@@ -213,28 +213,55 @@ def districts(city: dict, opts: dict | None = None) -> dict:
             "industrial": {"angle": (int(city.get("seed", 0)) * 137) % 360, "spread": 75}}
 
 
+def outline(city: dict, angle_deg: float) -> float:
+    """How far the city (and each of its district rings) reaches in this direction, as a factor of its
+    radius (~0.75..1.25): a few seeded waves, so no city or district is a perfect circle."""
+    s = int(city.get("seed", 1))
+    a = math.radians(angle_deg)
+    f = 0.0
+    for k, amp in ((2, 0.11), (3, 0.08), (5, 0.05), (7, 0.025)):
+        phase = ((s * (k * 7919 + 13)) % 997) / 997 * 2 * math.pi
+        f += amp * math.sin(k * a + phase)
+    return 1.0 + f
+
+
+def zone_share(city: dict, x: float, y: float) -> float:
+    """Distance from the centre as a share of the city's (irregular) edge in that direction: <downtown
+    share = core, <normal share = neighbourhood, <1 = suburb."""
+    dx, dy = x - city["x"], y - city["y"]
+    return math.hypot(dx, dy) / (city["radius"] * outline(city, math.degrees(math.atan2(dy, dx))))
+
+
 def city_graph(city: dict, opts: dict | None = None) -> tuple:
-    """Street lattice of one city: nodes {key: [x, y]}, edges [(a, b, kind)].
-    Downtown and the two main axes are four-lane; housing is two-lane; the rest has pavements."""
+    """Street network of one city: nodes {key: [x, y]}, edges [(a, b, kind)]. Real cities mix patterns
+    (urban-design transect): a strict grid of short blocks in the core, a looser grid in the
+    neighbourhoods, curving streets with cul-de-sacs in the suburbs, all inside an irregular outline.
+    Downtown and the two main axes are four-lane; suburbs are two-lane; the rest has pavements."""
     o = options(opts)
     block, down, normal = o["block_m"] * 100, o["downtown"], max(o["normal"], o["downtown"])
     rnd = random.Random(city.get("seed", 1))
     cx, cy, R, style = city["x"], city["y"], city["radius"], city.get("style", "mixed")
     turn = rnd.uniform(0, math.pi / 2)
     c, s = math.cos(turn), math.sin(turn)
-    k = int(R // block)
+    k = int(R * 1.3 // block)
     nodes, ring = {}, {}
     for ix in range(-k, k + 1):
         for iy in range(-k, k + 1):
             lx, ly = ix * block, iy * block
-            d = math.hypot(lx, ly)
-            if d > R:
-                continue
-            share = d / R
-            wobble = style == "organic" or (style == "mixed" and share > down)
-            if wobble and (ix or iy):
-                lx += rnd.uniform(-1, 1) * o["wobble"] * block
-                ly += rnd.uniform(-1, 1) * o["wobble"] * block
+            wx, wy = cx + c * lx - s * ly, cy + s * lx + c * ly
+            share = zone_share(city, wx, wy)
+            if share > 1.0:
+                continue  # outside this city's irregular edge
+            # wobble grows outward: core streets stay straight, suburbs curve (style can force either)
+            if style == "grid":
+                amount = 0.0
+            elif style == "organic":
+                amount = o["wobble"] * (0.6 if share <= down else 1.2)
+            else:
+                amount = 0.0 if share <= down else o["wobble"] * (0.5 if share <= normal else 1.3)
+            if amount and (ix or iy):
+                lx += rnd.uniform(-1, 1) * amount * block
+                ly += rnd.uniform(-1, 1) * amount * block
             nodes[(ix, iy)] = [cx + c * lx - s * ly, cy + s * lx + c * ly]
             ring[(ix, iy)] = share
     edges = []
@@ -246,7 +273,9 @@ def city_graph(city: dict, opts: dict | None = None) -> tuple:
             axis = (ix == 0 == nb[0]) or (iy == 0 == nb[1])
             kind = "4L" if axis or share <= down else ("2L" if share > normal else "2S")
             edges.append([(ix, iy), nb, kind])
-    if style != "grid" and o["prune"]:  # organic streets: drop side streets, never a main one, never a dead end
+    if style != "grid" and o["prune"]:
+        # neighbourhoods drop some side streets (never a main one, never a dead end); suburbs drop more and
+        # may leave cul-de-sacs, like real subdivisions
         degree = {}
         for a, b, _ in edges:
             degree[a] = degree.get(a, 0) + 1
@@ -254,12 +283,30 @@ def city_graph(city: dict, opts: dict | None = None) -> tuple:
         kept = []
         for e in edges:
             a, b, kind = e
-            if kind != "4L" and degree[a] > 2 and degree[b] > 2 and rnd.random() < o["prune"]:
+            suburb = min(ring[a], ring[b]) > normal
+            floor = 1 if suburb else 2  # a suburb street may end in a cul-de-sac
+            chance = o["prune"] * (1.6 if suburb else 1.0)
+            if kind != "4L" and degree[a] > floor and degree[b] > floor and rnd.random() < chance:
                 degree[a] -= 1
                 degree[b] -= 1
                 continue
             kept.append(e)
         edges = kept
+        # keep the one connected street network that holds the centre: pruning may cut a corner off
+        adj: dict = {}
+        for a, b, _ in edges:
+            adj.setdefault(a, []).append(b)
+            adj.setdefault(b, []).append(a)
+        start = min(adj, key=lambda n: abs(n[0]) + abs(n[1])) if adj else None
+        seen, todo = set(), [start] if start is not None else []
+        while todo:
+            n = todo.pop()
+            if n in seen:
+                continue
+            seen.add(n)
+            todo.extend(adj.get(n, []))
+        edges = [e for e in edges if e[0] in seen]
+        nodes = {n: p for n, p in nodes.items() if n in seen}
     return nodes, edges
 
 

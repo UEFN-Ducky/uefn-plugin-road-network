@@ -811,23 +811,63 @@ def register(api) -> None:
         push({"what": "pcg", "id": nid})
         return {"ok": True, "id": lid}
 
-    def pcg_preset(net_id: str = "", preset: str = "full_city") -> dict:
+    def pcg_preset(net_id: str = "", preset: str = "full_city", reorder: bool = False) -> dict:
         nid = slug(net_id)
         if not data.get(f"net.{nid}"):
             return {"ok": False, "error": f"No road network {net_id!r}."}
-        added = []
+        added, reordered, undo = [], [], []
         for layer in pl.preset(preset):
             lid = slug(layer["name"])
-            if not data.get(f"net.{nid}.pcg.{lid}"):  # never overwrite a layer the person already tuned
+            have = data.get(f"net.{nid}.pcg.{lid}")
+            if not have:  # never overwrite a layer the person already tuned
                 data.put(f"net.{nid}.pcg.{lid}", layer)
                 added.append(layer["name"])
-        record("road_network_pcg_preset", "pcg-layer", nid, None,
-               [{"command": "road_network_pcg_layer_delete", "params": {"net_id": nid, "layer_id": slug(n)}} for n in added])
+                undo.append({"command": "road_network_pcg_layer_delete", "params": {"net_id": nid, "layer_id": lid}})
+            elif reorder and have.get("order") != layer["order"]:  # only the planning order, every other setting kept
+                data.put(f"net.{nid}.pcg.{lid}", {**have, "order": layer["order"]})
+                reordered.append(layer["name"])
+                undo.append({"command": "road_network_pcg_layer_save",
+                             "params": {"net_id": nid, "layer_id": lid, "layer": json.dumps(have)}})
+        record("road_network_pcg_preset", "pcg-layer", nid, None, undo)
         push({"what": "pcg", "id": nid})
-        return {"ok": True, "id": nid, "added": added}
+        return {"ok": True, "id": nid, "added": added, "reordered": reordered}
 
     def road_tag_for(nid: str) -> str:
         return "CityRoads" if not (data.get(f"net.{nid}") or {}).get("generated") else f"{nid}_roads"
+
+    def asset_set_of(nid: str) -> str:
+        return (data.get(f"net.{nid}.assets") or {}).get("asset_set") or "own"
+
+    def pcg_assets(net_id: str = "", asset_set: str = "") -> dict:
+        """Which pieces a world's layers use: 'own' (the project's kit), 'fortnite' or 'mixed'. Empty = read it."""
+        nid = slug(net_id)
+        doc = data.get(f"net.{nid}") if nid else None
+        if not doc:
+            return {"ok": False, "error": f"No road network {net_id!r}."}
+        if asset_set:
+            if asset_set not in pl.ASSET_SETS:
+                return {"ok": False, "error": f"asset_set is one of {', '.join(pl.ASSET_SETS)}."}
+            before = data.get(f"net.{nid}.assets")
+            data.put(f"net.{nid}.assets", {"name": f"{doc.get('name', nid)} pieces", "asset_set": asset_set})
+            record("road_network_pcg_assets", "pcg-assets", nid, before,
+                   [{"command": "road_network_pcg_assets", "params": {"net_id": nid,
+                                                                      "asset_set": (before or {}).get("asset_set", "own")}}])
+            push({"what": "pcg", "id": nid})
+        cur = asset_set_of(nid)
+        return {"ok": True, "id": nid, "asset_set": cur,
+                "roles": {r: pl.asset_hint(r, cur) for r in pl.ROLES}}
+
+    def world_actors(nid: str) -> list:
+        actors = []
+        for aslug, head in actor_docs(nid).items():
+            if " before kit" in str(head.get("label") or ""):
+                continue  # a saved backup, not a road in the level
+            _, pts, segs = load_actor(nid, aslug)
+            actors.append((pts, segs))
+        return actors
+
+    def world_roads(nid: str, step: float = 500.0) -> list:
+        return pl.road_samples(world_actors(nid), step)
 
     def pcg_plan(net_id: str = "", road_tag: str = "") -> dict:
         nid = slug(net_id)
@@ -838,27 +878,21 @@ def register(api) -> None:
         if not layers:
             return {"ok": False, "error": "This world has no PCG layers yet (road_network_pcg_preset adds a starter set)."}
         cities = list(city_docs(nid).values())
-        halves = sorted(s[2] for s in world_roads(nid, step=5000.0)) or [875.0]
-        out = pl.plan(doc, layers, cities, road_tag or road_tag_for(nid), road_half_cm=halves[len(halves) // 2])
+        actors = world_actors(nid)
+        halves = sorted(s[2] for s in pl.road_samples(actors, 5000.0)) or [875.0]
+        out = pl.plan(doc, layers, cities, road_tag or road_tag_for(nid), road_half_cm=halves[len(halves) // 2],
+                      asset_set=asset_set_of(nid), juncs=pl.junctions(actors))
         out["road_actors"] = doc.get("actors") or []
         out["how"] = ("Build in UEFN with Epic PCGToolset, following skill_read_subskill('pcg', 'graph_layers'): "
                       "tag every road actor with road_tag, CreateGraph(name=graph, path=<content_root>/WorldGen/PCG), "
                       "AddNode per node in order with its settings, ConnectNodePins per edge, SetGraphParams for params "
-                      "(each wired through a Get Graph Parameter node), SpawnGraphInstance with volume, ExecuteGraphInstance.")
+                      "(each wired through a Get Graph Parameter node), SpawnGraphInstance with volume, ExecuteGraphInstance. "
+                      "Then the foliage[] layers in Foliage mode (foliage_how).")
         return out
-
-    def world_roads(nid: str, step: float = 500.0) -> list:
-        actors = []
-        for aslug, head in actor_docs(nid).items():
-            if " before kit" in str(head.get("label") or ""):
-                continue  # a saved backup, not a road in the level
-            _, pts, segs = load_actor(nid, aslug)
-            actors.append((pts, segs))
-        return pl.road_samples(actors, step)
 
     def pcg_preview(net_id: str = "", layer_id: str = "", summary: bool = False) -> dict:
         """Every enabled layer placed offline with the graph's rules; one layer per call when layer_id is
-        given (keeps each reply small). Points: [x, y, z, yaw, scale]."""
+        given (keeps each reply small). Points: [x, y, z, yaw, scale(, height m for buildings)]."""
         nid = slug(net_id)
         if not data.get(f"net.{nid}"):
             return {"ok": False, "error": f"No road network {net_id!r}."}
@@ -866,10 +900,10 @@ def register(api) -> None:
         if not docs:
             return {"ok": True, "id": nid, "layers": {}}
         terrain = (data.get(f"net.{nid}.scan") or {}).get("terrain") or {}
-        all_layers = list(docs.values())
-        out = pl.preview(all_layers, list(city_docs(nid).values()), terrain, world_roads(nid),
+        actors = world_actors(nid)
+        out = pl.preview(list(docs.values()), list(city_docs(nid).values()), terrain, pl.road_samples(actors),
                          lambda x, y: st.sample_grid(terrain, x, y) if terrain.get("heights") else 0.0,
-                         limit=2500)
+                         limit=2500, juncs=pl.junctions(actors))
         if layer_id:
             name = (docs.get(slug(layer_id)) or {}).get("name")
             out = {name: out[name]} if name in out else {}
@@ -882,27 +916,37 @@ def register(api) -> None:
         got = pcg_plan(net_id)
         if not got.get("ok"):
             return got
-        name = (data.get(f"net.{slug(net_id)}") or {}).get("name") or net_id
+        nid = slug(net_id)
+        name = (data.get(f"net.{nid}") or {}).get("name") or net_id
+        source = {"own": "our own kit (the project's WorldGen/City and WorldGen/Kit meshes, BuildingKit storeys)",
+                  "fortnite": "Fortnite's own props and buildings (search the Fortnite content)",
+                  "mixed": "our own kit first, Fortnite pieces for anything missing"}[got["asset_set"]]
         if not confirm:
-            return {"ok": False, "error": f"This starts an AI chat that builds {len(got['layers'])} PCG layers "
-                                          f"({', '.join(got['layers'])}) in the open UEFN level. Call again with confirm=true."}
+            return {"ok": False, "error": f"This starts an AI chat that builds {len(got['layers'])} city layers and "
+                                          f"{len(got['foliage'])} foliage layers in the open UEFN level with {source}. "
+                                          f"Call again with confirm=true."}
         try:
-            chat = api.call_tool("ducky_create_chat", {"title": f"PCG layers: {name}"})
+            chat = api.call_tool("ducky_create_chat", {"title": f"City Builder: {name}"})
             conv = (chat or {}).get("conv_id") or (chat or {}).get("id") or ((chat or {}).get("chat") or {}).get("id")
             if not conv:
                 return {"ok": False, "error": "Couldn't start a chat for the build.", "plan": got}
             api.call_tool("ducky_send_chat_message", {"conv_id": conv, "wait_for_reply": False, "message": (
-                f"Build the PCG placement layers of road network '{name}' in the open UEFN level.\n"
-                f"1. road_network_pcg_plan(net_id='{slug(net_id)}') gives the graph: nodes in data-flow order, wires, params, "
-                f"the road tag and the volume.\n"
-                f"2. Read skill_read_subskill('pcg', 'graph_layers') first and follow it (on an older UEFN plugin without it: "
-                f"skill_read_subskill('leveldesign', 'procedural_generation', section='Route A: PCG graphs (UEFN 43.00+)') and "
-                f"the plan's node order). Epic PCGToolset; read argument names with unreal__describe_toolset, never guess.\n"
-                f"3. Layers without meshes: pick the project's own meshes (its Kit and City folders) and save them back "
-                f"with road_network_pcg_layer_save before building.\n"
-                f"4. Execute once, report each layer's point count and the seed. Never touch the terrain.")})
+                f"Build the city layers of world '{name}' (City Builder) in the open UEFN level.\n"
+                f"1. road_network_pcg_plan(net_id='{nid}') gives everything: the PCG graph (nodes in data-flow order, "
+                f"wires, params, road tag, volume), pieces[] (each layer's role and where its pieces come from), "
+                f"foliage[] and buildings_how.\n"
+                f"2. Pieces: use {source}. For each layer pick real assets that fit its role and size (buildings: "
+                f"lot_m and storeys), and save them with road_network_pcg_layer_save before building.\n"
+                f"3. Read skill_read_subskill('pcg', 'graph_layers') and follow it (older UEFN plugin: "
+                f"skill_read_subskill('leveldesign', 'procedural_generation', section='Route A: PCG graphs (UEFN 43.00+)')). "
+                f"Epic PCGToolset; read argument names with unreal__describe_toolset, never guess.\n"
+                f"4. foliage[] is NOT PCG: import those meshes as Foliage Types and paint them in Foliage mode by mouse. "
+                f"No grass.\n"
+                f"5. Execute once, report each layer's count and seed. Never touch the terrain.")})
         except (ValueError, RuntimeError, PermissionError) as exc:
             return {"ok": False, "error": f"Couldn't start the build chat: {exc}"}
+        return {"ok": True, "chat": conv, "layers": got["layers"], "foliage": [f["layer"] for f in got["foliage"]],
+                "nodes": len(got["nodes"]), "asset_set": got["asset_set"]}
         return {"ok": True, "chat": conv, "layers": got["layers"], "nodes": len(got["nodes"])}
 
     # ---------------------------------------------------------------- MCP tools
@@ -1121,12 +1165,13 @@ def register(api) -> None:
         return safe(pcg_layer_delete)(net_id, layer_id)
 
     @api.tool(intent=PCG_INTENT, listener=False)
-    def road_network_pcg_preset(net_id: str = "", preset: str = "full_city") -> dict:
-        """Add starter PCG layers to a world: 'full_city' (nature, street trees and lamps, skyscrapers, office
-        blocks, hospitals and schools, factories and warehouses in an industrial zone, apartments, shops, gas
-        stations, houses), 'city' (buildings only), 'forest_and_streets' or 'forest'. Existing layers keep
-        their settings."""
-        return safe(pcg_preset)(net_id, preset)
+    def road_network_pcg_preset(net_id: str = "", preset: str = "full_city", reorder: bool = False) -> dict:
+        """Add every layer a city needs in one call: 'full_city' (16 building types, traffic lights / stop and
+        street signs on junction corners, lamps, street trees, bus stops, benches, bins, hydrants, billboards,
+        power poles, and trees / rocks / bushes as Foliage-mode layers, no grass), 'city', 'buildings', 'street'
+        or 'nature'. Existing layers keep their settings; reorder=true only moves them into planning order
+        (big civic sites first, dense fill after)."""
+        return safe(pcg_preset)(net_id, preset, reorder)
 
     @api.tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_plan(net_id: str = "", road_tag: str = "") -> dict:
@@ -1134,6 +1179,13 @@ def register(api) -> None:
         settings, the wires, the graph params, the road tag and the volume. Build it with Epic PCGToolset
         (skill pcg/graph_layers)."""
         return safe(pcg_plan)(net_id, road_tag)
+
+    @api.tool(intent=PCG_INTENT, listener=False)
+    def road_network_pcg_assets(net_id: str = "", asset_set: str = "") -> dict:
+        """Which pieces City Builder uses for a world's layers: 'own' (the project's own kit: WorldGen/City,
+        WorldGen/Kit, BuildingKit storeys), 'fortnite' (Fortnite's props and buildings) or 'mixed'. Empty
+        asset_set reads it, with where each role (traffic light, skyscraper, bench...) comes from."""
+        return safe(pcg_assets)(net_id, asset_set)
 
     @api.tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_preview(net_id: str = "", layer_id: str = "", summary: bool = False) -> dict:
@@ -1151,8 +1203,10 @@ def register(api) -> None:
     api.register_panel_rpc("pcg_layers", lambda net_id="": safe(pcg_layers)(net_id))
     api.register_panel_rpc("pcg_layer_save", lambda net_id="", layer="", layer_id="": safe(pcg_layer_save)(net_id, layer, layer_id))
     api.register_panel_rpc("pcg_layer_delete", lambda net_id="", layer_id="": safe(pcg_layer_delete)(net_id, layer_id))
-    api.register_panel_rpc("pcg_preset", lambda net_id="", preset="full_city": safe(pcg_preset)(net_id, preset))
+    api.register_panel_rpc("pcg_preset", lambda net_id="", preset="full_city", reorder=False:
+                           safe(pcg_preset)(net_id, preset, reorder))
     api.register_panel_rpc("pcg_plan", lambda net_id="", road_tag="": safe(pcg_plan)(net_id, road_tag))
+    api.register_panel_rpc("pcg_assets", lambda net_id="", asset_set="": safe(pcg_assets)(net_id, asset_set))
     api.register_panel_rpc("pcg_preview", lambda net_id="", layer_id="": safe(pcg_preview)(net_id, layer_id))
     api.register_panel_rpc("pcg_place", lambda net_id="", confirm=False: safe(pcg_place)(net_id, confirm))
 

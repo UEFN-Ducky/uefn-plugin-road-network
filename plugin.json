@@ -1,9 +1,9 @@
 {
   "id": "road-network",
   "kind": "plugin",
-  "version": "1.5.0",
-  "label": "Road Network",
-  "description": "See, edit and rebuild a whole UEFN city road network in 3D: every road, junction, ramp, elevated deck and kit piece, shared with your team, with one-button reimport into UEFN.",
+  "version": "1.6.0",
+  "label": "City Builder",
+  "description": "Build whole cities for UEFN: generate worlds with several cities, terrain and roads, lay out every building, street light, sign and tree as PCG layers with a live 3D preview, pick our own kit or Fortnite pieces, and build it in UEFN in one click, together with your team.",
   "min_app_version": "1.0.0",
   "default_enabled": false,
   "data_sharing": true,
@@ -11,7 +11,7 @@
   "contributes": {
     "agent.tools": {
       "category": "road-network",
-      "intent_pattern": "\\b(road network|city roads?|road splines?|interchange|road pieces?)\\b",
+      "intent_pattern": "\\b(city builder|road network|city roads?|road splines?|interchange|road pieces?|build (a )?city)\\b",
       "plan_tools": [
         "road_network_list",
         "road_network_stats"
@@ -29,7 +29,7 @@
     "ui.panels": [
       {
         "id": "main",
-        "title": "Road Network",
+        "title": "City Builder",
         "icon": "route",
         "entry": "ui/index.html"
       }
@@ -37,7 +37,7 @@
     "header.buttons": [
       {
         "id": "main",
-        "title": "Road Network",
+        "title": "City Builder",
         "icon": "route",
         "action": "panel:main",
         "order": 60

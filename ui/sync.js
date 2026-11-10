@@ -10,7 +10,7 @@ export function syncPlan(keys, net) {
     if (/^net\.[^.]+$/.test(k) || k.startsWith("project.")) out.nets = true;  // a world's own doc: names, settings
     if (!mine || !(k === mine || k.startsWith(mine + "."))) continue;  // another world: only the list above
     if (k === mine) out.nets = true;
-    else if (k.startsWith(mine + ".pcg.")) out.layers = true;
+    else if (k.startsWith(mine + ".pcg.") || k === mine + ".assets") out.layers = true;
     else if (k.startsWith(mine + ".city.")) { out.cities = true; out.layers = true; }  // district rings move layers
     else if (k.startsWith(mine + ".actor.") || k === mine + ".scan") { out.geometry = true; out.layers = true; }
   }

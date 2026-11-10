@@ -1,10 +1,35 @@
 ---
 name: road-network
-description: "Road Network: view, edit and reimport a whole UEFN city road network (landscape spline roads, junctions, elevated decks, interchanges) with road_network_* tools."
+description: "City Builder (plugin id road-network): generate worlds with cities, terrain and roads, lay out every city layer (buildings, street lights, signs, furniture, foliage) as PCG with a 3D preview, choose own or Fortnite pieces, build it in UEFN; road_network_* tools."
 ---
 
-# Road Network
+# City Builder
 
+The plugin's id and tool names stay `road-network` / `road_network_*` (renaming them would break
+saved data and the Store listing); everything the person sees says **City Builder**.
+
+## Pieces: own kit or Fortnite
+
+`road_network_pcg_assets(net_id, asset_set)` = `own` (the project's WorldGen/City SM_City_*, WorldGen/Kit, and
+the BuildingKit modular storeys from Blender: storey 3.84 m, Tower / Shop / House / Mansion / Modern / Mall / Sky
+styles), `fortnite` (Fortnite's own props and buildings, found by search words per role) or `mixed`. Every layer
+has a `role` (traffic_light, stop_sign, bench, skyscraper, factory, park...); the plan's `pieces[]` says where
+each role's pieces come from. The AI building it picks real assets and saves them on the layer.
+
+## A realistic city (how the layout is made)
+
+- **Transect zoning** (urban-design skill): core (short-block strict grid, 4-lane), neighbourhoods (looser grid, streets
+  with pavements), suburbs (curving streets, cul-de-sacs, 2-lane), one industrial wedge per city, countryside outside.
+- **Irregular edges:** `citygen.outline(city, angle)` bends the city edge and every district ring (never a circle);
+  the panel, preview and plan polygons all use it.
+- **Skyline:** building heights fall off from the core outward and two neighbours within 25 m never differ by less
+  than 18 % of the layer's range; give each building layer several meshes of different heights.
+- **One click:** `road_network_pcg_preset(net_id, "full_city")` = 31 layers: 16 building types, 12 street layers
+  (traffic lights / stop signs / street signs on junction corners via kind `at_junctions`, lamps, street trees, bus
+  stops, benches, bins, hydrants, billboards, power poles) and 3 foliage layers. **Foliage** (trees, rocks, bushes) is
+  never PCG and there is no grass: the plan's `foliage[]` goes to UEFN Foliage mode (Foliage Types, painted by mouse).
+
+## Roads
 A city's roads live in UEFN as landscape spline actors (City Roads, Elevated Freeways,
 Stack Interchange, ...). Python cannot read spline control points, so each actor travels
 as its BEGIN_SPLINES clipboard text, parsed into control points and segments and stored

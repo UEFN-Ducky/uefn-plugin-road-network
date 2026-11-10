@@ -385,9 +385,25 @@ function buildScene() {
   state.box = box;
   needsDraw = true;
 }
+// citygen.outline(): a city's edge in a direction as a factor of its radius (keep the two in step)
+function cityOutline(c, angleDeg) {
+  const s = Math.trunc(c.seed || 1), a = angleDeg * Math.PI / 180;
+  let f = 0;
+  for (const [k, amp] of [[2, 0.11], [3, 0.08], [5, 0.05], [7, 0.025]]) {
+    const phase = (((s * (k * 7919 + 13)) % 997 + 997) % 997) / 997 * 2 * Math.PI;
+    f += amp * Math.sin(k * a + phase);
+  }
+  return 1 + f;
+}
+
 // PCG preview: one instanced shape per layer, sized in metres like the real thing
 const PCG_COLORS = ["green", "amber", "yellow", "blue", "purple", "red", "accent"];
 function pcgShape(name, kind) {
+  if (/traffic|stop|sign|hydrant/i.test(name)) return [new THREE.CylinderGeometry(0.12, 0.12, /hydrant/i.test(name) ? 0.9 : 4, 6),
+    /hydrant/i.test(name) ? 0.45 : 2];
+  if (/bench|bin|trash/i.test(name)) return [new THREE.BoxGeometry(1.8, 0.9, 0.6), 0.45];
+  if (/billboard/i.test(name)) return [new THREE.BoxGeometry(10, 5, 0.4), 8];
+  if (/bus stop/i.test(name)) return [new THREE.BoxGeometry(4, 2.6, 1.6), 1.3];
   if (/rock|stone|boulder/i.test(name)) return [new THREE.DodecahedronGeometry(1.4), 0.9];
   if (/grass|bush|shrub|flower/i.test(name)) return [new THREE.SphereGeometry(0.7, 6, 4), 0.5];
   if (/lamp|light|pole|post/i.test(name)) return [new THREE.CylinderGeometry(0.15, 0.2, 7, 6), 3.5];
@@ -463,7 +479,8 @@ function drawDistricts() {
       const pts = [];
       for (let k = 0; k <= 96; k++) {
         const a = k / 96 * Math.PI * 2;
-        const x = c.x + Math.cos(a) * r, y = c.y + Math.sin(a) * r;
+        const rr = r * cityOutline(c, a * 180 / Math.PI);  // the same irregular edge the generator uses
+        const x = c.x + Math.cos(a) * rr, y = c.y + Math.sin(a) * rr;
         pts.push(toV(x, y, (sampleZ(t, x, y) ?? z ?? 0) + 250));
       }
       const geo = new THREE.BufferGeometry().setFromPoints(pts);
@@ -476,8 +493,8 @@ function drawDistricts() {
     if (ind && down && outer) {  // the industrial wedge, edge to edge
       const a0 = (ind.angle - (ind.spread || 75) / 2) * Math.PI / 180, span = (ind.spread || 75) * Math.PI / 180;
       const pts = [];
-      for (let k = 0; k <= 24; k++) { const a = a0 + span * k / 24; pts.push([c.x + Math.cos(a) * outer, c.y + Math.sin(a) * outer]); }
-      for (let k = 24; k >= 0; k--) { const a = a0 + span * k / 24; pts.push([c.x + Math.cos(a) * down, c.y + Math.sin(a) * down]); }
+      for (let k = 0; k <= 24; k++) { const a = a0 + span * k / 24, f = cityOutline(c, a * 180 / Math.PI); pts.push([c.x + Math.cos(a) * outer * f, c.y + Math.sin(a) * outer * f]); }
+      for (let k = 24; k >= 0; k--) { const a = a0 + span * k / 24, f = cityOutline(c, a * 180 / Math.PI); pts.push([c.x + Math.cos(a) * down * f, c.y + Math.sin(a) * down * f]); }
       pts.push(pts[0]);
       const geo = new THREE.BufferGeometry().setFromPoints(pts.map(([x, y]) => toV(x, y, (sampleZ(t, x, y) ?? z ?? 0) + 300)));
       const line = new THREE.Line(geo, new THREE.LineDashedMaterial({ color: col("amber"), dashSize: 24, gapSize: 10 }));
@@ -636,7 +653,18 @@ function buildPanes() {
 }
 
 // ------------------------------------------------------------------ PCG layers pane
-const KIND_OPTS = [["scatter", "Scatter", "terrain"], ["along_roads", "Along roads", "route"], ["buildings", "Buildings", "city"]];
+const KIND_OPTS = [
+  ["buildings", "Buildings", "Lots facing the street: frontage, depth, height", "city"],
+  ["along_roads", "Along the streets", "Lamps, trees, benches, bins, hydrants, bus stops", "route"],
+  ["at_junctions", "Junction corners", "Traffic lights, stop signs, street-name signs", "grid"],
+  ["foliage", "Foliage (painted)", "Trees, rocks, bushes: Foliage mode, not PCG", "terrain"],
+  ["scatter", "Scatter (PCG)", "Anything else spread over the ground", "points"],
+];
+const ASSET_OPTS = [
+  ["own", "Our own kit", "WorldGen City and Kit meshes, BuildingKit storeys from Blender", "layers"],
+  ["fortnite", "Fortnite pieces", "Fortnite's own props and buildings", "world"],
+  ["mixed", "Mixed", "Our kit first, Fortnite for anything missing", "mixed"],
+];
 const WHERE_OPTS = [
   ["outside", "Outside the cities", "Countryside between towns", "terrain"],
   ["everywhere", "Everywhere", "Whole map, cities too", "world"],
@@ -646,7 +674,7 @@ const WHERE_OPTS = [
   ["housing", "Housing", "Outer ring of each city", "pin"],
   ["industrial", "Industrial zone", "One wedge of each city's outer rings", "wrench"],
 ];
-const KIND_ICON = { scatter: "terrain", along_roads: "route", buildings: "city" };
+const KIND_ICON = { scatter: "points", along_roads: "route", buildings: "city", at_junctions: "grid", foliage: "terrain" };
 let pcgSaveTimer = 0;
 function renderPcgPane() {
   const pane = $("pane-pcg");
@@ -661,7 +689,7 @@ function renderPcgPane() {
       const out = await rpc("pcg_preset", { net_id: state.net, preset: "full_city" });
       if (out.ok === false) return showError(out.error);
       await loadLayers();
-    }, "secondary", "Nature, street trees and lamps, skyscrapers, offices, apartments, shops, hospitals and schools, factories, warehouses, gas stations and houses (layers you already have keep their settings)"),
+    }, "secondary", "Every layer a city needs in one click: skyscrapers, offices, malls, parking, hospitals, schools, police and fire stations, parks, factories, warehouses, apartments, shops, gas stations, mansions, houses; traffic lights, stop and street signs, lamps, street trees, bus stops, benches, bins, hydrants, billboards, power poles; trees, rocks and bushes as foliage (layers you already have keep their settings)"),
     button("New layer", "edit", async () => {
       const name = `Layer ${layers.length + 1}`;
       const out = await rpc("pcg_layer_save", { net_id: state.net, layer: JSON.stringify({ name, order: layers.length + 1 }) });
@@ -670,10 +698,17 @@ function renderPcgPane() {
       await loadLayers();
     }));
   const cards = layers.map((l, idx) => layerCard(l, layers.slice(0, idx)));
+  const pieces = choices({ label: "Pieces", value: state.assetSet || "own", options: ASSET_OPTS, onChange: async (v) => {
+    const out = await rpc("pcg_assets", { net_id: state.net, asset_set: v });
+    if (out.ok === false) return showError(out.error);
+    state.assetSet = out.asset_set;
+  } }).el;
   const place = button("Place in UEFN with AI", "upload", onPcgPlace, "primary",
     "Starts a chat that builds one PCG graph with every layer in the open UEFN level");
   place.style.width = "100%";
   pane.replaceChildren(
+    section("What it's built from", pieces, h("div", { class: "rn-hint", style: "margin-top: 6px" },
+      "The AI that builds it picks real pieces for every layer from this set (layers with meshes of their own keep them).")),
     section("Placement layers", head, h("div", { class: "rn-hint", style: "margin: 8px 0" },
       "Layers place in order: each one keeps clear of the roads and the layers you tick under Keep clear of.")),
     ...(cards.length ? cards : [h("div", { class: "dk-empty" }, h("div", { class: "dk-empty__title" }, "No layers yet"), "Add the starter layers or a new one.")]),
@@ -741,7 +776,8 @@ function layerCard(l, earlier) {
     : h("div", { class: "rn-hint" }, "First layer: nothing placed before it.");
   card.append(
     name.el,
-    segmented({ label: "Kind", value: l.kind, options: KIND_OPTS, onChange: (v) => save({ kind: v }, true) }).el,
+    choices({ label: "Kind", value: l.kind, options: KIND_OPTS, onChange: (v) => save({ kind: v }, true) }).el,
+    ...(l.kind === "at_junctions" ? [num("corners", "Corners per junction", 1, 4, 1, (v) => String(v))] : []),
     choices({ label: "Where", value: l.where, options: WHERE_OPTS, onChange: (v) => save({ where: v }, true) }).el,
     section("Spacing", ...spacing),
     section("Look", num("scale_min", "Smallest", 0.1, 10, 0.05, (v) => `×${v}`), num("scale_max", "Largest", 0.1, 10, 0.05, (v) => `×${v}`),
@@ -764,8 +800,9 @@ function layerCard(l, earlier) {
 }
 async function loadLayers() {
   if (!state.net) { state.layers = []; renderPcgPane(); return; }
-  const out = await rpc("pcg_layers", { net_id: state.net });
+  const [out, assets] = await Promise.all([rpc("pcg_layers", { net_id: state.net }), rpc("pcg_assets", { net_id: state.net })]);
   state.layers = out.ok === false ? [] : out.items || [];
+  state.assetSet = assets.ok === false ? "own" : assets.asset_set;
   const pane = $("pane-pcg");
   if (pane && pane.contains(document.activeElement) && document.activeElement !== document.body) {
     // the person is typing or dragging in a layer card: redraw once they leave it, never under their hands
