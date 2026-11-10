@@ -610,8 +610,10 @@ def register(api) -> None:
             given = json.loads(options) if str(options or "").strip() else {}
         except ValueError as exc:
             return {"ok": False, "error": f"options is not valid JSON: {exc}"}
-        # options left out keep this world's last values
-        opts = cg.options({**((data.get(f"net.{nid}") or {}).get("generated") or {}).get("options", {}), **given})
+        # options left out keep this world's last values; so do its keep-out zones (options.keep)
+        last = (data.get(f"net.{nid}") or {}).get("generated") or {}
+        keep = cg.keep_zones(given.pop("keep") if "keep" in given else last.get("keep"))
+        opts = cg.options({**last.get("options", {}), **given})
         folder = folder or road_folder()
         if not folder:
             return {"ok": False, "error": "Give folder: the project's road meshes folder (…/WorldGen/Roads)."}
@@ -637,16 +639,16 @@ def register(api) -> None:
         elif not text and old:  # regenerate the cities already there (their names, styles and buildings stay)
             towns = [{k: v for k, v in c.items() if k in ("name", "x", "y", "radius", "style", "seed")} for c in old.values()]
         else:
-            towns = cg.place_cities(int(seed), max(1, min(12, int(text or 3))), bounds)
+            towns = cg.place_cities(int(seed), max(1, min(12, int(text or 3))), bounds, keep)
         if not towns:
             return {"ok": False, "error": "No room for that many cities: make the map bigger or ask for fewer."}
         ter = base or cg.terrain(int(seed), size, max(0.0, float(relief_m)) * 100, towns, center=(center_x, center_y),
-                                 opts=opts)
+                                 opts=opts, keep=keep)
         water = ter.get("sea")
         # roads never dive into a lake: across water they stay 1.5 m above it (a causeway)
         road_ground = ((lambda x, y: max(st.sample_grid(ter, x, y) or 0.0, water + 150)) if water is not None
                        else (lambda x, y: st.sample_grid(ter, x, y) or 0.0))
-        actors = cg.generate(towns, road_ground, folder, int(seed), opts)
+        actors = cg.generate(towns, road_ground, folder, int(seed), opts, keep)
         before = data.get(f"net.{nid}")
         saved = save_network(nid, name, "", "live")
         if not saved.get("ok"):
@@ -672,7 +674,7 @@ def register(api) -> None:
         doc = data.get(f"net.{nid}")
         doc["generated"] = {"seed": int(seed), "size_km": size / 100000, "relief_m": float(relief_m),
                             "ground_from": slug(ground_from), "folder": folder, "options": opts,
-                            "cities": len(towns), "center": [center_x, center_y]}
+                            "cities": len(towns), "center": [center_x, center_y], "keep": keep}
         doc.pop("heightmap", None)  # written on demand (road_network_heightmap): keeps live preview fast
         doc["actors"] = sorted(actors)
         doc["updated"] = time.time()
@@ -910,13 +912,14 @@ def register(api) -> None:
         cities = list(city_docs(nid).values())
         # Every layer avoids the ones before it, so one layer still needs the whole preview: compute it
         # once per input set and serve the panel's per-layer calls from that.
-        key = hashlib.sha1(json.dumps([nid, docs, cities, terrain, actors], sort_keys=True, default=str)
+        keep = ((data.get(f"net.{nid}") or {}).get("generated") or {}).get("keep") or []
+        key = hashlib.sha1(json.dumps([nid, docs, cities, terrain, actors, keep], sort_keys=True, default=str)
                            .encode()).hexdigest()
         if _PREVIEW_CACHE.get("key") != key:  # ponytail: one entry, the world being looked at
             _PREVIEW_CACHE.update(key=key, out=pl.preview(
                 list(docs.values()), cities, terrain, pl.road_samples(actors),
                 lambda x, y: st.sample_grid(terrain, x, y) if terrain.get("heights") else 0.0,
-                limit=6000, juncs=pl.junctions(actors)))  # the whole city, not a sample
+                limit=6000, juncs=pl.junctions(actors), keep=keep))  # the whole city, not a sample
         out = _PREVIEW_CACHE["out"]
         if layer_id:
             name = (docs.get(slug(layer_id)) or {}).get("name")

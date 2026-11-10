@@ -722,7 +722,7 @@ def _height(layer: dict, cities: list, x: float, y: float, rnd, neighbours: "_Ha
 
 
 def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, limit: int = 2500,
-            juncs: list | None = None) -> dict:
+            juncs: list | None = None, keep: list | None = None) -> dict:
     """Run every enabled layer offline with the same rules as the graph (mask, off roads, keep clear of
     earlier layers, self pruning, sink) and return {layer name: {points: [[x, y, z, yaw, scale]], ...}}.
     Scatter is thinned to ``limit`` points per layer for the view; ``count`` says the full estimate."""
@@ -786,6 +786,8 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                 continue  # too soon after the last one on this side of the street
             if not _in_where(layer["where"], cities, x, y):
                 continue
+            if keep and any(max(k["x0"] - x, 0, x - k["x1"]) ** 2 + max(k["y0"] - y, 0, y - k["y1"]) ** 2 < 4e6 for k in keep):
+                continue  # 20 m around a keep zone (a cinema, a spawn) stays clear
             if layer["kind"] == "buildings" and layer["height_min_m"] >= 40 and rnd.random() > 0.08 + 0.92 * core_peak(cities, x, y):
                 continue  # towers cluster at the core and thin out toward the edge: no wall of equal towers
             z = sample_z(x, y)

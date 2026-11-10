@@ -126,8 +126,43 @@ def _smoothstep(e0: float, e1: float, x: float) -> float:
     return t * t * (3 - 2 * t)
 
 
+# ------------------------------------------------------------------ keep-out zones
+# Something already built that the world must leave alone (a cinema, a spawn island): a rectangle
+# {x0, y0, x1, y1, z} in cm. The ground stays flat at z there and blends back into the hills; no
+# city, highway or PCG lot goes inside.
+def keep_zones(raw) -> list:
+    out = []
+    for k in raw or []:
+        try:
+            x0, x1 = sorted((float(k["x0"]), float(k["x1"])))
+            y0, y1 = sorted((float(k["y0"]), float(k["y1"])))
+            out.append({"name": str(k.get("name") or "Keep"), "x0": x0, "y0": y0, "x1": x1, "y1": y1,
+                        "z": float(k.get("z", 0.0))})
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def keep_gap(k: dict, x: float, y: float) -> float:
+    """How far (cm) a point is outside a keep zone; 0 inside."""
+    return math.hypot(max(k["x0"] - x, 0, x - k["x1"]), max(k["y0"] - y, 0, y - k["y1"]))
+
+
+def in_keep(keep: list, x: float, y: float, margin: float = 0.0) -> bool:
+    return any(keep_gap(k, x, y) <= margin for k in keep or [])
+
+
+def push_out(keep: list, x: float, y: float, margin: float) -> list:
+    """A point moved to the nearest spot at least `margin` outside every keep zone."""
+    for k in keep or []:
+        if keep_gap(k, x, y) < margin:
+            cands = [(k["x0"] - margin, y), (k["x1"] + margin, y), (x, k["y0"] - margin), (x, k["y1"] + margin)]
+            x, y = min(cands, key=lambda p: math.hypot(p[0] - x, p[1] - y))
+    return [x, y]
+
+
 def terrain(seed: int, size_cm: float, relief_cm: float, cities: list, grid: int = 160,
-            center: tuple = (0.0, 0.0), opts: dict | None = None) -> dict:
+            center: tuple = (0.0, 0.0), opts: dict | None = None, keep: list | None = None) -> dict:
     """Hills, flattened into a plateau under every city. Same shape as a ground scan:
     {min, max, grid, heights[j][i]} with cell centres, so the 3D view and drape read it as is."""
     o = options(opts)
@@ -183,6 +218,8 @@ def terrain(seed: int, size_cm: float, relief_cm: float, cities: list, grid: int
             for c, flat in plateaus:
                 w = 1 - _smoothstep(c["radius"] * 1.05, c["radius"] * 1.05 + blend, math.hypot(x - c["x"], y - c["y"]))
                 h += (flat - h) * w
+            for k in keep or []:  # last: whatever is built there sits exactly on its own ground
+                h += (k["z"] - h) * (1 - _smoothstep(0, max(blend, 5000.0), keep_gap(k, x, y)))
             row.append(round(h, 1))
         rows.append(row)
     return {"min": lo, "max": hi, "grid": grid, "heights": rows, "sea": sea}
@@ -237,9 +274,9 @@ def heightmap_png(ter: dict, res: int = 1009, pads: list | None = None) -> tuple
 
 
 # ------------------------------------------------------------------ cities
-def place_cities(seed: int, count: int, bounds: tuple) -> list:
-    """count cities inside bounds ((x0, y0), (x1, y1)), never overlapping each other; their size
-    follows the map (8-14 % of its width, so a 6 km map gets 500-850 m cities)."""
+def place_cities(seed: int, count: int, bounds: tuple, keep: list | None = None) -> list:
+    """count cities inside bounds ((x0, y0), (x1, y1)), never overlapping each other or a keep zone;
+    their size follows the map (8-14 % of its width, so a 6 km map gets 500-850 m cities)."""
     rnd = random.Random(seed * 31 + 7)
     (x0, y0), (x1, y1) = bounds
     span = min(x1 - x0, y1 - y0)
@@ -250,6 +287,8 @@ def place_cities(seed: int, count: int, bounds: tuple) -> list:
             break
         r = rnd.uniform(min_r, max_r)
         x, y = rnd.uniform(x0 + r * 1.2, x1 - r * 1.2), rnd.uniform(y0 + r * 1.2, y1 - r * 1.2)
+        if in_keep(keep, x, y, r * 1.5):
+            continue
         if all(math.hypot(x - c["x"], y - c["y"]) > (r + c["radius"]) * 1.5 for c in out):
             out.append({"name": NAMES[len(out) % len(NAMES)], "x": round(x), "y": round(y), "radius": round(r),
                         "style": STYLES[len(out) % len(STYLES)], "seed": rnd.randrange(1 << 30)})
@@ -574,7 +613,7 @@ def interchange(kind: str, end: list, toward: list, tag: tuple, hw: str) -> tupl
     return profile, nodes, edges
 
 
-def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None = None) -> dict:
+def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None = None, keep: list | None = None) -> dict:
     """{label: {points, segments}}: one '<City> Roads' actor per city and one 'Highways' actor.
     A highway ends 40 m outside its city's gate street, where the city's own stub road ends; there it
     meets the city through the chosen interchange (direct, a trumpet loop, a cloverleaf piece, or a
@@ -603,6 +642,14 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
         bend = rnd.uniform(-1, 1) * o["highway_curve"] * L  # one gentle curve per highway
         via = [[x0 + (x1 - x0) * t + nx * bend * math.sin(math.pi * t), y0 + (y1 - y0) * t + ny * bend * math.sin(math.pi * t)]
                for t in (k / steps for k in range(1, steps))]
+        if keep:  # a highway goes round a keep zone, never through it
+            line, dense = [ends[0]] + via + [ends[1]], []
+            for p, q in zip(line, line[1:]):
+                n = max(1, int(math.dist(p, q) // 4000))
+                dense += [[p[0] + (q[0] - p[0]) * i / n, p[1] + (q[1] - p[1]) * i / n] for i in range(n)]
+            dense = dense[1:]
+            if any(in_keep(keep, *v, 6000) for v in dense):
+                via = [push_out(keep, v[0], v[1], 8000) for v in dense][::2]
         if o["overpasses"] == "yes":
             via, _ = overpass_via([ends[0]] + via + [ends[1]], streets, o["highway"])
         if o["interchange"] == "stack" and L > 70000:  # rise onto an elevated deck into each gate
@@ -639,6 +686,9 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
                     v[3] = "BR" if up > 0 and nxt_up > 0 else ("BRR" if up > 0 or nxt_up > 0 else o["highway"])
         hw_nodes[("hw", a, b, 0)], hw_nodes[("hw", a, b, 1)] = ends
         hw_edges.append([("hw", a, b, 0), ("hw", a, b, 1), o["highway"], via])
+    for nodes, edges in graphs:  # a city street never runs into a keep zone
+        gone = {n for n, p in nodes.items() if in_keep(keep, p[0], p[1], 2000)}
+        edges[:] = [e for e in edges if e[0] not in gone and e[1] not in gone]
     out = {f"{c['name']} Roads": build_actor(n, e, ground, folder) for c, (n, e) in zip(cities, graphs)}
     if hw_edges:
         out["Highways"] = build_actor(hw_nodes, hw_edges, ground, folder, pieces)
@@ -725,6 +775,18 @@ def _demo() -> None:
     assert steps["heights"], "terraces build"
     png, settings = heightmap_png(ter, res=65)
     assert png[:8] == b"\x89PNG\r\n\x1a\n" and settings["scale"][2] == 100.0
+    # a keep zone (the cinema): flat at its own height, no city on it, the highway goes round it
+    keep = keep_zones([{"name": "Cinema", "x0": -10000, "y0": -12000, "x1": 14000, "y1": 11000, "z": 1341}, {"bad": 1}])
+    assert len(keep) == 1
+    kc = place_cities(3, 4, ((-200000, -200000), (200000, 200000)), keep)
+    assert kc and all(keep_gap(keep[0], c["x"], c["y"]) > c["radius"] for c in kc)
+    kt = terrain(3, 400000, 6000, kc, grid=96, keep=keep)
+    for x, y in ((0, 0), (12000, 9000), (-8000, -10000)):
+        assert abs(st.sample_grid(kt, x, y) - 1341) < 30, (x, y, st.sample_grid(kt, x, y))
+    across = [{"name": "W", "x": -150000, "y": 0, "radius": 30000, "style": "grid", "seed": 1},
+              {"name": "E", "x": 150000, "y": 0, "radius": 30000, "style": "grid", "seed": 2}]
+    hw = generate(across, lambda x, y: 0.0, "/Game/X/Roads", seed=3, opts={"interchange": "direct"}, keep=keep)["Highways"]
+    assert not any(in_keep(keep, p["x"], p["y"], 2000) for p in hw["points"]), "the highway goes round the cinema"
     print("citygen ok", {k: len(v["segments"]) for k, v in actors.items()})
 
 

@@ -45,6 +45,9 @@ Building forms (`FORMS` in pcg_layers): box, slab, tower, podium_tower (10-store
 round, round_podium, twin, spire, L, courtyard, shed, gable, flat. Each building layer has `forms` {form: weight}
 and `size_jitter`; the preview gives every lot `[x, y, z, yaw, scale, height_m, form, width_m, depth_m]` and the
 plan's `pieces[].forms` says what each form is, so the city can be built to match.
+Keep-out zones: `options.keep = [{"name", "x0", "y0", "x1", "y1", "z"}]` (cm) protects something already built
+(a cinema, a spawn island): the ground stays flat at `z` there, no city is placed on it, city streets stop short,
+highways go round it and PCG lots keep 20 m clear. A world remembers its zones on later regenerations.
 Interchange option detail: `overpasses` (yes = a highway bridges over every street it crosses: 40 m ramp,
 deck at 7.5 m, ramp down; lifted points and segments never shape the ground). Buildings with `walkway` (all but
 parks / parking) get a 1.6 m path from the door to the kerb; `driveway` ones (houses, mansions, businesses) also a
