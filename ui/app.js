@@ -33,9 +33,11 @@ const GEN_DEFAULTS = {
   name: "Valley", cities: 3, size_km: 6, relief_m: 60, seed: 7, ground: "new",
   hill_km: 2, roughness: 0.5, detail: 5, ridges: 0, peaks: 0, flatten_m: 300, sea_m: -1000, water_depth_m: 12, terrace_m: 0,
   block_m: 100, wobble: 0.28, prune: 0.22, downtown: 0.4, normal: 0.75, highway: "4L", highway_curve: 0.08,
+  core_roads: "4L", neighbourhood_roads: "2S", suburb_roads: "2L", one_way_core: "no", interchange: "direct", overpasses: "yes",
 };
 const OPTION_KEYS = ["hill_km", "roughness", "detail", "ridges", "peaks", "flatten_m", "sea_m", "water_depth_m", "terrace_m", "block_m", "wobble",
-  "prune", "downtown", "normal", "highway", "highway_curve"];
+  "prune", "downtown", "normal", "highway", "highway_curve", "core_roads", "neighbourhood_roads", "suburb_roads", "one_way_core",
+  "interchange", "overpasses"];
 const VIEW_DEFAULTS = { zx: 1, pcg: true, terrain: true, water: true, districts: true, points: false, look: "natural", sunAz: 135, sunEl: 38, shadows: true };
 const state = {
   nets: [], net: "", actor: "", geo: null, sel: null, cities: [], tab: "world", framed: false, live: false,
@@ -439,6 +441,21 @@ function drawPcg(legend) {
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     groups.pcg.add(mesh);
+    if (building && layer.driveway) {  // a pad from each lot's front to the kerb
+      const [, d] = layer.size_m || [12, 12];
+      const reach = (layer.setback_m || 2) + 0.5;
+      const pads = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: col("fg-dim"), roughness: 0.95 }), pts.length);
+      pts.forEach(([x, y, z, yaw], i) => {
+        const r = yaw * Math.PI / 180, dist = (d / 2 + reach / 2) * 100;
+        dummy.position.copy(toV(x + Math.cos(r) * dist, y + Math.sin(r) * dist, z + 15));
+        dummy.rotation.set(0, -r, 0);
+        dummy.scale.set(reach, 0.2, 3.5);
+        dummy.updateMatrix();
+        pads.setMatrixAt(i, dummy.matrix);
+      });
+      pads.receiveShadow = true;
+      groups.pcg.add(pads);
+    }
     legend[`${name} · ${layer.count.toLocaleString()}`] = colour;
   });
 }
@@ -635,14 +652,27 @@ function buildPanes() {
       sl("flatten_m", "City edge blend", 0, 2000, 25, m, "How far the flat city ground blends back into the hills")),
     section("Preview", ctl.look.el, zx.el, sunAz.el, sunEl.el, ctl.shadows.el));
   // ---- Roads
-  ctl.highway = segmented({ label: "Highways", value: state.gen.highway, options: [["4L", "Four-lane", "road"], ["2L", "Two-lane", "route"]],
+  // road types from our kit (citygen.ROAD_TYPES): one-way, dirt, two-lane with or without sidewalks, four- and six-lane
+  const seg = (key, label, options) => (ctl[key] = segmented({ label, value: state.gen[key], options, onChange: (v) => setGen(key, v) })).el;
+  ctl.highway = segmented({ label: "Highways", value: state.gen.highway, options: [["2L", "2 lanes", "route"], ["4L", "4 lanes", "road"], ["6L", "6 lanes", "road"]],
     onChange: (v) => setGen("highway", v) });
+  const roadKinds = section("Road types",
+    seg("core_roads", "Downtown", [["2S", "2 + sidewalk", "route"], ["4L", "4 lanes", "road"], ["6L", "6 lanes", "road"]]),
+    seg("one_way_core", "One-way side streets downtown", [["no", "Two-way", "route"], ["yes", "One-way", "top"]]),
+    seg("neighbourhood_roads", "Neighbourhoods", [["2L", "2 lanes", "route"], ["2S", "2 + sidewalk", "route"], ["4L", "4 lanes", "road"]]),
+    seg("suburb_roads", "Suburbs", [["1W", "1 lane", "top"], ["DT", "Dirt", "terrain"], ["2L", "2 lanes", "route"], ["2S", "2 + sidewalk", "route"]]));
+  const junctions = section("Highways and interchanges", ctl.highway.el,
+    seg("interchange", "Where a highway meets a city", [["direct", "Direct", "route"], ["trumpet", "Trumpet", "refresh"],
+      ["cloverleaf", "Cloverleaf", "mixed"], ["stack", "Stack", "layers"]]),
+    seg("overpasses", "Where a highway crosses a street", [["yes", "Bridge over", "top"], ["no", "Cross at grade", "route"]]),
+    h("div", { class: "rn-hint" }, "Trumpet uses the big loop piece, Stack rises onto the elevated deck and ramps, Cloverleaf needs " +
+      "SM_Road_Freeway_Cloverleaf imported from the NeonSkyscrapers road kit first."));
   $("pane-roads").replaceChildren(
     section("Streets", sl("block_m", "Block size", 50, 250, 5, m), sl("wobble", "Curvy streets", 0, 0.45, 0.01, pct, "How far organic streets drift off the grid"),
       sl("prune", "Side streets removed", 0, 0.5, 0.01, pct)),
     section("Districts", sl("downtown", "Downtown ring", 0.1, 0.8, 0.01, pct, "Four-lane grid inside this share of each city's radius"),
       sl("normal", "Normal city ring", 0.2, 0.95, 0.01, pct, "Streets with pavements up to here; housing beyond")),
-    section("Between cities", ctl.highway.el, sl("highway_curve", "Highway curve", 0, 0.3, 0.01, pct)));
+    roadKinds, junctions, sl("highway_curve", "Highway curve", 0, 0.3, 0.01, pct));
   // ---- Footer
   ctl.live = toggle({ label: "Live preview", iconName: "play", value: state.live, onChange: (v) => { state.live = v; savePrefs(); } });
   $("foot").replaceChildren(ctl.live.el, button("Generate", "refresh", () => generate(), "primary", "Build the terrain, cities and roads (offline, nothing changes in UEFN)"));

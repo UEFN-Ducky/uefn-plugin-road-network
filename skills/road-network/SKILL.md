@@ -29,6 +29,18 @@ each role's pieces come from. The AI building it picks real assets and saves the
   stops, benches, bins, hydrants, billboards, power poles) and 3 foliage layers. **Foliage** (trees, rocks, bushes) is
   never PCG and there is no grass: the plan's `foliage[]` goes to UEFN Foliage mode (Foliage Types, painted by mouse).
 
+## Road types, bridges and interchanges
+
+Our road kit (NeonSkyscrapers.blend RoadKit, in UEFN under `WorldGen/Roads`, elevated pieces in `Roads/Elevated`):
+`1W` OneLane (one-way), `DT` Dirt, `2L` TwoLane (no sidewalk), `2S` TwoLaneSidewalk, `4L` FourLane (sidewalks),
+`6L` Freeway_Lane20m (six lanes), `BR`/`BRR` Bridge deck / ramp, `ED`/`ER` elevated deck / ramp, point pieces
+`SM_Road_Loop_Big` (trumpet) and `SM_Road_Freeway_Cloverleaf` (import from the kit first). Generate options:
+`core_roads`, `neighbourhood_roads`, `suburb_roads`, `one_way_core` (yes = every other core side street is a
+one-way lane), `highway` (2L/4L/6L), `interchange` (direct / trumpet / cloverleaf / stack = ramps up onto an
+elevated deck into each city), `overpasses` (yes = a highway bridges over every street it crosses: 40 m ramp,
+deck at 7.5 m, ramp down; lifted points and segments never shape the ground). Buildings with `driveway` (houses,
+mansions, businesses) get a pad from the front to the kerb (role `driveway`).
+
 ## Roads
 A city's roads live in UEFN as landscape spline actors (City Roads, Elevated Freeways,
 Stack Interchange, ...). Python cannot read spline control points, so each actor travels

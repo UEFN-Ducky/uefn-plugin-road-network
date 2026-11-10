@@ -62,6 +62,7 @@ ROLES = {
     "fire_station": ("Fire stations", "BuildingKit Shared walls + garage doors", "fire station"),
     "gas_station": ("Gas stations", "WorldGen/Kit (canopy + pumps)", "gas station fuel pump"),
     "park": ("Parks", "flat lot: grass, paths, benches, a few trees", "park fountain playground"),
+    "driveway": ("Driveways", "WorldGen/Roads OneLane / Dirt tile cut short, or a flat concrete slab", "driveway concrete pad"),
     "parking": ("Parking lots", "flat lot: asphalt, painted bays", "parking lot car park"),
 }
 STOREY_M = 3.84  # BuildingKit storey pitch: a building's height in storeys = height / 3.84
@@ -127,7 +128,13 @@ def clean(layer: dict) -> dict:
     out["enabled"] = bool(layer.get("enabled", True))
     out["role"] = layer.get("role") if layer.get("role") in ROLES else _guess_role(out["name"], out["kind"])
     out["corners"] = max(1, min(4, int(layer.get("corners", 2) or 2)))  # at_junctions: corners used per junction
+    # buildings that cars reach get a driveway from their front to the street
+    out["driveway"] = bool(layer.get("driveway", out["kind"] == "buildings" and out["role"] in DRIVEWAY_ROLES))
     return out
+
+
+DRIVEWAY_ROLES = ("house", "mansion", "gas_station", "warehouse", "factory", "parking", "fire_station", "police",
+                  "hospital", "school", "mall")
 
 
 def _guess_role(name: str, kind: str) -> str:
@@ -465,6 +472,19 @@ def plan(world: dict, layers: list, cities: list, road_tag: str, road_half_cm: f
                              "collision": "Default" if layer["collision"] else "NoCollision"} for m in layer["meshes"]]},
             f"{layer['name']}: {len(layer['meshes'])} meshes, collision {'on' if layer['collision'] else 'off'}")
         wire(cur, spawn)
+        if layer["kind"] == "buildings" and layer["driveway"]:  # a pad from the lot's front to the kerb
+            reach = layer["depth_m"] * 50 + layer["setback_m"] * 50
+            dw = node(f"{P}_DrivewayAt", "Transform Points", {"offsetMin": {"x": reach, "y": 0, "z": 0},
+                                                             "offsetMax": {"x": reach, "y": 0, "z": 0},
+                                                             "scaleMin": {"x": max(0.2, layer["setback_m"] / 10), "y": 0.35, "z": 1},
+                                                             "scaleMax": {"x": max(0.2, layer["setback_m"] / 10), "y": 0.35, "z": 1}},
+                      f"{layer['name']}: driveway pad between the front (+X faces the street) and the kerb")
+            wire(cur, dw)
+            dws = node(f"{P}_Driveways", "Static Mesh Spawner", {"meshSelectorType": "PCGMeshSelectorWeighted", "meshEntries": []},
+                       "driveway pieces (role driveway)")
+            wire(dw, dws)
+            params.append({"name": f"{P}DrivewayMeshes", "type": "SoftObjectPath", "containerType": "Array", "default": []})
+            edges.append({"param": f"{P}DrivewayMeshes", "to": dws, "in": "meshes"})
         edges.append({"param": f"{P}Meshes", "to": spawn, "in": "meshes"})
         edges.append({"param": f"{P}Seed", "to": spawn, "in": "seed"})
         if not layer["meshes"]:
@@ -619,6 +639,17 @@ def _lot_hits_road(road_hash: "_Hash", x: float, y: float, yaw: float, half_w: f
     return False
 
 
+def core_peak(cities: list, x: float, y: float) -> float:
+    """The city's height field at (x, y): 1 at the very core, falling off like a bell (half at ~18 % of
+    the radius, near 0 by 40 %), so the skyline peaks in the middle and steps down to the suburbs."""
+    best = 0.0
+    for c in cities:
+        dx, dy = x - c["x"], y - c["y"]
+        share = math.hypot(dx, dy) / (c["radius"] * outline(c, math.degrees(math.atan2(dy, dx))))
+        best = max(best, math.exp(-(share / 0.22) ** 2))
+    return best
+
+
 def _height(layer: dict, cities: list, x: float, y: float, rnd, neighbours: "_Hash") -> float:
     """A believable skyline: tallest at the city core, falling off outward (the transect), randomised,
     and never within 18 % of the range of a building of this layer closer than 25 m (no row of equal
@@ -627,12 +658,10 @@ def _height(layer: dict, cities: list, x: float, y: float, rnd, neighbours: "_Ha
     span = hi - lo
     if span <= 0.5:
         return lo
-    share = 1.0
-    for c in cities:
-        dx, dy = x - c["x"], y - c["y"]
-        share = min(share, math.hypot(dx, dy) / (c["radius"] * outline(c, math.degrees(math.atan2(dy, dx)))))
-    core = max(0.0, 1.0 - share) ** 1.3  # 1 at the centre, 0 at the edge
-    h = lo + span * min(1.0, (0.2 + 0.8 * core) * rnd.uniform(0.6, 1.15))
+    core = core_peak(cities, x, y)
+    # the layer's range follows the city's height field: top of the range only at the very core, the
+    # bottom at its district's edge, with real scatter (a few towers pop up, a few stay short)
+    h = lo + span * min(1.0, max(0.0, core * rnd.uniform(0.55, 1.2) + rnd.uniform(-0.08, 0.12)))
     for _ in range(4):  # step away from a too-similar neighbour, up or down, whichever fits
         clash = [nh for nh in neighbours.near(x, y, 2500.0) if abs(nh - h) < 0.18 * span]
         if not clash:
@@ -707,6 +736,8 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                 continue  # too soon after the last one on this side of the street
             if not _in_where(layer["where"], cities, x, y):
                 continue
+            if layer["kind"] == "buildings" and layer["height_min_m"] >= 40 and rnd.random() > 0.08 + 0.92 * core_peak(cities, x, y):
+                continue  # towers cluster at the core and thin out toward the edge: no wall of equal towers
             z = sample_z(x, y)
             if z is None or (sea is not None and z < sea + 50):
                 continue  # nothing grows under water or off the map
@@ -742,7 +773,8 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
             pts = rnd.sample(pts, limit)
         out[layer["name"]] = {"kind": layer["kind"], "role": layer["role"], "count": count, "shown": len(pts), "points": pts,
                               "radius_cm": round(r_base),
-                              **({"size_m": [layer["width_m"], layer["depth_m"]]} if layer["kind"] == "buildings" else {})}
+                              **({"size_m": [layer["width_m"], layer["depth_m"]], "setback_m": layer["setback_m"],
+                                  "driveway": layer["driveway"]} if layer["kind"] == "buildings" else {})}
     return out
 
 

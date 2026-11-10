@@ -16,9 +16,35 @@ import zlib
 
 from . import splines_text as st
 
-ROAD_MESH = {"4L": "SM_Road_FourLane_Straight10m", "2S": "SM_Road_TwoLaneSidewalk_Straight10m",
-             "2L": "SM_Road_TwoLane_Straight10m"}
-HALF = {"4L": 1400.0, "2S": 875.0, "2L": 525.0}
+# Every road type in our kit (WorldGen/Roads, from NeonSkyscrapers.blend RoadKit; Elevated/ from the stack
+# interchange). code: (mesh under the roads folder, half width cm, lanes, sidewalk, what it is)
+ROAD_TYPES = {
+    "1W": ("SM_Road_OneLane_Straight10m", 300.0, 1, False, "one-way lane"),
+    "DT": ("SM_Road_Dirt_Straight10m", 375.0, 2, False, "dirt road"),
+    "2L": ("SM_Road_TwoLane_Straight10m", 525.0, 2, False, "two-way street, no sidewalk"),
+    "2S": ("SM_Road_TwoLaneSidewalk_Straight10m", 875.0, 2, True, "two-way street with sidewalks"),
+    "4L": ("SM_Road_FourLane_Straight10m", 1400.0, 4, True, "four-lane avenue with sidewalks"),
+    "6L": ("SM_Road_Freeway_Lane20m", 1650.0, 6, False, "six-lane boulevard / freeway"),
+    "BR": ("SM_Road_Bridge_Straight20m", 925.0, 2, False, "bridge deck"),
+    "BRR": ("SM_Road_Bridge_Ramp40m", 925.0, 2, False, "bridge ramp"),
+    "ED": ("Elevated/SM_Elev_Deck20m", 1650.0, 4, False, "elevated deck"),
+    "ER": ("Elevated/SM_Elev_Ramp20m", 650.0, 1, False, "elevated ramp"),
+}
+ROAD_MESH = {k: v[0] for k, v in ROAD_TYPES.items()}
+HALF = {k: v[1] for k, v in ROAD_TYPES.items()}
+LOOP_PIECE = "SM_Road_Loop_Big"  # trumpet loop (point piece)
+CLOVER_PIECE = "SM_Road_Freeway_Cloverleaf"  # in NeonSkyscrapers RoadKit: import it before using cloverleaf
+# per-district road choices (the panel's Roads tab)
+CHOICES = {
+    "core_roads": (("4L", "6L", "2S"), "4L"),
+    "neighbourhood_roads": (("2S", "2L", "4L"), "2S"),
+    "suburb_roads": (("2L", "2S", "1W", "DT"), "2L"),
+    "highway": (("4L", "6L", "2L"), "4L"),
+    "interchange": (("direct", "trumpet", "cloverleaf", "stack"), "direct"),
+    "one_way_core": (("no", "yes"), "no"),  # core side streets as alternating one-way lanes
+    "overpasses": (("yes", "no"), "yes"),  # highways bridge over the streets they cross
+}
+BRIDGE_LIFT_CM = 750.0  # clearance a highway rises to over a street it crosses
 STYLES = ("mixed", "grid", "organic")
 JUNCTION = "SM_Junc_Gen"  # waits for Build pieces (st.pending_nodes picks it up)
 MOUTH_CM = 1500.0
@@ -45,7 +71,7 @@ OPTIONS = {
     "normal": (0.75, 0.2, 0.95),       # normal-city ring; housing beyond it
     "highway_curve": (0.08, 0.0, 0.3), # how far a highway bows out, share of its length
 }
-HIGHWAYS = ("4L", "2L")
+HIGHWAYS = CHOICES["highway"][0]
 
 
 def options(given: dict | None = None) -> dict:
@@ -59,7 +85,8 @@ def options(given: dict | None = None) -> dict:
             v = default
         v = max(lo, min(hi, v))
         out[key] = int(round(v)) if isinstance(default, int) else v
-    out["highway"] = given.get("highway") if given.get("highway") in HIGHWAYS else "4L"
+    for key, (allowed, default) in CHOICES.items():
+        out[key] = given.get(key) if given.get(key) in allowed else default
     return out
 
 
@@ -271,7 +298,13 @@ def city_graph(city: dict, opts: dict | None = None) -> tuple:
                 continue
             share = max(ring[(ix, iy)], ring[nb])
             axis = (ix == 0 == nb[0]) or (iy == 0 == nb[1])
-            kind = "4L" if axis or share <= down else ("2L" if share > normal else "2S")
+            if axis or share <= down:
+                kind = o["core_roads"]
+                # one-way pairs: every other side street in the core is a narrow one-way lane
+                if not axis and o["one_way_core"] == "yes" and (ix if nb[0] == ix else iy) % 2:
+                    kind = "1W"
+            else:
+                kind = o["suburb_roads"] if share > normal else o["neighbourhood_roads"]
             edges.append([(ix, iy), nb, kind])
     if style != "grid" and o["prune"]:
         # neighbourhoods drop some side streets (never a main one, never a dead end); suburbs drop more and
@@ -286,7 +319,7 @@ def city_graph(city: dict, opts: dict | None = None) -> tuple:
             suburb = min(ring[a], ring[b]) > normal
             floor = 1 if suburb else 2  # a suburb street may end in a cul-de-sac
             chance = o["prune"] * (1.6 if suburb else 1.0)
-            if kind != "4L" and degree[a] > floor and degree[b] > floor and rnd.random() < chance:
+            if kind != o["core_roads"] and degree[a] > floor and degree[b] > floor and rnd.random() < chance:
                 degree[a] -= 1
                 degree[b] -= 1
                 continue
@@ -332,24 +365,36 @@ def links(cities: list) -> list:
 
 
 # ------------------------------------------------------------------ splines
-def _point(i, x, y, z, yaw, w, mesh=""):
-    lines = [f"Width={w:.1f}", "bRaiseTerrain=True", "bLowerTerrain=True", "SideFalloff=800.000000",
+def _point(i, x, y, z, yaw, w, mesh="", lifted=False, piece=""):
+    """A control point. lifted: on a bridge / ramp (never shapes the ground). piece: a mesh path that sits
+    on the point (a trumpet loop, a cloverleaf)."""
+    live = "False" if lifted else "True"
+    lines = [f"Width={w:.1f}", f"bRaiseTerrain={live}", f"bLowerTerrain={live}", "SideFalloff=800.000000",
              "EndFalloff=1000.000000"] + ([] if mesh else ["SegmentMeshOffset=50.0"])
+    if piece:
+        name = piece.rsplit("/", 1)[-1]
+        lines += [f"Mesh=\"/Script/Engine.StaticMesh'{piece}.{name}'\"", "MeshScale=(X=1.000000,Y=1.000000,Z=1.000000)"]
+        mesh = name
     return {"i": i, "x": x, "y": y, "z": z, "pitch": 0.0, "yaw": yaw, "roll": 0.0, "w": w, "side": 800.0,
-            "mesh": mesh, "raise": True, "lines": lines}
+            "mesh": mesh, "raise": not lifted, "lines": lines}
 
 
-def _segment(i, a, b, kind, folder):
-    lines = ["bRaiseTerrain=True", "bLowerTerrain=True"]
-    mesh = ROAD_MESH.get(kind, "")
+def _segment(i, a, b, kind, folder, lifted=False):
+    live = "False" if lifted else "True"  # bridges and ramps never shape the ground under them
+    lines = [f"bRaiseTerrain={live}", f"bLowerTerrain={live}"]
+    path = ROAD_MESH.get(kind, "")
+    mesh = path.rsplit("/", 1)[-1]
     if mesh:
-        lines.insert(0, f"SplineMeshes(0)=(Mesh=\"/Script/Engine.StaticMesh'{folder}/{mesh}.{mesh}'\",bScaleToWidth=False)")
-    return {"i": i, "a": a, "b": b, "ta": 0.0, "tb": 0.0, "mesh": mesh, "raise": True, "lines": lines}
+        lines.insert(0, f"SplineMeshes(0)=(Mesh=\"/Script/Engine.StaticMesh'{folder}/{path}.{mesh}'\",bScaleToWidth=False)")
+    return {"i": i, "a": a, "b": b, "ta": 0.0, "tb": 0.0, "mesh": mesh, "raise": not lifted, "lines": lines}
 
 
-def build_actor(nodes: dict, edges: list, ground, folder: str) -> dict:
+def build_actor(nodes: dict, edges: list, ground, folder: str, pieces: dict | None = None) -> dict:
     """Street graph -> spline points and segments. A node with 3+ streets becomes a junction (a
-    pending piece with a mouth point on every arm); edges may carry 'via' points (highways)."""
+    pending piece with a mouth point on every arm); edges may carry 'via' points (highways):
+    [x, y] or [x, y, lift_cm, kind of the segment that starts there] for bridges and ramps.
+    pieces: {node: mesh path} puts a piece (trumpet loop, cloverleaf) on an end point."""
+    pieces = pieces or {}
     adj: dict = {}
     for e in edges:
         adj.setdefault(e[0], []).append(e)
@@ -367,7 +412,7 @@ def build_actor(nodes: dict, edges: list, ground, folder: str) -> dict:
         return nodes[e[1] if e[0] == n else e[0]]
 
     for n, arms in adj.items():
-        x, y = nodes[n]
+        x, y = nodes[n][:2]
         if len(arms) >= 3:
             w = max(HALF[e[2]] for e in arms) + 300.0
             j = _point(next(ids), x, y, ground(x, y), 0.0, w, JUNCTION)
@@ -383,7 +428,7 @@ def build_actor(nodes: dict, edges: list, ground, folder: str) -> dict:
         else:
             steps = [first_step(e, n) for e in arms]
             yaw = angle(steps[0], steps[1]) if len(steps) == 2 else angle((x, y), steps[0])
-            p = _point(next(ids), x, y, ground(x, y), yaw, max(HALF[e[2]] for e in arms))
+            p = _point(next(ids), x, y, ground(x, y), yaw, max(HALF[e[2]] for e in arms), piece=pieces.get(n, ""))
             pts.append(p)
             for e in arms:
                 ends[(id(e), n)] = p["i"]
@@ -391,13 +436,20 @@ def build_actor(nodes: dict, edges: list, ground, folder: str) -> dict:
         via = e[3] if len(e) > 3 else []
         chain = [ends[(id(e), e[0])]]
         line = [nodes[e[0]]] + via + [nodes[e[1]]]
-        for k, (x, y) in enumerate(via, start=1):
-            p = _point(next(ids), x, y, ground(x, y), angle(line[k - 1], line[k + 1]), HALF[e[2]])
+        lift = {chain[0]: 0.0}
+        kinds = [e[2]]  # the kind of the segment starting at each chain point
+        for k, v in enumerate(via, start=1):
+            x, y = v[0], v[1]
+            up = float(v[2]) if len(v) > 2 else 0.0
+            p = _point(next(ids), x, y, ground(x, y) + up, angle(line[k - 1], line[k + 1]), HALF[e[2]], lifted=up > 0)
             pts.append(p)
             chain.append(p["i"])
+            lift[p["i"]] = up
+            kinds.append(v[3] if len(v) > 3 and v[3] else e[2])
         chain.append(ends[(id(e), e[1])])
-        for a, b in zip(chain, chain[1:]):
-            segs.append(_segment(next(ids), a, b, e[2], folder))
+        lift.setdefault(chain[-1], 0.0)
+        for k, (a, b) in enumerate(zip(chain, chain[1:])):
+            segs.append(_segment(next(ids), a, b, kinds[k], folder, lifted=lift.get(a, 0) > 0 or lift.get(b, 0) > 0))
     by_i = {p["i"]: p for p in pts}
     for s in segs:
         st.retangent(by_i, s)
@@ -405,13 +457,64 @@ def build_actor(nodes: dict, edges: list, ground, folder: str) -> dict:
     return {"points": pts, "segments": segs}
 
 
+def _seg_cross(p1, p2, q1, q2):
+    """Where segment p1-p2 crosses q1-q2, as the share along p (None if they don't)."""
+    d = (p2[0] - p1[0]) * (q2[1] - q1[1]) - (p2[1] - p1[1]) * (q2[0] - q1[0])
+    if abs(d) < 1e-9:
+        return None
+    t = ((q1[0] - p1[0]) * (q2[1] - q1[1]) - (q1[1] - p1[1]) * (q2[0] - q1[0])) / d
+    u = ((q1[0] - p1[0]) * (p2[1] - p1[1]) - (q1[1] - p1[1]) * (p2[0] - p1[0])) / d
+    return t if 0 < t < 1 and 0 < u < 1 else None
+
+
+def overpass_via(line: list, streets: list, kind: str) -> tuple:
+    """A highway polyline's via points with a bridge over every street it crosses: ramp up 40 m, deck
+    over the street, ramp down 40 m (crossings closer than 150 m share one bridge). Returns (via, count)."""
+    cum = [0.0]
+    for p, q in zip(line, line[1:]):
+        cum.append(cum[-1] + math.dist(p[:2], q[:2]))
+    hits = []
+    for k, (p, q) in enumerate(zip(line, line[1:])):
+        for a, b in streets:
+            t = _seg_cross(p, q, a, b)
+            if t is not None:
+                hits.append(cum[k] + t * (cum[k + 1] - cum[k]))
+    hits.sort()
+    spans = []
+    for s in hits:  # merge close crossings into one longer bridge
+        if spans and s - spans[-1][1] < 15000:
+            spans[-1][1] = s
+        else:
+            spans.append([s, s])
+    total = cum[-1]
+    spans = [sp for sp in spans if sp[0] > 30000 and sp[1] < total - 30000]  # never in the gate approaches
+
+    def at(s):
+        for k in range(len(cum) - 1):
+            if cum[k] <= s <= cum[k + 1]:
+                t = (s - cum[k]) / ((cum[k + 1] - cum[k]) or 1)
+                return [line[k][0] + (line[k + 1][0] - line[k][0]) * t, line[k][1] + (line[k + 1][1] - line[k][1]) * t]
+        return list(line[-1][:2])
+
+    keep = [(cum[k], list(line[k][:2])) for k in range(1, len(line) - 1)
+            if not any(sp[0] - 8000 < cum[k] < sp[1] + 8000 for sp in spans)]
+    for a, b in spans:
+        keep += [(a - 7000, at(a - 7000) + [0.0, "BRR"]), (a - 3000, at(a - 3000) + [BRIDGE_LIFT_CM, "BR"]),
+                 (b + 3000, at(b + 3000) + [BRIDGE_LIFT_CM, "BRR"]), (b + 7000, at(b + 7000) + [0.0, kind])]
+    keep.sort(key=lambda r: r[0])
+    return [v for _, v in keep], len(spans)
+
+
 def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None = None) -> dict:
     """{label: {points, segments}}: one '<City> Roads' actor per city and one 'Highways' actor.
-    A highway ends 40 m outside its city's gate street, where the city's own stub road ends."""
+    A highway ends 40 m outside its city's gate street, where the city's own stub road ends; there it
+    meets the city through the chosen interchange (direct, a trumpet loop, a cloverleaf piece, or a
+    stack: an elevated deck on ramps), and it bridges over every street it crosses on the way."""
     o = options(opts)
     graphs = [city_graph(c, o) for c in cities]
     rnd = random.Random(seed)
-    hw_nodes, hw_edges = {}, []
+    hw_nodes, hw_edges, pieces = {}, [], {}
+    streets = [(n[a][:2], n[b][:2]) for n, e in graphs for a, b, *_ in e]
     for a, b in links(cities):
         ends = []
         for me, other in ((a, b), (b, a)):
@@ -431,11 +534,30 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
         bend = rnd.uniform(-1, 1) * o["highway_curve"] * L  # one gentle curve per highway
         via = [[x0 + (x1 - x0) * t + nx * bend * math.sin(math.pi * t), y0 + (y1 - y0) * t + ny * bend * math.sin(math.pi * t)]
                for t in (k / steps for k in range(1, steps))]
+        if o["overpasses"] == "yes":
+            via, _ = overpass_via([ends[0]] + via + [ends[1]], streets, o["highway"])
+        if o["interchange"] == "stack" and L > 70000:  # rise onto an elevated deck into each gate
+            line = [ends[0]] + [v[:2] for v in via] + [ends[1]]
+            heads = []
+            for end, nxt in ((ends[0], line[1]), (ends[1], line[-2])):
+                ux, uy = nxt[0] - end[0], nxt[1] - end[1]
+                ul = math.hypot(ux, uy) or 1.0
+                heads.append(lambda d, h, k, end=end, ux=ux / ul, uy=uy / ul: [end[0] + ux * d, end[1] + uy * d, h, k])
+            hw = o["highway"]
+            near = [heads[0](1500, 0.0, "ER"), heads[0](6000, 600.0, "ED"), heads[0](14000, 600.0, "ER"),
+                    heads[0](22000, 0.0, hw)]
+            far = [heads[1](22000, 0.0, "ER"), heads[1](14000, 600.0, "ED"), heads[1](6000, 600.0, "ER"),
+                   heads[1](1500, 0.0, hw)]
+            via = near + [v for v in via if math.dist(v[:2], ends[0]) > 26000 and math.dist(v[:2], ends[1]) > 26000] + far
         hw_nodes[("hw", a, b, 0)], hw_nodes[("hw", a, b, 1)] = ends
         hw_edges.append([("hw", a, b, 0), ("hw", a, b, 1), o["highway"], via])
+        piece = {"trumpet": LOOP_PIECE, "cloverleaf": CLOVER_PIECE}.get(o["interchange"])
+        if piece:
+            pieces[("hw", a, b, 0)] = pieces[("hw", a, b, 1)] = f"{folder}/{piece}"
     out = {f"{c['name']} Roads": build_actor(n, e, ground, folder) for c, (n, e) in zip(cities, graphs)}
     if hw_edges:
-        out["Highways"] = build_actor(hw_nodes, hw_edges, ground, folder)
+        out["Highways"] = build_actor(hw_nodes, hw_edges, ground, folder, pieces)
+    return out
     return out
 
 
@@ -457,8 +579,34 @@ def _demo() -> None:
     assert st.pending_nodes(city["points"], city["segments"]), "junctions wait for generated pieces"
     assert len(actors["Highways"]["segments"]) >= 2
     # options: clamped, lakes flatten the lowlands, smaller blocks mean more streets, 2-lane highways
-    o = options({"block_m": 9999, "sea_m": -5, "highway": "6L", "detail": 3.4})
-    assert o["block_m"] == 250 and o["highway"] == "4L" and o["detail"] == 3
+    o = options({"block_m": 9999, "sea_m": -5, "highway": "8L", "detail": 3.4, "interchange": "stack"})
+    assert o["block_m"] == 250 and o["highway"] == "4L" and o["detail"] == 3 and o["interchange"] == "stack"
+    # road types per district: a six-lane core with one-way side streets, dirt suburbs
+    kinds = {e[2] for e in city_graph(cities[0], {"core_roads": "6L", "one_way_core": "yes", "suburb_roads": "DT"})[1]}
+    assert {"6L", "1W", "DT"} <= kinds, kinds
+    # a highway bridges over a street it crosses: ramp up, deck, ramp down; bridges never shape the ground
+    via, n = overpass_via([[0, 0], [200000, 0]], [([100000, -5000], [100000, 5000])], "4L")
+    assert n == 1 and [v[3] for v in via if len(v) > 3] == ["BRR", "BR", "BRR", "4L"] and max(v[2] for v in via) == BRIDGE_LIFT_CM
+    br = build_actor({"a": [0, 0], "b": [200000, 0]}, [["a", "b", "4L", via]], lambda x, y: 0.0, "/Game/X/Roads")
+    meshes = [s["mesh"] for s in br["segments"]]
+    assert "SM_Road_Bridge_Straight20m" in meshes and meshes.count("SM_Road_Bridge_Ramp40m") == 2, meshes
+    deck = next(s for s in br["segments"] if s["mesh"] == "SM_Road_Bridge_Straight20m")
+    assert "bRaiseTerrain=False" in deck["lines"] and not deck["raise"]
+    top = max(p["z"] for p in br["points"])
+    assert abs(top - BRIDGE_LIFT_CM) < 1, top
+    text = st.serialize(br["points"], br["segments"])
+    assert "Elevated" not in text and "SM_Road_Bridge_Ramp40m" in text
+    # interchanges: a stack rises onto elevated decks, a trumpet puts the loop piece on each highway end
+    far = [{"name": "P", "x": -150000, "y": 0, "radius": 30000, "style": "grid", "seed": 3},
+           {"name": "Q", "x": 150000, "y": 0, "radius": 30000, "style": "grid", "seed": 4}]
+    stack = generate(far, lambda x, y: 0.0, "/Game/X/Roads", seed=3, opts={"interchange": "stack"})["Highways"]
+    assert {"SM_Elev_Deck20m", "SM_Elev_Ramp20m"} <= {s["mesh"] for s in stack["segments"]}
+    assert "/Game/X/Roads/Elevated/SM_Elev_Deck20m" in st.serialize(stack["points"], stack["segments"])
+    trumpet = generate(far, lambda x, y: 0.0, "/Game/X/Roads", seed=3, opts={"interchange": "trumpet"})["Highways"]
+    assert sum(1 for p in trumpet["points"] if p["mesh"] == "SM_Road_Loop_Big") == 2
+    for a in (stack, trumpet, br):
+        bad = st.problems(a["points"], a["segments"])
+        assert not any(bad.values()), {k: len(v) for k, v in bad.items()}
     # full relief: the grid spans the hill height, not a third of it
     flat_hills = [v for row in terrain(3, 400000, 6000, [], grid=48)["heights"] for v in row]
     assert max(flat_hills) > 5500 and min(flat_hills) < -5500, (min(flat_hills), max(flat_hills))
