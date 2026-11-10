@@ -269,8 +269,10 @@ def heightmap_png(ter: dict, res: int = 1009, pads: list | None = None) -> tuple
     png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", res, res, 16, 0, 0, 0, 0))
            + chunk(b"IDAT", zlib.compress(bytes(raw), 6)) + chunk(b"IEND", b""))
     scale = (hi[0] - lo[0]) / (res - 1)
-    return png, {"resolution": f"{res} x {res}", "location": [round(lo[0]), round(lo[1]), 0],
-                 "scale": [round(scale, 3), round(scale, 3), 100.0]}
+    # Landscape mode's New > Location is the landscape's centre, not its corner; 1009 = 16 components x 63 quads + 1
+    return png, {"resolution": f"{res} x {res}", "location": [round((lo[0] + hi[0]) / 2), round((lo[1] + hi[1]) / 2), 0],
+                 "scale": [round(scale, 3), round(scale, 3), 100.0],
+                 "components": f"{(res - 1) // 63} x {(res - 1) // 63}, 63 quads, 1 section"}
 
 
 # ------------------------------------------------------------------ cities
