@@ -412,6 +412,65 @@ function pcgShape(name, kind) {
   if (kind === "buildings" || /house|building|shop|tower/i.test(name)) return [new THREE.BoxGeometry(11, 9, 16), 4.5];
   return [new THREE.ConeGeometry(2.6, 10, 7), 5];  // trees
 }
+// Building forms (pcg_layers.FORMS): the parts each form is made of, in metres in the lot's own frame
+// (fx = toward the street, fy = along it, z = base). Every lot has its own form, width, depth and height.
+const FORM_STOREY = 3.84;
+function formParts(form, w, d, h) {
+  const P = Math.min(10 * FORM_STOREY, h * 0.42);  // a podium is at most 10 storeys
+  const box = (fx, fy, z, sx, sy, sz) => ({ c: false, fx, fy, z, sx, sy, sz });
+  const cyl = (fx, fy, z, r, sz) => ({ c: true, fx, fy, z, sx: r * 2, sy: r * 2, sz });
+  const m = Math.min(w, d);
+  switch (form) {
+    case "slab": return [box(0, 0, 0, d * 0.55, w * 1.0, h)];
+    case "tower": return [box(0, 0, 0, d * 0.7, w * 0.7, h)];
+    case "podium_tower": return [box(0, 0, 0, d, w, P), box(-d * 0.08, 0, P, d * 0.5, w * 0.5, h - P)];
+    case "stepped": return [box(0, 0, 0, d, w, h * 0.55), box(0, 0, h * 0.55, d * 0.74, w * 0.74, h * 0.25), box(0, 0, h * 0.8, d * 0.48, w * 0.48, h * 0.2)];
+    case "round": return [cyl(0, 0, 0, m * 0.45, h)];
+    case "round_podium": return [box(0, 0, 0, d, w, P), cyl(-d * 0.05, 0, P, m * 0.3, h - P)];
+    case "twin": return [box(0, 0, 0, d, w, P), box(0, -w * 0.24, P, d * 0.42, w * 0.34, h - P), box(0, w * 0.24, P, d * 0.42, w * 0.34, (h - P) * 0.72)];
+    case "spire": return [box(0, 0, 0, d * 0.62, w * 0.62, h * 0.82), box(0, 0, h * 0.82, d * 0.4, w * 0.4, h * 0.1), cyl(0, 0, h * 0.92, 0.6, h * 0.22)];
+    case "L": return [box(0, -w * 0.3, 0, d, w * 0.4, h), box(-d * 0.3, w * 0.2, 0, d * 0.4, w * 0.6, h * 0.82)];
+    case "courtyard": {
+      const t = m * 0.26;
+      return [box(d / 2 - t / 2, 0, 0, t, w, h), box(-d / 2 + t / 2, 0, 0, t, w, h * 0.9),
+        box(0, w / 2 - t / 2, 0, d - 2 * t, t, h * 0.95), box(0, -w / 2 + t / 2, 0, d - 2 * t, t, h)];
+    }
+    case "shed": return [box(0, 0, 0, d, w, h * 0.72), box(0, 0, h * 0.72, d * 0.28, w * 0.96, h * 0.28)];
+    case "gable": return [box(0, 0, 0, d, w, h * 0.62), box(0, 0, h * 0.62, d * 0.55, w * 0.92, h * 0.25), box(0, 0, h * 0.87, d * 0.2, w * 0.86, h * 0.13)];
+    case "flat": return [box(0, 0, 0, d, w, Math.max(0.4, h))];
+    default: return [box(0, 0, 0, d, w, h)];
+  }
+}
+function drawBuildings(layer, colour) {
+  const zx = state.view.zx || 1;
+  const forms = layer.forms || [];
+  const boxes = [], cyls = [];
+  const dummy = new THREE.Object3D();
+  for (const p of layer.points || []) {
+    const [x, y, z, yaw, , hgt, fi, wv, dv] = p;
+    const [w0, d0] = layer.size_m || [12, 12];
+    const w = (wv || w0) * 0.92, d = (dv || d0) * 0.92;
+    const r = yaw * Math.PI / 180, fxv = Math.cos(r), fyv = Math.sin(r);
+    for (const part of formParts(forms[fi] || "box", w, d, hgt || 6)) {
+      const ux = x + (part.fx * fxv - part.fy * fyv) * 100, uy = y + (part.fx * fyv + part.fy * fxv) * 100;
+      dummy.position.copy(toV(ux, uy, z + part.z * 100));
+      dummy.position.y += part.sz * zx / 2;
+      dummy.rotation.set(0, -r, 0);
+      dummy.scale.set(part.sx, Math.max(0.2, part.sz) * zx, part.sy);
+      dummy.updateMatrix();
+      (part.c ? cyls : boxes).push(dummy.matrix.clone());
+    }
+  }
+  const mat = new THREE.MeshStandardMaterial({ color: col(colour), roughness: 0.55, metalness: 0.2 });
+  for (const [list, geo] of [[boxes, new THREE.BoxGeometry(1, 1, 1)], [cyls, new THREE.CylinderGeometry(0.5, 0.5, 1, 20)]]) {
+    if (!list.length) continue;
+    const mesh = new THREE.InstancedMesh(geo, mat, list.length);
+    list.forEach((mtx, i) => mesh.setMatrixAt(i, mtx));
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    groups.pcg.add(mesh);
+  }
+}
 function drawPcg(legend) {
   const layers = state.pcg || {};
   const dummy = new THREE.Object3D();
@@ -420,27 +479,22 @@ function drawPcg(legend) {
     if (!pts.length) return;
     const colour = PCG_COLORS[k % PCG_COLORS.length];
     const building = layer.kind === "buildings";
-    const [geo, lift] = building ? [new THREE.BoxGeometry(1, 1, 1), 0] : pcgShape(name, layer.kind);
-    const mesh = new THREE.InstancedMesh(geo, new THREE.MeshStandardMaterial({ color: col(colour), roughness: building ? 0.6 : 0.85,
-      metalness: building ? 0.15 : 0 }), pts.length);
-    const zx = state.view.zx || 1;
-    pts.forEach(([x, y, z, yaw, s, hgt], i) => {
-      dummy.position.copy(toV(x, y, z));
-      dummy.rotation.set(0, -yaw * Math.PI / 180, 0);
-      if (building) {  // its real lot and height: depth faces the street, frontage runs along it
-        const [w, d] = layer.size_m || [12, 12];
-        dummy.scale.set(d * 0.9, hgt * zx, w * 0.9);
-        dummy.position.y += hgt * zx / 2;
-      } else {
+    if (building) { drawBuildings(layer, colour); legend[`${name} · ${layer.count.toLocaleString()}`] = colour; }
+    const [geo, lift] = building ? [null, 0] : pcgShape(name, layer.kind);
+    if (!building) {
+      const mesh = new THREE.InstancedMesh(geo, new THREE.MeshStandardMaterial({ color: col(colour), roughness: 0.85 }), pts.length);
+      pts.forEach(([x, y, z, yaw, s], i) => {
+        dummy.position.copy(toV(x, y, z));
+        dummy.rotation.set(0, -yaw * Math.PI / 180, 0);
         dummy.scale.setScalar(s);
         dummy.position.y += lift * s;
-      }
-      dummy.updateMatrix();
-      mesh.setMatrixAt(i, dummy.matrix);
-    });
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    groups.pcg.add(mesh);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+      });
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      groups.pcg.add(mesh);
+    }
     if (building && layer.driveway) {  // a pad from each lot's front to the kerb
       const [, d] = layer.size_m || [12, 12];
       const reach = (layer.setback_m || 2) + 0.5;
@@ -662,11 +716,12 @@ function buildPanes() {
     seg("neighbourhood_roads", "Neighbourhoods", [["2L", "2 lanes", "route"], ["2S", "2 + sidewalk", "route"], ["4L", "4 lanes", "road"]]),
     seg("suburb_roads", "Suburbs", [["1W", "1 lane", "top"], ["DT", "Dirt", "terrain"], ["2L", "2 lanes", "route"], ["2S", "2 + sidewalk", "route"]]));
   const junctions = section("Highways and interchanges", ctl.highway.el,
-    seg("interchange", "Where a highway meets a city", [["direct", "Direct", "route"], ["trumpet", "Trumpet", "refresh"],
-      ["cloverleaf", "Cloverleaf", "mixed"], ["stack", "Stack", "layers"]]),
+    seg("interchange", "Where a highway meets a city", [["direct", "Direct", "route"], ["diamond", "Diamond", "grid"],
+      ["trumpet", "Trumpet", "refresh"], ["cloverleaf", "Clover", "mixed"], ["stack", "Stack", "layers"]]),
     seg("overpasses", "Where a highway crosses a street", [["yes", "Bridge over", "top"], ["no", "Cross at grade", "route"]]),
-    h("div", { class: "rn-hint" }, "Trumpet uses the big loop piece, Stack rises onto the elevated deck and ramps, Cloverleaf needs " +
-      "SM_Road_Freeway_Cloverleaf imported from the NeonSkyscrapers road kit first."));
+    h("div", { class: "rn-hint" }, "Diamond, trumpet and cloverleaf are built from our ramp, bridge and road pieces: the highway " +
+      "bridges over a cross road with slip ramps (diamond), one loop (trumpet) or four loops (cloverleaf). Stack rises onto the " +
+      "elevated deck. You see every ramp in the 3D view."));
   $("pane-roads").replaceChildren(
     section("Streets", sl("block_m", "Block size", 50, 250, 5, m), sl("wobble", "Curvy streets", 0, 0.45, 0.01, pct, "How far organic streets drift off the grid"),
       sl("prune", "Side streets removed", 0, 0.5, 0.01, pct)),
@@ -704,6 +759,9 @@ const WHERE_OPTS = [
   ["housing", "Housing", "Outer ring of each city", "pin"],
   ["industrial", "Industrial zone", "One wedge of each city's outer rings", "wrench"],
 ];
+const BUILDING_FORMS = [["box", "Block"], ["slab", "Slab"], ["tower", "Tower"], ["podium_tower", "Podium + tower"],
+  ["stepped", "Stepped"], ["round", "Round"], ["round_podium", "Podium + round"], ["twin", "Twin towers"], ["spire", "Spire"],
+  ["L", "L-shape"], ["courtyard", "Courtyard"], ["shed", "Shed"], ["gable", "Pitched roof"], ["flat", "Flat lot"]];
 const KIND_ICON = { scatter: "points", along_roads: "route", buildings: "city", at_junctions: "grid", foliage: "terrain" };
 let pcgSaveTimer = 0;
 function renderPcgPane() {
@@ -785,6 +843,14 @@ function layerCard(l, earlier) {
   const spacing = l.kind === "scatter"
     ? [num("density", "Density", 0.01, 50, 0.01, (v) => `${v} per 100 m²`, "Points per 100 square metres before pruning")]
     : [num("spacing_m", "Spacing along the road", 2, 800, 1, m), num("setback_m", "Distance from the kerb", 0, 80, 0.5, m)];
+  if (l.kind === "buildings") spacing.push(h("div", { class: "rn-field__label", style: "margin: 4px 0 6px" }, "Building forms (each lot picks one)"),
+    h("div", { class: "dk-row", style: "margin-bottom: 12px" }, ...BUILDING_FORMS.map(([f, label]) => chip({ label, iconName: "city",
+      value: !!(l.forms || {})[f], onChange: (v) => {
+        const forms = { ...(l.forms || {}) };
+        if (v) forms[f] = forms[f] || 1; else delete forms[f];
+        save({ forms: Object.keys(forms).length ? forms : { box: 1 } }, true);
+      } }).el)),
+    num("size_jitter", "Size variety", 0, 0.6, 0.05, pct, "How much each lot's width and depth differ from the next"));
   if (l.kind === "buildings") spacing.push(
     num("width_m", "Frontage", 1, 200, 1, m, "Width along the street"), num("depth_m", "Depth", 1, 200, 1, m, "Depth away from the street"),
     num("height_min_m", "Lowest", 1, 600, 1, m), num("height_max_m", "Tallest", 1, 600, 1, m, "Pick meshes in this height range"));

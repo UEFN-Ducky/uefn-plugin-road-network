@@ -66,6 +66,39 @@ ROLES = {
     "parking": ("Parking lots", "flat lot: asphalt, painted bays", "parking lot car park"),
 }
 STOREY_M = 3.84  # BuildingKit storey pitch: a building's height in storeys = height / 3.84
+
+# Building forms (massing): what each lot's building looks like, so the preview draws a real city and the AI
+# building it knows what to make (BuildingKit storeys stacked in that shape, or a mesh of that shape).
+FORMS = {
+    "box": "plain block filling the lot",
+    "slab": "long thin slab, 1.5x as wide, 0.6x as deep",
+    "tower": "slim tower, 70 % of the lot, full height",
+    "podium_tower": "10-storey podium on the whole lot with a slim tower on top",
+    "stepped": "wedding-cake tower: three tiers stepping in at 55 % and 80 % of the height",
+    "round": "round (curved) tower",
+    "round_podium": "podium with a round tower on top",
+    "twin": "two towers on one podium, different heights",
+    "spire": "tower with a crown and spire on top",
+    "L": "L-shaped block (two wings)",
+    "courtyard": "perimeter block around an open courtyard",
+    "shed": "wide low shed with a raised roof strip (factory, warehouse)",
+    "gable": "house with a pitched roof",
+    "flat": "flat lot (park, parking)",
+}
+FORM_NAMES = list(FORMS)
+ROLE_FORMS = {
+    "skyscraper": {"tower": 2, "podium_tower": 3, "stepped": 2, "round": 2, "round_podium": 2, "twin": 1, "spire": 2},
+    "office": {"box": 2, "slab": 2, "podium_tower": 2, "courtyard": 1, "L": 1, "round": 1},
+    "apartment": {"slab": 3, "L": 2, "courtyard": 2, "box": 2, "stepped": 1},
+    "mall": {"box": 2, "round_podium": 1, "L": 1},
+    "hospital": {"L": 2, "box": 1, "courtyard": 1, "podium_tower": 1},
+    "school": {"L": 2, "courtyard": 2, "box": 1},
+    "police": {"box": 2, "L": 1}, "fire_station": {"box": 2, "L": 1},
+    "factory": {"shed": 3, "L": 1}, "warehouse": {"shed": 4, "box": 1},
+    "shop": {"box": 3, "gable": 1}, "gas_station": {"box": 1},
+    "house": {"gable": 4, "L": 1, "box": 1}, "mansion": {"L": 2, "courtyard": 1, "gable": 2},
+    "park": {"flat": 1}, "parking": {"flat": 1},
+}
 WHERE = ("outside", "cities", "downtown", "normal", "housing", "industrial", "everywhere")
 INDUSTRIAL_SPREAD = 75.0  # degrees: each city's industrial zone is one wedge of its outer rings
 
@@ -130,6 +163,12 @@ def clean(layer: dict) -> dict:
     out["corners"] = max(1, min(4, int(layer.get("corners", 2) or 2)))  # at_junctions: corners used per junction
     # buildings that cars reach get a driveway from their front to the street
     out["driveway"] = bool(layer.get("driveway", out["kind"] == "buildings" and out["role"] in DRIVEWAY_ROLES))
+    forms = layer.get("forms") if isinstance(layer.get("forms"), dict) else ROLE_FORMS.get(out["role"], {"box": 1})
+    out["forms"] = {f: max(0.0, float(w)) for f, w in forms.items() if f in FORMS and float(w) > 0} or {"box": 1.0}
+    try:
+        out["size_jitter"] = max(0.0, min(0.6, float(layer.get("size_jitter", 0.3))))  # lots vary +-30 % by default
+    except (TypeError, ValueError):
+        out["size_jitter"] = 0.3
     return out
 
 
@@ -314,7 +353,9 @@ def plan(world: dict, layers: list, cities: list, road_tag: str, road_half_cm: f
     pieces = [{"layer": l["name"], "role": l["role"], "kind": l["kind"], "meshes": [m["path"] for m in l["meshes"]],
                "from": asset_hint(l["role"], asset_set),
                **({"storeys": [max(1, round(l["height_min_m"] / STOREY_M)), max(1, round(l["height_max_m"] / STOREY_M))],
-                   "lot_m": [l["width_m"], l["depth_m"]]} if l["kind"] == "buildings" else {})} for l in every]
+                    "lot_m": [l["width_m"], l["depth_m"]], "size_jitter": l["size_jitter"],
+                    "forms": {f: {"weight": w, "what": FORMS[f]} for f, w in l["forms"].items()}}
+                 if l["kind"] == "buildings" else {})} for l in every]
     foliage = [{"layer": l["name"], "role": l["role"], "where": l["where"], "per_100m2": l["density"],
                 "scale": [l["scale_min"], l["scale_max"]], "meshes": [m["path"] for m in l["meshes"]],
                 "keep_off_roads_m": l["road_clear_m"] if l["avoid_roads"] else None, "collision": l["collision"]}
@@ -516,7 +557,10 @@ def plan(world: dict, layers: list, cities: list, road_tag: str, road_half_cm: f
             "buildings_how": "Buildings: one mesh per lot, or with the own set stack BuildingKit storeys (3.84 m each, storeys "
                              "range in pieces[]) into a building mesh first; a lot is frontage x depth facing the street. "
                              "Skyline: give each layer several meshes of different heights (tallest near the core); never one "
-                             "height for a whole street. road_network_pcg_preview shows the intended height per lot (point[5]).",
+                             "height for a whole street. road_network_pcg_preview gives every lot: point = [x, y, z, yaw, "
+                             "scale, height_m, form, width_m, depth_m], form = index into forms[] (FORMS says what each "
+                             "looks like: podium + tower, stepped, round, twin, L, courtyard...); build one variant mesh per "
+                             "form and height band so the city matches the preview.",
             "layout": "Transect: strict short-block grid in the core, looser grid in the neighbourhoods, curving streets "
                       "and cul-de-sacs in the suburbs, irregular city and district edges, industry in one wedge."}
 
@@ -765,6 +809,12 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
             row = [round(x), round(y), round(z - layer["sink_cm"]), round(yaw), round(s, 2)]
             if layer["kind"] == "buildings":  # + its height in metres, so the preview draws a real skyline
                 row.append(round(_height(layer, cities, x, y, rnd, own_heights), 1))
+                # its form and its own size: no two neighbours the same shape and footprint
+                names, weights = list(layer["forms"]), list(layer["forms"].values())
+                j = layer["size_jitter"]
+                row += [FORM_NAMES.index(rnd.choices(names, weights)[0]),
+                        round(layer["width_m"] * rnd.uniform(1 - j, 1 + j * 0.5), 1),
+                        round(layer["depth_m"] * rnd.uniform(1 - j, 1 + j * 0.3), 1)]
                 own_heights.add(x, y, 0.0, row[-1])
             pts.append(row)
         kept[layer["name"]] = own
@@ -774,6 +824,7 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
         out[layer["name"]] = {"kind": layer["kind"], "role": layer["role"], "count": count, "shown": len(pts), "points": pts,
                               "radius_cm": round(r_base),
                               **({"size_m": [layer["width_m"], layer["depth_m"]], "setback_m": layer["setback_m"],
+                                  "forms": FORM_NAMES,
                                   "driveway": layer["driveway"]} if layer["kind"] == "buildings" else {})}
     return out
 

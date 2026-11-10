@@ -903,7 +903,7 @@ def register(api) -> None:
         actors = world_actors(nid)
         out = pl.preview(list(docs.values()), list(city_docs(nid).values()), terrain, pl.road_samples(actors),
                          lambda x, y: st.sample_grid(terrain, x, y) if terrain.get("heights") else 0.0,
-                         limit=2500, juncs=pl.junctions(actors))
+                         limit=6000, juncs=pl.junctions(actors))  # the whole city, not a sample
         if layer_id:
             name = (docs.get(slug(layer_id)) or {}).get("name")
             out = {name: out[name]} if name in out else {}

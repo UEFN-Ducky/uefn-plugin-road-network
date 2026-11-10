@@ -36,8 +36,16 @@ Our road kit (NeonSkyscrapers.blend RoadKit, in UEFN under `WorldGen/Roads`, ele
 `6L` Freeway_Lane20m (six lanes), `BR`/`BRR` Bridge deck / ramp, `ED`/`ER` elevated deck / ramp, point pieces
 `SM_Road_Loop_Big` (trumpet) and `SM_Road_Freeway_Cloverleaf` (import from the kit first). Generate options:
 `core_roads`, `neighbourhood_roads`, `suburb_roads`, `one_way_core` (yes = every other core side street is a
-one-way lane), `highway` (2L/4L/6L), `interchange` (direct / trumpet / cloverleaf / stack = ramps up onto an
-elevated deck into each city), `overpasses` (yes = a highway bridges over every street it crosses: 40 m ramp,
+one-way lane), `highway` (2L/4L/6L), `interchange` (direct / diamond / trumpet / cloverleaf / stack). Diamond, trumpet and
+cloverleaf are REAL geometry in the Highways actor, made of our pieces: the highway bridges (BRR ramp, BR deck at
+7.5 m) over a 4-lane cross road 180 m out from each city end, with 4 straight 2-lane slip ramps (diamond), 1 loop
+(trumpet) or 4 loop ramps of 12 `ER` segments each, 55 m radius, descending from the deck (cloverleaf); stack
+rises onto `ED` decks via `ER` ramps. All of it shows in the 3D view, and the AI builds what it sees.
+Building forms (`FORMS` in pcg_layers): box, slab, tower, podium_tower (10-storey podium + tower), stepped,
+round, round_podium, twin, spire, L, courtyard, shed, gable, flat. Each building layer has `forms` {form: weight}
+and `size_jitter`; the preview gives every lot `[x, y, z, yaw, scale, height_m, form, width_m, depth_m]` and the
+plan's `pieces[].forms` says what each form is, so the city can be built to match.
+Interchange option detail: `overpasses` (yes = a highway bridges over every street it crosses: 40 m ramp,
 deck at 7.5 m, ramp down; lifted points and segments never shape the ground). Buildings with `driveway` (houses,
 mansions, businesses) get a pad from the front to the kerb (role `driveway`).
 
