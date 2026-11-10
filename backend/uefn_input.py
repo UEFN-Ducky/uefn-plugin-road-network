@@ -18,8 +18,11 @@ import time
 from ctypes import wintypes
 
 MANAGE_TAB = (152, 130)
-SPLINES_SPOTS = ((388, 180), (38, 222))  # first tool row / wrapped onto the second row
-VIEWPORT = (944, 700)
+# Manage tools sit in a grid of 50 px buttons from (38, 180), rows 43 px apart, in this order:
+# New, Import, Select, Add, Delete, Move, Resize, Splines. How many fit in a row depends on the
+# panel's width, so the Splines button moves (end of row 1 on a wide panel, row 4 on a narrow one).
+TOOL_X0, TOOL_Y0, TOOL_DX, TOOL_DY, SPLINES_INDEX = 38, 180, 50, 43, 7
+VIEWPORT_PAST_PANEL = (250, 450)  # hover this far right of the panel's edge, this far down, to paste
 TITLE = "Unreal Editor for Fortnite"
 
 _MOUSE_DOWN, _MOUSE_UP = 0x0002, 0x0004
@@ -139,8 +142,14 @@ def landscape_tabs(user32, left: int, top: int):
     return x0, x1, max(0, min(2, int((centre - x0) / ((x1 - x0) / 3))))
 
 
-def splines_active(user32, left: int, top: int) -> bool:
-    return any(_lit(user32, left + x, top + y) for x, y in SPLINES_SPOTS)
+def splines_spot(tabs) -> tuple:
+    """Window-relative centre of the Splines button for a panel whose tab strip ends at tabs[1]."""
+    cols = max(1, int((tabs[1] - 13) // TOOL_DX))
+    return TOOL_X0 + TOOL_DX * (SPLINES_INDEX % cols), TOOL_Y0 + TOOL_DY * (SPLINES_INDEX // cols)
+
+
+def splines_active(user32, left: int, top: int, spot: tuple) -> bool:
+    return _lit(user32, left + spot[0], top + spot[1])
 
 
 def paste_in_splines_tool(toggle_splines: bool = True) -> dict:
@@ -192,21 +201,27 @@ def _paste(user32, toggle_splines: bool) -> dict:
         tabs = landscape_tabs(user32, left, top)
         if tabs is None or tabs[2] != 0:
             return {"ok": False, "error": "Couldn't switch the Landscape panel to Manage; nothing was pasted."}
-    if not splines_active(user32, left, top):
-        if toggle_splines:
-            for x, y in SPLINES_SPOTS:
-                if splines_active(user32, left, top):
-                    break
-                _click(user32, left + x, top + y)
-                time.sleep(1.0)
-    if not splines_active(user32, left, top):
-        return {"ok": False, "error": "The Splines tool didn't turn on (Landscape panel not where expected)."}
+    spot = splines_spot(tabs)
+    if not splines_active(user32, left, top, spot) and toggle_splines:
+        _click(user32, left + spot[0], top + spot[1])
+        time.sleep(1.0)
+    if not splines_active(user32, left, top, spot):
+        return {"ok": False, "error": f"The Splines tool didn't turn on (looked for it at {spot} in the window)."}
     tabs = landscape_tabs(user32, left, top)
     if tabs is None or tabs[2] != 0:  # last look before Ctrl+V: only ever paste on the Manage tab
         return {"ok": False, "error": "The Landscape panel isn't on Manage; nothing was pasted."}
-    user32.SetCursorPos(left + VIEWPORT[0] - 10, top + VIEWPORT[1])
+    vx, vy = tabs[1] + VIEWPORT_PAST_PANEL[0], VIEWPORT_PAST_PANEL[1]  # the viewport starts where the panel ends
+    user32.SetCursorPos(left + vx - 10, top + vy)
     time.sleep(0.15)
-    user32.SetCursorPos(left + VIEWPORT[0], top + VIEWPORT[1])
+    user32.SetCursorPos(left + vx, top + vy)
     time.sleep(0.3)
     _key(user32, _VK_CONTROL, _VK_V)
     return {"ok": True}
+
+
+if __name__ == "__main__":
+    # a narrow panel (2 buttons a row), the original wide one (all 8 in row 1) and the wrapped one (7 a row)
+    assert splines_spot((10, 150, 0)) == (88, 309), splines_spot((10, 150, 0))
+    assert splines_spot((10, 460, 0)) == (388, 180)
+    assert splines_spot((10, 380, 0)) == (38, 223)
+    print("uefn_input ok")
