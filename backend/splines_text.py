@@ -612,8 +612,9 @@ def kit_convert(points: list, segments: list) -> dict:
     return {"road_segments": road_segs, "pieces": counts, "unfit": len(unfit), "unfit_nodes": unfit[:60]}
 
 
-def pending_nodes(points: list, segments: list) -> list:
-    """Old fitted junction nodes (3+ arms) still waiting for a Road1-width piece: [(node, [mouths], [angles])]."""
+def pending_nodes(points: list, segments: list, rebuild: bool = False) -> list:
+    """Old fitted junction nodes (3+ arms) still waiting for a Road1-width piece: [(node, [mouths], [angles])].
+    rebuild: also the nodes that already have a generated SM_JK_ piece (to regenerate it in place)."""
     by_i = {p["i"]: p for p in points}
     links: dict = {}
     for s in segments:
@@ -622,7 +623,8 @@ def pending_nodes(points: list, segments: list) -> list:
             links.setdefault(s["b"], []).append(s["a"])
     out = []
     for p in points:
-        if p["mesh"].startswith("SM_Junc_") and p["mesh"] != "SM_Junc_Empty" and len(links.get(p["i"], [])) >= 3:
+        waiting = p["mesh"].startswith("SM_Junc_") and p["mesh"] != "SM_Junc_Empty"
+        if (waiting or (rebuild and p["mesh"].startswith("SM_JK_"))) and len(links.get(p["i"], [])) >= 3:
             arms = links[p["i"]]
             out.append((p["i"], arms, [math.degrees(math.atan2(by_i[m]["y"] - p["y"], by_i[m]["x"] - p["x"])) for m in arms]))
     return out

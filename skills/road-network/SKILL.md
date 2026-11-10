@@ -45,6 +45,14 @@ Building forms (`FORMS` in pcg_layers): box, slab, tower, podium_tower (10-store
 round, round_podium, twin, spire, L, courtyard, shed, gable, flat. Each building layer has `forms` {form: weight}
 and `size_jitter`; the preview gives every lot `[x, y, z, yaw, scale, height_m, form, width_m, depth_m]` and the
 plan's `pieces[].forms` says what each form is, so the city can be built to match.
+Materials (read before spawning kit meshes): the kit's FBX materials are one flat colour each and are NOT
+allowed on instanced meshes, so anything PCG spawns draws the grey checker (or a flat untextured colour).
+`road_network_kit_materials` (pcg_build runs it first) gives every WorldGen/City + WorldGen/Kit slot an MI of
+`WorldGen/Materials/M_City_WorldPBR`: world-aligned PBR (cinema PBR textures by world position, so meshes
+stretched to fit a lot never smear), old colour as Tint, Used with Instanced Static Meshes + Nanite on. Never
+put a new mesh on PCG/ISM without a material that has that usage flag. Junctions: with our own road kit
+`road_network_build_pieces(rebuild=true)` regenerates every SM_JK_ piece flat at deck height in the roads'
+`M_Asphalt` with planar UVs (the Fortnite Road1 crown + MI_Apollo_Roads material is only for the Fortnite kit).
 Build the city in UEFN in one call: `road_network_pcg_build(net_id, confirm=true)` turns every previewed lot and
 street piece into a PCG graph (`WorldGen/CityPCG/PCG_<World>_City`: Create Points -> Static Mesh Spawner per kit
 mesh) plus a volume `City Builder <World>`, and runs it. Lots take the own-kit building nearest their height

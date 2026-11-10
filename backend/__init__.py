@@ -410,13 +410,14 @@ def register(api) -> None:
         return {"ok": True, "label": head["label"], **result,
                 "problems": {k: len(v) for k, v in st.problems(pts, segs).items()}}
 
-    def build_pieces(net_id: str = "", actor: str = "") -> dict:
-        """Generate a Road1-width plain-asphalt piece for every junction the kit has no piece for."""
+    def build_pieces(net_id: str = "", actor: str = "", rebuild: bool = False) -> dict:
+        """Generate a plain-asphalt piece for every junction the kit has no piece for (rebuild: also
+        regenerate the pieces already made, in place)."""
         nid, aslug = slug(net_id), slug(actor)
         head, pts, segs = load_actor(nid, aslug)
         if not head:
             return {"ok": False, "error": f"No actor {actor!r} in network {net_id!r}."}
-        todo = st.pending_nodes(pts, segs)
+        todo = st.pending_nodes(pts, segs, rebuild)
         if not todo:
             return {"ok": True, "label": head["label"], "built": 0, "note": "No junction needs a generated piece."}
         folder = junction_folder(pts, segs)
@@ -930,6 +931,16 @@ def register(api) -> None:
             return {"ok": True, "id": nid, "counts": {k: v["count"] for k, v in out.items()}}
         return {"ok": True, "id": nid, "layers": out}
 
+    def kit_root() -> str:
+        folder = road_folder()
+        return folder.split("/WorldGen/Roads")[0] if "/WorldGen/Roads" in folder else ""
+
+    def kit_materials(net_id: str = "") -> dict:
+        root = kit_root()
+        if not root:
+            return {"ok": False, "error": "Couldn't find the project's WorldGen folder (import the roads first)."}
+        return listener("road_network_kit_materials", {"root": root}, timeout=900)
+
     BAKE_CHUNK = 1500  # points per Create Points node: keeps each node's settings a sensible size
 
     def pcg_build(net_id: str = "", confirm: bool = False) -> dict:
@@ -948,6 +959,11 @@ def register(api) -> None:
         groups, baked, missing = kit_bake.bake(got.get("layers") or {}, root)
         if not groups:
             return {"ok": False, "error": "Nothing to build: the preview has no buildings or street pieces."}
+        mats = None
+        if confirm:  # instance-safe textured materials first, or every building draws the grey checker
+            mats = kit_materials(nid)
+            if not mats.get("ok"):
+                return {"ok": False, "error": f"Kit materials: {mats.get('error')}"}
         name = doc.get("name") or nid
         label = f"City Builder {name}"
         graph_path = f"{root}/WorldGen/CityPCG/PCG_{re.sub(r'[^A-Za-z0-9]', '', name)}_City"
@@ -993,7 +1009,7 @@ def register(api) -> None:
                           "scale": {"x": size / 200, "y": size / 200, "z": 200}}})["returnValue"]
         messages = epic("PCGToolset.PCGToolset", "ExecuteGraphInstance", {"pCGVolume": volume["actor"]}).get("returnValue", [])
         return {"ok": True, "id": nid, "graph": graph["refPath"], "volume": volume["actor"]["refPath"], "nodes": nodes,
-                "meshes": len(groups), "built": baked, "no_kit_piece": missing,
+                "meshes": len(groups), "built": baked, "no_kit_piece": missing, "materials": mats,
                 "messages": messages[:20],
                 "note": "Foliage layers stay for painting (Foliage mode); layers in no_kit_piece have no mesh in the kit yet."}
 
@@ -1126,11 +1142,19 @@ def register(api) -> None:
         return safe(kit_convert)(net_id, actor)
 
     @api.tool(intent=INTENT, listener=True)
-    def road_network_build_pieces(net_id: str = "", actor: str = "") -> dict:
-        """Build Road1-width plain-asphalt junction meshes (GeometryScript, in the project's
-        WorldGen/Roads/Junctions/Kit folder) for every junction the Fortnite kit has no piece for, and put
-        them on the nodes. Creates mesh assets only; never touches the landscape."""
-        return safe(build_pieces)(net_id, actor)
+    def road_network_build_pieces(net_id: str = "", actor: str = "", rebuild: bool = False) -> dict:
+        """Build plain-asphalt junction meshes (GeometryScript, in the project's WorldGen/Roads/Junctions/Kit
+        folder) for every junction that has no piece, and put them on the nodes. With our own road kit they
+        are flat M_Asphalt at deck height; with the Fortnite kit, Road1 crowned. rebuild=true regenerates the
+        existing pieces in place (after a kit or material change). Mesh assets only; never the landscape."""
+        return safe(build_pieces)(net_id, actor, rebuild)
+
+    @api.tool(intent=INTENT, listener=True)
+    def road_network_kit_materials(net_id: str = "") -> dict:
+        """Give the own kit (WorldGen/City + WorldGen/Kit meshes) textured materials that work on PCG
+        instances: one MI of M_City_WorldPBR (world-aligned PBR, ISM + Nanite usage on) per old flat-colour
+        material, its colour kept as Tint. pcg_build runs it first; run it alone after importing new kit meshes."""
+        return safe(kit_materials)(net_id)
 
     @api.tool(intent=INTENT, listener=False)
     def road_network_restore(net_id: str = "", actor: str = "", from_actor: str = "") -> dict:
@@ -1363,7 +1387,8 @@ def register(api) -> None:
                            end_falloff=1000.0, width=0.0, paint_layer="", mesh_offset_cm=-1.0: safe(tune_actor)(
                                net_id, actor, thin_tolerance_cm, side_falloff, end_falloff, width, paint_layer,
                                mesh_offset_cm))
-    api.register_panel_rpc("build_pieces", lambda net_id="", actor="": safe(build_pieces)(net_id, actor))
+    api.register_panel_rpc("build_pieces", lambda net_id="", actor="", rebuild=False: safe(build_pieces)(net_id, actor, rebuild))
+    api.register_panel_rpc("kit_materials", lambda net_id="": safe(kit_materials)(net_id))
     api.register_panel_rpc("kit_convert", lambda net_id="", actor="": safe(kit_convert)(net_id, actor))
     api.register_panel_rpc("check", lambda net_id="", actor="": safe(check)(net_id, actor))
     api.register_panel_rpc("repair", lambda net_id="", actor="": safe(repair_actor)(net_id, actor))

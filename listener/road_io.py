@@ -159,13 +159,23 @@ _U_ASPHALT, _U_SHOULDER = 0.27, 0.02
 _R1_MATERIAL = "/Game/Athena/Apollo/Environments/Landscape/Materials/MI_Apollo_Roads_Straight_NO_RVT"
 
 
-def _junction_geometry(arm_deg: list, half: float = _R1_W) -> tuple:
-    """Plain-asphalt junction in the Road1 shape for arms at these world angles (degrees), as wide
-    as the roads it joins (half: road half width, cm). Returns (verts, uvs, tris, mouth distance
-    per arm in the given order)."""
+# Our own road kit (WorldGen/Roads): a flat deck at z 0 in M_Asphalt. A junction for it is flat too,
+# a hair above the deck so the road ends it overlaps never flicker, with planar UVs in metres.
+_OWN_DECK_Z = 2.0
+_OWN_UV_CM = 400.0
+
+
+def _junction_geometry(arm_deg: list, half: float = _R1_W, flat: bool = False) -> tuple:
+    """Plain-asphalt junction for arms at these world angles (degrees), as wide as the roads it joins
+    (half: road half width, cm). flat: our own kit's flat deck and planar UVs; otherwise the Fortnite
+    Road1 crown and its texture strip. Returns (verts, uvs, tris, mouth distance per arm in the given order)."""
     k_w = max(0.5, float(half) / _R1_W)
     _R1_W_ = _R1_W * k_w
-    profile = [(s * k_w, z) for s, z in _R1_PROFILE]
+    profile = [(s * k_w, _OWN_DECK_Z if flat else z) for s, z in _R1_PROFILE]
+    edge_z = _OWN_DECK_Z if flat else -2.0
+
+    def uv(x, y, u_strip):
+        return (x / _OWN_UV_CM, y / _OWN_UV_CM) if flat else (u_strip, x / 1024.0)
     order = sorted(range(len(arm_deg)), key=lambda k: arm_deg[k] % 360.0)
     ang = [math.radians(arm_deg[k] % 360.0) for k in order]
     n = len(ang)
@@ -202,13 +212,13 @@ def _junction_geometry(arm_deg: list, half: float = _R1_W) -> tuple:
             a, b, cc = (1 - t) ** 2, 2 * (1 - t) * t, t * t
             q = (a * L[0] + b * C[0] + cc * R[0], a * L[1] + b * C[1] + cc * R[1])
             chain.append(q)
-            ring.append((q[0], q[1], -2.0))
+            ring.append((q[0], q[1], edge_z))
         chain.append(R)
         chains.append((chain, k, j))
-    verts, uvs, tris = [(0.0, 0.0, 16.0)], [(_U_ASPHALT, 0.0)], []
+    verts, uvs, tris = [(0.0, 0.0, _OWN_DECK_Z if flat else 16.0)], [uv(0.0, 0.0, _U_ASPHALT)], []
     for x, y, z in ring:
         verts.append((x, y, z))
-        uvs.append((_U_ASPHALT, x / 1024.0))
+        uvs.append(uv(x, y, _U_ASPHALT))
     m = len(ring)
     for i in range(m):
         a, b = 1 + i, 1 + (i + 1) % m
@@ -230,9 +240,9 @@ def _junction_geometry(arm_deg: list, half: float = _R1_W) -> tuple:
         for side in (0, 1):  # both faces, separate vertices (shared ones cancel the normals)
             for i in range(len(chain) - 1):
                 base = len(verts)
-                for (x, y), z in ((chain[i], -2.0), (chain[i + 1], -2.0), (outs[i + 1], _R1_SKIRT_Z), (outs[i], _R1_SKIRT_Z)):
+                for (x, y), z in ((chain[i], edge_z), (chain[i + 1], edge_z), (outs[i + 1], _R1_SKIRT_Z), (outs[i], _R1_SKIRT_Z)):
                     verts.append((x, y, z))
-                    uvs.append((_U_SHOULDER, x / 1024.0))
+                    uvs.append(uv(x, y, _U_SHOULDER))
                 q = (base, base + 1, base + 2, base + 3)
                 tris += ([(q[0], q[1], q[2]), (q[0], q[2], q[3])] if side == 0 else [(q[0], q[2], q[1]), (q[0], q[3], q[2])])
     mouth = [0.0] * n
@@ -247,14 +257,17 @@ def road_network_build_junctions(folder: str = "", pieces: list | None = None) -
     Writes mesh assets only (never the landscape). Returns each piece's mouth distance per arm."""
     if not folder.startswith("/"):
         return {"ok": False, "error": "Give the asset folder (for example /<mount>/MovieTheater/WorldGen/Roads/Junctions/Kit)."}
-    mat = unreal.load_asset(_R1_MATERIAL)
+    # our own road kit: the junction is the same flat asphalt as the road deck it joins
+    own = folder.split("/WorldGen/Roads")[0] + "/WorldGen/Roads/M_Asphalt" if "/WorldGen/Roads" in folder else ""
+    flat = bool(own) and unreal.EditorAssetLibrary.does_asset_exist(own)
+    mat = unreal.load_asset(own if flat else _R1_MATERIAL)
     out, errors = {}, []
     for piece in pieces or []:
         name, arms = str(piece.get("name") or ""), list(piece.get("arms") or [])
         if not name or len(arms) < 3:
             errors.append(f"{name or '?'}: needs a name and 3+ arms")
             continue
-        verts, uvs, tris, mouth = _junction_geometry(arms, float(piece.get("half") or _R1_W))
+        verts, uvs, tris, mouth = _junction_geometry(arms, float(piece.get("half") or _R1_W), flat)
         buf = unreal.GeometryScriptSimpleMeshBuffers()
         buf.vertices = [unreal.Vector(*v) for v in verts]
         buf.uv0 = [unreal.Vector2D(*u) for u in uvs]
@@ -273,7 +286,7 @@ def road_network_build_junctions(folder: str = "", pieces: list | None = None) -
         opts = unreal.GeometryScriptCopyMeshToAssetOptionsV2()
         opts.replace_materials = True
         opts.new_materials = [mat]
-        opts.new_material_slot_names = ["Road1"]
+        opts.new_material_slot_names = ["Asphalt" if flat else "Road1"]
         lod = unreal.GeometryScriptMeshWriteLOD()
         unreal.GeometryScript_AssetUtils.copy_mesh_to_static_mesh_v2(dm, sm, opts, lod)
         out[name] = mouth
@@ -290,3 +303,184 @@ def road_network_ground_check(points: list | None = None) -> dict:
         out.append({"x": p[0], "y": p[1], "z": p[2], "ground": g,
                     "below": (p[2] - g) if g is not None else None})
     return {"ok": True, "points": out}
+
+
+# ------------------------------------------------------------------ kit materials
+# The kit came in from FBX with one flat colour per material (no textures) and none of them is
+# allowed on instanced meshes, so PCG's instances drew the grey checker. Every kit slot gets an
+# instance of one world-aligned PBR master instead: textures projected by world position (a lot
+# stretched to fit never smears them), the old colour kept as Tint, usage flags for ISM/Nanite on.
+_MASTER = "M_City_WorldPBR"
+_PBR_SET = "{root}/Cinema/PBR/Textures/T_CinemaPBR_{set}_{ch}"
+# material name keyword -> (texture set, tile cm, roughness x, metallic, emissive)
+_LOOKS = [
+    ("Glass", ("Tile", 300, 0.15, 0.4, 0.0)), ("Neon", ("Concrete", 400, 0.5, 0.0, 6.0)),
+    ("LampLED", ("Concrete", 400, 0.5, 0.0, 6.0)), ("Brick", ("Pavers", 150, 1.0, 0.0, 0.0)),
+    ("Siding", ("Wood", 250, 1.0, 0.0, 0.0)), ("DoorWood", ("Oak", 200, 1.0, 0.0, 0.0)),
+    ("Wood", ("Oak", 200, 1.0, 0.0, 0.0)), ("Roof", ("Tile", 200, 1.0, 0.0, 0.0)),
+    ("Trim", ("Stone", 200, 1.0, 0.0, 0.0)), ("Stone", ("Stone", 300, 1.0, 0.0, 0.0)),
+    ("Gold", ("Frame", 200, 0.5, 0.9, 0.0)), ("Metal", ("Frame", 200, 0.6, 0.7, 0.0)),
+    ("Spire", ("Frame", 200, 0.5, 0.6, 0.0)), ("Mullion", ("Frame", 200, 0.6, 0.6, 0.0)),
+    ("Frame", ("Frame", 200, 0.8, 0.3, 0.0)), ("Foliage", ("Rock", 150, 1.0, 0.0, 0.0)),
+    ("Floor", ("Concrete", 300, 1.0, 0.0, 0.0)), ("Concrete", ("Concrete", 400, 1.0, 0.0, 0.0)),
+]
+_DEFAULT_LOOK = ("Concrete", 400, 1.0, 0.0, 0.0)
+
+
+def _look(name: str) -> tuple:
+    return next((v for k, v in _LOOKS if k.lower() in name.lower()), _DEFAULT_LOOK)
+
+
+def _world_pbr_master(folder: str, root: str):
+    path = f"{folder}/{_MASTER}"
+    if unreal.EditorAssetLibrary.does_asset_exist(path):
+        return unreal.load_asset(path)
+    mel = unreal.MaterialEditingLibrary
+    m = unreal.AssetToolsHelpers.get_asset_tools().create_asset(_MASTER, folder, unreal.Material, unreal.MaterialFactoryNew())
+
+    def node(cls, x, y, **props):
+        e = mel.create_material_expression(m, cls, x, y)
+        for k, v in props.items():
+            e.set_editor_property(k, v)
+        return e
+
+    def wire(a, b, out="", inp=""):
+        mel.connect_material_expressions(a, out, b, inp)
+
+    def param(name, value, y):
+        return node(unreal.MaterialExpressionScalarParameter, -400, y, parameter_name=name, default_value=value)
+
+    wp = node(unreal.MaterialExpressionWorldPosition, -2200, 0)
+    tile = param("TileCm", 400.0, 160)
+    p = node(unreal.MaterialExpressionDivide, -2000, 0)
+    wire(wp, p, inp="A")
+    wire(tile, p, inp="B")
+    uvs = {}
+    for k, (key, rgb) in enumerate((("yz", (False, True, True)), ("xz", (True, False, True)), ("xy", (True, True, False)))):
+        cm = node(unreal.MaterialExpressionComponentMask, -1800, k * 120, r=rgb[0], g=rgb[1], b=rgb[2], a=False)
+        wire(p, cm)
+        uvs[key] = cm
+    nrm = node(unreal.MaterialExpressionVertexNormalWS, -2200, 500)
+    ab = node(unreal.MaterialExpressionAbs, -2000, 500)
+    wire(nrm, ab)
+    sq = node(unreal.MaterialExpressionMultiply, -1800, 500)
+    wire(ab, sq, inp="A")
+    wire(ab, sq, inp="B")
+    one = node(unreal.MaterialExpressionConstant3Vector, -1800, 640, constant=unreal.LinearColor(1, 1, 1, 1))
+    tot = node(unreal.MaterialExpressionDotProduct, -1600, 560)
+    wire(sq, tot, inp="A")
+    wire(one, tot, inp="B")
+    w = node(unreal.MaterialExpressionDivide, -1400, 500)
+    wire(sq, w, inp="A")
+    wire(tot, w, inp="B")
+    weights = {}
+    for k, (key, rgb) in enumerate((("yz", (True, False, False)), ("xz", (False, True, False)), ("xy", (False, False, True)))):
+        cm = node(unreal.MaterialExpressionComponentMask, -1200, 500 + k * 120, r=rgb[0], g=rgb[1], b=rgb[2], a=False)
+        wire(w, cm)
+        weights[key] = cm
+
+    def triplanar(name, tex, out, y0):
+        total = None
+        for k, key in enumerate(("yz", "xz", "xy")):
+            t = node(unreal.MaterialExpressionTextureSampleParameter2D, -1000, y0 + k * 260, parameter_name=name,
+                     texture=tex)
+            wire(uvs[key], t, inp="UVs")
+            mul = node(unreal.MaterialExpressionMultiply, -760, y0 + k * 260)
+            wire(t, mul, out=out, inp="A")
+            wire(weights[key], mul, inp="B")
+            if total is None:
+                total = mul
+            else:
+                add = node(unreal.MaterialExpressionAdd, -560, y0 + k * 260)
+                wire(total, add, inp="A")
+                wire(mul, add, inp="B")
+                total = add
+        return total
+
+    base = triplanar("Base", unreal.load_asset(_PBR_SET.format(root=root, set="Concrete", ch="B")), "RGB", 0)
+    rough = triplanar("Rough", unreal.load_asset(_PBR_SET.format(root=root, set="Concrete", ch="R")), "R", 900)
+    tint = node(unreal.MaterialExpressionVectorParameter, -400, -200, parameter_name="Tint",
+                default_value=unreal.LinearColor(1, 1, 1, 1))
+    bc = node(unreal.MaterialExpressionMultiply, -200, 0)
+    wire(base, bc, inp="A")
+    wire(tint, bc, inp="B")
+    mel.connect_material_property(bc, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    rmul = node(unreal.MaterialExpressionMultiply, -200, 900)
+    wire(rough, rmul, inp="A")
+    wire(param("RoughMul", 1.0, 1000), rmul, inp="B")
+    mel.connect_material_property(rmul, "", unreal.MaterialProperty.MP_ROUGHNESS)
+    mel.connect_material_property(param("Metallic", 0.0, 1200), "", unreal.MaterialProperty.MP_METALLIC)
+    glow = node(unreal.MaterialExpressionMultiply, -200, 1400)
+    wire(tint, glow, inp="A")
+    wire(param("Emissive", 0.0, 1400), glow, inp="B")
+    mel.connect_material_property(glow, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
+    for flag in ("used_with_instanced_static_meshes", "used_with_nanite", "used_with_spline_meshes"):
+        try:
+            m.set_editor_property(flag, True)
+        except Exception:
+            pass
+    mel.recompile_material(m)
+    unreal.EditorAssetLibrary.save_loaded_asset(m)
+    return m
+
+
+def _old_tint(mat) -> unreal.LinearColor:
+    mel = unreal.MaterialEditingLibrary
+    try:
+        for name in mel.get_vector_parameter_names(mat):
+            return mel.get_material_default_vector_parameter_value(mat, name)
+    except Exception:
+        pass
+    return unreal.LinearColor(1, 1, 1, 1)
+
+
+@register("road_network_kit_materials")
+def road_network_kit_materials(root: str = "", folders: list | None = None) -> dict:
+    """Give every mesh in the kit folders (WorldGen/City, WorldGen/Kit) textured, instance-safe materials:
+    one MI of M_City_WorldPBR per old flat-colour material (its colour kept as Tint). Writes mesh and
+    material assets only. Safe to run again: existing instances are refreshed, never duplicated."""
+    if not root.startswith("/"):
+        return {"ok": False, "error": "Give root, the project's content root (for example /<mount>/MovieTheater)."}
+    mel = unreal.MaterialEditingLibrary
+    eal = unreal.EditorAssetLibrary
+    tools = unreal.AssetToolsHelpers.get_asset_tools()
+    mat_folder = f"{root}/WorldGen/Materials"
+    if not eal.does_directory_exist(mat_folder):
+        eal.make_directory(mat_folder)
+    master = _world_pbr_master(mat_folder, root)
+    made, meshes, slots = {}, 0, 0
+    for sub in folders or ["City", "Kit"]:
+        for path in eal.list_assets(f"{root}/WorldGen/{sub}", recursive=False):
+            mesh = eal.load_asset(path)
+            if not isinstance(mesh, unreal.StaticMesh):
+                continue
+            changed = False
+            for i, slot in enumerate(mesh.static_materials):
+                old = slot.material_interface
+                if old is None or old.get_path_name().startswith(mat_folder):
+                    continue
+                key = old.get_name()
+                if key not in made:
+                    mi_path = f"{mat_folder}/MI_City_{key.removeprefix('M_')}"
+                    mi = eal.load_asset(mi_path) if eal.does_asset_exist(mi_path) else tools.create_asset(
+                        mi_path.rsplit("/", 1)[1], mat_folder, unreal.MaterialInstanceConstant,
+                        unreal.MaterialInstanceConstantFactoryNew())
+                    mel.set_material_instance_parent(mi, master)
+                    tex, tile, rough, metal, glow = _look(key)
+                    for ch, pname in (("B", "Base"), ("R", "Rough")):
+                        t = eal.load_asset(_PBR_SET.format(root=root, set=tex, ch=ch))
+                        if t:
+                            mel.set_material_instance_texture_parameter_value(mi, pname, t)
+                    mel.set_material_instance_vector_parameter_value(mi, "Tint", _old_tint(old))
+                    for pname, v in (("TileCm", tile), ("RoughMul", rough), ("Metallic", metal), ("Emissive", glow)):
+                        mel.set_material_instance_scalar_parameter_value(mi, pname, float(v))
+                    mel.update_material_instance(mi)
+                    eal.save_loaded_asset(mi)
+                    made[key] = mi
+                mesh.set_material(i, made[key])
+                changed = True
+                slots += 1
+            if changed:
+                eal.save_loaded_asset(mesh)
+                meshes += 1
+    return {"ok": True, "master": master.get_path_name(), "instances": len(made), "meshes": meshes, "slots": slots}
