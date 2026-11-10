@@ -811,7 +811,7 @@ def register(api) -> None:
         push({"what": "pcg", "id": nid})
         return {"ok": True, "id": lid}
 
-    def pcg_preset(net_id: str = "", preset: str = "forest_and_streets") -> dict:
+    def pcg_preset(net_id: str = "", preset: str = "full_city") -> dict:
         nid = slug(net_id)
         if not data.get(f"net.{nid}"):
             return {"ok": False, "error": f"No road network {net_id!r}."}
@@ -856,7 +856,7 @@ def register(api) -> None:
             actors.append((pts, segs))
         return pl.road_samples(actors, step)
 
-    def pcg_preview(net_id: str = "", layer_id: str = "") -> dict:
+    def pcg_preview(net_id: str = "", layer_id: str = "", summary: bool = False) -> dict:
         """Every enabled layer placed offline with the graph's rules; one layer per call when layer_id is
         given (keeps each reply small). Points: [x, y, z, yaw, scale]."""
         nid = slug(net_id)
@@ -873,6 +873,8 @@ def register(api) -> None:
         if layer_id:
             name = (docs.get(slug(layer_id)) or {}).get("name")
             out = {name: out[name]} if name in out else {}
+        if summary:  # counts only: a quick check for an agent, no point lists
+            return {"ok": True, "id": nid, "counts": {k: v["count"] for k, v in out.items()}}
         return {"ok": True, "id": nid, "layers": out}
 
     def pcg_place(net_id: str = "", confirm: bool = False) -> dict:
@@ -1119,9 +1121,11 @@ def register(api) -> None:
         return safe(pcg_layer_delete)(net_id, layer_id)
 
     @api.tool(intent=PCG_INTENT, listener=False)
-    def road_network_pcg_preset(net_id: str = "", preset: str = "forest_and_streets") -> dict:
-        """Add starter PCG layers to a world: 'forest_and_streets' (trees, rocks, bushes, street trees, lamps,
-        houses) or 'forest'. Layers that already exist keep their settings."""
+    def road_network_pcg_preset(net_id: str = "", preset: str = "full_city") -> dict:
+        """Add starter PCG layers to a world: 'full_city' (nature, street trees and lamps, skyscrapers, office
+        blocks, hospitals and schools, factories and warehouses in an industrial zone, apartments, shops, gas
+        stations, houses), 'city' (buildings only), 'forest_and_streets' or 'forest'. Existing layers keep
+        their settings."""
         return safe(pcg_preset)(net_id, preset)
 
     @api.tool(intent=PCG_INTENT, listener=False)
@@ -1132,11 +1136,11 @@ def register(api) -> None:
         return safe(pcg_plan)(net_id, road_tag)
 
     @api.tool(intent=PCG_INTENT, listener=False)
-    def road_network_pcg_preview(net_id: str = "", layer_id: str = "") -> dict:
+    def road_network_pcg_preview(net_id: str = "", layer_id: str = "", summary: bool = False) -> dict:
         """Run a world's PCG layers offline with the graph's rules (district, off the roads, clear of earlier
         layers, no overlaps, nothing under water) and return where each would place things plus its count;
-        the panel draws it in 3D. layer_id: just that layer."""
-        return safe(pcg_preview)(net_id, layer_id)
+        the panel draws it in 3D. layer_id: just that layer. summary=true: only the count per layer."""
+        return safe(pcg_preview)(net_id, layer_id, summary)
 
     @api.tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_place(net_id: str = "", confirm: bool = False) -> dict:
@@ -1147,7 +1151,7 @@ def register(api) -> None:
     api.register_panel_rpc("pcg_layers", lambda net_id="": safe(pcg_layers)(net_id))
     api.register_panel_rpc("pcg_layer_save", lambda net_id="", layer="", layer_id="": safe(pcg_layer_save)(net_id, layer, layer_id))
     api.register_panel_rpc("pcg_layer_delete", lambda net_id="", layer_id="": safe(pcg_layer_delete)(net_id, layer_id))
-    api.register_panel_rpc("pcg_preset", lambda net_id="", preset="forest_and_streets": safe(pcg_preset)(net_id, preset))
+    api.register_panel_rpc("pcg_preset", lambda net_id="", preset="full_city": safe(pcg_preset)(net_id, preset))
     api.register_panel_rpc("pcg_plan", lambda net_id="", road_tag="": safe(pcg_plan)(net_id, road_tag))
     api.register_panel_rpc("pcg_preview", lambda net_id="", layer_id="": safe(pcg_preview)(net_id, layer_id))
     api.register_panel_rpc("pcg_place", lambda net_id="", confirm=False: safe(pcg_place)(net_id, confirm))

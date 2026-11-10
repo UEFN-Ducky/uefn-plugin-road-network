@@ -401,13 +401,22 @@ function drawPcg(legend) {
     const pts = layer.points || [];
     if (!pts.length) return;
     const colour = PCG_COLORS[k % PCG_COLORS.length];
-    const [geo, lift] = pcgShape(name, layer.kind);
-    const mesh = new THREE.InstancedMesh(geo, new THREE.MeshStandardMaterial({ color: col(colour), roughness: 0.85 }), pts.length);
-    pts.forEach(([x, y, z, yaw, s], i) => {
+    const building = layer.kind === "buildings";
+    const [geo, lift] = building ? [new THREE.BoxGeometry(1, 1, 1), 0] : pcgShape(name, layer.kind);
+    const mesh = new THREE.InstancedMesh(geo, new THREE.MeshStandardMaterial({ color: col(colour), roughness: building ? 0.6 : 0.85,
+      metalness: building ? 0.15 : 0 }), pts.length);
+    const zx = state.view.zx || 1;
+    pts.forEach(([x, y, z, yaw, s, hgt], i) => {
       dummy.position.copy(toV(x, y, z));
-      dummy.position.y += lift * s;
       dummy.rotation.set(0, -yaw * Math.PI / 180, 0);
-      dummy.scale.setScalar(s);
+      if (building) {  // its real lot and height: depth faces the street, frontage runs along it
+        const [w, d] = layer.size_m || [12, 12];
+        dummy.scale.set(d * 0.9, hgt * zx, w * 0.9);
+        dummy.position.y += hgt * zx / 2;
+      } else {
+        dummy.scale.setScalar(s);
+        dummy.position.y += lift * s;
+      }
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
     });
@@ -459,6 +468,19 @@ function drawDistricts() {
       }
       const geo = new THREE.BufferGeometry().setFromPoints(pts);
       const line = new THREE.Line(geo, new THREE.LineDashedMaterial({ color: col(colour), dashSize: 18, gapSize: 12, transparent: true, opacity: 0.85 }));
+      line.computeLineDistances();
+      groups.districts.add(line);
+    }
+    const ind = c.districts?.industrial;
+    const down = c.districts?.downtown?.radius, outer = c.districts?.housing?.radius;
+    if (ind && down && outer) {  // the industrial wedge, edge to edge
+      const a0 = (ind.angle - (ind.spread || 75) / 2) * Math.PI / 180, span = (ind.spread || 75) * Math.PI / 180;
+      const pts = [];
+      for (let k = 0; k <= 24; k++) { const a = a0 + span * k / 24; pts.push([c.x + Math.cos(a) * outer, c.y + Math.sin(a) * outer]); }
+      for (let k = 24; k >= 0; k--) { const a = a0 + span * k / 24; pts.push([c.x + Math.cos(a) * down, c.y + Math.sin(a) * down]); }
+      pts.push(pts[0]);
+      const geo = new THREE.BufferGeometry().setFromPoints(pts.map(([x, y]) => toV(x, y, (sampleZ(t, x, y) ?? z ?? 0) + 300)));
+      const line = new THREE.Line(geo, new THREE.LineDashedMaterial({ color: col("amber"), dashSize: 24, gapSize: 10 }));
       line.computeLineDistances();
       groups.districts.add(line);
     }
@@ -622,6 +644,7 @@ const WHERE_OPTS = [
   ["downtown", "Downtown", "Inner ring of each city", "grid"],
   ["normal", "Normal city", "Between downtown and housing", "mixed"],
   ["housing", "Housing", "Outer ring of each city", "pin"],
+  ["industrial", "Industrial zone", "One wedge of each city's outer rings", "wrench"],
 ];
 const KIND_ICON = { scatter: "terrain", along_roads: "route", buildings: "city" };
 let pcgSaveTimer = 0;
@@ -634,11 +657,11 @@ function renderPcgPane() {
   }
   const layers = state.layers || [];
   const head = h("div", { class: "rn-btns" },
-    button("Starter layers", "layers", async () => {
-      const out = await rpc("pcg_preset", { net_id: state.net });
+    button("Whole city", "city", async () => {
+      const out = await rpc("pcg_preset", { net_id: state.net, preset: "full_city" });
       if (out.ok === false) return showError(out.error);
       await loadLayers();
-    }, "secondary", "Trees, rocks, bushes, street trees, lamps and houses (layers you already have keep their settings)"),
+    }, "secondary", "Nature, street trees and lamps, skyscrapers, offices, apartments, shops, hospitals and schools, factories, warehouses, gas stations and houses (layers you already have keep their settings)"),
     button("New layer", "edit", async () => {
       const name = `Layer ${layers.length + 1}`;
       const out = await rpc("pcg_layer_save", { net_id: state.net, layer: JSON.stringify({ name, order: layers.length + 1 }) });
@@ -696,7 +719,10 @@ function layerCard(l, earlier) {
     button: { icon: "dice", title: "New random seed", onClick: (input) => { input.value = Math.floor(Math.random() * 99999); save({ seed: +input.value }); } } });
   const spacing = l.kind === "scatter"
     ? [num("density", "Density", 0.01, 50, 0.01, (v) => `${v} per 100 m²`, "Points per 100 square metres before pruning")]
-    : [num("spacing_m", "Spacing along the road", 2, 200, 1, m), num("setback_m", "Distance from the road centre", 0, 80, 0.5, m)];
+    : [num("spacing_m", "Spacing along the road", 2, 800, 1, m), num("setback_m", "Distance from the kerb", 0, 80, 0.5, m)];
+  if (l.kind === "buildings") spacing.push(
+    num("width_m", "Frontage", 1, 200, 1, m, "Width along the street"), num("depth_m", "Depth", 1, 200, 1, m, "Depth away from the street"),
+    num("height_min_m", "Lowest", 1, 600, 1, m), num("height_max_m", "Tallest", 1, 600, 1, m, "Pick meshes in this height range"));
   const meshRows = l.meshes.map((mesh, k) => h("div", { class: "rn-card", style: "padding: 8px; margin-bottom: 6px" },
     h("div", { class: "rn-code", style: "margin-bottom: 6px" }, mesh.path),
     slider({ label: "Weight", min: 0.1, max: 10, step: 0.1, value: mesh.weight, fmt: (v) => `×${v}`,

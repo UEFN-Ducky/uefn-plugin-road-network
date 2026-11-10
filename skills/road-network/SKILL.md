@@ -70,8 +70,12 @@ as team docs (chunks of 1000).
 
 ## PCG placement layers
 
-- `road_network_pcg_preset(net_id)` adds starter layers (Trees, Rocks, Bushes and grass, Street trees,
-  Street lamps, Houses; meshes empty). `road_network_pcg_layers`, `road_network_pcg_layer_save(net_id, layer
+- `road_network_pcg_preset(net_id, preset="full_city")` adds starter layers (meshes empty): nature (Trees, Rocks,
+  Bushes and grass), every building type (Skyscrapers and Office blocks downtown; Hospitals and schools, Apartments
+  and Shops in the normal ring; Factories and Warehouses in each city's industrial wedge; Gas stations; Houses in
+  housing) and Street trees and lamps placed last. Building layers have `width_m`, `depth_m`, `height_min_m`,
+  `height_max_m` and always keep clear of every earlier building layer. `where` also takes `industrial`.
+  `road_network_pcg_preview(net_id, layer_id)` places them offline (buildings drawn at real size and height). `road_network_pcg_layers`, `road_network_pcg_layer_save(net_id, layer
   JSON, layer_id)`, `road_network_pcg_layer_delete`: one doc per layer (`net.<nid>.pcg.<layer>`).
 - A layer: `kind` scatter (Surface Sampler, `density` per 100 m2) | along_roads | buildings (Spline Sampler on
   the road actors, `spacing_m`, both sides at `setback_m`, facing the road); `where` outside | everywhere |

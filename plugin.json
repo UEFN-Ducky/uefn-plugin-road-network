@@ -1,7 +1,7 @@
 {
   "id": "road-network",
   "kind": "plugin",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "label": "Road Network",
   "description": "See, edit and rebuild a whole UEFN city road network in 3D: every road, junction, ramp, elevated deck and kit piece, shared with your team, with one-button reimport into UEFN.",
   "min_app_version": "1.0.0",

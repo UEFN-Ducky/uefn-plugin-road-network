@@ -19,18 +19,23 @@ import math
 import re
 
 KINDS = ("scatter", "along_roads", "buildings")
-WHERE = ("outside", "cities", "downtown", "normal", "housing", "everywhere")
+WHERE = ("outside", "cities", "downtown", "normal", "housing", "industrial", "everywhere")
+INDUSTRIAL_SPREAD = 75.0  # degrees: each city's industrial zone is one wedge of its outer rings
 
 # name: (default, min, max)
 NUMBERS = {
     "density": (1.0, 0.01, 50.0),       # scatter: points per 100 m2
-    "spacing_m": (25.0, 2.0, 200.0),    # along roads / buildings: one every N m along the road
+    "spacing_m": (25.0, 2.0, 1000.0),   # along roads / buildings: one every N m (gas stations ~650 m apart)
     "setback_m": (2.0, 0.0, 80.0),      # along roads / buildings: distance from the road EDGE (kerb)
     "scale_min": (0.9, 0.1, 10.0),
     "scale_max": (1.2, 0.1, 10.0),
     "sink_cm": (10.0, 0.0, 500.0),      # push into the ground so roots and bases never float
     "footprint": (0.8, 0.1, 2.0),       # bounds scale used for pruning and differences (1 = mesh bounds)
     "road_clear_m": (2.0, 0.0, 50.0),   # extra clearance past the road edge
+    "width_m": (12.0, 1.0, 200.0),      # buildings: frontage along the road
+    "depth_m": (12.0, 1.0, 200.0),      # buildings: depth away from the road
+    "height_min_m": (6.0, 1.0, 600.0),  # buildings: height range (the preview draws it; pick meshes to match)
+    "height_max_m": (9.0, 1.0, 600.0),
     "seed": (7, 0, 99999),
     "order": (0, 0, 99),
 }
@@ -54,6 +59,8 @@ def clean(layer: dict) -> dict:
         out[key] = int(round(v)) if isinstance(default, int) else round(v, 4)
     if out["scale_max"] < out["scale_min"]:
         out["scale_min"], out["scale_max"] = out["scale_max"], out["scale_min"]
+    if out["height_max_m"] < out["height_min_m"]:
+        out["height_min_m"], out["height_max_m"] = out["height_max_m"], out["height_min_m"]
     meshes = []
     for m in layer.get("meshes") or []:
         path = str((m or {}).get("path") if isinstance(m, dict) else m or "").strip()
@@ -74,8 +81,30 @@ def clean(layer: dict) -> dict:
     return out
 
 
-def preset(name: str = "forest_and_streets") -> list:
-    """Starter layers. Meshes stay empty: the person (or the AI placing it) picks the project's own."""
+def _bld(name, where, order, spacing, setback, w, d, hmin, hmax, **extra):
+    return {"name": name, "kind": "buildings", "where": where, "order": order, "spacing_m": spacing, "setback_m": setback,
+            "width_m": w, "depth_m": d, "height_min_m": hmin, "height_max_m": hmax, "scale_min": 1, "scale_max": 1,
+            "footprint": 1.0, **extra}
+
+
+# Everything a city has, biggest first so smaller things fill the gaps between them.
+CITY_BUILDINGS = [
+    _bld("Skyscrapers", "downtown", 10, 48, 6, 32, 32, 90, 240),
+    _bld("Office blocks", "downtown", 11, 34, 5, 26, 24, 30, 75, avoid=["Skyscrapers"]),
+    _bld("Hospitals and schools", "normal", 12, 420, 12, 48, 40, 14, 28),
+    _bld("Factories", "industrial", 13, 110, 10, 46, 34, 10, 20),  # gaps between them take the warehouses
+    _bld("Warehouses", "industrial", 14, 44, 8, 34, 22, 8, 12, avoid=["Factories"]),
+    _bld("Apartments", "normal", 15, 28, 6, 22, 18, 12, 32, avoid=["Hospitals and schools"]),
+    _bld("Shops", "normal", 16, 14, 2, 12, 10, 4, 8, avoid=["Apartments", "Hospitals and schools"]),
+    _bld("Gas stations", "cities", 17, 650, 4, 20, 16, 5, 6, avoid=["Skyscrapers", "Office blocks", "Apartments", "Shops"]),
+    _bld("Houses", "housing", 18, 17, 10, 11, 14, 5, 8),
+]
+
+
+def preset(name: str = "full_city") -> list:
+    """Starter layers. Meshes stay empty: the person (or the AI placing it) picks the project's own.
+    'full_city': nature, street furniture and every kind of building; 'city': the buildings only;
+    'forest_and_streets': nature, street trees, lamps and houses; 'forest': trees, rocks, bushes."""
     rows = [
         {"name": "Trees", "kind": "scatter", "where": "outside", "density": 0.8, "scale_min": 0.8, "scale_max": 1.4,
          "sink_cm": 15, "footprint": 0.35, "order": 1},
@@ -87,11 +116,19 @@ def preset(name: str = "forest_and_streets") -> list:
          "scale_min": 0.9, "scale_max": 1.1, "random_yaw": True, "footprint": 0.4, "order": 4},
         {"name": "Street lamps", "kind": "along_roads", "where": "cities", "spacing_m": 30, "setback_m": 1.5,
          "scale_min": 1, "scale_max": 1, "footprint": 0.5, "avoid": ["Street trees"], "order": 5},
-        {"name": "Houses", "kind": "buildings", "where": "housing", "spacing_m": 17, "setback_m": 10,
-         "scale_min": 1, "scale_max": 1, "footprint": 1.0, "order": 6},
     ]
     if name == "forest":
         rows = rows[:3]
+    elif name == "city":
+        rows = [dict(b) for b in CITY_BUILDINGS]
+    elif name == "forest_and_streets":
+        rows += [dict(CITY_BUILDINGS[-1])]
+    else:  # full_city: street trees and lamps keep clear of every building
+        rows = [r for r in rows] + [dict(b) for b in CITY_BUILDINGS]
+        for r in rows:
+            if r["name"] in ("Street trees", "Street lamps"):
+                r["order"] += 20
+                r["avoid"] = sorted(set(r.get("avoid", [])) | {b["name"] for b in CITY_BUILDINGS})
     for r in rows:  # one seed per layer: two layers on the same seed sample the same spots and wipe each other out
         r["seed"] = 7 + r["order"] * 101
     return [clean(r) for r in rows]
@@ -102,21 +139,61 @@ def _ring(c: dict, radius: float, sides: int = 24) -> list:
              round(c["y"] + radius * math.sin(2 * math.pi * k / sides))] for k in range(sides)]
 
 
+def avoid_list(layer: dict, earlier: list) -> list:
+    """Names this layer keeps clear of: its own list, plus every earlier building layer for a building
+    (two buildings never share a lot, whatever their type)."""
+    names = [a for a in layer["avoid"] if any(e["name"] == a for e in earlier)]
+    if layer["kind"] == "buildings":
+        names += [e["name"] for e in earlier if e["kind"] == "buildings" and e["name"] not in names]
+    return names
+
+
+def rings(c: dict) -> tuple:
+    """(downtown, normal, outer) radii of one city, cm."""
+    d = c.get("districts") or {}
+    outer = d.get("housing", {}).get("radius", c["radius"])
+    return d.get("downtown", {}).get("radius", c["radius"] * 0.4), d.get("normal", {}).get("radius", c["radius"] * 0.75), outer
+
+
+def industrial_angle(c: dict) -> float:
+    """Where a city's industrial wedge points (degrees): its own setting, else from its seed."""
+    a = ((c.get("districts") or {}).get("industrial") or {}).get("angle")
+    return float(a) if a is not None else float((int(c.get("seed", 0)) * 137) % 360)
+
+
+def _in_wedge(c: dict, x: float, y: float) -> bool:
+    ang = math.degrees(math.atan2(y - c["y"], x - c["x"]))
+    return abs((ang - industrial_angle(c) + 180) % 360 - 180) <= INDUSTRIAL_SPREAD / 2
+
+
+def _wedge(c: dict, steps: int = 10) -> list:
+    """Annular sector between downtown and the outer ring: the industrial zone's outline."""
+    down, _, outer = rings(c)
+    a0 = math.radians(industrial_angle(c) - INDUSTRIAL_SPREAD / 2)
+    span = math.radians(INDUSTRIAL_SPREAD)
+    arc = lambda r: [[round(c["x"] + r * math.cos(a0 + span * k / steps)), round(c["y"] + r * math.sin(a0 + span * k / steps))]
+                     for k in range(steps + 1)]
+    return arc(outer) + arc(down)[::-1]
+
+
 def masks(cities: list, where: str) -> tuple:
-    """(mode, polygons): 'inside' keeps points in any polygon, 'outside' drops them, 'none' keeps all.
-    Rings come from each city's districts; 'normal' is the band between downtown and normal."""
+    """(keep, cut): a point must be in one keep polygon (None = anywhere) and in no cut polygon.
+    Rings come from each city's districts; the industrial wedge is cut out of normal and housing."""
     if where == "everywhere" or not cities:
-        return "none", []
+        return None, []
+    r = {c["name"]: rings(c) for c in cities}
+    wedges = [_wedge(c) for c in cities]
     if where == "outside":
-        return "outside", [_ring(c, (c.get("districts") or {}).get("housing", {}).get("radius", c["radius"])) for c in cities]
+        return None, [_ring(c, r[c["name"]][2]) for c in cities]
     if where == "cities":
-        return "inside", [_ring(c, c["radius"]) for c in cities]
-    rad = lambda c, ring: (c.get("districts") or {}).get(ring, {}).get("radius", 0)
+        return [_ring(c, r[c["name"]][2]) for c in cities], []
     if where == "downtown":
-        return "inside", [_ring(c, rad(c, "downtown")) for c in cities]
-    if where == "normal":  # band: inside normal, then a second mask removes downtown
-        return "band", [[_ring(c, rad(c, "normal")) for c in cities], [_ring(c, rad(c, "downtown")) for c in cities]]
-    return "band", [[_ring(c, c["radius"]) for c in cities], [_ring(c, rad(c, "normal")) for c in cities]]  # housing
+        return [_ring(c, r[c["name"]][0]) for c in cities], []
+    if where == "industrial":
+        return wedges, []
+    if where == "normal":
+        return [_ring(c, r[c["name"]][1]) for c in cities], [_ring(c, r[c["name"]][0]) for c in cities] + wedges
+    return [_ring(c, r[c["name"]][2]) for c in cities], [_ring(c, r[c["name"]][1]) for c in cities] + wedges  # housing
 
 
 def plan(world: dict, layers: list, cities: list, road_tag: str, road_half_cm: float = 875.0) -> dict:
@@ -169,7 +246,7 @@ def plan(world: dict, layers: list, cities: list, road_tag: str, road_half_cm: f
                  "drop the road width the samples carry as scale")
             wire(src, f"{P}_Flat")
             # the graph offsets by a fixed distance: the world's most common road half width + the setback
-            back = road_half_cm + layer["setback_m"] * 100
+            back = road_half_cm + layer["setback_m"] * 100 + (layer["depth_m"] * 50 if layer["kind"] == "buildings" else 0)
             node(f"{P}_Left", "Transform Points", {"offsetMin": {"x": 0, "y": back, "z": 0}, "offsetMax": {"x": 0, "y": back, "z": 0},
                                                    "rotationMin": {"pitch": 0, "yaw": -90, "roll": 0},
                                                    "rotationMax": {"pitch": 0, "yaw": -90, "roll": 0}},
@@ -195,37 +272,43 @@ def plan(world: dict, layers: list, cities: list, road_tag: str, road_half_cm: f
             "scaleMax": {"x": layer["scale_max"]} | {"y": layer["scale_max"], "z": layer["scale_max"]},
             "bUniformScale": True}, "random size and turn, sunk into the ground")
         wire(src, tr)
-        bm = node(f"{P}_Footprint", "Bounds Modifier", {"mode": "Scale",
-                                                        "boundsMin": {"x": layer["footprint"], "y": layer["footprint"], "z": 1},
-                                                        "boundsMax": {"x": layer["footprint"], "y": layer["footprint"], "z": 1}},
-                  "bounds = what pruning and differences see: shrink to the trunk or base")
+        if layer["kind"] == "buildings":  # a building's lot: frontage x depth (the point faces the road)
+            hw, hd = layer["width_m"] * 50 * layer["footprint"], layer["depth_m"] * 50 * layer["footprint"]
+            bm = node(f"{P}_Footprint", "Bounds Modifier", {"mode": "Set", "boundsMin": {"x": -hd, "y": -hw, "z": 0},
+                                                            "boundsMax": {"x": hd, "y": hw, "z": layer["height_max_m"] * 100}},
+                      f"lot {layer['width_m']} x {layer['depth_m']} m, up to {layer['height_max_m']} m tall")
+        else:
+            bm = node(f"{P}_Footprint", "Bounds Modifier", {"mode": "Scale",
+                                                            "boundsMin": {"x": layer["footprint"], "y": layer["footprint"], "z": 1},
+                                                            "boundsMax": {"x": layer["footprint"], "y": layer["footprint"], "z": 1}},
+                      "bounds = what pruning and differences see: shrink to the trunk or base")
         wire(tr, bm)
         cur = bm
-        mode, polys = masks(cities, layer["where"])
-        if mode != "none":
-            keep = polys[0] if mode == "band" else polys
-            node(f"{P}_Area", "Create Points", {"points": [[x, y] for poly in keep for x, y in poly], "polygons": keep,
-                                                 "coordinateSpace": "World"},
-                 f"district outline(s): {layer['where']} (one closed polygon per city)")
-            node(f"{P}_Poly", "Create Polygon 2D")
-            wire(f"{P}_Area", f"{P}_Poly")
+        keep, cut = masks(cities, layer["where"])
+        if keep is not None or cut:
             tall = node(f"{P}_Tall", "Bounds Modifier", {"mode": "Set", "boundsMin": {"z": -100000}, "boundsMax": {"z": 100000}},
                         "tall bounds: a 2D polygon only meets points that reach z = 0")
             wire(cur, tall)
-            op = "Difference" if mode == "outside" else "Intersection"
-            nxt = node(f"{P}_InArea", op, {"densityFunction": "Binary"} if op == "Difference" else {})
-            wire(tall, nxt, "Source" if op == "Difference" else "Primary Source")
-            wire(f"{P}_Poly", nxt, "Differences" if op == "Difference" else "Source")
+            cur = tall
+        if keep is not None:
+            node(f"{P}_Area", "Create Points", {"polygons": keep, "coordinateSpace": "World"},
+                 f"district outline(s): {layer['where']} (one closed polygon per city)")
+            node(f"{P}_Poly", "Create Polygon 2D")
+            wire(f"{P}_Area", f"{P}_Poly")
+            nxt = node(f"{P}_InArea", "Intersection")
+            wire(cur, nxt, "Primary Source")
+            wire(f"{P}_Poly", nxt, "Source")
             cur = nxt
-            if mode == "band":
-                node(f"{P}_Inner", "Create Points", {"polygons": polys[1], "coordinateSpace": "World"}, "inner ring to cut out")
-                node(f"{P}_InnerPoly", "Create Polygon 2D")
-                wire(f"{P}_Inner", f"{P}_InnerPoly")
-                band = node(f"{P}_Band", "Difference", {"densityFunction": "Binary"})
-                wire(cur, band, "Source")
-                wire(f"{P}_InnerPoly", band, "Differences")
-                cur = band
-        avoid = [a for a in layer["avoid"] if a in done]
+        if cut:
+            node(f"{P}_Cut", "Create Points", {"polygons": cut, "coordinateSpace": "World"},
+                 "areas this layer keeps out of (inner rings, industrial zones, the cities)")
+            node(f"{P}_CutPoly", "Create Polygon 2D")
+            wire(f"{P}_Cut", f"{P}_CutPoly")
+            out_ = node(f"{P}_NotThere", "Difference", {"densityFunction": "Binary"})
+            wire(cur, out_, "Source")
+            wire(f"{P}_CutPoly", out_, "Differences")
+            cur = out_
+        avoid = avoid_list(layer, [l for l in layers if l["name"] in done])
         if layer["avoid_roads"] and any_roads:
             gap = node(f"{P}_RoadGap", "Bounds Modifier", {"mode": "Scale", "boundsMin": {"x": 1, "y": 1 + layer["road_clear_m"] / 10, "z": 1},
                                                              "boundsMax": {"x": 1, "y": 1 + layer["road_clear_m"] / 10, "z": 1}},
@@ -313,18 +396,20 @@ def road_samples(actors: list, step: float = 500.0) -> list:
 
 
 def _in_where(where: str, cities: list, x: float, y: float) -> bool:
+    """Same areas as masks(): rings per city, the industrial wedge cut out of normal and housing."""
     if where == "everywhere" or not cities:
         return True
     for c in cities:
         d = math.hypot(x - c["x"], y - c["y"])
-        rings = c.get("districts") or {}
-        down = rings.get("downtown", {}).get("radius", c["radius"] * 0.4)
-        normal = rings.get("normal", {}).get("radius", c["radius"] * 0.75)
-        outer = rings.get("housing", {}).get("radius", c["radius"])
+        down, normal, outer = rings(c)
         if where == "outside" and d < outer:
             return False
-        if (where == "cities" and d < outer) or (where == "downtown" and d < down) or \
-                (where == "normal" and down <= d < normal) or (where == "housing" and normal <= d < outer):
+        if d >= outer:
+            continue
+        wedge = d >= down and _in_wedge(c, x, y)
+        if (where == "cities") or (where == "downtown" and d < down) or (where == "industrial" and wedge) or \
+                (where == "normal" and down <= d < normal and not wedge) or \
+                (where == "housing" and normal <= d < outer and not wedge):
             return True
     return where == "outside"
 
@@ -362,21 +447,27 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
             last = None
             for x, y, half, dx, dy in roads:
                 if last is not None and math.hypot(x - last[0], y - last[1]) > 2000:
-                    acc = 0.0  # a new road
-                acc += math.hypot(x - last[0], y - last[1]) if last else spacing
+                    last = None  # a jump to another segment: count on from here (a 420 m spacing spans many 100 m streets)
+                acc += math.hypot(x - last[0], y - last[1]) if last else 0.0
+                if not cands and acc == 0.0:
+                    acc = spacing  # the very first road point places one
                 last = (x, y)
                 if acc < spacing:
                     continue
                 acc = 0.0
-                back = half + layer["setback_m"] * 100  # from this road's kerb, whatever its width
+                # from this road's kerb, whatever its width; a building's centre is half its depth further back
+                back = half + layer["setback_m"] * 100 + (layer["depth_m"] * 50 if layer["kind"] == "buildings" else 0)
                 for side in (1, -1):  # normal to the road, both sides, facing it
                     nx, ny = -dy * side, dx * side
                     yaw = math.degrees(math.atan2(-ny, -nx))
                     cands.append((x + nx * back, y + ny * back, yaw))
             thin = 1.0
         r_base = BASE_RADIUS[layer["kind"]] * layer["footprint"]
+        if layer["kind"] == "buildings":  # its lot, not a fixed size: a skyscraper needs far more room than a shop
+            r_base = 50.0 * max(layer["width_m"], layer["depth_m"]) * layer["footprint"]
         own = _Hash()
         pts = []
+        avoid = avoid_list(layer, [l for l in layers if l["name"] in kept])
         for x, y, yaw in cands:
             if not _in_where(layer["where"], cities, x, y):
                 continue
@@ -389,27 +480,32 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
             clear = layer["road_clear_m"] * 100 if layer["kind"] == "scatter" else 0.0
             if layer["avoid_roads"] and any(True for _ in road_hash.near(x, y, r + clear)):
                 continue
-            if any(True for other in layer["avoid"] if other in kept for _ in kept[other].near(x, y, r)):
+            if any(True for other in avoid for _ in kept[other].near(x, y, r)):
                 continue
             if layer["self_prune"] and any(True for _ in own.near(x, y, r)):
                 continue
             own.add(x, y, r)
             yaw = yaw if layer["random_yaw"] or layer["kind"] != "scatter" else 0.0
-            pts.append([round(x), round(y), round(z - layer["sink_cm"]), round(yaw), round(s, 2)])
+            row = [round(x), round(y), round(z - layer["sink_cm"]), round(yaw), round(s, 2)]
+            if layer["kind"] == "buildings":  # + its height in metres, so the preview draws a real skyline
+                row.append(round(rnd.uniform(layer["height_min_m"], layer["height_max_m"]), 1))
+            pts.append(row)
         kept[layer["name"]] = own
         count = int(len(pts) * thin) if layer["kind"] == "scatter" else len(pts)
         if len(pts) > limit:
             pts = rnd.sample(pts, limit)
         out[layer["name"]] = {"kind": layer["kind"], "count": count, "shown": len(pts), "points": pts,
-                              "radius_cm": round(r_base)}
+                              "radius_cm": round(r_base),
+                              **({"size_m": [layer["width_m"], layer["depth_m"]]} if layer["kind"] == "buildings" else {})}
     return out
 
 
 def _demo() -> None:
     cities = [{"name": "A", "x": 0, "y": 0, "radius": 50000, "districts": {"downtown": {"radius": 20000},
-               "normal": {"radius": 37500}, "housing": {"radius": 50000}}}]
-    layers = preset()
+               "normal": {"radius": 37500}, "housing": {"radius": 50000}, "industrial": {"angle": 90}}}]
+    layers = preset("forest_and_streets")
     assert len(layers) == 6 and all(l["meshes"] == [] for l in layers)
+    assert len(preset()) == 5 + len(CITY_BUILDINGS), "the full city has nature, street furniture and every building"
     out = plan({"name": "Valley", "generated": {"size_km": 6}}, layers, cities, "valley_roads")
     ids = {n["id"] for n in out["nodes"]}
     assert all(e["to"] in ids and (e.get("from") in ids or "param" in e) for e in out["edges"]), "every wire joins real nodes"
@@ -419,7 +515,7 @@ def _demo() -> None:
     assert "Rocks_NotTrees" in ids and "BushesAndGrass_NotRocks" in ids and "StreetLamps_NotStreetTrees" in ids
     assert any(e["to"] == "Rocks_NotTrees" and e["from"] == "Trees_Footprint" for e in out["edges"] if "from" in e), \
         "a difference subtracts the other layer's bounds, never its spawner"
-    assert "Houses_Band" in ids and "Trees_InArea" in ids
+    assert "Houses_InArea" in ids and "Houses_NotThere" in ids and "Trees_NotThere" in ids
     assert out["volume"]["scale"][0] == 3000.0 and len(out["notes"]) >= 6
     # offline preview: a straight road through a city, every layer placed, nothing on the road, no overlaps
     pts = [{"i": 0, "x": -60000, "y": 0, "w": 875}, {"i": 1, "x": 60000, "y": 0, "w": 875}]
@@ -432,13 +528,29 @@ def _demo() -> None:
     assert all(pv[n]["shown"] > 0 for n in ("Trees", "Rocks", "Street trees", "Street lamps", "Houses")), \
         {n: v["shown"] for n, v in pv.items()}
     for name, v in pv.items():
-        for x, y, z, yaw, s in v["points"]:
+        for x, y, *_ in v["points"]:
             assert abs(y) > 875 or abs(x) > 60000, f"{name} on the road at {x},{y}"
     trees = pv["Trees"]["points"]
     assert all(math.hypot(x, y) >= 50000 for x, y, *_ in trees), "trees stay outside the city"
     houses = pv["Houses"]["points"]
     assert all(37500 <= math.hypot(x, y) < 50000 for x, y, *_ in houses), "houses only in the housing ring"
-    assert all(abs(abs(y) - 1875) < 2 for _, y, *_ in houses), "houses sit 10 m past the kerb (875 + 1000)"
+    assert all(abs(abs(y) - 2575) < 2 for _, y, *_ in houses), "a house's centre: kerb 875 + setback 1000 + half depth 700"
+    # the whole city: a north-south road too, so the industrial wedge (pointing +y) has a street
+    pts2 = pts + [{"i": 2, "x": 0, "y": -60000, "w": 875}, {"i": 3, "x": 0, "y": 60000, "w": 875}]
+    segs2 = segs + [{"a": 2, "b": 3, "mesh": "SM_Road_TwoLane"}]
+    city = preset("city")
+    pv2 = preview(city, cities, ter, road_samples([(pts2, segs2)]), lambda x, y: 0.0)
+    for name in ("Skyscrapers", "Office blocks", "Factories", "Warehouses", "Apartments", "Shops", "Houses"):
+        assert pv2[name]["shown"] > 0, (name, {n: v["shown"] for n, v in pv2.items()})
+    sky = pv2["Skyscrapers"]["points"]
+    assert all(math.hypot(p[0], p[1]) < 20000 and 90 <= p[5] <= 240 for p in sky), "skyscrapers downtown, 90-240 m"
+    for p in pv2["Factories"]["points"]:
+        assert 20000 <= math.hypot(p[0], p[1]) < 50000 and _in_wedge(cities[0], p[0], p[1]), "factories in the industrial zone"
+    for name in ("Apartments", "Shops", "Houses"):
+        assert not any(_in_wedge(cities[0], p[0], p[1]) for p in pv2[name]["points"]), f"no {name} in the industrial zone"
+    lots = [(p[0], p[1], 50 * max(*pv2[n]["size_m"])) for n in pv2 for p in pv2[n]["points"]]
+    clash = sum(1 for i, a in enumerate(lots) for b in lots[i + 1:] if math.hypot(a[0] - b[0], a[1] - b[1]) < (a[2] + b[2]) * 0.7)
+    assert clash == 0, f"{clash} buildings overlap"
     bad = clean({"name": "x", "kind": "nope", "density": -5, "scale_min": 3, "scale_max": 1})
     assert bad["kind"] == "scatter" and bad["density"] == 0.01 and bad["scale_min"] == 1 and bad["scale_max"] == 3
     print("pcg layers ok", len(out["nodes"]), "nodes", len(out["edges"]), "wires")

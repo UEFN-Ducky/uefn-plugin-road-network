@@ -208,7 +208,9 @@ def districts(city: dict, opts: dict | None = None) -> dict:
     o = options(opts)
     r = city["radius"]
     return {"downtown": {"radius": round(r * o["downtown"])}, "normal": {"radius": round(r * max(o["normal"], o["downtown"]))},
-            "housing": {"radius": round(r)}}
+            "housing": {"radius": round(r)},
+            # one wedge of the outer rings is the industrial zone (factories, warehouses), its direction from the seed
+            "industrial": {"angle": (int(city.get("seed", 0)) * 137) % 360, "spread": 75}}
 
 
 def city_graph(city: dict, opts: dict | None = None) -> tuple:
