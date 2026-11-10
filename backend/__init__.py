@@ -587,7 +587,9 @@ def register(api) -> None:
         return os.path.join(str(api.local_dir()), "heightmaps", f"{nid}.png")
 
     def write_heightmap(nid: str, ter: dict) -> dict:
-        png, settings = cg.heightmap_png(ter)
+        # every previewed lot is cut into its level pad: only ever this new landscape, never the level's terrain
+        got = pcg_preview(nid)
+        png, settings = cg.heightmap_png(ter, pads=pl.pads(got.get("layers") or {}))
         path = heightmap_path(nid)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path + ".tmp", "wb") as fh:
@@ -741,7 +743,8 @@ def register(api) -> None:
         hm = write_heightmap(nid, ter)  # always from the stored terrain, so every PC gets the same file
         return {"ok": True, "id": nid, **hm,
                 "how": f"Landscape mode > Manage > New > Import from File: pick the PNG, resolution {hm['resolution']}, "
-                       f"Location {hm['location']}, Scale {hm['scale']}. It makes a new landscape; your current one is not touched."}
+                       f"Location {hm['location']}, Scale {hm['scale']}. It makes a new landscape; your current one is not touched. "
+                       f"Every building lot is already levelled into it (cut and fill), so buildings sit flat on hills."}
 
     def import_all(net_id: str = "", confirm: bool = False) -> dict:
         """One click: build the junction pieces of every road actor, then paste each into UEFN."""

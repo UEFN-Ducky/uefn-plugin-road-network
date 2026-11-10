@@ -471,6 +471,40 @@ function drawBuildings(layer, colour) {
     groups.pcg.add(mesh);
   }
 }
+// Foundations where a hill falls away under a lot, and the walkways / driveways from each door to the kerb
+// (row [.., foundation_m, paths [[width_m, [x, y, z, ...]]]]).
+function drawLotGround(layer) {
+  const zx = state.view.zx || 1;
+  const dummy = new THREE.Object3D();
+  const found = [], walks = [];
+  for (const p of layer.points || []) {
+    const [x, y, z, yaw, , , , w, d, depth, paths] = p;
+    if (depth > 0.3) {
+      dummy.position.copy(toV(x, y, z - depth * 50));
+      dummy.rotation.set(0, -yaw * Math.PI / 180, 0);
+      dummy.scale.set(d * 0.94, depth * zx, w * 0.94);
+      dummy.updateMatrix();
+      found.push(dummy.matrix.clone());
+    }
+    for (const [width, flat] of paths || []) {
+      for (let i = 3; i + 2 < flat.length; i += 3) {
+        const a = toV(flat[i - 3], flat[i - 2], flat[i - 1] + 15), b = toV(flat[i], flat[i + 1], flat[i + 2] + 15);
+        dummy.position.copy(a).add(b).multiplyScalar(0.5);
+        dummy.scale.set(width, 0.15, a.distanceTo(b));
+        dummy.lookAt(b);
+        dummy.updateMatrix();
+        walks.push(dummy.matrix.clone());
+      }
+    }
+  }
+  for (const [list, colour] of [[found, col("fg-dim").multiplyScalar(0.7)], [walks, col("fg-dim").lerp(col("fg"), 0.5)]]) {
+    if (!list.length) continue;
+    const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: colour, roughness: 0.95 }), list.length);
+    list.forEach((m, i) => mesh.setMatrixAt(i, m));
+    mesh.receiveShadow = true;
+    groups.pcg.add(mesh);
+  }
+}
 function drawPcg(legend) {
   const layers = state.pcg || {};
   const dummy = new THREE.Object3D();
@@ -495,21 +529,7 @@ function drawPcg(legend) {
       mesh.receiveShadow = true;
       groups.pcg.add(mesh);
     }
-    if (building && layer.driveway) {  // a pad from each lot's front to the kerb
-      const [, d] = layer.size_m || [12, 12];
-      const reach = (layer.setback_m || 2) + 0.5;
-      const pads = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: col("fg-dim"), roughness: 0.95 }), pts.length);
-      pts.forEach(([x, y, z, yaw], i) => {
-        const r = yaw * Math.PI / 180, dist = (d / 2 + reach / 2) * 100;
-        dummy.position.copy(toV(x + Math.cos(r) * dist, y + Math.sin(r) * dist, z + 15));
-        dummy.rotation.set(0, -r, 0);
-        dummy.scale.set(reach, 0.2, 3.5);
-        dummy.updateMatrix();
-        pads.setMatrixAt(i, dummy.matrix);
-      });
-      pads.receiveShadow = true;
-      groups.pcg.add(pads);
-    }
+    if (building) drawLotGround(layer);
     legend[`${name} · ${layer.count.toLocaleString()}`] = colour;
   });
 }

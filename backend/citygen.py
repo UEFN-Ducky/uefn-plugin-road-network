@@ -188,17 +188,42 @@ def terrain(seed: int, size_cm: float, relief_cm: float, cities: list, grid: int
     return {"min": lo, "max": hi, "grid": grid, "heights": rows, "sea": sea}
 
 
-def heightmap_png(ter: dict, res: int = 1009) -> tuple:
+PAD_BLEND_CM = 400.0  # a lot's pad blends back into the hillside over this distance
+PAD_CELL_CM = 4000.0
+
+
+def graded(ter: dict, pads: list):
+    """The terrain with every lot cut and filled to its level pad (pcg_layers.pads): z = f(x, y)."""
+    cells: dict = {}
+    for p in pads:
+        r = max(p[4], p[5]) + PAD_BLEND_CM
+        for i in range(int((p[0] - r) // PAD_CELL_CM), int((p[0] + r) // PAD_CELL_CM) + 1):
+            for j in range(int((p[1] - r) // PAD_CELL_CM), int((p[1] + r) // PAD_CELL_CM) + 1):
+                cells.setdefault((i, j), []).append(p)
+
+    def at(x, y):
+        z = st.sample_grid(ter, x, y) or 0.0
+        for cx, cy, c, s, hw, hd, pz in cells.get((int(x // PAD_CELL_CM), int(y // PAD_CELL_CM)), ()):
+            dx, dy = x - cx, y - cy
+            e = max(abs(dx * c + dy * s) - hd, abs(-dx * s + dy * c) - hw)  # outside the pad, in cm
+            if e < PAD_BLEND_CM:
+                z += (pz - z) * (1 - _smoothstep(0, PAD_BLEND_CM, e))
+        return z
+    return at
+
+
+def heightmap_png(ter: dict, res: int = 1009, pads: list | None = None) -> tuple:
     """16-bit greyscale PNG of the terrain for Landscape > Import, plus the import settings
-    (Z scale 100: 1 unit = 100/128 cm, so +-256 m fits)."""
+    (Z scale 100: 1 unit = 100/128 cm, so +-256 m fits). pads: lots levelled into it."""
     lo, hi = ter["min"], ter["max"]
+    ground = graded(ter, pads or [])
     raw = bytearray()
     for py in range(res):
         y = lo[1] + (hi[1] - lo[1]) * py / (res - 1)
         vals = []
         for px in range(res):
             x = lo[0] + (hi[0] - lo[0]) * px / (res - 1)
-            z = st.sample_grid(ter, x, y) or 0.0
+            z = ground(x, y)
             vals.append(max(0, min(65535, int(round(32768 + z * 128 / 100)))))
         raw += b"\x00" + struct.pack(f">{res}H", *vals)
 

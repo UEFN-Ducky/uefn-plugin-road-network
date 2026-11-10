@@ -46,8 +46,12 @@ round, round_podium, twin, spire, L, courtyard, shed, gable, flat. Each building
 and `size_jitter`; the preview gives every lot `[x, y, z, yaw, scale, height_m, form, width_m, depth_m]` and the
 plan's `pieces[].forms` says what each form is, so the city can be built to match.
 Interchange option detail: `overpasses` (yes = a highway bridges over every street it crosses: 40 m ramp,
-deck at 7.5 m, ramp down; lifted points and segments never shape the ground). Buildings with `driveway` (houses,
-mansions, businesses) get a pad from the front to the kerb (role `driveway`).
+deck at 7.5 m, ramp down; lifted points and segments never shape the ground). Buildings with `walkway` (all but
+parks / parking) get a 1.6 m path from the door to the kerb; `driveway` ones (houses, mansions, businesses) also a
+3.5 m driveway at one side, winding across the slope when steeper than 15 %. On hills every lot gets a level pad
+at its corners' mean height (cut and fill) and `foundation_m` (plinth depth where the ground falls away); preview
+rows add `foundation_m, paths`. The generated heightmap (road_network_heightmap) has the pads cut in; an
+existing terrain is never edited, so there the foundations and paths do the work.
 
 ## Roads
 A city's roads live in UEFN as landscape spline actors (City Roads, Elevated Freeways,

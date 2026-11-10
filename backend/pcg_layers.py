@@ -163,6 +163,8 @@ def clean(layer: dict) -> dict:
     out["corners"] = max(1, min(4, int(layer.get("corners", 2) or 2)))  # at_junctions: corners used per junction
     # buildings that cars reach get a driveway from their front to the street
     out["driveway"] = bool(layer.get("driveway", out["kind"] == "buildings" and out["role"] in DRIVEWAY_ROLES))
+    # and every building with a door gets a walkway from it to the pavement
+    out["walkway"] = bool(layer.get("walkway", out["kind"] == "buildings" and out["role"] not in ("park", "parking")))
     forms = layer.get("forms") if isinstance(layer.get("forms"), dict) else ROLE_FORMS.get(out["role"], {"box": 1})
     out["forms"] = {f: max(0.0, float(w)) for f, w in forms.items() if f in FORMS and float(w) > 0} or {"box": 1.0}
     try:
@@ -560,7 +562,11 @@ def plan(world: dict, layers: list, cities: list, road_tag: str, road_half_cm: f
                              "height for a whole street. road_network_pcg_preview gives every lot: point = [x, y, z, yaw, "
                              "scale, height_m, form, width_m, depth_m], form = index into forms[] (FORMS says what each "
                              "looks like: podium + tower, stepped, round, twin, L, courtyard...); build one variant mesh per "
-                             "form and height band so the city matches the preview.",
+                             "form and height band so the city matches the preview. Each lot also has foundation_m "
+                             "(> 0 on a hill: a plinth / retaining wall that deep under the building, which sits at the "
+                             "level pad z) and paths [[width_m, [x, y, z, ...]]]: a 1.6 m walkway from the door and a "
+                             "3.5 m driveway (winding on steep ground) to the kerb; lay them as flat tiles or spline "
+                             "meshes along those points. A generated world's heightmap already has every lot levelled.",
             "layout": "Transect: strict short-block grid in the core, looser grid in the neighbourhoods, curving streets "
                       "and cul-de-sacs in the suburbs, irregular city and district edges, industry in one wedge."}
 
@@ -815,7 +821,10 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                 row += [FORM_NAMES.index(rnd.choices(names, weights)[0]),
                         round(layer["width_m"] * rnd.uniform(1 - j, 1 + j * 0.5), 1),
                         round(layer["depth_m"] * rnd.uniform(1 - j, 1 + j * 0.3), 1)]
-                own_heights.add(x, y, 0.0, row[-1])
+                own_heights.add(x, y, 0.0, row[5])
+                pad, found, paths = _lot_ground(layer, sample_z, x, y, yaw, row[7], row[8])
+                row[2] = round(pad - layer["sink_cm"])
+                row += [found, paths]
             pts.append(row)
         kept[layer["name"]] = own
         count = int(len(pts) * thin) if layer["kind"] in SCATTERED else len(pts)
@@ -824,8 +833,60 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
         out[layer["name"]] = {"kind": layer["kind"], "role": layer["role"], "count": count, "shown": len(pts), "points": pts,
                               "radius_cm": round(r_base),
                               **({"size_m": [layer["width_m"], layer["depth_m"]], "setback_m": layer["setback_m"],
-                                  "forms": FORM_NAMES,
-                                  "driveway": layer["driveway"]} if layer["kind"] == "buildings" else {})}
+                                  "forms": FORM_NAMES, "driveway": layer["driveway"], "walkway": layer["walkway"],
+                                  "row": "x, y, pad z, yaw, scale, height_m, form, width_m, depth_m, foundation_m, "
+                                         "paths [[width_m, [x, y, z, ...]]]"} if layer["kind"] == "buildings" else {})}
+    return out
+
+
+WALK_M, DRIVE_M = 1.6, 3.5  # path widths
+STEEP = 0.15  # a driveway steeper than 15 % winds across the slope instead of straight down it
+
+
+def _lot_ground(layer: dict, sample_z, x: float, y: float, yaw: float, w_m: float, d_m: float) -> tuple:
+    """A lot on a hill the way it is built: a level pad at the corners' mean height (cut uphill, fill
+    downhill), a foundation as deep as the ground falls away under it, and the paths from its front to
+    the kerb: a walkway from the door, a driveway at one side (winding when steep).
+    Returns (pad z cm, foundation m, paths [[width_m, [x, y, z, ...]]])."""
+    fx, fy = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))  # +X faces the street
+    sx, sy = -fy, fx
+    hd, hw = d_m * 50, w_m * 50
+    corners = [sample_z(x + fx * a * hd + sx * b * hw, y + fy * a * hd + sy * b * hw) for a in (1, -1) for b in (1, -1)]
+    ground = [z for z in corners if z is not None] or [sample_z(x, y) or 0.0]
+    pad = sum(ground) / len(ground)
+    found = round(max(0.0, pad - min(ground)) / 100, 1)
+    reach = max(100.0, layer["depth_m"] * 50 + layer["setback_m"] * 100 - hd)  # front wall to kerb
+    paths = []
+
+    def path(width, off):
+        ax, ay = x + fx * hd + sx * off, y + fy * hd + sy * off
+        bx, by = ax + fx * reach, ay + fy * reach
+        bz = sample_z(bx, by)
+        bz = pad if bz is None else bz
+        pts = [(ax, ay, pad)]
+        if width == DRIVE_M and abs(bz - pad) > STEEP * reach:  # an S across the slope: longer, gentler
+            swing = min(hw * 0.8, reach)
+            pts.append((ax + fx * reach * 0.5 + sx * swing, ay + fy * reach * 0.5 + sy * swing, (pad + bz) / 2))
+        pts.append((bx, by, bz))
+        paths.append([width, [round(v) for p in pts for v in p]])
+
+    if layer["walkway"]:
+        path(WALK_M, 0.0)
+    if layer["driveway"]:
+        path(DRIVE_M, -hw * 0.6)
+    return pad, found, paths
+
+
+def pads(previewed: dict, margin_cm: float = 400.0) -> list:
+    """Every previewed lot as a level pad for the heightmap: (x, y, cos, sin, half width, half depth, z)."""
+    out = []
+    for v in previewed.values():
+        if v.get("kind") != "buildings":
+            continue
+        for p in v["points"]:
+            if len(p) > 9:
+                a = math.radians(p[3])
+                out.append((p[0], p[1], math.cos(a), math.sin(a), p[7] * 50 + margin_cm / 2, p[8] * 50 + margin_cm / 2, p[2]))
     return out
 
 
@@ -900,6 +961,25 @@ def _demo() -> None:
     lots = [(p[0], p[1], 50 * max(*pv[n]["size_m"])) for n in pv if "size_m" in pv[n] for p in pv[n]["points"]]
     clash = sum(1 for i, a in enumerate(lots) for b in lots[i + 1:] if math.hypot(a[0] - b[0], a[1] - b[1]) < (a[2] + b[2]) * 0.7)
     assert clash == 0, f"{clash} buildings overlap"
+    # flat ground: no foundation; houses get a walkway and a driveway, shops just a walkway
+    h = pv["Houses"]["points"][0]
+    assert h[9] == 0.0 and sorted(p[0] for p in h[10]) == [WALK_M, DRIVE_M], h
+    assert all(len(p[1]) == 6 for p in h[10]) and len(pv["Shops"]["points"][0][10]) == 1
+    assert pv["Parks"]["shown"] == 0 or pv["Parks"]["points"][0][10] == []
+    # a hillside rising 30 % away from the street: a level pad at the mean, a foundation where it falls away,
+    # the walkway goes straight down and the driveway winds across the slope
+    house = clean({"name": "H", "kind": "buildings", "role": "house"})
+    slope = lambda x, y: -0.3 * x  # +X (the street side) is downhill
+    pad, found, paths = _lot_ground(house, slope, 0, 0, 0.0, 12, 12)
+    assert abs(pad) < 1 and found == 1.8, (pad, found)
+    walk, drive = paths
+    assert len(walk[1]) == 6 and len(drive[1]) == 9 and drive[1][2] == round(pad) and drive[1][-1] < pad - 100, paths
+    from . import citygen as cg
+    ter = {"min": [-2000, -2000], "max": [2000, 2000], "grid": 40,
+           "heights": [[-0.3 * (-2000 + 4000 * (i + 0.5) / 40) for i in range(40)] for _ in range(40)]}
+    g = cg.graded(ter, pads({"H": {"kind": "buildings", "points": [[0, 0, 0, 0, 1, 8, 0, 12, 12, 0, []]]}}))
+    assert abs(g(300, 300)) < 1 and abs(g(-300, 0)) < 1, "the lot is level"
+    assert abs(g(1500, 0) - (-450)) < 30, "the hill away from the lot is untouched"
     bad = clean({"name": "x", "kind": "nope", "density": -5, "scale_min": 3, "scale_max": 1})
     assert bad["kind"] == "scatter" and bad["density"] == 0.01 and bad["scale_min"] == 1 and bad["scale_max"] == 3
     print("pcg layers ok", len(full), "layers,", len(out["nodes"]), "nodes", len(out["edges"]), "wires,",
