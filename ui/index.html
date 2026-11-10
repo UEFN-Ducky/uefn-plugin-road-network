@@ -1,0 +1,182 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Road Network</title>
+  <script src="../../_kit/ducky.js"></script>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    body { overflow: hidden; font-family: var(--font-ui); }
+    .dk-layout { height: 100%; }
+    .dk-main.rn-main { position: relative; min-width: 0; padding: 0; overflow: hidden; }
+    #view { position: absolute; inset: 0; }
+    #view canvas { display: block; width: 100%; height: 100%; outline: none; }
+
+    /* ---------- side panels */
+    .rn-left { width: 236px; display: flex; flex-direction: column; overflow: hidden; }
+    .rn-left .rn-scroll { flex: 1; overflow: auto; padding: 0 4px 8px; }
+    .rn-right { width: 328px; display: flex; flex-direction: column; overflow: hidden; padding: 0; }
+    .rn-section { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--fg-dim); margin: 16px 4px 8px; }
+    .rn-group:first-child .rn-section { margin-top: 4px; }
+    .rn-list { display: flex; flex-direction: column; gap: 2px; }
+    .rn-list .dk-nav-item { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .rn-list .dk-nav-item > span:first-of-type { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+    .rn-count { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .rn-tag { font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--fg-dim); }
+    .rn-pull { display: flex; gap: 4px; padding: 0 4px; }
+    .rn-pull .dk-input { flex: 1; min-width: 0; }
+
+    /* ---------- tabs + panes */
+    .rn-tabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 12px 12px 8px; }
+    .rn-tabs .dk-tab { display: flex; align-items: center; justify-content: center; gap: 6px; min-width: 0; font-size: 12px; }
+    .rn-pane { flex: 1; overflow: auto; padding: 4px 12px 16px; display: none; }
+    .rn-pane.is-open { display: block; }
+    .rn-foot { border-top: 1px solid var(--border); padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .rn-foot[hidden] { display: none; }
+    .rn-foot .dk-btn--primary { width: 100%; justify-content: center; }
+    .rn-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+    .rn-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .rn-btns .rn-btn, .rn-stack .rn-btn { width: 100%; }
+    .rn-stack { display: flex; flex-direction: column; gap: 8px; }
+    .rn-hint { font-size: 12px; color: var(--muted); line-height: 1.45; }
+    .rn-icon { flex: none; }
+
+    /* ---------- fields */
+    .rn-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+    .rn-field__label { font-size: 12px; color: var(--fg-dim); }
+    .rn-input-row { display: flex; gap: 4px; }
+    .rn-input-row .dk-input { flex: 1; min-width: 0; }
+
+    /* ---------- slider */
+    .rn-slider { margin-bottom: 14px; border-radius: var(--radius-sm); outline: none; touch-action: none; }
+    .rn-slider:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 4px; }
+    .rn-slider__head { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; margin-bottom: 8px; }
+    .rn-slider__label { color: var(--fg-dim); }
+    .rn-slider__val { color: var(--fg); font-variant-numeric: tabular-nums; font-family: var(--font-mono); font-size: 11px;
+                      background: var(--input-bg); border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; }
+    .rn-slider__track { position: relative; height: 6px; border-radius: 999px; background: var(--input-bg); border: 1px solid var(--border); cursor: pointer; }
+    .rn-slider__track::before { content: ""; position: absolute; inset: -8px 0; }
+    .rn-slider__fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: var(--accent); }
+    .rn-slider__thumb { position: absolute; top: 50%; width: 14px; height: 14px; border-radius: 50%; background: var(--fg);
+                        border: 2px solid var(--accent); transform: translate(-50%, -50%); box-shadow: var(--shadow-sm);
+                        transition: transform 140ms ease; }
+    .rn-slider:hover .rn-slider__thumb, .rn-slider.is-dragging .rn-slider__thumb { transform: translate(-50%, -50%) scale(1.15); }
+
+    /* ---------- segmented pills */
+    .rn-seg { display: flex; gap: 2px; padding: 2px; border-radius: 999px; background: var(--input-bg); border: 1px solid var(--border); }
+    .rn-seg__btn { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 0; border: 0;
+                   background: transparent; color: var(--fg-dim); border-radius: 999px; padding: 5px 8px; font: inherit; font-size: 12px;
+                   cursor: pointer; transition: background-color 140ms ease, color 140ms ease; white-space: nowrap; }
+    .rn-seg__btn span { overflow: hidden; text-overflow: ellipsis; }
+    .rn-seg__btn:hover { color: var(--fg); background: var(--bg-hover); }
+    .rn-seg__btn[aria-checked="true"] { background: var(--accent); color: var(--fg-inverse); }
+    .rn-seg__btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+
+    /* ---------- switch + chips */
+    .rn-switch { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: transparent; color: var(--fg);
+                 font: inherit; font-size: 12px; padding: 6px 4px; border-radius: var(--radius-sm); cursor: pointer; margin-bottom: 8px; }
+    .rn-switch:hover { background: var(--bg-hover); }
+    .rn-switch:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+    .rn-switch__label { flex: 1; text-align: left; }
+    .rn-switch__track { width: 30px; height: 18px; border-radius: 999px; background: var(--input-bg); border: 1px solid var(--border);
+                        position: relative; transition: background-color 160ms ease; flex: none; }
+    .rn-switch__knob { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--fg-dim);
+                       transition: transform 160ms ease, background-color 160ms ease; }
+    .rn-switch[aria-checked="true"] .rn-switch__track { background: var(--accent); border-color: var(--accent); }
+    .rn-switch[aria-checked="true"] .rn-switch__knob { transform: translateX(12px); background: var(--fg-inverse); }
+    .rn-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: var(--bg-panel);
+               color: var(--fg-dim); border-radius: 999px; padding: 5px 10px; font: inherit; font-size: 12px; cursor: pointer;
+               transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease; }
+    .rn-chip:hover { color: var(--fg); background: var(--bg-hover); }
+    .rn-chip[aria-pressed="true"] { color: var(--fg); border-color: var(--accent); }
+    .rn-chip[aria-pressed="true"] .rn-icon { color: var(--accent); }
+    .rn-chip:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+
+    /* ---------- choice rows */
+    .rn-choices { display: flex; flex-direction: column; gap: 4px; }
+    .rn-choice { width: 100%; text-align: left; display: flex; align-items: center; gap: 10px; }
+    .rn-choice .dk-choice__text { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    .rn-choice__check { opacity: 0; color: var(--accent); transition: opacity 140ms ease; }
+    .rn-choice[aria-checked="true"] .rn-choice__check { opacity: 1; }
+    .rn-choice:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+
+    /* ---------- cards */
+    .rn-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; margin-bottom: 8px; }
+    .rn-card__head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 13px; color: var(--fg); }
+    .rn-card__head .rn-card__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+    .rn-kv { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; font-size: 12px; }
+    .rn-kv span:nth-child(odd) { color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rn-kv span:nth-child(even) { font-variant-numeric: tabular-nums; text-align: right; }
+    .rn-stat-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+    .rn-stat { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px; }
+    .rn-stat b { display: block; font-size: 16px; font-variant-numeric: tabular-nums; color: var(--fg); }
+    .rn-stat span { font-size: 11px; color: var(--muted); }
+    .rn-xyz { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+    .rn-xyz .dk-input { width: 100%; min-width: 0; font-family: var(--font-mono); font-size: 11px; }
+    .rn-steps { counter-reset: step; display: flex; flex-direction: column; gap: 8px; }
+    .rn-step { display: grid; grid-template-columns: 22px 1fr; gap: 10px; align-items: start; }
+    .rn-step::before { counter-increment: step; content: counter(step); width: 22px; height: 22px; border-radius: 50%;
+                       display: grid; place-items: center; font-size: 11px; background: var(--input-bg); border: 1px solid var(--border); color: var(--fg-dim); }
+    .rn-code { font-family: var(--font-mono); font-size: 11px; background: var(--input-bg); border: 1px solid var(--border);
+               border-radius: var(--radius-sm); padding: 8px; word-break: break-all; color: var(--fg); }
+
+    /* ---------- viewport chrome */
+    .rn-toolbar { position: absolute; left: 12px; top: 12px; right: 12px; display: flex; gap: 6px; flex-wrap: wrap; z-index: 2; pointer-events: none; }
+    .rn-toolbar > * { pointer-events: auto; }
+    .rn-toolbar .rn-sep { width: 1px; background: var(--border); margin: 4px 2px; }
+    .rn-hud { position: absolute; right: 12px; top: 12px; z-index: 2; display: flex; flex-direction: column; align-items: flex-end; gap: 2px;
+              pointer-events: none; text-align: right; }
+    .rn-hud b { font-size: 15px; color: var(--fg); }
+    .rn-hud span { font-size: 11px; color: var(--fg-dim); }
+    .rn-legend { position: absolute; left: 12px; bottom: 12px; z-index: 2; display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px;
+                 background: var(--bg-panel); border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px; color: var(--fg-dim); }
+    .rn-legend:empty { display: none; }
+    .rn-sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; vertical-align: -1px; margin-right: 6px; }
+    .rn-labels { position: absolute; inset: 0; pointer-events: none; z-index: 1; overflow: hidden; }
+    .rn-label { position: absolute; transform: translate(-50%, -100%); display: flex; align-items: center; gap: 4px; white-space: nowrap;
+                font-size: 11px; color: var(--fg); background: var(--bg-panel); border: 1px solid var(--border); border-radius: 999px;
+                padding: 2px 8px; box-shadow: var(--shadow-sm); }
+    .rn-label .rn-icon { color: var(--accent); }
+    .rn-busy { position: absolute; left: 50%; bottom: 56px; transform: translateX(-50%); z-index: 3; pointer-events: none; }
+    .rn-empty-view { position: absolute; inset: 0; display: grid; place-items: center; z-index: 1; pointer-events: none; }
+    #err:empty { display: none; }
+    #err { padding: 0 12px; }
+  </style>
+</head>
+<body data-live-view="networks:world">
+  <div class="dk-layout">
+    <aside class="dk-sidebar rn-left" aria-label="Worlds and road networks">
+      <div class="dk-sidebar__title">Road networks</div>
+      <div class="rn-scroll">
+        <div class="rn-list" id="nets"><div class="dk-loading">Loading networks…</div></div>
+        <div class="rn-section">Road actors</div>
+        <div class="rn-list" id="actors"><div class="rn-hint">Pick a network.</div></div>
+        <div class="rn-section">Pull from UEFN</div>
+        <div class="rn-pull" id="pullRow"></div>
+      </div>
+    </aside>
+    <main class="dk-main rn-main">
+      <div id="view" tabindex="0" aria-label="3D road network view"></div>
+      <div class="rn-labels" id="labels"></div>
+      <div class="rn-toolbar" id="toolbar"></div>
+      <div class="rn-hud" id="hud"></div>
+      <div class="rn-legend" id="legend"></div>
+      <div class="rn-busy" id="busy"></div>
+      <div class="rn-empty-view" id="emptyView"></div>
+    </main>
+    <aside class="dk-sidebar dk-sidebar--right rn-right" aria-label="World settings">
+      <div class="dk-tabs rn-tabs" role="tablist" id="tabs"></div>
+      <div id="err"></div>
+      <div class="rn-pane" id="pane-world" role="tabpanel"></div>
+      <div class="rn-pane" id="pane-terrain" role="tabpanel"></div>
+      <div class="rn-pane" id="pane-roads" role="tabpanel"></div>
+      <div class="rn-pane" id="pane-cities" role="tabpanel"></div>
+      <div class="rn-pane" id="pane-pcg" role="tabpanel"></div>
+      <div class="rn-pane" id="pane-edit" role="tabpanel"></div>
+      <div class="rn-pane" id="pane-uefn" role="tabpanel"></div>
+      <div class="rn-foot" id="foot"></div>
+    </aside>
+  </div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

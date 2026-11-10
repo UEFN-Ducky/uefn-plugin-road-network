@@ -1,0 +1,502 @@
+{
+  "id": "road-network",
+  "kind": "plugin",
+  "version": "1.4.0",
+  "label": "Road Network",
+  "description": "See, edit and rebuild a whole UEFN city road network in 3D: every road, junction, ramp, elevated deck and kit piece, shared with your team, with one-button reimport into UEFN.",
+  "min_app_version": "1.0.0",
+  "default_enabled": false,
+  "data_sharing": true,
+  "secret_keys": [],
+  "contributes": {
+    "agent.tools": {
+      "category": "road-network",
+      "intent_pattern": "\\b(road network|city roads?|road splines?|interchange|road pieces?)\\b",
+      "plan_tools": [
+        "road_network_list",
+        "road_network_stats"
+      ],
+      "destructive_tools": [
+        "road_network_delete",
+        "road_network_project_delete",
+        "road_network_reimport",
+        "road_network_import_all",
+        "road_network_pcg_place",
+        "road_network_pcg_layer_delete",
+        "road_network_pull"
+      ]
+    },
+    "ui.panels": [
+      {
+        "id": "main",
+        "title": "Road Network",
+        "icon": "route",
+        "entry": "ui/index.html"
+      }
+    ],
+    "header.buttons": [
+      {
+        "id": "main",
+        "title": "Road Network",
+        "icon": "route",
+        "action": "panel:main",
+        "order": 60
+      }
+    ],
+    "automations": {
+      "nodes": [
+        {
+          "id": "road-network.stats",
+          "label": "Road network pieces",
+          "group": "Road Network",
+          "config_fields": [
+            {
+              "id": "net_id",
+              "label": "Network",
+              "type": "string"
+            }
+          ],
+          "outputs": [
+            {
+              "id": "stats",
+              "label": "Pieces used",
+              "type": "json"
+            }
+          ]
+        },
+        {
+          "id": "road-network.pull",
+          "label": "Pull roads from UEFN",
+          "group": "Road Network",
+          "config_fields": [
+            {
+              "id": "name",
+              "label": "Network name",
+              "type": "string"
+            },
+            {
+              "id": "project",
+              "label": "Project",
+              "type": "string"
+            },
+            {
+              "id": "actors",
+              "label": "Road actors (comma list, empty = all)",
+              "type": "string"
+            }
+          ],
+          "outputs": [
+            {
+              "id": "network",
+              "label": "Network id",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "road-network.reimport",
+          "label": "Reimport roads into UEFN",
+          "group": "Road Network",
+          "config_fields": [
+            {
+              "id": "net_id",
+              "label": "Network",
+              "type": "string"
+            },
+            {
+              "id": "actor",
+              "label": "Road actor",
+              "type": "string"
+            },
+            {
+              "id": "confirm",
+              "label": "Replace it in UEFN",
+              "type": "boolean"
+            }
+          ]
+        },
+        {
+          "id": "road-network.generate",
+          "label": "Generate cities, roads and terrain",
+          "group": "Road Network",
+          "config_fields": [
+            {
+              "id": "name",
+              "label": "World name",
+              "type": "string"
+            },
+            {
+              "id": "seed",
+              "label": "Seed",
+              "type": "number"
+            },
+            {
+              "id": "cities",
+              "label": "Cities (count or JSON list)",
+              "type": "string"
+            },
+            {
+              "id": "size_km",
+              "label": "Map size (km)",
+              "type": "number"
+            },
+            {
+              "id": "relief_m",
+              "label": "Hill height (m)",
+              "type": "number"
+            },
+            {
+              "id": "ground_from",
+              "label": "Use the ground of network (empty = new terrain)",
+              "type": "string"
+            },
+            {
+              "id": "options",
+              "label": "Terrain and road options (JSON)",
+              "type": "string"
+            }
+          ],
+          "outputs": [
+            {
+              "id": "network",
+              "label": "Network id",
+              "type": "text"
+            },
+            {
+              "id": "heightmap",
+              "label": "Heightmap PNG",
+              "type": "text"
+            }
+          ]
+        },
+        {
+          "id": "road-network.import_all",
+          "label": "Import all roads into UEFN",
+          "group": "Road Network",
+          "config_fields": [
+            {
+              "id": "net_id",
+              "label": "Network",
+              "type": "string"
+            },
+            {
+              "id": "confirm",
+              "label": "Paste them into UEFN",
+              "type": "boolean"
+            }
+          ]
+        },
+        {
+          "id": "road-network.pcg_plan",
+          "label": "PCG layer plan",
+          "group": "Road Network",
+          "config_fields": [
+            {
+              "id": "net_id",
+              "label": "Network",
+              "type": "string"
+            },
+            {
+              "id": "road_tag",
+              "label": "Road actor tag (empty = the world's own)",
+              "type": "string"
+            }
+          ],
+          "outputs": [
+            {
+              "id": "plan",
+              "label": "PCG graph plan",
+              "type": "json"
+            }
+          ]
+        }
+      ],
+      "templates": [
+        {
+          "id": "road-network-pcg-layers",
+          "label": "Place a world's PCG layers in UEFN",
+          "category": "Road Network",
+          "description": "Chat start \u2192 PCG layer plan \u2192 Agent builds it with PCGToolset \u2192 Finish.",
+          "graph": {
+            "nodes": [
+              {
+                "id": "s",
+                "type": "start.chat",
+                "x": 0,
+                "y": 0,
+                "config": {}
+              },
+              {
+                "id": "n",
+                "type": "road-network.pcg_plan",
+                "x": 200,
+                "y": 0,
+                "config": {}
+              },
+              {
+                "id": "a",
+                "type": "pipeline.agent",
+                "x": 400,
+                "y": 0,
+                "config": {}
+              },
+              {
+                "id": "f",
+                "type": "pipeline.finish",
+                "x": 600,
+                "y": 0,
+                "config": {}
+              }
+            ],
+            "edges": [
+              {
+                "source": "s",
+                "target": "n",
+                "kind": "main"
+              },
+              {
+                "source": "n",
+                "target": "a",
+                "kind": "main"
+              },
+              {
+                "source": "a",
+                "target": "f",
+                "kind": "main"
+              }
+            ]
+          }
+        },
+        {
+          "id": "road-network-generate",
+          "label": "Generate a world of cities",
+          "category": "Road Network",
+          "description": "Chat start \u2192 Agent \u2192 Generate cities, roads and terrain \u2192 Finish.",
+          "graph": {
+            "nodes": [
+              {
+                "id": "s",
+                "type": "start.chat",
+                "x": 0,
+                "y": 0,
+                "config": {}
+              },
+              {
+                "id": "a",
+                "type": "pipeline.agent",
+                "x": 200,
+                "y": 0,
+                "config": {}
+              },
+              {
+                "id": "n",
+                "type": "road-network.generate",
+                "x": 400,
+                "y": 0,
+                "config": {
+                  "name": "World",
+                  "cities": "3"
+                }
+              },
+              {
+                "id": "f",
+                "type": "pipeline.finish",
+                "x": 600,
+                "y": 0,
+                "config": {}
+              }
+            ],
+            "edges": [
+              {
+                "source": "s",
+                "target": "a",
+                "kind": "main"
+              },
+              {
+                "source": "a",
+                "target": "n",
+                "kind": "main"
+              },
+              {
+                "source": "n",
+                "target": "f",
+                "kind": "main"
+              }
+            ]
+          }
+        },
+        {
+          "id": "road-network-import-all",
+          "label": "Import a generated world into UEFN",
+          "category": "Road Network",
+          "description": "Chat start \u2192 Agent \u2192 Import all roads into UEFN \u2192 Finish.",
+          "graph": {
+            "nodes": [
+              {
+                "id": "s",
+                "type": "start.chat",
+                "x": 0,
+                "y": 0,
+                "config": {}
+              },
+              {
+                "id": "a",
+                "type": "pipeline.agent",
+                "x": 200,
+                "y": 0,
+                "config": {}
+              },
+              {
+                "id": "n",
+                "type": "road-network.import_all",
+                "x": 400,
+                "y": 0,
+                "config": {}
+              },
+              {
+                "id": "f",
+                "type": "pipeline.finish",
+                "x": 600,
+                "y": 0,
+                "config": {}
+              }
+            ],
+            "edges": [
+              {
+                "source": "s",
+                "target": "a",
+                "kind": "main"
+              },
+              {
+                "source": "a",
+                "target": "n",
+                "kind": "main"
+              },
+              {
+                "source": "n",
+                "target": "f",
+                "kind": "main"
+              }
+            ]
+          }
+        },
+        {
+          "id": "road-network-stats",
+          "label": "Road network pieces",
+          "category": "Road Network",
+          "description": "Chat start \u2192 Agent \u2192 Road network pieces \u2192 Finish.",
+          "graph": {
+            "nodes": [
+              {
+                "id": "s",
+                "type": "start.chat",
+                "x": 0,
+                "y": 0,
+                "config": {}
+              },
+              {
+                "id": "a",
+                "type": "pipeline.agent",
+                "x": 200,
+                "y": 0,
+                "config": {}
+              },
+              {
+                "id": "n",
+                "type": "road-network.stats",
+                "x": 400,
+                "y": 0,
+                "config": {}
+              },
+              {
+                "id": "f",
+                "type": "pipeline.finish",
+                "x": 600,
+                "y": 0,
+                "config": {}
+              }
+            ],
+            "edges": [
+              {
+                "source": "s",
+                "target": "a",
+                "kind": "main"
+              },
+              {
+                "source": "a",
+                "target": "n",
+                "kind": "main"
+              },
+              {
+                "source": "n",
+                "target": "f",
+                "kind": "main"
+              }
+            ]
+          }
+        },
+        {
+          "id": "road-network-pull",
+          "label": "Pull city roads from UEFN",
+          "category": "Road Network",
+          "description": "Chat start \u2192 Agent \u2192 Pull roads from UEFN \u2192 Finish.",
+          "graph": {
+            "nodes": [
+              {
+                "id": "s",
+                "type": "start.chat",
+                "x": 0,
+                "y": 0,
+                "config": {}
+              },
+              {
+                "id": "a",
+                "type": "pipeline.agent",
+                "x": 200,
+                "y": 0,
+                "config": {}
+              },
+              {
+                "id": "n",
+                "type": "road-network.pull",
+                "x": 400,
+                "y": 0,
+                "config": {
+                  "name": "City"
+                }
+              },
+              {
+                "id": "f",
+                "type": "pipeline.finish",
+                "x": 600,
+                "y": 0,
+                "config": {}
+              }
+            ],
+            "edges": [
+              {
+                "source": "s",
+                "target": "a",
+                "kind": "main"
+              },
+              {
+                "source": "a",
+                "target": "n",
+                "kind": "main"
+              },
+              {
+                "source": "n",
+                "target": "f",
+                "kind": "main"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "backend": {
+    "entry": "backend",
+    "register": "register"
+  }
+}
