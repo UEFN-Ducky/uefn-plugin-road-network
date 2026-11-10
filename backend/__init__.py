@@ -12,6 +12,7 @@ Data (team-shared through api.data, one doc per record):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -890,6 +891,8 @@ def register(api) -> None:
                       "Then the foliage[] layers in Foliage mode (foliage_how).")
         return out
 
+    _PREVIEW_CACHE: dict = {}
+
     def pcg_preview(net_id: str = "", layer_id: str = "", summary: bool = False) -> dict:
         """Every enabled layer placed offline with the graph's rules; one layer per call when layer_id is
         given (keeps each reply small). Points: [x, y, z, yaw, scale(, height m for buildings)]."""
@@ -901,9 +904,17 @@ def register(api) -> None:
             return {"ok": True, "id": nid, "layers": {}}
         terrain = (data.get(f"net.{nid}.scan") or {}).get("terrain") or {}
         actors = world_actors(nid)
-        out = pl.preview(list(docs.values()), list(city_docs(nid).values()), terrain, pl.road_samples(actors),
-                         lambda x, y: st.sample_grid(terrain, x, y) if terrain.get("heights") else 0.0,
-                         limit=6000, juncs=pl.junctions(actors))  # the whole city, not a sample
+        cities = list(city_docs(nid).values())
+        # Every layer avoids the ones before it, so one layer still needs the whole preview: compute it
+        # once per input set and serve the panel's per-layer calls from that.
+        key = hashlib.sha1(json.dumps([nid, docs, cities, terrain, actors], sort_keys=True, default=str)
+                           .encode()).hexdigest()
+        if _PREVIEW_CACHE.get("key") != key:  # ponytail: one entry, the world being looked at
+            _PREVIEW_CACHE.update(key=key, out=pl.preview(
+                list(docs.values()), cities, terrain, pl.road_samples(actors),
+                lambda x, y: st.sample_grid(terrain, x, y) if terrain.get("heights") else 0.0,
+                limit=6000, juncs=pl.junctions(actors)))  # the whole city, not a sample
+        out = _PREVIEW_CACHE["out"]
         if layer_id:
             name = (docs.get(slug(layer_id)) or {}).get("name")
             out = {name: out[name]} if name in out else {}

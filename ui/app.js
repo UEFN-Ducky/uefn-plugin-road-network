@@ -522,8 +522,9 @@ async function loadPcgPreview() {
   if (!state.net || !(state.layers || []).length) { state.pcg = {}; buildScene(); return; }
   const net = state.net;
   const out = {};
-  busy("Previewing PCG layers…");
-  for (const l of state.layers.filter((x) => x.enabled)) {  // one layer per reply keeps each one small
+  const todo = state.layers.filter((x) => x.enabled);
+  for (const [i, l] of todo.entries()) {  // one layer per reply keeps each one small; the first call computes them all
+    busy(i ? `Previewing PCG layers ${i + 1}/${todo.length}…` : "Placing every PCG layer…");
     const r = await rpc("pcg_preview", { net_id: net, layer_id: l.id });
     if (r.ok === false) { busy(""); return showError(r.error); }
     Object.assign(out, r.layers || {});
