@@ -349,7 +349,7 @@ function buildScene() {
   Object.values(groups).forEach(clear);
   const g = state.geo;
   $("emptyView").innerHTML = g ? "" : `<div class="dk-empty"><div class="dk-empty__title">No world open</div>Generate one in the World tab, or pull roads from UEFN.</div>`;
-  if (!g) { $("legend").innerHTML = ""; $("hud").innerHTML = ""; needsDraw = true; return; }
+  if (!g) { $("hud").innerHTML = ""; needsDraw = true; return; }
   const byColor = {}, legend = {}, box = new THREE.Box3();
   for (const [aslug, actor] of Object.entries(g.actors || {})) {
     const pts = new Map(actor.pts.map((p) => [p[0], p]));
@@ -475,7 +475,6 @@ function buildScene() {
   sc.updateProjectionMatrix();
   sun.castShadow = state.view.shadows;
   sun.color = new THREE.Color(0xffffff).lerp(col("amber"), 0.08 + 0.3 * (1 - state.view.sunEl / 90));  // warmer when low
-  $("legend").innerHTML = Object.entries(legend).map(([k, c]) => `<span><span class="rn-sw" style="background: ${swatch(c)}"></span>${esc(k)}</span>`).join("");
   renderHud();
   if (liveReady) { drawPeers(); drawRemoteSel(); }
   if (!state.framed && !box.isEmpty()) { frame(box); state.framed = true; }
