@@ -63,6 +63,12 @@ ROLES = {
     "fire_station": ("Fire stations", "BuildingKit Shared walls + garage doors", "fire station"),
     "gas_station": ("Gas stations", "WorldGen/Kit (canopy + pumps)", "gas station fuel pump"),
     "park": ("Parks", "flat lot: grass, paths, benches, a few trees", "park fountain playground"),
+    "civic": ("Civic buildings", "BuildingKit Modern storeys 2-4, columns / canopy entrance (city hall, library, "
+              "community centre, post office, courthouse)", "city hall library civic building"),
+    "utility": ("Utilities", "BuildingKit Shared walls, low sheds and plant (substations, treatment plants, "
+                "recycling)", "substation water treatment plant utility building"),
+    "transit": ("Transit stations", "BuildingKit Shop walls + long canopy (bus terminal, train station)",
+                "train station bus terminal"),
     "driveway": ("Driveways", "WorldGen/Roads OneLane / Dirt tile cut short, or a flat concrete slab", "driveway concrete pad"),
     "parking": ("Parking lots", "flat lot: asphalt, painted bays", "parking lot car park"),
 }
@@ -99,7 +105,11 @@ ROLE_FORMS = {
     "shop": {"box": 3, "gable": 1}, "gas_station": {"box": 1},
     "house": {"gable": 4, "L": 1, "box": 1}, "mansion": {"L": 2, "courtyard": 1, "gable": 2},
     "park": {"flat": 1}, "parking": {"flat": 1},
+    "civic": {"box": 2, "L": 1, "courtyard": 1}, "utility": {"shed": 3, "box": 1}, "transit": {"slab": 2, "shed": 1},
 }
+# Roles the urban planner places (urban.py): their layers build only on the planned sites, never at random
+PLANNED_ROLES = ("mall", "hospital", "school", "police", "fire_station", "park", "gas_station", "civic", "utility",
+                 "transit")
 WHERE = ("outside", "cities", "downtown", "normal", "housing", "industrial", "everywhere")
 INDUSTRIAL_SPREAD = 75.0  # degrees: each city's industrial zone is one wedge of its outer rings
 
@@ -222,6 +232,9 @@ CITY_BUILDINGS = [
     _bld("Schools", "normal", 7, 700, 12, 44, 36, 8, 14, role="school"),
     _bld("Police stations", "normal", 8, 1000, 8, 30, 24, 8, 12, role="police"),
     _bld("Fire stations", "normal", 9, 1000, 8, 26, 22, 8, 10, role="fire_station"),
+    _bld("Civic buildings", "cities", 9, 1000, 8, 40, 30, 8, 18, role="civic"),
+    _bld("Utilities", "cities", 9, 1000, 6, 30, 20, 5, 9, role="utility"),
+    _bld("Transit stations", "cities", 9, 1000, 6, 50, 20, 6, 10, role="transit"),
     _bld("Parks", "normal", 10, 350, 4, 50, 40, 0.5, 1, role="park", collision=False),
     _bld("Parking lots", "downtown", 11, 260, 3, 30, 22, 0.5, 1, role="parking", collision=False),
     _bld("Gas stations", "cities", 12, 650, 4, 20, 16, 5, 6, role="gas_station"),
@@ -663,8 +676,16 @@ def site_layers(cities: list, ground) -> dict:
     scaled for `mesh`, `box_m` its size at scale 1 for the preview): complex parking lots, painted stalls,
     cul-de-sac turnarounds and parking garages (lots a complex reserved with role 'parking_garage')."""
     lots, stalls, pads, garages = [], [], [], []
+    grounds: dict = {}
     for c in cities:
         priv = c.get("private") or {}
+        for x, y, yaw, sx, sy, kind in priv.get("grounds") or []:  # the planned developments' grounds
+            mesh, box, _tint = GROUNDS[kind]
+            z = round(ground(x, y) or 0)
+            if box[0] == 1:  # 1 m unit slabs, stretched to the part
+                grounds.setdefault(kind, []).append([x, y, z, yaw, sx, sy, 1.0])
+            else:  # fixed pieces (towers) stand in its middle
+                grounds.setdefault(kind, []).append([x, y, z, yaw, 1.0, 1.0, 1.0])
         for x, y, yaw, sx, sy in priv.get("parking") or []:
             lots.append([x, y, round(ground(x, y) or 0), yaw, sx, sy, 1.0])
         for x, y, yaw, *_ in priv.get("stalls") or []:
@@ -683,7 +704,24 @@ def site_layers(cities: list, ground) -> dict:
         if rows:
             out[name] = {"kind": "site", "role": "site", "mesh": mesh, "box_m": box, "count": len(rows),
                          "shown": len(rows), "points": rows, "meshes": [], "row": "x, y, z, yaw, sx, sy, sz"}
+    for kind, rows in grounds.items():
+        mesh, box, tint = GROUNDS[kind]
+        out[GROUND_NAMES[kind]] = {"kind": "site", "role": "site", "mesh": mesh, "box_m": box, "tint": tint,
+                                   "count": len(rows), "shown": len(rows), "points": rows, "meshes": [],
+                                   "row": "x, y, z, yaw, sx, sy, sz"}
     return out
+
+
+# the planned developments' ground parts (urban.ARCHETYPES): kind -> (mesh, size at scale 1 in m, preview tint)
+GROUNDS = {"apron": ("SM_Kit_Apron", [1, 1, 0.1], "mix:fg-dim:bg:0.35"),
+           "field": ("SM_Kit_SportsField", [1, 1, 0.02], "mix:green:fg:0.25"),
+           "playground": ("SM_Kit_Playground", [1, 1, 0.05], "mix:red:amber:0.5"),
+           "pool": ("SM_Kit_Pool", [1, 1, 0.1], "mix:blue:fg:0.3"),
+           "yard": ("SM_Kit_UtilityYard", [1, 1, 0.05], "mix:fg-dim:bg:0.5"),
+           "pond": ("SM_Kit_Pond", [1, 1, 0.05], "mix:blue:bg:0.3"),
+           "tower": ("SM_Kit_WaterTower", [12, 12, 30], "fg-dim")}
+GROUND_NAMES = {"apron": "Service aprons", "field": "Sports fields", "playground": "Playgrounds", "pool": "Pools",
+                "yard": "Utility yards", "pond": "Ponds and tanks", "tower": "Towers"}
 
 
 WALL_CUT_CM, WALL_FILL_CM = 120.0, 200.0  # road cut / fill deeper than this gets a stone retaining wall
@@ -852,6 +890,8 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
     road_hash = _Hash()
     for x, y, half, _, _ in roads:
         road_hash.add(x, y, half, (x, y, half))
+    plan_roles = {row[7] for c in cities for row in c.get("lots") or [] if len(row) > 8 and row[8] is True}
+    planned = lambda layer: layer["role"] in PLANNED_ROLES and layer["role"] in plan_roles
     kept: dict = {}
     taken: set = set()  # lots already built on (by front point)
     lot_layers: set = set()  # layers that filled lots
@@ -881,7 +921,7 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                     continue  # a meadow, not a forest
                 cands.append((x, y, rnd.uniform(0, 360)))
             thin = full / max(1, len(cands)) if cands else 1.0
-        elif layer["kind"] == "buildings" and layer["width_m"] < BIG_SITE_M and any(c.get("lots") for c in cities):
+        elif layer["kind"] == "buildings" and (layer["width_m"] < BIG_SITE_M or planned(layer)) and any(c.get("lots") for c in cities):
             # everyday buildings fill the lots cut from the city's blocks (parcels): each faces its street square
             # on, its front yard is the layer's setback, and it is sized to its lot, never over a road
             for c in cities:
@@ -928,6 +968,8 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                     continue  # an earlier layer built on this lot
                 if lot_role and lot_role != layer["role"]:
                     continue  # a neighbourhood decided this lot: houses in a subdivision, apartments in a complex
+                if not lot_role and layer["role"] in PLANNED_ROLES and planned(layer):
+                    continue  # the planner placed these: a school is where children live, not on any free lot
                 lw, ld = cand[4] / 100, cand[5] / 100
                 if cand[9]:  # a building footprint the complex planned: exactly that size and spot
                     bw, bd = round(lw * 0.96, 1), round(ld * 0.96, 1)
@@ -1206,7 +1248,7 @@ def _demo() -> None:
     from . import citygen as cg
     town = {"name": "L", "x": 0, "y": 0, "radius": 40000, "seed": 4, "style": "grid"}
     town["districts"] = cg.districts(town)
-    town["lots"] = cg.city_lots(town)
+    town["lots"] = cg.city_lots(town, {"planner": "no"})  # every lot plain: this checks the house fill
     assert len(town["lots"]) > 200, len(town["lots"])
     houses = clean({"name": "Houses", "kind": "buildings", "role": "house", "where": "cities", "width_m": 12,
                     "depth_m": 12, "setback_m": 6, "spacing_m": 20})

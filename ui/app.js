@@ -132,6 +132,7 @@ const ROLE_COLOR = { house: "mix:fg-dim:amber:0.45", mansion: "mix:fg:amber:0.25
   shop: "mix:fg-dim:yellow:0.35", mall: "mix:fg:yellow:0.2", office: "mix:fg-dim:blue:0.3", skyscraper: "mix:fg-dim:blue:0.5",
   hospital: "fg", school: "mix:amber:red:0.35", police: "mix:blue:bg:0.35", fire_station: "red", factory: "mix:fg-dim:amber:0.15",
   warehouse: "mix:fg-dim:bg:0.25", gas_station: "mix:fg:amber:0.12", park: "green", parking: MAT.drive,
+  civic: "mix:fg:purple:0.25", utility: "mix:fg-dim:yellow:0.3", transit: "mix:fg:blue:0.35",
   // nature and street pieces
   tree: "mix:green:bg:0.35", street_tree: "green", bush: "mix:green:yellow:0.2", rock: "fg-dim", street_lamp: "mix:bg:fg:0.3",
   traffic_light: "mix:bg:fg:0.25", stop_sign: "red", street_sign: "mix:green:bg:0.3", sidewalk_corner: MAT.sidewalk,
@@ -617,7 +618,7 @@ function drawPcg(legend) {
     const colour = ROLE_COLOR[layer.role] || PCG_COLORS[k % PCG_COLORS.length];
     if (layer.kind === "site") {  // a neighbourhood's pieces, pre-scaled: [x, y, z, yaw, sx, sy, sz] x box_m
       const [bx, by, bz] = layer.box_m || [1, 1, 1];
-      const tint = layer.mesh === "SM_Kit_ParkingStall" ? "mix:fg:bg:0.05" : layer.mesh === "SM_City_CT_MidRise" ? "fg-dim" : MAT.drive;
+      const tint = layer.tint || (layer.mesh === "SM_Kit_ParkingStall" ? "mix:fg:bg:0.05" : layer.mesh === "SM_City_CT_MidRise" ? "fg-dim" : MAT.drive);
       const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: col(tint), roughness: 0.9 }), pts.length);
       const zx = state.view.zx || 1;
       pts.forEach(([x, y, z, yaw, sx, sy, sz], i) => {
@@ -1106,6 +1107,31 @@ function syncControls() {
 
 // ------------------------------------------------------------------ cities pane
 const STYLE_OPTS = [["mixed", "Mixed", "mixed"], ["grid", "Grid", "grid"], ["organic", "Organic", "wave"]];
+// the urban planner's result for one city (urban.py): population, what it needs, what it got, coverage by road
+const CAT_LABEL = { commercial: "Commercial", residential: "Residential", education: "Education", government: "Government & emergency",
+  industrial: "Industrial", recreation: "Recreation", utilities: "Utilities", transportation: "Transport" };
+const COVER_LABEL = { fire_station: "Fire (4 min drive)", police_precinct: "Police (6 min)", ambulance: "Ambulance (5 min)",
+  neighbourhood_park: "Park (500 m walk)", convenience: "Corner shop (1 km walk)", neighbourhood_center: "Grocery (4 min)" };
+function cityPlan(p) {
+  if (!p) return h("div", { class: "rn-hint", style: "margin-top: 8px" }, "No city plan yet: generate again to plan its services.");
+  const pop = p.population || {};
+  const counts = Object.entries(p.counts || {}).sort((a, b) => b[1] - a[1]);
+  const pct = (v) => `${Math.round(v * 100)} %`;
+  return h("div", { style: "margin-top: 10px" },
+    h("div", { class: "rn-field__label" }, "City plan"),
+    h("div", { class: "rn-kv" },
+      h("span", {}, "Population"), h("span", {}, (pop.total || 0).toLocaleString()),
+      h("span", {}, "Households"), h("span", {}, (pop.households || 0).toLocaleString()),
+      h("span", {}, "Jobs"), h("span", {}, (pop.total_jobs || 0).toLocaleString()),
+      ...Object.entries(p.by_category || {}).filter(([, n]) => n).flatMap(([k, n]) => [h("span", {}, CAT_LABEL[k] || k), h("span", {}, `${n} sites`)])),
+    h("div", { class: "rn-field__label", style: "margin-top: 8px" }, "Coverage by road"),
+    h("div", { class: "rn-kv" }, ...Object.entries(p.coverage || {}).flatMap(([k, v]) => [h("span", {}, COVER_LABEL[k] || k),
+      h("span", { style: v < 0.85 ? "color: var(--amber)" : "" }, pct(v))])),
+    h("div", { class: "dk-row", style: "margin-top: 8px; flex-wrap: wrap" },
+      ...counts.map(([k, n]) => h("span", { class: "rn-tag" }, `${k.replace(/_/g, " ")} × ${n}`))),
+    ...(p.unmet || []).length ? [h("div", { class: "rn-hint", style: "margin-top: 6px" },
+      "Not met: " + p.unmet.map((u) => u.type.replace(/_/g, " ")).join(", ") + " (no free land of that size where it is needed)")] : []);
+}
 // the World section's city picker: pick a city, then size it (the same save as the Cities section)
 function renderWorldCity() {
   const box = $("worldCity");
@@ -1142,7 +1168,8 @@ function renderCitiesPane() {
         h("span", {}, "Downtown"), h("span", {}, `${Math.round((d.downtown?.radius || 0) / 100)} m`),
         h("span", {}, "Normal city"), h("span", {}, `${Math.round((d.normal?.radius || 0) / 100)} m`),
         h("span", {}, "Housing"), h("span", {}, `${Math.round((d.housing?.radius || 0) / 100)} m`),
-        ...sets.flatMap(([k, n]) => [h("span", {}, `${k[0].toUpperCase() + k.slice(1)} buildings`), h("span", {}, n ? `${n} meshes` : "Not set")])));
+        ...sets.flatMap(([k, n]) => [h("span", {}, `${k[0].toUpperCase() + k.slice(1)} buildings`), h("span", {}, n ? `${n} meshes` : "Not set")])),
+      cityPlan(c.plan));
   });
   pane.replaceChildren(section(`Cities · ${state.cities.length}`, ...cards),
     h("div", { class: "rn-hint" }, "Each city keeps its own roads actor, style and building sets. Changing one rebuilds the world with the same seed."));
@@ -1372,6 +1399,7 @@ async function openNet(id) {
   state.net = id; state.framed = false; state.sel = null; state.actor = ""; state.pcg = {};
   call("prefs.set", { id: "last_net", value: id }).catch(() => {});
   renderWorldPick();
+  setTimeout(loadSync, 400);  // after the world's own loads: the badge never holds up the view
   document.querySelectorAll("[data-net]").forEach((b) => b.toggleAttribute("aria-current", b.dataset.net === id));
   const g = currentNet()?.generated;
   if (g) {  // the generate tabs show this world's own settings
@@ -1446,16 +1474,19 @@ async function generate() {
   const g = state.gen;
   const name = (g.name || "").trim();
   if (!name) { openTab("world"); ctl.name?.input.focus(); return showError("Give the world a name."); }
-  if (g.ground === "net" && (!state.net || currentNet()?.generated)) {
+  // the ground: a network pulled from UEFN, or (regenerating a world that sits on one) the ground it already uses
+  const cur = currentNet();
+  const groundFrom = g.ground !== "net" ? "" : !cur ? "" : cur.generated ? (cur.generated.ground_from || cur.id) : cur.id;
+  if (g.ground === "net" && !groundFrom) {
     openTab("world");
-    return showError("Pick a network pulled from UEFN on the left: its ground is what the cities sit on.");
+    return showError("Open a network pulled from UEFN (or a world that sits on one) first: its ground is what the cities sit on.");
   }
   const prev = state.nets.find((n) => n.name.toLowerCase() === name.toLowerCase())?.generated;
   // same world with the same city layout: keep its cities (their styles and sizes) instead of placing new ones
   const keep = prev && prev.cities === g.cities && prev.seed === g.seed && prev.size_km === g.size_km;
   busy("Generating terrain, cities and roads…");
   const out = await rpc("generate", { name, seed: g.seed, cities: keep ? "" : String(g.cities), size_km: g.size_km, relief_m: g.relief_m,
-    ground_from: g.ground === "net" ? state.net : "", options: JSON.stringify(optionsOf(g)) });
+    ground_from: groundFrom, options: JSON.stringify(optionsOf(g)) });
   busy("");
   if (out.ok === false) return showError(out.error);
   showError("");
@@ -1588,9 +1619,31 @@ function renderHeader() {
   $("brand").replaceChildren(icon("city", 18), h("span", {}, "City Builder"));
   $("headActions").replaceChildren(button("New world", "plus", newWorld, "secondary", "Set up a new world in the World section"));
   // City Builder is the blueprint: an AI builds it in UEFN with UEFN's own systems (landscape splines, PCG)
-  $("headPush").replaceChildren(
+  $("headPush").replaceChildren(h("span", { id: "syncBadge" }),
     button("Build in UEFN with AI", "chat", () => openNote("build"), "primary",
       "Send this world to an AI chat that builds what changed in UEFN: roads as landscape splines, the city as PCG"));
+  loadSync();
+}
+// UEFN vs this world: shows when the level is behind (generate as often as you like, nothing is blocked)
+let syncSeq = 0;
+async function loadSync() {
+  const el = $("syncBadge");
+  if (!el) return;
+  if (!state.net) { el.replaceChildren(); return; }
+  const seq = ++syncSeq;
+  el.replaceChildren(h("span", { class: "rn-tag" }, "Checking UEFN…"));
+  const s = await rpc("sync", { net_id: state.net });
+  if (seq !== syncSeq) return;  // a newer check started (another world opened, or generated again)
+  if (s.ok === false) { el.replaceChildren(); return; }
+  const tone = s.in_sync ? "var(--green)" : "var(--amber)";
+  const detail = s.in_sync ? "Everything in this world is built in the open UEFN level as it is here."
+    : `${s.roads_changed.length} road actors changed and ${s.roads_never_pushed.length} never built; `
+      + `${s.tiles.build} city tiles to build, ${s.tiles.remove} to remove. Generating again is fine: the next build in UEFN `
+      + `only changes these.`;
+  const b = h("button", { type: "button", class: "rn-tag", title: detail, style: `cursor: pointer; border: 1px solid ${tone}; color: ${tone}` },
+    icon(s.in_sync ? "check" : "refresh", 12), h("span", { style: "margin-left: 4px" }, s.summary));
+  b.addEventListener("click", () => s.in_sync ? loadSync() : openNote("build"));
+  el.replaceChildren(b);
 }
 let worldDrop = null;
 function renderWorldPick() {

@@ -187,6 +187,40 @@ BEFORE the blocks) and local streets (`<City> Roads`). Per city, `freeways.plan`
   crossings with less than 7 m between them, radius and grade per class, and ramp ends that touch no road. It must
   come back clean. Never hand-place a ramp; change the plan and regenerate.
 
+## Urban planner: a city that functions (`backend/urban.py`, stage `demand`, option `planner`)
+Facilities are never placed at random. After the lots exist, `urban.plan` runs:
+1. **Population** from the lots: houses hold 2.6 people, apartment buildings are sized by floor area, and plain
+   parcels are counted by district ring (core lots also carry jobs). Age groups follow (0-4, 5-10, 11-13, 14-17).
+   Retail demand is D = P × S.
+2. **Travel along the roads** (`Network`): drive time per road class (Dijkstra) and walking distance. Never circles.
+3. **Location** (`CATALOG`, in eight categories: commercial, residential, education, government, industrial,
+   recreation, utilities, transportation):
+   - **Maximum coverage:** fire within 4 min, police 6, ambulance 5, parks within 500 m walk, corner shops within
+     1 km walk, grocery centres within 4 min. Facilities that already serve an area count toward it.
+   - **Capacity:** schools from enrolment / seats, hospitals, libraries, post offices, community centres and
+     parks, substations, parking garages by jobs. These are p-median placed, and school catchments are assigned
+     by travel time within capacity.
+   - **Single central sites:** city hall, bus terminal, train station, hotel. **Edge / industrial sites:**
+     distribution, power, recycling.
+   - **Terrain:** water and telecom towers on high ground, treatment plants and retention ponds on low ground.
+   - **Anchors:** park-and-ride at freeway interchanges.
+4. **Complete developments** (`ARCHETYPES`): a site is whole free lots of one block. It never crosses a street or
+   a freeway. Each site gets its building (a lot with the building's role and exact footprint), parking fields
+   with stalls, and aprons, sports fields, playgrounds, pools, yards, ponds or towers. These appear as built-in
+   site layers (Service aprons, Sports fields, Playgrounds, Pools, Utility yards, Ponds and tanks, Towers).
+   The PCG layers for these roles (Schools, Hospitals, Police / Fire stations, Malls, Parks, Gas stations, Civic
+   buildings, Utilities, Transit stations) build only on planned sites.
+5. **Growth:** generating again keeps every facility whose site still exists and adds only what new demand needs.
+
+`road_network_city_plan(net_id, city, facilities)` returns population, demand, counts by category, coverage,
+school enrolment, unmet needs, and each facility with the reason it is there. The panel's Cities cards show the
+same. To change the services, change population (city size, district rings) or the catalogue, then generate.
+
+## Generate again, any time
+Regenerating is never blocked. A world on scanned ground keeps using that ground. The header badge
+(`road_network_sync`) says whether UEFN is behind this world: road actors changed or never pushed, and
+city tiles to build or remove. The next build in UEFN changes only those.
+
 ## City size, spacing and water
 - **World tab:** `City size` (option `city_size`, ×0.3–4) scales every city, and regenerating scales the ones you
   have. `Distance between cities` (`city_gap_m`) is the open country between two cities' edges; cities closer

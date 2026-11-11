@@ -41,15 +41,22 @@ STAGES = [
     {"id": "blocks", "name": "BlockGenerator", "parts": ["BuildingParcels"],
      "consumes": ["roads"], "produces": "each city's lots (front, facing, width, depth)",
      "code": "parcels.blocks / inset / split / lots, citygen.city_lots"},
+    {"id": "demand", "name": "CityDemandSystem",
+     "parts": ["Population", "Demand", "FacilityLocation", "Developments"],
+     "consumes": ["terrain", "roads", "blocks"],
+     "produces": "per city: population, households, jobs, age groups; schools, emergency services, retail, parks, "
+                 "utilities and transit placed by demand, road travel time and coverage, as complete developments "
+                 "(building + parking + aprons / fields / playgrounds / yards) on whole lots; coverage report",
+     "code": "urban.plan (Network, population, CATALOG, ARCHETYPES, develop), citygen.city_layout"},
     {"id": "foundations", "name": "FoundationGenerator", "parts": ["BuildingPads", "CutAndFill", "RetainingWalls"],
-     "consumes": ["terrain", "blocks"], "produces": "per lot: pad height, plinth depth, retaining walls, paths",
+     "consumes": ["terrain", "blocks", "demand"], "produces": "per lot: pad height, plinth depth, retaining walls, paths",
      "code": "pcg_layers._lot_ground"},
     {"id": "buildings", "name": "BuildingGenerator", "parts": ["Footprints", "Buildings", "Entrances"],
      "consumes": ["blocks", "foundations"], "produces": "every PCG layer's placements, baked to kit meshes, "
      "pushed as 400 m PCG tiles", "code": "pcg_layers.preview, kit_bake.bake, pcg_build (Push city)"},
 ]
 ORDER = [s["id"] for s in STAGES]
-RUN_ORDER = ["terrain", "planner", "roads", "blocks", "foundations", "buildings", "sidewalks", "road_meshes"]
+RUN_ORDER = ["terrain", "planner", "roads", "blocks", "demand", "foundations", "buildings", "sidewalks", "road_meshes"]
 
 
 def after(stage: str) -> list:

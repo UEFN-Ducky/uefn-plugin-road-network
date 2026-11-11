@@ -104,6 +104,14 @@ KIT = {
     "SM_Kit_SidewalkCorner": ("Kit/Street", -200, -200, -15, 200, 200, 0),
     "SM_Kit_Bush": ("Kit/Street", -83, -95, 0, 110, 85, 130),
     "SM_Kit_Rock": ("Kit/Street", -80, -70, -20, 85, 70, 70),
+    # the planned developments' grounds (urban.ARCHETYPES): 1 m unit slabs stretched to each part, and towers
+    "SM_Kit_Apron": ("Kit/Street", -50, -50, 0, 50, 50, 10),
+    "SM_Kit_SportsField": ("Kit/Street", -50, -50, 0, 50, 50, 2),
+    "SM_Kit_Playground": ("Kit/Street", -50, -50, 0, 50, 50, 5),
+    "SM_Kit_Pool": ("Kit/Street", -50, -50, 0, 50, 50, 10),
+    "SM_Kit_UtilityYard": ("Kit/Street", -50, -50, 0, 50, 50, 5),
+    "SM_Kit_Pond": ("Kit/Street", -50, -50, -5, 50, 50, 0),
+    "SM_Kit_WaterTower": ("Kit/Street", -600, -600, 0, 600, 600, 3000),
 }
 
 
@@ -130,6 +138,9 @@ BUILDINGS = {
     "police": [["SM_Bld_Police"]],
     "fire_station": [["SM_Bld_Police"]],
     "school": [["SM_City_CT_MidRise"]],
+    "civic": [["SM_City_CT_MidRise"], ["SM_Bld_Police"]],
+    "utility": [["SM_V4_Container_Green"], ["SM_V4_Container_Blue"]],
+    "transit": [["SM_City_CT_ShopRow2"]],
     "factory": [["SM_V4_Crane"], ["SM_V4_Container_Blue"], ["SM_V4_Container_Red"]],
     "warehouse": [["SM_V4_Container_Green"], ["SM_V4_Container_Orange"], ["SM_V4_Container_Blue"]],
 }
@@ -153,6 +164,7 @@ PROPS = {
 # what is inside a building, by role (factories / warehouses are open yards: nothing)
 INTERIOR = {"skyscraper": "SM_Kit_DeskSet", "office": "SM_Kit_DeskSet", "hospital": "SM_Kit_DeskSet",
             "police": "SM_Kit_DeskSet", "fire_station": "SM_Kit_DeskSet", "school": "SM_Kit_DeskSet",
+            "civic": "SM_Kit_DeskSet",
             "apartment": "SM_Kit_SofaSet", "house": "SM_Kit_SofaSet", "mansion": "SM_Kit_SofaSet",
             "shop": "SM_Kit_ShopShelf", "mall": "SM_Kit_ShopShelf", "gas_station": "SM_Kit_ShopShelf"}
 STOREY_CM = 400  # = SM_Kit_StairCore's rise: its top landing is the next storey's floor

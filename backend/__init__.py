@@ -617,8 +617,8 @@ def register(api) -> None:
         return {"path": path, **settings}
 
     def _layout_doc(layout: dict) -> dict:
-        return {"lots": layout["lots"], "hoods": layout["hoods"],
-                "private": {k: layout[k] for k in ("streets", "parking", "stalls", "pads")}}
+        return {"lots": layout["lots"], "hoods": layout["hoods"], "plan": layout.get("plan"),
+                "private": {k: layout.get(k) or [] for k in ("streets", "parking", "stalls", "pads", "grounds")}}
 
     def city_docs(nid: str) -> dict:
         return {k.rsplit(".", 1)[1]: v for k, v in data.items(f"net.{nid}.city.").items() if k.count(".") == 3}
@@ -703,7 +703,9 @@ def register(api) -> None:
             data.put(f"net.{nid}.city.{cslug}", {**t, "name": t["name"], "roads": f"{t['name']} Roads",
                                                  "districts": cg.districts(t, opts),
                                                  # BlockGenerator + neighbourhoods: lots, private streets, parking
-                                                 **_layout_doc(cg.city_layout(t, opts, wet)),
+                                                 **_layout_doc(cg.city_layout(
+                                                     t, opts, wet, lambda x, y: st.sample_grid(ter, x, y) or 0.0,
+                                                     ((prev.get("plan") or {}).get("facilities")))),
                                                  "freeways": freeways[t["name"]],
                                                  "buildings": prev.get("buildings") or {"downtown": [], "normal": [], "housing": []}})
         doc = data.get(f"net.{nid}")
@@ -1102,6 +1104,15 @@ def register(api) -> None:
                 if not r.get("ok"):
                     return r
                 ran += ["terrain", "planner", "roads", "blocks"]
+            elif stage == "demand":  # planned with the blocks in generate (city_layout -> urban.plan)
+                if "blocks" not in ran:
+                    r = generate(doc.get("name") or nid, gen.get("seed", 7), "", gen.get("size_km", 6),
+                                 gen.get("relief_m", 60), gen.get("ground_from") or nid, "",
+                                 *(gen.get("center") or [0, 0]), "")
+                    if not r.get("ok"):
+                        return r
+                    ran += ["terrain", "planner", "roads", "blocks"]
+                ran.append(stage)
             elif stage in ("foundations", "buildings"):
                 _PREVIEW_CACHE.clear()
                 ran.append(stage)
@@ -1133,6 +1144,12 @@ def register(api) -> None:
                 info = {"actors": [a for a in doc.get("actors") or [] if a.endswith(" Paths")]}
             elif s["id"] == "blocks":
                 info = {"lots": {t["name"]: len(t.get("lots") or []) for t in towns}}
+            elif s["id"] == "demand":
+                info = {t["name"]: {"population": ((t.get("plan") or {}).get("population") or {}).get("total"),
+                                    "facilities": (t.get("plan") or {}).get("counts"),
+                                    "coverage": (t.get("plan") or {}).get("coverage"),
+                                    "unmet": [u["type"] for u in (t.get("plan") or {}).get("unmet") or []]}
+                        for t in towns}
             elif s["id"] in ("foundations", "buildings"):
                 info = {"placed": sum(v for k, v in counts.items()), "layers": len(counts)}
             stages.append({**s, "ran": s["id"] in ran, "status": info})
@@ -1155,6 +1172,43 @@ def register(api) -> None:
                 epic("EditorToolset.AssetToolset", "Delete", {"path": path})
                 removed.append(g)
         return removed
+
+    def sync_status(net_id: str = "") -> dict:
+        """How far UEFN is behind this world (offline: against what was last pushed, nothing is read from the level):
+        road actors whose splines changed since their push, PCG tiles to (re)build or remove. Generating is never
+        blocked by this; it only says what the next build in UEFN will change."""
+        nid = slug(net_id)
+        doc = data.get(f"net.{nid}") if nid else None
+        if not doc:
+            return {"ok": False, "error": f"No road network {net_id!r}."}
+        changed, never, same = [], [], 0
+        for aslug in actor_docs(nid):
+            head, pts, segs = load_actor(nid, aslug)
+            digest = hashlib.sha1(st.serialize(pts, segs).encode()).hexdigest()
+            if not head.get("pushed"):
+                never.append(head.get("label") or aslug)
+            elif head["pushed"] != digest:
+                changed.append(head.get("label") or aslug)
+            else:
+                same += 1
+        tiles = {"build": 0, "remove": 0, "same": 0}
+        folder = road_folder()
+        state = data.get(f"net.{nid}.pcg") or {"tiles": {}}
+        if "/WorldGen/Roads" in folder:
+            got = pcg_preview(nid)
+            if got.get("ok"):
+                groups = kit_bake.bake(got.get("layers") or {}, folder.split("/WorldGen/Roads")[0])[0]
+                build, remove, keep = kit_bake.tile_diff(kit_bake.tiles(groups), state.get("tiles") or {}, False)
+                tiles = {"build": len(build), "remove": len(remove), "same": len(keep)}
+        pushed_any = same or changed or state.get("tiles")
+        behind = len(changed) + len(never) + tiles["build"] + tiles["remove"]
+        return {"ok": True, "id": nid, "in_sync": behind == 0, "never_built": not pushed_any,
+                "roads_changed": changed, "roads_never_pushed": never, "roads_same": same, "tiles": tiles,
+                "plugin_version": plugin_version().get("version"),
+                "summary": ("UEFN matches this world" if behind == 0 else
+                            "Never built in UEFN" if not pushed_any else
+                            f"UEFN is behind: {len(changed) + len(never)} road actors, "
+                            f"{tiles['build'] + tiles['remove']} city tiles to update")}
 
     def pcg_build(net_id: str = "", confirm: bool = False, force: bool = False) -> dict:
         """The world's previewed city as PCG in the open UEFN level, in 400 m tiles (one graph + volume each).
@@ -1543,6 +1597,32 @@ def register(api) -> None:
         return safe(list_cities)(net_id)
 
     @api.tool(intent=GEN_INTENT, listener=False)
+    def road_network_city_plan(net_id: str = "", city: str = "", facilities: bool = False) -> dict:
+        """The urban planner's plan for one city (urban.py): population, households, jobs and age groups; the
+        demand (retail, school seats); every facility the city got by category (commercial, education,
+        government and emergency, industrial, recreation, utilities, transport) with why it is there;
+        service coverage measured along the roads; school enrolment per school; and what could not be met.
+        facilities=true lists each facility with its site (x, y, yaw, size, lots claimed) and reason.
+        Facilities are placed by the plan, never by hand: change population (city size, district rings) or
+        the catalogue (urban.CATALOG) and generate again; existing facilities stay where they are."""
+        def run():
+            nid = slug(net_id)
+            docs = city_docs(nid)
+            if not docs:
+                return {"ok": False, "error": f"No generated cities in {net_id!r}."}
+            cslug = slug(city) if city else sorted(docs)[0]
+            doc = docs.get(cslug)
+            if not doc:
+                return {"ok": False, "error": f"No city {city!r}. Cities: {', '.join(sorted(docs))}."}
+            p = dict(doc.get("plan") or {})
+            if not p:
+                return {"ok": False, "error": "This city has no plan yet: generate the world again."}
+            if not facilities:
+                p.pop("facilities", None)
+            return {"ok": True, "city": doc["name"], **p}
+        return safe(run)()
+
+    @api.tool(intent=GEN_INTENT, listener=False)
     def road_network_city_save(net_id: str = "", city: str = "", name: str = "", style: str = "",
                                radius_m: float = 0.0, buildings: str = "") -> dict:
         """Change one city of a generated world: rename it, its road style (mixed / grid / organic), its
@@ -1682,6 +1762,14 @@ def register(api) -> None:
     api.register_panel_rpc("chats", lambda: safe(list_chats)())
     api.register_panel_rpc("send_note", lambda net_id="", chat_id="", text="", kind="pin", points="":
                            safe(send_note)(net_id, chat_id, text, kind, points))
+
+    api.register_panel_rpc("sync", lambda net_id="": safe(sync_status)(net_id))
+
+    @api.tool(intent=GEN_INTENT, listener=False)
+    def road_network_sync(net_id: str = "") -> dict:
+        """Is UEFN behind this world? Road actors changed or never pushed, and PCG tiles to rebuild / remove,
+        against what was last built (offline). The panel header shows it; generating again is never blocked."""
+        return safe(sync_status)(net_id)
 
     @api.tool(intent=GEN_INTENT, listener=False)
     def road_network_version() -> dict:

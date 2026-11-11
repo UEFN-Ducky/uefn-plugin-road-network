@@ -60,6 +60,9 @@ CHOICES = {
     # urban freeways through each big city, planned before its blocks (freeways.py): viaducts over the grid,
     # service interchanges on the main roads, a stack where two freeways cross
     "freeways": (("yes", "no"), "yes"),
+    # demand-driven urban planner (urban.py): schools, emergency services, retail, parks, utilities and transit
+    # placed from population, road travel time and coverage, as complete developments
+    "planner": (("yes", "no"), "yes"),
 }
 # steepest grade per road (rise / run): arterials and highways 4 %, collectors 5-6 %, local streets 8 %,
 # dirt 10 % (CityEngine-style targets for a game, not legal limits). Steeper ground is cut and filled.
@@ -97,6 +100,10 @@ RULES = [
     "into a lake stops at the shore. No street node, lot, parking or private street is ever in the water.",
     "City size (city_size) scales every city; the distance between cities (city_gap_m) is open country between "
     "their edges, and cities closer than that are pushed apart. One city is resized with road_network_city_save.",
+    "Facilities are never placed at random (urban.py): population comes from the lots, travel is measured along "
+    "the roads, and each school, station, store, park, utility and transit site is placed for demand, coverage "
+    "or terrain, as a complete development (building, parking, aprons, fields, playground, yards) on whole lots "
+    "of one block. Civic PCG layers build only on those planned sites.",
     "One editor call does little (one mesh build, a few junctions, one tile): UEFN frees windows only per frame.",
 ]
 STYLES = ("mixed", "grid", "organic")
@@ -761,7 +768,7 @@ def access_actor(city: dict, rows: list, ground, folder: str) -> dict:
 LOT_W_CM, LOT_D_CM = 1600.0, 3500.0  # a lot: 16 m frontage, up to 35 m deep (two back to back in a block)
 
 
-def city_layout(city: dict, opts: dict | None = None, wet=None) -> dict:
+def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, keep: list | None = None) -> dict:
     """BlockGenerator + neighbourhoods: every block of the city's street grid becomes either plain street-fronting
     lots (parcels) or one neighbourhood (neighbourhoods.TYPES: subdivisions with private streets, apartment
     complexes with parking), picked per block from the city's seed and weighted by its district ring.
@@ -798,6 +805,24 @@ def city_layout(city: dict, opts: dict | None = None, wet=None) -> dict:
         for key in ("lots", "parking", "stalls", "pads"):
             out[key] = [r for r in out[key] if not wet(r[0], r[1])]
         out["streets"] = [s for s in out["streets"] if not any(wet(p[0], p[1]) for p in s)]
+    out["grounds"], out["plan"] = [], None
+    if o["planner"] == "yes" and out["lots"]:
+        from . import urban
+        ring_of = lambda x, y: (lambda s: "core" if s <= down else "normal" if s <= normal else "housing")(
+            zone_share(city, x, y))
+        ind = districts(city, o)["industrial"]
+
+        def industrial(x, y):
+            a = math.degrees(math.atan2(y - city["y"], x - city["x"]))
+            off = abs((a - ind["angle"] + 180) % 360 - 180)
+            return off <= ind["spread"] / 2 and zone_share(city, x, y) > normal * 0.8
+        barriers = [(p, q) for ln in fw.lines for p, q in zip(ln["points"], ln["points"][1:])]
+        got = urban.plan(out["lots"], nodes, edges, ring_of, ground, [tuple(i["at"]) for i in fw.interchanges],
+                         keep, (city["x"], city["y"]), city["radius"], industrial, barriers)
+        out["lots"] = got["lots"]
+        out["parking"] += got["parking"]
+        out["stalls"] += got["stalls"]
+        out["grounds"], out["plan"] = got["grounds"], got["plan"]
     return out
 
 
@@ -1332,7 +1357,14 @@ def _demo() -> None:
     rep = freeway_report(big)
     assert rep["validation"]["ok"], {k: v for k, v in rep["validation"].items() if v}
     lay = city_layout(big)
-    assert lay["lots"] and not any(fw.blocked(r[0], r[1], 0.5 * max(r[3], r[4])) for r in lay["lots"])
+    assert lay["lots"] and not any(fw.blocked(r[0], r[1], 0 if r[8] is True else 0.5 * max(r[3], r[4]))
+                                   for r in lay["lots"])
+    # the planned city: services from demand, complete developments, never across a freeway
+    p = lay["plan"]
+    assert p and p["counts"].get("fire_station") and p["counts"].get("elementary_school"), p and p["counts"]
+    assert {g[5] for g in lay["grounds"]} >= {"apron", "field"}, "sites come complete"
+    for f in p["facilities"]:
+        assert not fw.blocked(f["x"], f["y"]), ("a site sits in the freeway", f["type"])
     gn, ge = city_graph(big)
     under = sum(1 for a, b, _ in ge if fw.street_blocked(gn[a], gn[b], 0) is False and
                 any(_seg_cross(gn[a], gn[b], ln["points"][k][:2], ln["points"][k + 1][:2]) is not None
