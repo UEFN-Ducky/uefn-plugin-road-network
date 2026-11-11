@@ -702,9 +702,17 @@ def register(api) -> None:
                                                              "airport")}}
 
     CHUNK_ROWS = 6000  # a city's private pieces (parking, stalls, grounds, waterfront) go in docs of this many rows
+    FIELD_SPLIT = 32_000  # any other city field whose JSON is bigger (its lots, its plan) goes in piece docs
+    PIECE_BYTES = 700_000  # one piece doc's encoded size at most: under the 1 MB share limit, escapes included
+    CITY_KEEP = ("name", "x", "y", "radius", "style", "seed", "roads")  # always in the head itself
+
+    def city_parts(head: str) -> list:
+        """The chunk and piece docs a city head owns (deleted with it)."""
+        return list(data.keys(f"{head}.private.")) + list(data.keys(f"{head}.piece."))
 
     def city_docs(nid: str) -> dict:
-        """Every city of a world, its private pieces put back together from their chunk docs."""
+        """Every city of a world, put back together from its chunk docs (private pieces) and piece docs (big
+        fields such as a large city's lots)."""
         items = data.items(f"net.{nid}.city.")
         out = {}
         for k, v in items.items():
@@ -716,11 +724,25 @@ def register(api) -> None:
                     part = items.get(f"{k}.private.{i}") or {}
                     priv.setdefault(part.get("key", ""), []).extend(part.get("rows") or [])
                 v = {**v, "private": priv}
+            if v.get("piece_chunks"):
+                texts: dict = {}
+                for i in range(int(v["piece_chunks"])):
+                    part = items.get(f"{k}.piece.{i}") or {}
+                    texts[part.get("key", "")] = texts.get(part.get("key", ""), "") + (part.get("text") or "")
+                fields = {}
+                for key, text in texts.items():
+                    try:
+                        fields[key] = json.loads(text)
+                    except ValueError:  # a piece still on its way from a teammate: generate rebuilds that field
+                        pass
+                v = {**v, **{key: val for key, val in fields.items() if key and key not in v}}  # an edit in the head wins
             out[k.rsplit(".", 1)[1]] = v
         return out
 
     def put_city(nid: str, cslug: str, doc: dict) -> None:
-        """Store a city: its big private lists split into chunk docs (one doc stays under the 1 MB share limit)."""
+        """Store a city: its big private lists split into chunk docs, and any other big field (a large city's
+        lots run past 1 MB: 'doc too big to share' lost the whole rebuild, Nov 11 2026) into piece docs of its
+        JSON, so every doc stays under the 1 MB share limit."""
         head = f"net.{nid}.city.{cslug}"
         priv = doc.get("private") or {}
         n = 0
@@ -731,7 +753,27 @@ def register(api) -> None:
         for k in data.keys(f"{head}.private."):  # chunks of a bigger previous run
             if int(k.rsplit(".", 1)[1]) >= n:
                 data.delete(k)
-        data.put(head, {**{k: v for k, v in doc.items() if k != "private"}, "private": {}, "private_chunks": n})
+        rest = {k: v for k, v in doc.items() if k not in ("private", "private_chunks", "piece_chunks")}
+        big = {k: json.dumps(v, ensure_ascii=False, separators=(",", ":")) for k, v in rest.items() if k not in CITY_KEEP}
+        big = {k: text for k, text in big.items() if len(text) > FIELD_SPLIT}
+        m = 0
+        for key, text in big.items():
+            i = 0
+            while i < len(text):
+                step = PIECE_BYTES
+                while True:  # the piece as stored (quotes escaped, UTF-8) must fit, not just its characters
+                    piece = {"key": key, "text": text[i:i + step]}
+                    if len(json.dumps(piece, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) <= PIECE_BYTES:
+                        break
+                    step //= 2
+                data.put(f"{head}.piece.{m}", piece)
+                m += 1
+                i += step
+        for k in data.keys(f"{head}.piece."):  # pieces of a bigger previous run
+            if int(k.rsplit(".", 1)[1]) >= m:
+                data.delete(k)
+        data.put(head, {**{k: v for k, v in rest.items() if k not in big}, "private": {}, "private_chunks": n,
+                        "piece_chunks": m})
 
     def generate(name: str = "", seed: int = 7, cities: str = "", size_km: float = 6.0, relief_m: float = 60.0,
                  ground_from: str = "", folder: str = "", center_x: float = 0.0, center_y: float = 0.0,
@@ -818,7 +860,7 @@ def register(api) -> None:
                     data.delete(key)
         for cslug in old:
             if cslug not in {slug(t["name"]) for t in towns}:
-                for k in [f"net.{nid}.city.{cslug}"] + list(data.keys(f"net.{nid}.city.{cslug}.private.")):
+                for k in [f"net.{nid}.city.{cslug}"] + city_parts(f"net.{nid}.city.{cslug}"):
                     data.delete(k)
         stats_out = {label: store_actor(nid, label, a, name)["stats"] for label, a in actors.items()}
         # terrain is a big blob (a 160 grid is ~200 KB): one doc, never edited by hand, so it never conflicts
@@ -952,7 +994,7 @@ def register(api) -> None:
         if not confirm:
             return {"ok": False, "error": f"This removes {before.get('name')} and everything on it. Call again with "
                                           f"confirm=true."}
-        for k in [head] + list(data.keys(f"{head}.private.")):
+        for k in [head] + city_parts(head):
             data.delete(k)
         push({"what": "city", "id": nid})
         return {"ok": True, "id": cslug, "note": "Generate again (cities empty) to rebuild the world without it."}
@@ -1001,9 +1043,9 @@ def register(api) -> None:
         if name and slug(name) != cslug:
             key = slug(name)
             doc["name"], doc["roads"] = name, f"{name} Roads"
-            for k in list(data.keys(f"net.{nid}.city.{cslug}.private.")):  # its pieces come back on generate
+            for k in city_parts(f"net.{nid}.city.{cslug}"):  # its pieces come back on generate
                 data.delete(k)
-            doc["private_chunks"] = 0
+            doc["private_chunks"] = doc["piece_chunks"] = 0
             data.delete(f"net.{nid}.city.{cslug}")
         data.put(f"net.{nid}.city.{key}", doc)
         api.search.upsert(f"net.{nid}.city.{key}", doc["name"], f"City {doc['name']}: {doc.get('style')} roads, "
