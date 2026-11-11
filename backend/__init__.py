@@ -18,6 +18,7 @@ import math
 import os
 import re
 import subprocess
+import threading
 import time
 
 from . import citygen as cg
@@ -46,6 +47,27 @@ def register(api) -> None:
                 return fn(*a, **k)
             except PermissionError as exc:
                 return {"ok": False, "error": str(exc)}
+        run.__name__ = fn.__name__
+        run.__doc__ = fn.__doc__
+        return run
+
+    def one_run_at_a_time(fn):
+        """Full-city work runs once at a time. A caller that waited gets the answer of a run that started after
+        it asked (fresh), so a pile of the same request costs at most two runs. The panel asks on every open
+        and reload: these minutes-long runs side by side took Ducky to 13 GB (Nov 11 2026)."""
+        lock, last = threading.RLock(), {}
+
+        def run(*a, **k):
+            key, asked = json.dumps([a, k], sort_keys=True, default=str), time.perf_counter()
+            with lock:
+                hit = last.get(key)
+                if hit and hit[0] > asked:
+                    return hit[1]
+                started = time.perf_counter()
+                out = fn(*a, **k)
+                last.clear()  # ponytail: only the newest answer is kept
+                last[key] = (started, out)
+                return out
         run.__name__ = fn.__name__
         run.__doc__ = fn.__doc__
         return run
@@ -975,6 +997,7 @@ def register(api) -> None:
     _PREVIEW_CACHE: dict = {}
     FOREST_LIMIT = 200000  # foliage points per layer kept and baked: very dense forests; tiled PCG builds them 400 m at a time
 
+    @one_run_at_a_time
     def pcg_preview(net_id: str = "", layer_id: str = "", summary: bool = False) -> dict:
         """Every enabled layer placed offline with the graph's rules; one layer per call when layer_id is
         given (keeps each reply small). Points: [x, y, z, yaw, scale(, height m for buildings)]."""
@@ -1173,6 +1196,7 @@ def register(api) -> None:
                 removed.append(g)
         return removed
 
+    @one_run_at_a_time
     def sync_status(net_id: str = "") -> dict:
         """How far UEFN is behind this world (offline: against what was last pushed, nothing is read from the level):
         road actors whose splines changed since their push, PCG tiles to (re)build or remove. Generating is never
