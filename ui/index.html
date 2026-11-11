@@ -35,6 +35,10 @@
     .rn-split:hover, .rn-split.is-dragging { background: var(--accent); }
     .rn-split:focus-visible { outline: none; background: var(--border-focus); }
     body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-select: none; }
+    /* the header's fold buttons hide a side panel and its handle; the map takes the room */
+    body.rn-no-left .rn-left, body.rn-no-left #splitLeft, body.rn-no-right .rn-right, body.rn-no-right #splitRight { display: none; }
+    .rn-fold { flex: none; color: var(--fg-dim); }
+    .rn-fold[aria-expanded="false"] { color: var(--accent); }
 
     /* ---------- left sidebar: sections, layers, actors, version */
     .rn-version { padding: 8px 12px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; }
@@ -281,14 +285,16 @@
 </head>
 <body data-live-view="networks:world">
   <header class="rn-header" aria-label="City Builder">
+    <button type="button" class="dk-btn dk-btn--ghost dk-btn--icon rn-fold" id="foldLeft" aria-controls="leftPanel"></button>
     <div class="rn-brand" id="brand"></div>
     <div class="rn-world" id="worldPick"><div class="dk-loading">Loading worlds…</div></div>
     <div id="headActions" class="dk-row"></div>
     <div class="rn-spacer"></div>
     <div id="headPush" class="dk-row"></div>
+    <button type="button" class="dk-btn dk-btn--ghost dk-btn--icon rn-fold" id="foldRight" aria-controls="rightPanel"></button>
   </header>
   <div class="dk-layout">
-    <aside class="dk-sidebar rn-left" aria-label="Sections and layers">
+    <aside class="dk-sidebar rn-left" id="leftPanel" aria-label="Sections and layers">
       <div class="rn-scroll">
         <div class="rn-section">Sections</div>
         <div class="rn-list" id="nav" role="tablist" aria-orientation="vertical"></div>
@@ -324,7 +330,7 @@
       <div class="rn-note" id="note" hidden></div>
     </main>
     <div class="rn-split" id="splitRight" role="separator" aria-orientation="vertical" aria-label="Resize the right panel" tabindex="0"></div>
-    <aside class="dk-sidebar dk-sidebar--right rn-right" aria-label="Section settings">
+    <aside class="dk-sidebar dk-sidebar--right rn-right" id="rightPanel" aria-label="Section settings">
       <div class="rn-pane-head" id="paneTitle">World</div>
       <div id="tabs" hidden></div>
       <div id="err"></div>

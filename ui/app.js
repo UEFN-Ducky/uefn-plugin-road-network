@@ -2108,6 +2108,20 @@ function initSplits() {
       handle.addEventListener("pointercancel", up);
     });
     handle.addEventListener("dblclick", () => { setW(s.start); savePrefs(); });
+    // the header button folds this panel away (view.leftHidden / view.rightHidden are kept)
+    const side = s.key === "leftW" ? "left" : "right", fold = $(s.key === "leftW" ? "foldLeft" : "foldRight");
+    const show = (open) => {
+      state.view[`${side}Hidden`] = !open;
+      document.body.classList.toggle(`rn-no-${side}`, !open);
+      const tip = `${open ? "Hide" : "Show"} the ${side} panel`;
+      fold.setAttribute("aria-expanded", String(open));
+      fold.setAttribute("aria-label", tip);
+      fold.title = tip;
+      resize();
+    };
+    fold.replaceChildren(icon(side === "left" ? "panelLeft" : "panelRight", 16));
+    fold.addEventListener("click", () => { show(!!state.view[`${side}Hidden`]); savePrefs(); });
+    show(!state.view[`${side}Hidden`]);
     handle.addEventListener("keydown", (e) => {
       const k = { ArrowLeft: -16, ArrowRight: 16 }[e.key];
       if (!k) return;
