@@ -587,7 +587,7 @@ _STREET_KIT = {
 
 
 @register("road_network_street_kit")
-def road_network_street_kit(root: str = "") -> dict:
+def road_network_street_kit(root: str = "", rebuild: bool = False) -> dict:
     """Make the street pieces the kit lacks (traffic lights, stop / street signs, billboards, power poles,
     parking lot, path slab, plinth) as GeometryScript meshes in WorldGen/Kit/Street, in M_City_WorldPBR
     instances. Mesh and material assets only; safe to run again (rebuilt in place)."""
@@ -598,13 +598,18 @@ def road_network_street_kit(root: str = "") -> dict:
     for f in (mat_folder, folder):
         if not eal.does_directory_exist(f):
             eal.make_directory(f)
+    # only the pieces that aren't there yet (rebuild=true remakes all): remaking and saving all of them
+    # on every PCG build kept UEFN busy for minutes
+    todo = {n: v for n, v in _STREET_KIT.items() if rebuild or not eal.does_asset_exist(f"{folder}/{n}")}
+    if not todo:
+        return {"ok": True, "made": [], "errors": [], "note": "every street kit piece is already there"}
     master = _world_pbr_master(mat_folder, root)
     looks = {k: _mi(mat_folder, f"MI_Street_{k}", master, root, look, unreal.LinearColor(*tint, 1))
              for k, (look, tint) in _STREET_LOOKS.items()}
     gp = unreal.GeometryScript_Primitives
     base = unreal.GeometryScriptPrimitiveOriginMode.BASE
     made, errors = [], []
-    for name, (mats, parts) in _STREET_KIT.items():
+    for name, (mats, parts) in todo.items():
         try:
             dm = unreal.DynamicMesh()
             unreal.GeometryScript_Materials.enable_material_i_ds(dm)

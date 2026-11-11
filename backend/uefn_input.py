@@ -62,7 +62,10 @@ def find_window() -> tuple:
 def _rect(user32, hwnd) -> tuple:
     rect = wintypes.RECT()
     user32.GetWindowRect(hwnd, ctypes.byref(rect))
-    return rect.left, rect.top, rect.right, rect.bottom
+    # a maximized window's rect starts 8 px above the screen (its invisible frame); a normal window has no
+    # such frame at the top, and every offset here (tab row, tools, viewport) is measured from that top
+    top = rect.top + (8 if user32.IsZoomed(hwnd) else 0)
+    return rect.left, top, rect.right, rect.bottom
 
 
 def _click(user32, x: int, y: int) -> None:
@@ -135,8 +138,19 @@ def landscape_tabs(user32, left: int, top: int):
             if gap > 3:
                 break
     x0, x1 = xs[start][0], xs[end][0]
-    sel = [x for x, k in xs[start:end + 1] if k == "sel"]
-    if not sel or x1 - x0 < 120:
+    # the selected tab is the longest unbroken run of its grey: the other tabs' anti-aliased label pixels
+    # fall in the same grey range and would pull the centre over to Sculpt
+    runs, run = [], []
+    for x, k in xs[start:end + 1]:
+        if k == "sel":
+            run.append(x)
+        elif run:
+            runs.append(run)
+            run = []
+    if run:
+        runs.append(run)
+    sel = max(runs, key=len, default=[])
+    if len(sel) < 5 or x1 - x0 < 120:
         return None
     centre = (sel[0] + sel[-1]) / 2
     return x0, x1, max(0, min(2, int((centre - x0) / ((x1 - x0) / 3))))
