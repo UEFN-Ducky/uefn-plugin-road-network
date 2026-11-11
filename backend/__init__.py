@@ -1746,7 +1746,7 @@ def register(api) -> None:
                               relief_m: float = 60.0, ground_from: str = "", folder: str = "",
                               center_x: float = 0.0, center_y: float = 0.0, options: str = "") -> dict:
         """Generate a world as a road network you can preview, then import: a hilly terrain (16-bit PNG
-        heightmap, flat under each city), several cities each with its own roads actor, districts
+        heightmap; natural ground, or option city_ground 'flatten' for a plateau under each city), several cities each with its own roads actor, districts
         (downtown / normal / housing rings) and style ('mixed' grid downtown with wobbly suburbs, 'grid',
         'organic'), and highways joining them. cities: a count ('3'), a JSON list
         [{name, x, y, radius_m, style}] in cm, or empty to rebuild the cities already in this world.

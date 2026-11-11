@@ -61,11 +61,11 @@ const GEN_DEFAULTS = {
   block_m: 100, wobble: 0.28, prune: 0.22, downtown: 0.4, normal: 0.75, highway: "4L", highway_curve: 0.08,
   core_roads: "4L", neighbourhood_roads: "2S", suburb_roads: "2L", one_way_core: "no", interchange: "direct", overpasses: "yes",
   city_size: 1, city_gap_m: 300, freeways: "yes", waterfront: "yes", canals: "none", shipyards: "auto",
-  airports: "auto", military_base: "no", wind_deg: 240,
+  airports: "auto", military_base: "no", wind_deg: 240, city_ground: "natural",
 };
 const OPTION_KEYS = ["hill_km", "roughness", "detail", "ridges", "peaks", "flatten_m", "sea_m", "water_depth_m", "terrace_m", "block_m", "wobble",
   "prune", "downtown", "normal", "highway", "highway_curve", "core_roads", "neighbourhood_roads", "suburb_roads", "one_way_core",
-  "interchange", "overpasses", "city_size", "city_gap_m", "freeways", "waterfront", "canals", "shipyards", "airports", "military_base", "wind_deg"];
+  "interchange", "overpasses", "city_size", "city_gap_m", "freeways", "waterfront", "canals", "shipyards", "airports", "military_base", "wind_deg", "city_ground"];
 const VIEW_DEFAULTS = { zx: 1, pcg: true, terrain: true, water: true, districts: true, points: false, look: "natural", sunAz: 135, sunEl: 38, shadows: true };
 const state = {
   nets: [], net: "", actor: "", geo: null, sel: null, cities: [], tab: "world", framed: false, live: false,
@@ -943,7 +943,7 @@ function buildPanes() {
   ctl.seed = field({ label: "Seed", value: state.gen.seed, onChange: (v) => setGen("seed", parseInt(v, 10) || 1),
     button: { icon: "dice", title: "New random seed", onClick: (input) => { input.value = Math.floor(Math.random() * 99999); setGen("seed", +input.value); } } });
   ctl.ground = choices({ label: "Ground", value: state.gen.ground, onChange: (v) => setGen("ground", v), options: [
-    ["new", "New terrain", "Hills made around the cities, with a heightmap to import", "terrain"],
+    ["new", "New terrain", "Natural hills and water, with a heightmap to import", "terrain"],
     ["net", "Selected network's ground", "Cities sit on the open network's scanned terrain", "layers"]] });
   $("pane-world").replaceChildren(
     section("World", ctl.name.el, sl("cities", "Cities", 1, 12, 1, (v) => String(v)), sl("size_km", "Map size", 1, 20, 0.5, (v) => `${v} km`),
@@ -952,6 +952,12 @@ function buildPanes() {
       ctl.seed.el),
     section("Selected city", h("div", { id: "worldCity" })),
     section("Where it goes", ctl.ground.el),
+    section("Ground height", sl("relief_m", "Hill height", 0, 250, 5, m, "Highest hills above the middle, deepest valleys below it"),
+      sl("sea_m", "Water level", -1000, 200, 5, (v) => v <= -1000 ? "Off" : m(v), "Ground below this becomes lakes and sea; streets bridge it"),
+      (ctl.city_ground = segmented({ label: "Ground under the cities", value: state.gen.city_ground, onChange: (v) => setGen("city_ground", v),
+        options: [["natural", "Natural", "terrain"], ["flatten", "Flatten", "layers"]] })).el,
+      h("div", { class: "rn-hint" }, "Natural keeps the hills as they are: a moved city sits on the land it lands on. "
+        + "New terrain only: a world on scanned ground keeps that ground.")),
     section("This world", h("div", { id: "worldSummary" }), h("div", { id: "worldHeightmap" })));
   // ---- Terrain
   ctl.look = segmented({ label: "Preview look", value: state.view.look, options: [["natural", "Natural", "terrain"], ["height", "Height", "layers"], ["slope", "Slope", "wave"]],
@@ -965,14 +971,14 @@ function buildPanes() {
     hint: "Preview only: the heightmap and roads keep real heights",
     onChange: (v) => { state.view.zx = v; savePrefs(); state.framed = false; buildScene(); } });
   $("pane-terrain").replaceChildren(
-    section("Shape", sl("relief_m", "Hill height", 0, 250, 5, m), sl("hill_km", "Hill size", 0.3, 10, 0.1, (v) => `${v.toFixed(1)} km`),
+    section("Shape", sl("hill_km", "Hill size", 0.3, 10, 0.1, (v) => `${v.toFixed(1)} km`),
       sl("roughness", "Roughness", 0.2, 0.8, 0.02, pct), sl("detail", "Detail", 1, 8, 1, (v) => `${v} layers`),
       sl("ridges", "Mountain ridges", 0, 1, 0.05, pct, "0 = rolling hills, 100 % = sharp crests"),
       sl("peaks", "Peaks", 0, 1, 0.05, pct, "Wide low valleys with tall sharp peaks")),
-    section("Water and steps", sl("sea_m", "Water level", -1000, 200, 5, (v) => v <= -1000 ? "Off" : m(v), "Ground below this is dug down into lake beds under the water"),
+    section("Water and steps", h("div", { class: "rn-hint" }, "Hill height and water level are on the World tab."),
       sl("water_depth_m", "Lake depth", 0, 80, 1, m, "How far lake beds drop below the water line"),
       sl("terrace_m", "Terraces", 0, 50, 1, (v) => v ? m(v) : "Off"),
-      sl("flatten_m", "City edge blend", 0, 2000, 25, m, "How far the flat city ground blends back into the hills")),
+      sl("flatten_m", "City edge blend", 0, 2000, 25, m, "With flattened cities: how far the flat city ground blends back into the hills")),
     section("Preview", ctl.look.el, zx.el, sunAz.el, sunEl.el, ctl.shadows.el));
   // ---- Roads
   // road types from our kit (citygen.ROAD_TYPES): one-way, dirt, two-lane with or without sidewalks, four- and six-lane
@@ -2012,7 +2018,7 @@ function setTool(id) {
 }
 window.addEventListener("keydown", (e) => {
   if (e.target.closest?.("input, textarea, [contenteditable]")) return;  // typing, not shortcuts
-  if (e.key === "Escape") { if (state.tool !== "select") setTool("select"); $("toolHelp")?.setAttribute("hidden", ""); return; }
+  if (e.key === "Escape") { if (cancelCityDrag()) return; if (state.tool !== "select") setTool("select"); $("toolHelp")?.setAttribute("hidden", ""); return; }
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   const k = e.key.toLowerCase();
   const tools = { v: "select", h: "hand", p: "pin", a: "area", c: "addcity" };
@@ -2144,8 +2150,7 @@ function startCityDrag(c) {
   drag.city = { c, dx: c.x - x, dy: c.y - y, to: [c.x, c.y] };
   renderer.domElement.style.cursor = "grabbing";
   state.cityPick = c.id;
-  renderCityList();
-  busy(`Moving ${c.name}`, { text: "Let go where it should be: its roads, freeways, airport and buildings are rebuilt there" });
+  renderCityList();  // only a ghost moves while dragging: nothing is rebuilt until the drop (Esc cancels)
   drawCityGhost(drag.city);
 }
 function dragCity(e) {
@@ -2175,11 +2180,20 @@ function drawCityGhost(m) {
     new THREE.LineBasicMaterial({ color: accent, depthTest: false })));
   needsDraw = true;
 }
+function cancelCityDrag() {  // Esc while dragging: the city stays where it was
+  if (!drag?.city) return false;
+  clear(marks);
+  delete drag.city.c.dragTo;
+  drag = null;
+  renderer.domElement.style.cursor = "";
+  drawCityMark();
+  needsDraw = true;
+  return true;
+}
 async function dropCity(m) {
   clear(marks);
   delete m.c.dragTo;
   needsDraw = true;
-  busy("");
   if (Math.hypot(m.to[0] - m.c.x, m.to[1] - m.c.y) < 1000) { drawCityMark(); return; }  // barely moved: nothing to do
   await saveCity(m.c, { x: Math.round(m.to[0]), y: Math.round(m.to[1]) });
 }

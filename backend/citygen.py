@@ -85,6 +85,9 @@ CHOICES = {
     # its streets; a military airbase on request
     "airports": (("auto", "none"), "auto"),
     "military_base": (("no", "yes"), "no"),
+    # the ground under a city: 'natural' leaves the hills as they are (streets drape, lots get their own pads,
+    # water is bridged), 'flatten' presses a flat plateau under every city
+    "city_ground": (("natural", "flatten"), "natural"),
 }
 # steepest grade per road (rise / run): arterials and highways 4 %, collectors 5-6 %, local streets 8 %,
 # dirt 10 % (CityEngine-style targets for a game, not legal limits). Steeper ground is cut and filled.
@@ -271,7 +274,7 @@ def push_out(keep: list, x: float, y: float, margin: float) -> list:
 
 def terrain(seed: int, size_cm: float, relief_cm: float, cities: list, grid: int = 160,
             center: tuple = (0.0, 0.0), opts: dict | None = None, keep: list | None = None) -> dict:
-    """Hills, flattened into a plateau under every city. Same shape as a ground scan:
+    """Hills (natural ground; option city_ground 'flatten' presses a plateau under every city). Same shape as a ground scan:
     {min, max, grid, heights[j][i]} with cell centres, so the 3D view and drape read it as is."""
     o = options(opts)
     fbm = _fbm(seed, o["detail"], o["roughness"], o["ridges"])
@@ -317,7 +320,8 @@ def terrain(seed: int, size_cm: float, relief_cm: float, cities: list, grid: int
 
     blend = o["flatten_m"] * 100
     # a city's plateau is its centre's ground, lifted out of the water when it sits in a lake
-    plateaus = [(c, max(at(c["x"], c["y"]), (sea + shore * 2) if sea is not None else -1e9)) for c in cities]
+    plateaus = [(c, max(at(c["x"], c["y"]), (sea + shore * 2) if sea is not None else -1e9)) for c in cities] \
+        if o["city_ground"] == "flatten" else []
     rows = []
     for j, y in enumerate(ys):
         row = []
@@ -1528,9 +1532,11 @@ def _demo() -> None:
     cities = place_cities(3, 3, ((-200000, -200000), (200000, 200000)))
     assert len(cities) == 3 and all(c["style"] in STYLES for c in cities)
     ter = terrain(3, 400000, 6000, cities, grid=64)
+    assert ter["heights"] == terrain(3, 400000, 6000, [], grid=64)["heights"], "natural ground ignores the cities"
+    flat = terrain(3, 400000, 6000, cities, grid=64, opts={"city_ground": "flatten"})
     for c in cities:
-        z, z2 = st.sample_grid(ter, c["x"], c["y"]), st.sample_grid(ter, c["x"] + c["radius"] * 0.5, c["y"])
-        assert abs(z - z2) < 50, "a city sits on a flat plateau"
+        z, z2 = st.sample_grid(flat, c["x"], c["y"]), st.sample_grid(flat, c["x"] + c["radius"] * 0.5, c["y"])
+        assert abs(z - z2) < 50, "flatten: a city sits on a flat plateau"
     actors = generate(cities, lambda x, y: st.sample_grid(ter, x, y) or 0.0, "/Game/X/WorldGen/Roads", seed=3)
     assert set(actors) == {f"{c['name']} Roads" for c in cities} | {"Highways"}
     for label, a in actors.items():
@@ -1674,7 +1680,7 @@ def _demo() -> None:
     assert all(w <= d + 1 for rd, rw in zip(dry, wet["heights"]) for d, w in zip(rd, rw)), "water only lowers"
     # a city in a lake gets dry ground
     lake_city = [{"name": "L", "x": 0, "y": 0, "radius": 30000}]
-    t = terrain(3, 400000, 6000, lake_city, grid=48, opts={"sea_m": 50})
+    t = terrain(3, 400000, 6000, lake_city, grid=48, opts={"sea_m": 50, "city_ground": "flatten"})
     assert st.sample_grid(t, 0, 0) > t["sea"], "a city never sits under water"
     small = city_graph(cities[0], {"block_m": 60})[1]
     assert len(small) > len(city_graph(cities[0], {"block_m": 150})[1])
