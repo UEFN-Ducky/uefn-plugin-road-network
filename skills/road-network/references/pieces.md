@@ -116,6 +116,17 @@ Simple collision comes from the parts. Sizes are mirrored in `KIT` in `backend/k
 - Lots on a hill: the point's z is the level pad; `foundation_m > 0.3` adds a plinth; each path in `paths`
   becomes one slab per run.
 
+## 6b. Forests and parks
+
+- Foliage layers (`Trees`, `Rocks`, `Bushes`) grow in **patches**: `patch(x, y)` (3-octave value noise, 600 m cells,
+  shared by every foliage layer) below the layer's `cover` is forest, the rest meadow. Inside a patch `density` per
+  100 m2 (Trees 4 = a tree about every 5 m, Bushes 2), within `reach` city radii of a city (3 = the land around each
+  city, so the count stays buildable). Up to `FOREST_LIMIT` (40 000) points per layer are kept and baked.
+- Baked: Trees -> `SM_V4_TreeRound` / `SM_V4_TreePine` (random yaw, preview scale). Rocks and bushes have no kit mesh
+  yet (they show in the preview only).
+- A park lot is a **grove**: a tree every 6 m on a jittered grid, 85 % filled, the middle row left open with a 2.5 m
+  path slab along the lot.
+
 ## 7. Materials (`WorldGen/Materials`)
 
 - `M_City_WorldPBR` (made once by the listener): triplanar world projection: WorldPosition / `TileCm`, three samples per
@@ -127,13 +138,18 @@ Simple collision comes from the parts. Sizes are mirrored in `KIT` in `backend/k
   (`_LOOKS`: Glass -> Tile, rough 0.15, metal 0.4; Brick -> Pavers; Siding -> Wood; Metal/Gold/Spire/Mullion ->
   Frame, metallic; Neon/LampLED -> emissive 6; default Concrete). Street kit: `MI_Street_<Look>`.
 - A mesh spawned by PCG with a material lacking the ISM usage flag draws the grey checker.
+- **Never change a kit mesh's own materials** (`StaticMesh.set_material`): it rebuilds the whole mesh, about 1.5 min
+  and GBs each, all inside one editor frame (80 meshes froze UEFN for hours). The MIs go on as **PCG material
+  overrides**: `road_network_kit_materials` returns `overrides` {mesh: [MI per slot]} and pcg_build puts them in
+  each spawner's `templateDescriptor.descriptor.overrideMaterials`. New street-kit meshes get MIs when they are made.
 
 ## 8. The PCG build (`road_network_pcg_build`)
 
 - One graph `WorldGen/CityPCG/PCG_<World>_<City>` and one volume `City Builder <World> <City>` per city (each lot goes
   to the nearest city), volume sized to its farthest point + 50 m, **Generate On Demand** (never on load).
 - Per kit mesh: `Create Points` nodes (world space, cull off, at most 1500 points each, transform = x, y, z, pitch,
-  yaw, scale) -> one `Static Mesh Spawner` with `{"meshSelector": {"meshes": [path]}}`.
+  yaw, scale) -> one `Static Mesh Spawner` with `{"meshSelector": {"meshes": [path], "templateDescriptor":
+  {"descriptor": {"overrideMaterials": [MI per slot]}}}}`.
 - Runs `road_network_kit_materials` first (street kit + materials), saved in **one batch**.
 
 ## 9. Adding a new piece (checklist)
@@ -142,6 +158,7 @@ Simple collision comes from the parts. Sizes are mirrored in `KIT` in `backend/k
 2. Road tile: keep X inside 0..tile, deck at z 0, skirt to -40, add its row to `ROAD_TYPES` and `OUR_FAMILIES`.
 3. Street piece or building: add its bounds to `KIT` (kit_bake) and its role to `PROPS` / `BUILDINGS`; a generated one
    also to `_STREET_KIT` (listener) with matching sizes.
-4. Give every slot an `M_City_WorldPBR` instance (or another material with ISM usage) before PCG spawns it.
+4. Give every slot an `M_City_WorldPBR` instance (or another material with ISM usage) before PCG spawns it: when
+   you make the mesh, or as PCG material overrides for an existing one. Never `set_material` on an existing mesh.
 5. Save everything in one batch; never `save_loaded_asset` in a loop.
 6. Run the self-checks (`py -3 -m backend.citygen`, `backend.pcg_layers`, `backend.kit_bake`) and `ducky_plugin_test`.

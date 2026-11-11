@@ -104,7 +104,9 @@ INDUSTRIAL_SPREAD = 75.0  # degrees: each city's industrial zone is one wedge of
 
 # name: (default, min, max)
 NUMBERS = {
-    "density": (1.0, 0.01, 50.0),       # scatter: points per 100 m2
+    "density": (1.0, 0.01, 50.0),       # scatter: points per 100 m2 (inside its patches when cover < 1)
+    "cover": (1.0, 0.05, 1.0),          # scatter / foliage: share of the land in patches (forests), the rest open
+    "reach": (0.0, 0.0, 10.0),          # foliage: only within this many city radii of a city centre (0 = everywhere)
     "spacing_m": (25.0, 2.0, 1000.0),   # along roads / buildings: one every N m (gas stations ~650 m apart)
     "setback_m": (2.0, 0.0, 80.0),      # along roads / buildings: distance from the road EDGE (kerb)
     "scale_min": (0.9, 0.1, 10.0),
@@ -247,14 +249,39 @@ CITY_STREET = [
 ]
 
 # Nature: Foliage Types painted in UEFN's Foliage mode. No grass (the landscape material does that).
+# Forests: dense patches (cover = share of open land that is forest) with meadows between, a tree every ~5 m
+# inside a patch; within 3 city radii so the instance count stays buildable (wider = density x area).
 NATURE = [
-    {"name": "Trees", "kind": "foliage", "where": "outside", "role": "tree", "density": 0.2, "scale_min": 0.8,
-     "scale_max": 1.4, "sink_cm": 15, "footprint": 0.35, "order": 1},
-    {"name": "Rocks", "kind": "foliage", "where": "outside", "role": "rock", "density": 0.05, "scale_min": 0.7,
-     "scale_max": 2.0, "sink_cm": 40, "footprint": 0.8, "avoid": ["Trees"], "order": 2},
-    {"name": "Bushes", "kind": "foliage", "where": "outside", "role": "bush", "density": 0.3, "scale_min": 0.8,
-     "scale_max": 1.4, "sink_cm": 5, "footprint": 0.4, "collision": False, "avoid": ["Trees", "Rocks"], "order": 3},
+    {"name": "Trees", "kind": "foliage", "where": "outside", "role": "tree", "density": 4.0, "cover": 0.55,
+     "reach": 3.0, "scale_min": 0.8, "scale_max": 1.5, "sink_cm": 15, "footprint": 0.35, "order": 1},
+    {"name": "Rocks", "kind": "foliage", "where": "outside", "role": "rock", "density": 0.1, "cover": 0.55,
+     "reach": 3.0, "scale_min": 0.7, "scale_max": 2.0, "sink_cm": 40, "footprint": 0.8, "avoid": ["Trees"], "order": 2},
+    {"name": "Bushes", "kind": "foliage", "where": "outside", "role": "bush", "density": 2.0, "cover": 0.6,
+     "reach": 3.0, "scale_min": 0.8, "scale_max": 1.4, "sink_cm": 5, "footprint": 0.4, "collision": False,
+     "avoid": ["Trees", "Rocks"], "order": 3},
 ]
+PATCH_CM = 60000.0  # forest patch scale: patches a few hundred metres across
+
+
+def patch(x: float, y: float, cell: float = PATCH_CM) -> float:
+    """Smooth value noise 0..1 shared by every foliage layer (bushes grow in the same forests as trees)."""
+    def h(i, j):
+        n = (i * 374761393 + j * 668265263) & 0xFFFFFFFF
+        n = ((n ^ (n >> 13)) * 1274126177) & 0xFFFFFFFF
+        return (n & 0xFFFF) / 65535.0
+    total, amp, norm = 0.0, 1.0, 0.0
+    for octave in range(3):  # three octaves: ragged forest edges, clearings inside
+        c = cell / (2 ** octave)
+        gx, gy = x / c, y / c
+        i, j = math.floor(gx), math.floor(gy)
+        fx, fy = gx - i, gy - j
+        sx, sy = fx * fx * (3 - 2 * fx), fy * fy * (3 - 2 * fy)
+        a = h(i, j) + (h(i + 1, j) - h(i, j)) * sx
+        b = h(i, j + 1) + (h(i + 1, j + 1) - h(i, j + 1)) * sx
+        total += (a + (b - a) * sy) * amp
+        norm += amp
+        amp *= 0.5
+    return total / norm
 
 
 def preset(name: str = "full_city") -> list:
@@ -722,7 +749,7 @@ def _height(layer: dict, cities: list, x: float, y: float, rnd, neighbours: "_Ha
 
 
 def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, limit: int = 2500,
-            juncs: list | None = None, keep: list | None = None) -> dict:
+            juncs: list | None = None, keep: list | None = None, foliage_limit: int = 0) -> dict:
     """Run every enabled layer offline with the same rules as the graph (mask, off roads, keep clear of
     earlier layers, self pruning, sink) and return {layer name: {points: [[x, y, z, yaw, scale]], ...}}.
     Scatter is thinned to ``limit`` points per layer for the view; ``count`` says the full estimate."""
@@ -746,12 +773,24 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
             cands = junction_corners(juncs or [], layer["setback_m"], layer["corners"])
             thin = 1.0
         elif layer["kind"] in SCATTERED:
-            area_m2 = (hi[0] - lo[0]) * (hi[1] - lo[1]) / 1e4
-            full = area_m2 * layer["density"] / 100.0
-            n = int(min(full, limit * 4))  # candidates before masks and pruning
+            cap = (foliage_limit or limit) if layer["kind"] == "foliage" else limit
+            discs = [(c["x"], c["y"], c["radius"] * layer["reach"]) for c in cities] if layer["reach"] and cities else []
+            area_m2 = (sum(math.pi * r * r for _, _, r in discs) if discs else (hi[0] - lo[0]) * (hi[1] - lo[1])) / 1e4
+            # density counts inside the patches only: a forest is dense, the meadows between are open
+            full = area_m2 * layer["density"] / 100.0 * layer["cover"]
+            n = int(min(full / layer["cover"], cap * 4))  # candidates before patches, masks and pruning
+            weights = [r * r for _, _, r in discs]
             for _ in range(n):
-                cands.append((rnd.uniform(lo[0], hi[0]), rnd.uniform(lo[1], hi[1]), rnd.uniform(0, 360)))
-            thin = full / n if n else 1.0
+                if discs:
+                    cx, cy, r = rnd.choices(discs, weights)[0]
+                    a, d = rnd.uniform(0, 2 * math.pi), r * math.sqrt(rnd.random())
+                    x, y = cx + d * math.cos(a), cy + d * math.sin(a)
+                else:
+                    x, y = rnd.uniform(lo[0], hi[0]), rnd.uniform(lo[1], hi[1])
+                if layer["cover"] < 1.0 and patch(x, y) > layer["cover"]:
+                    continue  # a meadow, not a forest
+                cands.append((x, y, rnd.uniform(0, 360)))
+            thin = full / max(1, len(cands)) if cands else 1.0
         else:
             # every road sample on both sides is a candidate; the placing loop below takes the first good one
             # once `spacing` has passed since the last placed one on that side (a lot blocked by a cross
@@ -830,8 +869,9 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
             pts.append(row)
         kept[layer["name"]] = own
         count = int(len(pts) * thin) if layer["kind"] in SCATTERED else len(pts)
-        if len(pts) > limit:
-            pts = rnd.sample(pts, limit)
+        shown_cap = (foliage_limit or limit) if layer["kind"] == "foliage" else limit
+        if len(pts) > shown_cap:
+            pts = rnd.sample(pts, shown_cap)
         out[layer["name"]] = {"kind": layer["kind"], "role": layer["role"], "count": count, "shown": len(pts), "points": pts,
                               "radius_cm": round(r_base),
                               **({"size_m": [layer["width_m"], layer["depth_m"]], "setback_m": layer["setback_m"],

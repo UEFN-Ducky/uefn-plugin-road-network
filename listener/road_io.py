@@ -548,9 +548,12 @@ def road_network_street_kit(root: str = "") -> dict:
 
 @register("road_network_kit_materials")
 def road_network_kit_materials(root: str = "", folders: list | None = None) -> dict:
-    """Give every mesh in the kit folders (WorldGen/City, WorldGen/Kit) textured, instance-safe materials:
-    one MI of M_City_WorldPBR per old flat-colour material (its colour kept as Tint). Writes mesh and
-    material assets only. Safe to run again: existing instances are refreshed, never duplicated."""
+    """Textured, instance-safe materials for every mesh in the kit folders (WorldGen/City, WorldGen/Kit):
+    one MI of M_City_WorldPBR per old flat-colour material (its colour kept as Tint), and per mesh the MI for
+    each slot, returned as `overrides` {mesh path: [MI path per slot]} for PCG's material overrides.
+    The meshes themselves are NEVER edited: changing a mesh's material rebuilds the whole mesh (about 1.5 min
+    and GBs each, all inside one editor frame), which froze UEFN for hours on 80 kit meshes.
+    Material assets only, saved in one batch. Safe to run again: existing instances are reused."""
     if not root.startswith("/"):
         return {"ok": False, "error": "Give root, the project's content root (for example /<mount>/MovieTheater)."}
     mel = unreal.MaterialEditingLibrary
@@ -560,39 +563,42 @@ def road_network_kit_materials(root: str = "", folders: list | None = None) -> d
     if not eal.does_directory_exist(mat_folder):
         eal.make_directory(mat_folder)
     master = _world_pbr_master(mat_folder, root)
-    made, meshes, slots, changed_meshes = {}, 0, 0, []
+    made, created, overrides = {}, [], {}
     for sub in folders or ["City", "Kit"]:
         for path in eal.list_assets(f"{root}/WorldGen/{sub}", recursive=False):
             mesh = eal.load_asset(path)
             if not isinstance(mesh, unreal.StaticMesh):
                 continue
-            changed = False
-            for i, slot in enumerate(mesh.static_materials):
+            per_slot = []
+            for slot in mesh.static_materials:
                 old = slot.material_interface
-                if old is None or old.get_path_name().startswith(mat_folder):
+                if old is None:
+                    per_slot.append("")
+                    continue
+                if old.get_path_name().startswith(mat_folder):  # an earlier run already gave it one
+                    per_slot.append(old.get_path_name())
                     continue
                 key = old.get_name()
                 if key not in made:
                     mi_path = f"{mat_folder}/MI_City_{key.removeprefix('M_')}"
-                    mi = eal.load_asset(mi_path) if eal.does_asset_exist(mi_path) else tools.create_asset(
-                        mi_path.rsplit("/", 1)[1], mat_folder, unreal.MaterialInstanceConstant,
-                        unreal.MaterialInstanceConstantFactoryNew())
-                    mel.set_material_instance_parent(mi, master)
-                    tex, tile, rough, metal, glow = _look(key)
-                    for ch, pname in (("B", "Base"), ("R", "Rough")):
-                        t = eal.load_asset(_PBR_SET.format(root=root, set=tex, ch=ch))
-                        if t:
-                            mel.set_material_instance_texture_parameter_value(mi, pname, t)
-                    mel.set_material_instance_vector_parameter_value(mi, "Tint", _old_tint(old))
-                    for pname, v in (("TileCm", tile), ("RoughMul", rough), ("Metallic", metal), ("Emissive", glow)):
-                        mel.set_material_instance_scalar_parameter_value(mi, pname, float(v))
-                    mel.update_material_instance(mi)
+                    fresh = not eal.does_asset_exist(mi_path)
+                    mi = tools.create_asset(mi_path.rsplit("/", 1)[1], mat_folder, unreal.MaterialInstanceConstant,
+                                            unreal.MaterialInstanceConstantFactoryNew()) if fresh else eal.load_asset(mi_path)
+                    if fresh:
+                        mel.set_material_instance_parent(mi, master)
+                        tex, tile, rough, metal, glow = _look(key)
+                        for ch, pname in (("B", "Base"), ("R", "Rough")):
+                            t = eal.load_asset(_PBR_SET.format(root=root, set=tex, ch=ch))
+                            if t:
+                                mel.set_material_instance_texture_parameter_value(mi, pname, t)
+                        mel.set_material_instance_vector_parameter_value(mi, "Tint", _old_tint(old))
+                        for pname, v in (("TileCm", tile), ("RoughMul", rough), ("Metallic", metal), ("Emissive", glow)):
+                            mel.set_material_instance_scalar_parameter_value(mi, pname, float(v))
+                        mel.update_material_instance(mi)
+                        created.append(mi)
                     made[key] = mi
-                mesh.set_material(i, made[key])
-                changed = True
-                slots += 1
-            if changed:
-                changed_meshes.append(mesh)
-                meshes += 1
-    _save_batch(list(made.values()) + changed_meshes)
-    return {"ok": True, "master": master.get_path_name(), "instances": len(made), "meshes": meshes, "slots": slots}
+                per_slot.append(made[key].get_path_name())
+            overrides[mesh.get_path_name()] = per_slot
+    _save_batch(created)
+    return {"ok": True, "master": master.get_path_name(), "instances": len(made), "created": len(created),
+            "meshes": len(overrides), "overrides": overrides}

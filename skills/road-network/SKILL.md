@@ -51,10 +51,11 @@ and `size_jitter`; the preview gives every lot `[x, y, z, yaw, scale, height_m, 
 plan's `pieces[].forms` says what each form is, so the city can be built to match.
 Materials (read before spawning kit meshes): the kit's FBX materials are one flat colour each and are NOT
 allowed on instanced meshes, so anything PCG spawns draws the grey checker (or a flat untextured colour).
-`road_network_kit_materials` (pcg_build runs it first) gives every WorldGen/City + WorldGen/Kit slot an MI of
-`WorldGen/Materials/M_City_WorldPBR`: world-aligned PBR (cinema PBR textures by world position, so meshes
-stretched to fit a lot never smear), old colour as Tint, Used with Instanced Static Meshes + Nanite on. Never
-put a new mesh on PCG/ISM without a material that has that usage flag. Junctions: with our own road kit
+`road_network_kit_materials` (pcg_build runs it first) makes an MI of `WorldGen/Materials/M_City_WorldPBR` for
+every WorldGen/City + WorldGen/Kit material: world-aligned PBR (cinema PBR textures by world position, so meshes
+stretched to fit a lot never smear), old colour as Tint, Used with Instanced Static Meshes + Nanite on. They go
+on as PCG material overrides; the kit meshes are never edited (a material change rebuilds a mesh: ~1.5 min and
+GBs each). Never put a mesh on PCG/ISM without a material that has the ISM usage flag. Junctions: with our own road kit
 `road_network_build_pieces(rebuild=true)` regenerates every SM_JK_ piece flat at deck height in the roads'
 `M_Asphalt` with planar UVs (the Fortnite Road1 crown + MI_Apollo_Roads material is only for the Fortnite kit).
 Interchanges are tangent: each loop's centre is its radius plus the road's half width from the highway and the

@@ -900,6 +900,7 @@ def register(api) -> None:
         return out
 
     _PREVIEW_CACHE: dict = {}
+    FOREST_LIMIT = 40000  # foliage points per layer kept (and baked): dense forests near the cities, still buildable
 
     def pcg_preview(net_id: str = "", layer_id: str = "", summary: bool = False) -> dict:
         """Every enabled layer placed offline with the graph's rules; one layer per call when layer_id is
@@ -922,7 +923,7 @@ def register(api) -> None:
             _PREVIEW_CACHE.update(key=key, out=pl.preview(
                 list(docs.values()), cities, terrain, pl.road_samples(actors),
                 lambda x, y: st.sample_grid(terrain, x, y) if terrain.get("heights") else 0.0,
-                limit=6000, juncs=pl.junctions(actors), keep=keep))  # the whole city, not a sample
+                limit=6000, juncs=pl.junctions(actors), keep=keep, foliage_limit=FOREST_LIMIT))  # the whole city
         out = _PREVIEW_CACHE["out"]
         if layer_id:
             name = (docs.get(slug(layer_id)) or {}).get("name")
@@ -935,11 +936,11 @@ def register(api) -> None:
         folder = road_folder()
         return folder.split("/WorldGen/Roads")[0] if "/WorldGen/Roads" in folder else ""
 
-    def kit_materials(net_id: str = "") -> dict:
+    def kit_materials(net_id: str = "", street_kit: bool = True) -> dict:
         root = kit_root()
         if not root:
             return {"ok": False, "error": "Couldn't find the project's WorldGen folder (import the roads first)."}
-        street = listener("road_network_street_kit", {"root": root}, timeout=600)  # the pieces the kit lacks
+        street = listener("road_network_street_kit", {"root": root}, timeout=600) if street_kit else None
         out = listener("road_network_kit_materials", {"root": root}, timeout=900)
         return {**out, "street_kit": street}
 
@@ -1003,10 +1004,14 @@ def register(api) -> None:
                                                                   "path": graph_path.rsplit("/", 1)[0]})["returnValue"]
             reach = 0.0
             for k, (mesh, rows) in enumerate(sorted(meshes.items())):
+                selector = {"meshes": [mesh]}
+                over = ((mats or {}).get("overrides") or {}).get(mesh)
+                if over and any(over):  # textured MIs as overrides: the kit mesh itself is never edited
+                    selector["templateDescriptor"] = {"descriptor": {"overrideMaterials": [m or None for m in over]}}
                 spawn = epic("PCGToolset.PCGToolset", "AddNode", {
                     "graph": graph, "nativeNodeType": "Static Mesh Spawner", "nodeName": f"Spawn{k}",
                     "nodeTitle": mesh.rsplit(".", 1)[1], "xPositionIdx": 400, "yPositionIdx": k * 160,
-                    "jsonParams": json.dumps({"meshSelector": {"meshes": [mesh]}})})["returnValue"]
+                    "jsonParams": json.dumps({"meshSelector": selector})})["returnValue"]
                 for c in range(0, len(rows), BAKE_CHUNK):
                     pts = [{"transform": {"location": {"x": r[0], "y": r[1], "z": r[2]},
                                           "rotation": {"pitch": r[7] if len(r) > 7 else 0, "yaw": r[3], "roll": 0},
@@ -1184,11 +1189,12 @@ def register(api) -> None:
         return safe(build_pieces)(net_id, actor, rebuild)
 
     @api.tool(intent=INTENT, listener=True)
-    def road_network_kit_materials(net_id: str = "") -> dict:
+    def road_network_kit_materials(net_id: str = "", street_kit: bool = True) -> dict:
         """Give the own kit (WorldGen/City + WorldGen/Kit meshes) textured materials that work on PCG
         instances: one MI of M_City_WorldPBR (world-aligned PBR, ISM + Nanite usage on) per old flat-colour
-        material, its colour kept as Tint. pcg_build runs it first; run it alone after importing new kit meshes."""
-        return safe(kit_materials)(net_id)
+        material, its colour kept as Tint. pcg_build runs it first; run it alone after importing new kit meshes.
+        street_kit=false skips (re)building the street kit and only fixes the kit meshes' materials."""
+        return safe(kit_materials)(net_id, street_kit)
 
     @api.tool(intent=INTENT, listener=False)
     def road_network_restore(net_id: str = "", actor: str = "", from_actor: str = "") -> dict:
@@ -1422,7 +1428,7 @@ def register(api) -> None:
                                net_id, actor, thin_tolerance_cm, side_falloff, end_falloff, width, paint_layer,
                                mesh_offset_cm))
     api.register_panel_rpc("build_pieces", lambda net_id="", actor="", rebuild=False: safe(build_pieces)(net_id, actor, rebuild))
-    api.register_panel_rpc("kit_materials", lambda net_id="": safe(kit_materials)(net_id))
+    api.register_panel_rpc("kit_materials", lambda net_id="", street_kit=True: safe(kit_materials)(net_id, street_kit))
     api.register_panel_rpc("kit_convert", lambda net_id="", actor="": safe(kit_convert)(net_id, actor))
     api.register_panel_rpc("check", lambda net_id="", actor="": safe(check)(net_id, actor))
     api.register_panel_rpc("repair", lambda net_id="", actor="": safe(repair_actor)(net_id, actor))

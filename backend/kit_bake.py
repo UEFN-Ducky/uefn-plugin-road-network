@@ -121,7 +121,7 @@ PROPS = {
     "bench": ["SM_Prop_Bench"],
     "bin": ["SM_Prop_TrashCan", "SM_Prop_RecycleBin"],
     "hydrant": ["SM_Prop_FireHydrant"],
-    "park": ["SM_V4_TreeRound", "SM_Prop_Planter"],
+    "tree": ["SM_V4_TreeRound", "SM_V4_TreePine", "SM_V4_TreeRound"],
     "traffic_light": ["SM_Kit_TrafficLight"],
     "stop_sign": ["SM_Kit_StopSign"],
     "street_sign": ["SM_Kit_StreetSign"],
@@ -129,6 +129,7 @@ PROPS = {
     "power_pole": ["SM_Kit_PowerPole"],
 }
 FLAT = {"parking": "SM_Kit_ParkingLot"}  # lots that are ground, not buildings: stretched to the lot, never up
+PARK_TREE_M = 6.0  # a park is a grove: a tree about every 6 m (jittered, 85 % filled), a path slab through it
 SCALE_RANGE = (0.5, 2.0)  # a kit mesh is stretched at most this much to fit its lot
 
 
@@ -157,7 +158,12 @@ def bake(previewed: dict, root: str) -> tuple:
     for name, layer in previewed.items():
         role = layer.get("role")
         pts = layer.get("points") or []
-        if layer.get("kind") == "buildings" and role in FLAT:
+        if layer.get("kind") == "buildings" and role == "park":
+            trees = 0
+            for p in pts:
+                trees += _grove(groups, root, p)
+            baked[name] = len(pts)
+        elif layer.get("kind") == "buildings" and role in FLAT:
             for p in pts:
                 w = (p[7] if len(p) > 7 else 30) * 100
                 d = (p[8] if len(p) > 8 else 30) * 100
@@ -182,7 +188,7 @@ def bake(previewed: dict, root: str) -> tuple:
                     groups.setdefault(path(part, root), []).append([x, y, z, yaw, round(sx, 3), round(sy, 3), round(sz, 3)])
                 _ground_pieces(groups, root, p, x, y, z, yaw, w, d)
             baked[name] = len(pts)
-        elif role in PROPS and layer.get("kind") != "foliage":
+        elif role in PROPS:
             opts = PROPS[role]
             for p in pts:
                 s = p[4] if len(p) > 4 else 1.0
@@ -191,6 +197,30 @@ def bake(previewed: dict, root: str) -> tuple:
         elif pts and layer.get("kind") != "foliage":
             missing.append(name)
     return groups, baked, missing
+
+
+def _grove(groups: dict, root: str, p: list) -> int:
+    """A park lot filled with trees on a jittered grid (deterministic per lot), plus a path across it."""
+    x, y, z, yaw = p[0], p[1], p[2], p[3]
+    w = (p[7] if len(p) > 7 else 40) * 100
+    d = (p[8] if len(p) > 8 else 40) * 100
+    fx, fy = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+    step = PARK_TREE_M * 100
+    made = 0
+    for i in range(int(d // step)):
+        for j in range(int(w // step)):
+            seed = abs(int(x) * 31 + int(y) * 17 + i * 7919 + j * 104729)
+            if seed % 100 >= 85 or abs(j - w / step / 2 + 0.5) < 0.6:  # some gaps; the middle row is the path
+                continue
+            u = -d / 2 + (i + 0.5) * step + (seed % 97 - 48) / 48 * step * 0.35
+            v = -w / 2 + (j + 0.5) * step + (seed % 89 - 44) / 44 * step * 0.35
+            mesh = PROPS["tree"][seed % len(PROPS["tree"])]
+            s = round(0.8 + (seed % 50) / 100, 2)
+            groups.setdefault(path(mesh, root), []).append([round(x + fx * u - fy * v), round(y + fy * u + fx * v), z,
+                                                            seed % 360, s, s, s])
+            made += 1
+    groups.setdefault(path("SM_Kit_PathSlab", root), []).append([x, y, z, yaw, round(d / 100, 2), 2.5, 1.0])
+    return made
 
 
 def _ground_pieces(groups: dict, root: str, p: list, x, y, z, yaw, w, d) -> None:
@@ -221,7 +251,7 @@ def _demo() -> None:
         "Traffic lights": {"kind": "at_junctions", "role": "traffic_light", "points": [[7, 7, 7, 0, 1]]},
     }
     groups, baked, missing = bake(pv, "/R")
-    assert baked == {"Skyscrapers": 2, "Houses": 1, "Street lamps": 1, "Traffic lights": 1} and missing == [], (baked, missing)
+    assert baked == {"Skyscrapers": 2, "Houses": 1, "Street lamps": 1, "Trees": 1, "Traffic lights": 1} and missing == [], (baked, missing)
     # a house on a hill: a plinth under it and a sloped walkway slab from its door
     hill = {"Houses": {"kind": "buildings", "role": "house",
                        "points": [[0, 0, 500, 0, 1, 7, 0, 12, 12, 1.8, [[1.6, [600, 0, 500, 1100, 0, 350]]]]]},
@@ -239,7 +269,11 @@ def _demo() -> None:
         for r in rows:
             assert "SM_Kit_" in p or all(SCALE_RANGE[0] <= v <= SCALE_RANGE[1] for v in r[4:7]) or r[4] == 1.1, r
     assert all(p.startswith("/R/WorldGen/") and p.count(".") == 1 for p in groups)
-    assert not any("Tree" in p for p in groups), "foliage is painted, not baked"
+    assert any("SM_V4_Tree" in p for p in groups), "forest trees are baked"
+    park = {"Parks": {"kind": "buildings", "role": "park", "points": [[0, 0, 0, 0, 1, 0, 0, 40, 40, 0, []]]}}
+    g3, b3, _ = bake(park, "/R")
+    trees = sum(len(v) for k, v in g3.items() if "SM_V4_Tree" in k)
+    assert 25 <= trees <= 40 and b3 == {"Parks": 1}, ("a 40 m park is a grove", trees)
     print("kit bake ok", len(groups), "meshes")
 
 
