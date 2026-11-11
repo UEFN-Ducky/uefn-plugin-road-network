@@ -108,6 +108,26 @@ KIT = {
     "SM_Kit_Bush": ("Kit/Street", -83, -95, 0, 110, 85, 130),
     "SM_Kit_Rock": ("Kit/Street", -80, -70, -20, 85, 70, 70),
     "SM_Kit_TreePit": ("Kit/Street", -75, -75, -2, 75, 75, 2),  # dirt square + grate under every street tree
+    # facility kit (BuildingKit.blend): what makes a power plant a power plant, a city hall a city hall
+    "SM_Kit_EntranceSteps": ("Kit/Facility", 0, -150, -20, 180, 150, 200),  # 1 m rise (scaled to the plinth), down +X
+    "SM_Kit_CoolingTower": ("Kit/Facility", -1210, -1200, 0, 1210, 1200, 3205),
+    "SM_Kit_Chimney": ("Kit/Facility", -250, -250, 0, 250, 250, 4205),
+    "SM_Kit_Transformer": ("Kit/Facility", -200, -160, 0, 200, 160, 320),
+    "SM_Kit_StorageTank": ("Kit/Facility", -510, -510, 0, 510, 510, 920),
+    "SM_Kit_Silo": ("Kit/Facility", -305, -305, 0, 305, 305, 2050),
+    "SM_Kit_ClarifierTank": ("Kit/Facility", -1000, -1000, 0, 1040, 1000, 440),
+    "SM_Kit_Conveyor": ("Kit/Facility", 0, -70, 0, 1200, 70, 720),
+    "SM_Kit_FactoryMachine": ("Kit/Facility", -250, -150, 0, 250, 150, 390),
+    "SM_Kit_TelecomMast": ("Kit/Facility", -160, -160, 0, 160, 160, 4030),
+    "SM_Kit_SecurityFence_4m": ("Kit/Facility", -5, -25, 0, 405, 25, 360),
+    "SM_Kit_WatchTower": ("Kit/Facility", -200, -200, 0, 205, 205, 1130),
+    "SM_Kit_Flagpole": ("Kit/Facility", -40, -40, 0, 230, 40, 1045),
+    "SM_Kit_Portico": ("Kit/Facility", 0, -620, -60, 360, 620, 1060),
+    "SM_Kit_CivicDome": ("Kit/Facility", -620, -620, 0, 620, 620, 1060),
+    "SM_Kit_Helipad": ("Kit/Facility", -905, -905, 0, 905, 905, 37),
+    "SM_Kit_PlatformCanopy": ("Kit/Facility", -2000, -350, 0, 2000, 350, 580),
+    "SM_Kit_Bleachers": ("Kit/Facility", -1005, -485, 0, 1005, 0, 370),
+    "SM_Kit_AmbulanceCanopy": ("Kit/Facility", 0, -421, 0, 1010, 421, 560),
     # the planned developments' grounds (urban.ARCHETYPES): 1 m unit slabs stretched to each part, and towers
     "SM_Kit_Apron": ("Kit/Street", -50, -50, 0, 50, 50, 10),
     "SM_Kit_SportsField": ("Kit/Street", -50, -50, 0, 50, 50, 2),
@@ -262,13 +282,14 @@ def bake(previewed: dict, root: str) -> tuple:
                 groups.setdefault(path(FLAT[role], root), []).append([p[0], p[1], p[2], p[3], round(d / 100, 2),
                                                                     round(w / 100, 2), 1.0])
             baked[name] = len(pts)
-        elif layer.get("kind") == "buildings" and layer.get("build") == "modular" and role in grammar.STYLE_BY_ROLE:
+        elif layer.get("kind") == "buildings" and (role in grammar.STYLE_BY_ROLE or role in BUILDINGS):
+            opts = BUILDINGS.get(role) or [["SM_City_CT_MidRise"]]
+            modular = layer.get("build") == "modular" and role in grammar.STYLE_BY_ROLE
             for p in pts:
-                _modular(groups, root, role, p)
-            baked[name] = len(pts)
-        elif layer.get("kind") == "buildings" and role in BUILDINGS:
-            opts = BUILDINGS[role]
-            for p in pts:
+                fac = p[12] if len(p) > 12 and isinstance(p[12], str) else ""
+                if fac in FACILITIES or modular:  # planned facilities are always built for what they are
+                    _modular(groups, root, role, p, fac)
+                    continue
                 x, y, z, yaw = p[0], p[1], p[2], p[3]
                 h = (p[5] if len(p) > 5 else 8) * 100
                 w = (p[7] if len(p) > 7 else 12) * 100
@@ -325,26 +346,108 @@ def tile_diff(new: dict, stored: dict, force: bool = False) -> tuple:
     return build, remove, sorted(k for k in new if k not in build)
 
 
-def _modular(groups: dict, root: str, role: str, p: list) -> None:
+FLAG = "SM_Kit_Flagpole"
+FRONT_BOX = (-0.5, 0.4, -0.5, 0.5)  # a facility's shell leaves a front strip for its flags, portico, canopy
+# planned facility (urban.CATALOG key) -> how it is built. style: grammar style; box: the shell in the lot
+# (u0, u1 along the depth, -0.5 back .. 0.5 street; v0, v1 across); shell=False: no building (a stadium);
+# hall: open sheds, one storey of interior; furniture: what stands on each floor; extras: [(mesh, u, v, where,
+# turn)] with where 'ground' | 'roof' | 'box_front' (on the shell's front face); ring: (mesh, inset, piece cm,
+# centred) pieces round the lot's edge, facing in (fences, bleachers).
+FACILITIES = {
+    "city_hall": dict(style="civic", box=(-0.5, 0.36, -0.5, 0.5), extras=[("SM_Kit_Portico", 0, 0, "box_front", 0),
+                      ("SM_Kit_CivicDome", -0.07, 0, "roof", 0), (FLAG, 0.46, -0.42, "ground", 0), (FLAG, 0.46, 0.42, "ground", 0)]),
+    "courthouse": dict(style="civic", box=(-0.5, 0.36, -0.5, 0.5),
+                       extras=[("SM_Kit_Portico", 0, 0, "box_front", 0), (FLAG, 0.46, 0.42, "ground", 0)]),
+    "post_office": dict(style="school", extras=[(FLAG, 0.46, 0.42, "ground", 0)]),
+    "library": dict(style="school"),
+    "community_center": dict(style="school"),
+    "police_hq": dict(style="modern", extras=[(FLAG, 0.46, -0.42, "ground", 0), (FLAG, 0.46, 0.42, "ground", 0)]),
+    "police_precinct": dict(style="modern", extras=[(FLAG, 0.46, 0.42, "ground", 0)]),
+    "jail": dict(style="jail", box=(-0.36, 0.36, -0.36, 0.36), extras=[("SM_Kit_WatchTower", u, v, "ground", 0)
+                 for u in (-0.45, 0.45) for v in (-0.45, 0.45)], ring=("SM_Kit_SecurityFence_4m", 0.49, 400, False)),
+    "fire_station": dict(style="industrial", extras=[(FLAG, 0.46, 0.42, "ground", 0)]),
+    "ambulance": dict(style="industrial", extras=[("SM_Kit_AmbulanceCanopy", 0, 0, "box_front", 0)]),
+    "hospital": dict(style="tower", extras=[("SM_Kit_Helipad", 0, 0, "roof", 0),
+                                           ("SM_Kit_AmbulanceCanopy", 0, 0.3, "box_front", 0)]),
+    "elementary_school": dict(style="school", extras=[(FLAG, 0.46, 0.42, "ground", 0)]),
+    "middle_school": dict(style="school", extras=[(FLAG, 0.46, 0.42, "ground", 0)]),
+    "high_school": dict(style="school", extras=[(FLAG, 0.46, -0.42, "ground", 0), (FLAG, 0.46, 0.42, "ground", 0)]),
+    "college": dict(style="civic", extras=[(FLAG, 0.46, 0.42, "ground", 0)]),
+    "daycare": dict(style="school"),
+    "power_plant": dict(style="industrial", box=(-0.5, -0.05, -0.5, 0.5), hall=True, furniture="SM_Kit_FactoryMachine",
+                        extras=[("SM_Kit_CoolingTower", 0.24, -0.25, "ground", 0), ("SM_Kit_CoolingTower", 0.24, 0.25, "ground", 0),
+                                ("SM_Kit_Chimney", 0.03, -0.44, "ground", 0), ("SM_Kit_Transformer", 0.45, 0, "ground", 0)]),
+    "water_treatment": dict(style="industrial", box=(-0.5, 0.0, -0.5, 0.5), hall=True,
+                            extras=[("SM_Kit_StorageTank", 0.25, -0.25, "ground", 0), ("SM_Kit_StorageTank", 0.25, 0.25, "ground", 0)]),
+    "wastewater": dict(style="industrial", box=(-0.5, 0.0, -0.5, 0.5), hall=True,
+                       extras=[("SM_Kit_StorageTank", 0.25, -0.25, "ground", 0), ("SM_Kit_StorageTank", 0.25, 0.25, "ground", 0)]),
+    "recycling_center": dict(style="industrial", box=(-0.5, 0.1, -0.5, 0.5), hall=True, furniture="SM_Kit_FactoryMachine",
+                             extras=[("SM_Kit_Conveyor", 0.12, -0.3, "ground", 0), ("SM_Kit_Silo", 0.32, 0.3, "ground", 0)]),
+    "distribution_center": dict(style="industrial", hall=True),
+    "substation": dict(style="industrial", hall=True),
+    "train_station": dict(style="shop", box=(-0.3, 0.5, -0.5, 0.5),
+                          extras=[("SM_Kit_PlatformCanopy", -0.45, 0, "ground", 90)]),
+    "bus_terminal": dict(style="shop", box=(-0.5, 0.3, -0.5, 0.5), extras=[("SM_Kit_PlatformCanopy", 0.42, 0, "ground", 90)]),
+    "stadium": dict(shell=False, ring=("SM_Kit_Bleachers", 0.44, 2000, True),
+                    extras=[(FLAG, 0.49, -0.49, "ground", 0), (FLAG, 0.49, 0.49, "ground", 0)]),
+    "sports_complex": dict(style="school"),
+    "hotel": dict(style="tower"),
+}
+# industrial sheds hold machines, not desks
+FURNITURE_BY_STYLE = {"industrial": "SM_Kit_FactoryMachine", "jail": "SM_Kit_DeskSet"}
+
+
+def _modular(groups: dict, root: str, role: str, p: list, fac: str = "") -> None:
     """A lot built from BuildingKit modules by the grammar (grammar.py), placed in the lot's frame, with its
-    interiors on the same storey grid and its pad pieces."""
+    interiors (floors and a stair core on every storey) on the same storey grid and its pad pieces. A planned
+    facility gets its own style, its shell in part of the lot, and its machines / extras (FACILITIES)."""
     x, y, z, yaw = p[0], p[1], p[2], p[3]
     h = (p[5] if len(p) > 5 else 8) * 100
     form = FORM_NAMES[p[6]] if len(p) > 6 and isinstance(p[6], int) and 0 <= p[6] < len(FORM_NAMES) else "box"
     w = (p[7] if len(p) > 7 else 12) * 100
     d = (p[8] if len(p) > 8 else 12) * 100
-    seed = abs(int(x) * 73856093 ^ int(y) * 19349663)
-    rows, blocks = grammar.build(form, role, d, w, h, seed,
-                                 lambda n: f"{root}/WorldGen/{grammar.FOLDER}/{n}.{n}")
+    spec = FACILITIES.get(fac) or {}
+    style = spec.get("style") or grammar.STYLE_BY_ROLE.get(role, "tower")
+    u0, u1, v0, v1 = spec.get("box", FRONT_BOX if spec else (-0.5, 0.5, -0.5, 0.5))
+    cu, cv = (u0 + u1) / 2 * d, (v0 + v1) / 2 * w
     fx, fy = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
-    for mesh, rs in rows.items():
-        out = groups.setdefault(mesh, [])
-        for u, v, h0, turn, sx, sy, sz in rs:
-            out.append([round(x + fx * u - fy * v), round(y + fy * u + fx * v), round(z + h0),
-                        round((yaw + turn) % 360, 1), sx, sy, sz])
-    if role in INTERIOR:
-        _interior(groups, root, blocks, INTERIOR[role], x, y, z, yaw, 1.0, 1.0, 1.0, storey=grammar.STOREY_CM)
-    _ground_pieces(groups, root, p, x, y, z, yaw, w, d)
+
+    def put(mesh, u, v, h0, turn, s=(1.0, 1.0, 1.0)):
+        groups.setdefault(mesh, []).append([round(x + fx * u - fy * v), round(y + fy * u + fx * v), round(z + h0),
+                                            round((yaw + turn) % 360, 1), *s])
+
+    top = 0.0
+    if spec.get("shell", True):
+        seed = abs(int(x) * 73856093 ^ int(y) * 19349663)
+        rows, blocks = grammar.build(spec.get("form", form), role, (u1 - u0) * d, (v1 - v0) * w, h, seed,
+                                     lambda n: f"{root}/WorldGen/{grammar.FOLDER}/{n}.{n}", style)
+        for mesh, rs in rows.items():
+            for u, v, h0, turn, sx, sy, sz in rs:
+                put(mesh, u + cu, v + cv, h0, turn, (sx, sy, sz))
+        blocks = [(bx0 + cu, by0 + cv, bz0, bx1 + cu, by1 + cv, bz1) for bx0, by0, bz0, bx1, by1, bz1 in blocks]
+        top = max(b[5] for b in blocks)
+        if spec.get("hall"):  # an open shed: one floor of machines, the hall above it stays open
+            blocks = [(b[0], b[1], b[2], b[3], b[4], b[2] + grammar.STOREY_CM) for b in blocks]
+        furniture = spec.get("furniture") or FURNITURE_BY_STYLE.get(style) or INTERIOR.get(role)
+        if furniture:
+            _interior(groups, root, blocks, furniture, x, y, z, yaw, 1.0, 1.0, 1.0, storey=grammar.STOREY_CM)
+    for mesh, u, v, where, turn in spec.get("extras", []):
+        if where == "box_front":  # against the shell's street face
+            put(path(mesh, root), u1 * d, v * w + cv, 0, turn)
+        else:
+            put(path(mesh, root), u * d, v * w, top if where == "roof" else 0, turn)
+    if spec.get("ring"):
+        mesh, inset, piece, centred = spec["ring"]
+        corners = [(-inset * d, -inset * w), (inset * d, -inset * w), (inset * d, inset * w), (-inset * d, inset * w)]
+        for (pu, pv), (qu, qv) in zip(corners, corners[1:] + corners[:1]):  # counter-clockwise: the lot is on the left
+            L = math.hypot(qu - pu, qv - pv)
+            n = max(1, round(L / piece))
+            du, dv = (qu - pu) / n, (qv - pv) / n
+            turn = math.degrees(math.atan2(qv - pv, qu - pu))
+            for i in range(n):
+                k = i + 0.5 if centred else i
+                put(path(mesh, root), pu + du * k, pv + dv * k, 0, turn, (round(L / n / piece, 3), 1.0, 1.0))
+    _ground_pieces(groups, root, p, x, y, z, yaw, w, d, front=u1 * d)
 
 
 
@@ -402,7 +505,9 @@ def _interior(groups: dict, root: str, parts: list, furniture: str, x, y, z, yaw
             floors += 1
             h = k * storey + 10
             put(plate, cu, cv, h, 0, [round(2 * ru / 100, 2), round(2 * rv / 100, 2), 1.0])
-            if has_core:
+            # a core climbs one storey; under a modular block's roof there is no storey to climb to (its shaft and
+            # rails stood through the roof), the flight from below lands on this floor
+            if has_core and (part or k < k1 - 1):
                 put("SM_Kit_StairCore", cu, cv, h, 0, cs)
                 if not car:
                     put("SM_Kit_ElevatorCar", cu, cv + 115 * cs[1], h + 15, 0, [cs[0], 1.0, 1.0])
@@ -480,12 +585,17 @@ def _grove(groups: dict, root: str, p: list) -> int:
     return made
 
 
-def _ground_pieces(groups: dict, root: str, p: list, x, y, z, yaw, w, d) -> None:
-    """A lot's foundation (a plinth as deep as the hill falls away) and its walkway / driveway slabs."""
+def _ground_pieces(groups: dict, root: str, p: list, x, y, z, yaw, w, d, front: float = 0.0) -> None:
+    """A lot's foundation (a plinth as deep as the hill falls away), steps down from its door when the plinth
+    lifts it, and its walkway / driveway slabs. front: the door's distance ahead of the lot centre (cm)."""
     found = p[9] if len(p) > 9 else 0.0
     if found > 0.3:
         groups.setdefault(path("SM_Kit_Plinth", root), []).append([x, y, z, yaw, round(d / 100, 2), round(w / 100, 2),
                                                                   round(found + 0.3, 2)])
+        f = front or d / 2
+        fx, fy = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+        groups.setdefault(path("SM_Kit_EntranceSteps", root), []).append(
+            [round(x + fx * f), round(y + fy * f), round(z - found * 100), yaw, 1.0, 1.0, round(found, 2)])
     for wx, wy, wyaw, length, height in (p[11] if len(p) > 11 else []):  # uphill cut: a wall from pad to ground
         groups.setdefault(path("SM_Kit_RetainingWall", root), []).append(
             [wx, wy, z, wyaw, round(length, 2), 1.0, round(height + 0.2, 2)])
@@ -604,9 +714,38 @@ def _demo() -> None:
         ("3 storeys on the BuildingKit grid, both wings furnished", sorted({r[2] for r in floors}))
     assert all(r[6] == round(grammar.STOREY_CM / STOREY_CM, 3) for r in gm2[path("SM_Kit_StairCore", "/R")]), "core fits the storey"
     assert path("SM_Kit_Plinth", "/R") in gm2, "pad pieces still come with a modular lot"
-    # a role the grammar has no style for keeps its whole mesh even when the layer asks for modular
+    # planned facilities: each built for what it is, from its own style and machines, hollow with stairs
+    def fac_lot(key, role, w=60, d=50, h=12, found=0.0):
+        return {key: {"kind": "buildings", "role": role, "points": [[0, 0, 0, 0, 1, h, 0, w, d, found, [], [], key]]}}
+    gc = bake(fac_lot("city_hall", "civic", found=1.0), "/R")[0]
+    for piece in ("SM_Kit_Portico", "SM_Kit_CivicDome", "SM_Kit_Flagpole", "SM_Kit_EntranceSteps", "SM_Kit_StairCore"):
+        assert path(piece, "/R") in gc, piece
+    assert bk("SM_BK_Mansion_Wall_GrandEntrance") in gc and not any("SM_City_" in k for k in gc), "a city hall, not a mid-rise"
+    portico = gc[path("SM_Kit_Portico", "/R")][0]
+    assert portico[0] == round(0.36 * 5000), ("the portico stands on the shell's front face", portico)
+    assert gc[path("SM_Kit_CivicDome", "/R")][0][2] >= 1152 - 1, "the dome sits on the roof"
+    gj = bake(fac_lot("jail", "police", 100, 80), "/R")[0]
+    assert len(gj[path("SM_Kit_WatchTower", "/R")]) == 4 and len(gj[path("SM_Kit_SecurityFence_4m", "/R")]) > 30
+    assert bk("SM_BK_Jail_Wall_SallyPort") in gj and path("SM_Kit_StairCore", "/R") in gj
+    gpp = bake(fac_lot("power_plant", "factory", 90, 90, 18), "/R")[0]
+    assert len(gpp[path("SM_Kit_CoolingTower", "/R")]) == 2 and path("SM_Kit_Chimney", "/R") in gpp
+    assert path("SM_Kit_FactoryMachine", "/R") in gpp and bk("SM_BK_Ind_Wall_RollerDoor") in gpp
+    assert len({r[2] for r in gpp[path("SM_Kit_FactoryMachine", "/R")]}) == 1, "a power hall is one open storey, not 5 floors"
+    assert path("SM_Kit_StairCore", "/R") not in gpp, "a one-storey hall has nowhere for stairs to go"
+    # no stair core under a modular roof: the top storey's floor is where the last flight lands
+    cores = gc[path("SM_Kit_StairCore", "/R")]
+    assert max(r[2] for r in cores) + 415 <= 1152 + 10, ("no core pokes through the roof", sorted(r[2] for r in cores))
+    gst = bake(fac_lot("stadium", "mall", 140, 116, 10), "/R")[0]
+    assert len(gst[path("SM_Kit_Bleachers", "/R")]) >= 20 and not any("SM_BK_" in k for k in gst), "a bowl, no shell"
+    assert path("SM_Kit_EntranceSteps", "/R") not in gst, "no plinth, no steps"
+    gh2 = bake(fac_lot("hospital", "hospital", 80, 60, 30), "/R")[0]
+    assert path("SM_Kit_Helipad", "/R") in gh2 and len({r[2] for r in gh2[path("SM_Kit_StairCore", "/R")]}) >= 7
+    assert all(kb_ in KIT for kb_ in ("SM_Kit_CoolingTower", "SM_Kit_WatchTower", "SM_Kit_EntranceSteps"))
+    for spec in FACILITIES.values():  # every extra is a kit piece and every style exists
+        assert all(e[0] in KIT for e in spec.get("extras", [])) and (not spec.get("style") or spec["style"] in grammar.STYLES)
+    # a warehouse layer set to modular is an industrial shed now, not a stack of containers
     gw2 = bake({"W": {"kind": "buildings", "role": "warehouse", "build": "modular", "points": [lot]}}, "/R")[0]
-    assert any("SM_V4_Container" in k for k in gw2)
+    assert bk("SM_BK_Ind_Wall_RollerDoor") in gw2 and not any("SM_V4_Container" in k for k in gw2)
     print("kit bake ok", len(groups), "meshes")
 
 

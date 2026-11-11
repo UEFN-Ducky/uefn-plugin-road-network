@@ -60,3 +60,7 @@ UEFN. A blown-out or empty screenshot is a failure, not a pass.
 When the person corrects you, or you find the plugin did something surprising, add one line here: the
 situation and what to do. Keep it to what you couldn't have known.
 - The person wants cities realistic up close: tree pits in paving, real stairs, no smeared facades.
+- Every planned facility must look like what it is (city hall, jail, power plant...). If one comes out generic,
+  its type was lost on the way to the bake: check the lot still carries it, don't add a mesh by hand.
+- Check a new building type the way the person can see it: assemble it in Blender from the plugin's own bake
+  (a cutaway with the roof off) before calling it done. That's how the stairs poking through roofs were found.

@@ -690,7 +690,9 @@ def site_layers(cities: list, ground) -> dict:
     grounds: dict = {}
     for c in cities:
         priv = c.get("private") or {}
-        for x, y, yaw, sx, sy, kind in priv.get("grounds") or []:  # the planned developments' grounds
+        for x, y, yaw, sx, sy, kind, *fac in priv.get("grounds") or []:  # the planned developments' grounds
+            if kind == "tower" and fac and fac[0] == "telecom_tower":
+                kind = "telecom"  # a mast, not a water tank
             mesh, box, _tint = GROUNDS[kind]
             z = round(ground(x, y) or 0)
             if box[0] == 1:  # 1 m unit slabs, stretched to the part
@@ -730,9 +732,10 @@ GROUNDS = {"apron": ("SM_Kit_Apron", [1, 1, 0.1], "mix:fg-dim:bg:0.35"),
            "pool": ("SM_Kit_Pool", [1, 1, 0.1], "mix:blue:fg:0.3"),
            "yard": ("SM_Kit_UtilityYard", [1, 1, 0.05], "mix:fg-dim:bg:0.5"),
            "pond": ("SM_Kit_Pond", [1, 1, 0.05], "mix:blue:bg:0.3"),
-           "tower": ("SM_Kit_WaterTower", [12, 12, 30], "fg-dim")}
+           "tower": ("SM_Kit_WaterTower", [12, 12, 30], "fg-dim"),
+           "telecom": ("SM_Kit_TelecomMast", [3.2, 3.2, 40], "fg-dim")}
 GROUND_NAMES = {"apron": "Service aprons", "field": "Sports fields", "playground": "Playgrounds", "pool": "Pools",
-                "yard": "Utility yards", "pond": "Ponds and tanks", "tower": "Towers"}
+                "yard": "Utility yards", "pond": "Ponds and tanks", "tower": "Towers", "telecom": "Telecom masts"}
 
 
 WALL_CUT_CM, WALL_FILL_CM = 120.0, 200.0  # road cut / fill deeper than this gets a stone retaining wall
@@ -939,7 +942,8 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                 for lot_row in c.get("lots") or []:
                     lx, ly, lyaw, lw, ld, frx, fry = lot_row[:7]
                     role, foot = (lot_row[7], lot_row[8]) if len(lot_row) > 8 else ("", False)
-                    cands.append((lx, ly, lyaw, "lot", lw, ld, frx, fry, role, foot))
+                    fac = lot_row[9] if len(lot_row) > 9 and isinstance(lot_row[9], str) else ""  # planner's facility
+                    cands.append((lx, ly, lyaw, "lot", lw, ld, frx, fry, role, foot, fac))
             rnd.shuffle(cands)  # which layer gets which free lot is mixed, not swept from one corner
             thin = 1.0
         else:
@@ -972,7 +976,7 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
         for cand in cands:
             x, y, yaw = cand[:3]
             along = len(cand) == 5
-            lot = len(cand) == 10
+            lot = len(cand) == 11
             lot_role = cand[8] if lot else ""
             if lot:
                 if (cand[6], cand[7]) in taken:
@@ -1020,8 +1024,10 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                 continue
             # one of a kind per `spacing` in any direction (two hospitals never sit across the street from
             # each other); dense layers just must not overlap
-            if lot:  # only one-of-a-kind spacing (100 m+) applies on lots; neighbours sit lot to lot
-                gap = spacing * 0.5 if spacing >= 10000 else 0.0
+            if lot:  # only one-of-a-kind spacing (100 m+) applies on lots; neighbours sit lot to lot.
+                # A site the planner chose (a library next to city hall) is never pruned by the layer's spacing:
+                # that spacing is for scattering, and it silently dropped planned civic buildings and schools
+                gap = 0.0 if cand[9] else spacing * 0.5 if spacing >= 10000 else 0.0
             else:
                 gap = max(r, spacing * 0.5) if along and spacing > 4 * r else r
             if layer["self_prune"] and gap and any(True for _ in own.near(x, y, gap)):
@@ -1045,9 +1051,11 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                 pad, found, paths, walls = _lot_ground(layer, sample_z, x, y, yaw, row[7], row[8])
                 row[2] = round(pad - layer["sink_cm"])
                 row += [found, paths, walls]
+                if lot and cand[10]:
+                    row.append(cand[10])  # the facility (city_hall, jail, power_plant...): how the bake builds it
             pts.append(row)
         kept[layer["name"]] = own
-        if any(len(c) == 10 for c in cands[:1]):
+        if any(len(c) == 11 for c in cands[:1]):
             lot_layers.add(layer["name"])
         count = int(len(pts) * thin) if layer["kind"] in SCATTERED else len(pts)
         shown_cap = (foliage_limit or limit) if layer["kind"] == "foliage" else limit
@@ -1058,7 +1066,7 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                               **({"size_m": [layer["width_m"], layer["depth_m"]], "setback_m": layer["setback_m"],
                                   "forms": FORM_NAMES, "driveway": layer["driveway"], "walkway": layer["walkway"],
                                   "row": "x, y, pad z, yaw, scale, height_m, form, width_m, depth_m, foundation_m, "
-                                         "paths [[width_m, [x, y, z, ...]]], walls [[x, y, yaw, length_m, height_m]]"} if layer["kind"] == "buildings" else {})}
+                                         "paths [[width_m, [x, y, z, ...]]], walls [[x, y, yaw, length_m, height_m]], facility (planned sites)"} if layer["kind"] == "buildings" else {})}
     return out
 
 

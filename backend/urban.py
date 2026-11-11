@@ -62,6 +62,8 @@ CATALOG = {
     "courthouse": dict(cat="government", method="single", role="civic", size=(60, 50), arch="civic", min_pop=30000),
     "post_office": dict(cat="government", method="capacity", role="civic", size=(45, 40), arch="civic_small",
                         rate=1.0, capacity=20000, min_demand=6000),
+    "jail": dict(cat="government", method="single", role="police", size=(140, 110), arch="jail", min_pop=40000,
+                 edge=True),
     # education
     "college": dict(cat="education", method="single", role="school", size=(250, 200), arch="campus", min_pop=50000),
     "high_school": dict(cat="education", method="capacity", role="school", size=(200, 150), arch="high_school",
@@ -183,6 +185,7 @@ ARCHETYPES = {
     "rail": [("parking", -0.48, -0.32, 0.05, 0.45), ("building", -0.3, 0.3, 0.05, 0.45),
              ("parking", 0.32, 0.48, 0.05, 0.45), ("apron", -0.48, 0.48, 0.55, 0.95)],
     "parking_only": [("parking", -0.48, 0.48, 0.03, 0.97)],
+    "jail": [("parking", -0.48, 0.48, 0.02, 0.18), ("building", -0.4, 0.4, 0.24, 0.96)],
     "garage": [("garage", -0.45, 0.45, 0.05, 0.95)],
 }
 SPEED = {"6L": 1667, "ED": 2222, "ER": 1389, "4L": 1389, "2S": 1111, "FR": 1111, "2L": 972, "1W": 833, "DT": 694,
@@ -317,8 +320,9 @@ def develop(spec: dict, site: _Site, ftype: str) -> dict:
         if kind.startswith("building"):
             role = kind.split(":", 1)[1] if ":" in kind else spec["role"]
             if role:
+                # the facility type rides along, so the bake can build a city hall as a city hall, not a generic block
                 out["lots"].append([round(cx), round(cy), round(site.facing, 1), round(w), round(d),
-                                    round(front[0]), round(front[1]), role, True])
+                                    round(front[0]), round(front[1]), role, True, ftype])
         elif kind == "garage":
             out["lots"].append([round(cx), round(cy), round(site.facing, 1), round(w), round(d),
                                 round(front[0]), round(front[1]), "parking_garage", True])
@@ -328,7 +332,7 @@ def develop(spec: dict, site: _Site, ftype: str) -> dict:
             out["stalls"] += stalls
         else:
             out["grounds"].append([round(cx), round(cy), round(site.yaw(1, 0), 1), round(w / 100, 2),
-                                   round(d / 100, 2), kind])
+                                   round(d / 100, 2), kind, ftype])
     return out
 
 

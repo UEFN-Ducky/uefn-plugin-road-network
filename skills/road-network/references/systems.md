@@ -219,6 +219,20 @@ Facilities are never placed at random. After the lots exist, `urban.plan` runs:
 school enrolment, unmet needs, and each facility with the reason it is there. The panel's Cities cards show the
 same. To change the services, change population (city size, district rings) or the catalogue, then generate.
 
+**Each facility is built for what it is.** The facility type travels with its lot from the planner through the
+preview into the bake. There, a table of facilities gives each type a grammar style, the part of the lot its
+building takes, and its own pieces:
+- **Civic:** a city hall gets classical walls, a portico, a dome and flags; a courthouse a portico and a flag.
+- **Jail:** slit-window walls, a sally-port gate, a security fence round the lot and four watchtowers.
+- **Utilities:** a power plant gets an open industrial hall with machines, two cooling towers, a chimney and a
+  transformer; treatment plants get storage tanks.
+- **Health:** a hospital gets a helipad on the roof and an ambulance canopy.
+- **Transport and sport:** stations get platform canopies; a stadium is a ring of bleachers with no shell.
+
+Facility buildings are always modular, so they are hollow with floors and a stair core every storey (open
+halls get one storey of machines). A raised plinth gets entrance steps. Planned sites are never thinned by a
+layer's spacing; that spacing only applies to scattered lots.
+
 ## Waterfront & marine development (`backend/waterfront.py`, options `waterfront`, `canals`)
 - **ShorelineAnalyzer (`analyze`):** the water line S(t) comes from the terrain at the water level (marching
   squares), resampled every 20 m. Each sample carries:

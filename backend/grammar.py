@@ -49,16 +49,34 @@ STYLES = {
                "walls": {"Glass": "SM_BK_Modern_SlidingGlassWall", "Wood": "SM_BK_Modern_Wall_Wood",
                          "Garage": "SM_BK_Modern_GarageDoor"},
                "front_ground": "[Glass*]", "ground": "[{Glass:1,Wood:1}*]", "upper": "[{Glass:2,Wood:1}*]"},
+    "civic": {"corner": "SM_BK_Mansion_Column",  # city hall, courthouse: arched windows, a grand door
+              "walls": {"Arch": "SM_BK_Mansion_Wall_ArchWindows", "Bay": "SM_BK_Mansion_Wall_BayWindow",
+                        "Entrance": "SM_BK_Mansion_Wall_GrandEntrance"},
+              "front_ground": "[Arch*,Entrance,Arch*]", "ground": "[Arch*]", "upper": "[{Arch:4,Bay:1}*]"},
+    "school": {"corner": "SM_BK_Modern_StonePillar",  # schools, libraries, community and post offices
+               "walls": {"Glass": "SM_BK_Modern_SlidingGlassWall", "Wood": "SM_BK_Modern_Wall_Wood",
+                         "Door": "SM_BK_Shop_Wall_Entrance"},
+               "front_ground": "[Glass*,Door,Glass*]", "ground": "[{Glass:2,Wood:1}*]", "upper": "[{Glass:3,Wood:1}*]"},
+    "industrial": {"corner": "SM_BK_Ind_Corner",  # factories, plants, depots, fire and ambulance stations
+                   "walls": {"Metal": "SM_BK_Ind_Wall_Metal", "Window": "SM_BK_Ind_Wall_Window",
+                             "Roller": "SM_BK_Ind_Wall_RollerDoor", "Door": "SM_BK_Ind_Wall_Door"},
+                   "front_ground": "[Roller*,Door,Roller*]", "ground": "[Door,{Metal:2,Window:1}*]",
+                   "upper": "[{Window:1,Metal:1}*]"},
+    "jail": {"corner": "SM_BK_Jail_Corner",
+             "walls": {"Slit": "SM_BK_Jail_Wall_Slit", "Solid": "SM_BK_Jail_Wall_Solid",
+                       "Gate": "SM_BK_Jail_Wall_SallyPort"},
+             "front_ground": "[Slit*,Gate,Slit*]", "ground": "[{Slit:2,Solid:1}*]", "upper": "[{Slit:2,Solid:1}*]"},
     "mansion": {"corner": "SM_BK_Mansion_Column",
                 "walls": {"Arch": "SM_BK_Mansion_Wall_ArchWindows", "Bay": "SM_BK_Mansion_Wall_BayWindow",
                           "Entrance": "SM_BK_Mansion_Wall_GrandEntrance"},
                 "front_ground": "[Arch*,Entrance,Arch*]", "ground": "[{Arch:2,Bay:1}*]", "upper": "[{Arch:2,Bay:1}*]"},
 }
 SHARED = {"parapet": "SM_BK_Parapet", "roof": "SM_BK_Floor"}
-# role -> style; roles left out (factories, warehouses, parks, parking) keep their whole meshes
+# role -> style (a planned facility can pick its own style instead: kit_bake.FACILITIES)
 STYLE_BY_ROLE = {"skyscraper": "tower", "office": "tower", "apartment": "apartment", "shop": "shop", "mall": "shop",
-                 "transit": "shop", "gas_station": "shop", "house": "house", "mansion": "mansion", "school": "modern",
-                 "civic": "modern", "hospital": "modern", "police": "modern", "fire_station": "modern"}
+                 "transit": "shop", "gas_station": "shop", "house": "house", "mansion": "mansion", "school": "school",
+                 "civic": "civic", "hospital": "tower", "police": "modern", "fire_station": "industrial",
+                 "factory": "industrial", "warehouse": "industrial", "utility": "industrial"}
 
 
 def modules() -> list:
@@ -153,10 +171,10 @@ def massing(form: str, d: float, w: float, h: float) -> list:
     return [(0, 0, d, w, 0, h)]
 
 
-def build(form: str, role: str, d: float, w: float, h: float, seed: int, path) -> tuple:
+def build(form: str, role: str, d: float, w: float, h: float, seed: int, path, style_name: str = "") -> tuple:
     """(rows {mesh path: [[u, v, z, yaw, sx, sy, sz]]} in the lot frame, blocks for the interiors).
     path(name) -> the mesh's content path. Storeys snap to whole BuildingKit storeys (at least one)."""
-    style = STYLES[STYLE_BY_ROLE.get(role, "tower")]
+    style = STYLES[style_name or STYLE_BY_ROLE.get(role, "tower")]
     rnd = random.Random(seed)
     rows: dict = {}
     blocks = []
