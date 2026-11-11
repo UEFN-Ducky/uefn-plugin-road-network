@@ -85,6 +85,16 @@ KIT = {
     "SM_Kit_ParkingLot": ("Kit/Street", -50, -50, 0, 50, 50, 8),
     "SM_Kit_PathSlab": ("Kit/Street", -50, -50, 0, 50, 50, 8),
     "SM_Kit_Plinth": ("Kit/Street", -50, -50, -100, 50, 50, 0),
+    # interiors (also listener-built): storey slabs with glowing ceiling panels under them (Plate / Round have
+    # a well in the middle for the core), the one-storey stair + elevator core, the elevator car, furniture
+    "SM_Kit_FloorPlate": ("Kit/Street", -50, -50, -4, 50, 50, 15),
+    "SM_Kit_FloorRound": ("Kit/Street", -50, -50, -4, 50, 50, 15),
+    "SM_Kit_FloorSolid": ("Kit/Street", -50, -50, -4, 50, 50, 15),
+    "SM_Kit_StairCore": ("Kit/Street", -200, -200, 0, 200, 200, 415),
+    "SM_Kit_ElevatorCar": ("Kit/Street", -110, -70, 0, 110, 70, 250),
+    "SM_Kit_DeskSet": ("Kit/Street", -80, -40, 0, 85, 40, 115),
+    "SM_Kit_SofaSet": ("Kit/Street", -55, -100, 0, 120, 100, 85),
+    "SM_Kit_ShopShelf": ("Kit/Street", -30, -100, 0, 30, 100, 180),
 }
 
 
@@ -128,6 +138,16 @@ PROPS = {
     "billboard": ["SM_Kit_Billboard"],
     "power_pole": ["SM_Kit_PowerPole"],
 }
+# what is inside a building, by role (factories / warehouses are open yards: nothing)
+INTERIOR = {"skyscraper": "SM_Kit_DeskSet", "office": "SM_Kit_DeskSet", "hospital": "SM_Kit_DeskSet",
+            "police": "SM_Kit_DeskSet", "fire_station": "SM_Kit_DeskSet", "school": "SM_Kit_DeskSet",
+            "apartment": "SM_Kit_SofaSet", "house": "SM_Kit_SofaSet", "mansion": "SM_Kit_SofaSet",
+            "shop": "SM_Kit_ShopShelf", "mall": "SM_Kit_ShopShelf", "gas_station": "SM_Kit_ShopShelf"}
+STOREY_CM = 400  # = SM_Kit_StairCore's rise: its top landing is the next storey's floor
+CORE_CM = 400  # SM_Kit_StairCore's footprint; scaled 0.7-1.6x to the slab's well
+CORE_MIN_CM = 280  # a well narrower than this gets no core (solid slabs, one storey of furniture each)
+MAX_FLOORS = 40  # ponytail: caps instances on the tallest towers; floors above it stay empty
+SETS_PER_FLOOR = 8  # furniture sets per storey, the ones nearest the windows (what you see through glass)
 FLAT = {"parking": "SM_Kit_ParkingLot"}  # lots that are ground, not buildings: stretched to the lot, never up
 PARK_TREE_M = 6.0  # a park is a grove: a tree about every 6 m (jittered, 85 % filled), a path slab through it
 SCALE_RANGE = (0.5, 2.0)  # a kit mesh is stretched at most this much to fit its lot
@@ -186,6 +206,8 @@ def bake(previewed: dict, root: str) -> tuple:
                 sz = max(lo, min(hi, h / _height(parts)))
                 for part in parts:
                     groups.setdefault(path(part, root), []).append([x, y, z, yaw, round(sx, 3), round(sy, 3), round(sz, 3)])
+                if role in INTERIOR:
+                    _interior(groups, root, parts, INTERIOR[role], x, y, z, yaw, sx, sy, sz)
                 _ground_pieces(groups, root, p, x, y, z, yaw, w, d)
             baked[name] = len(pts)
         elif role in PROPS:
@@ -197,6 +219,69 @@ def bake(previewed: dict, root: str) -> tuple:
         elif pts and layer.get("kind") != "foliage":
             missing.append(name)
     return groups, baked, missing
+
+
+def _interior(groups: dict, root: str, parts: list, furniture: str, x, y, z, yaw, sx, sy, sz) -> None:
+    """Floors inside a building shell, per storey: a slab inset from the walls (glowing ceiling panels under it)
+    with a well in the middle, the stair + elevator core standing in that well (walkable switchback stairs,
+    one storey per piece, so the stairs climb the whole building), and furniture along the windows facing
+    out. One elevator car waits at the ground floor. Round / sculpted towers get a round slab well inside
+    their outline so nothing pokes through the glass; a building too small for the core gets solid slabs."""
+    fx, fy = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+
+    def put(mesh, u, v, h, turn, s):
+        groups.setdefault(path(mesh, root), []).append(
+            [round(x + fx * u - fy * v), round(y + fy * u + fx * v), round(z + h), round((yaw + turn) % 360, 1), *s])
+
+    floors, below, car = 0, 0.0, False
+    for part in parts:
+        x0, y0, z0, x1, y1, z1 = KIT[part][1:]
+        roof = 150 if part == parts[-1] else 0
+        rnd = "Round" in part or "SM_Sky" in part
+        odd = part in ("SM_Bld_Hospital", "SM_Bld_Police") or "Mansion_P1" in part
+        inset = 0.6 if "SM_Sky" in part or odd else 0.66 if rnd else 0.86
+        cu, cv = (x0 + x1) / 2 * sx, (y0 + y1) / 2 * sy
+        ru, rv = (x1 - x0) / 2 * sx * inset, (y1 - y0) / 2 * sy * inset
+        if rnd:
+            ru = rv = min(ru, rv)
+        # storeys on one building-wide grid, so the stairs run on through the tower's parts without a gap;
+        # the last storey under the roof stays clear of it
+        k0, k1 = math.ceil((below or z0 * sz) / STOREY_CM), int((z1 * sz - roof) // STOREY_CM)
+        if k1 <= k0 or min(ru, rv) < 150:
+            continue
+        below = k1 * STOREY_CM
+        # the well: square 0.6 r x 0.6 r (FloorPlate's hole), or the square inside FloorRound's round hole
+        wu, wv = (0.594 * ru, 0.594 * ru) if rnd else (0.6 * ru, 0.6 * rv)
+        has_core = min(wu, wv) >= CORE_MIN_CM
+        plate = ("SM_Kit_FloorRound" if rnd else "SM_Kit_FloorPlate") if has_core else "SM_Kit_FloorSolid"
+        cs = [round(max(0.7, min(2.2, wu / CORE_CM)), 3), round(max(0.7, min(2.2, wv / CORE_CM)), 3), 1.0]
+        # furniture: a ring 70 % of the way out to the slab edge (between the well and the glass), ~6 m apart
+        count = max(2, min(SETS_PER_FLOOR, int(2 * math.pi * 0.7 * (ru + rv) / 2 // 600)))
+        spots = []
+        for s in range(count):
+            t = 2 * math.pi * (s + 0.5) / count
+            c, n_ = math.cos(t), math.sin(t)
+            m = 1.0 if rnd else max(abs(c), abs(n_))  # square ring: push the direction out to the rectangle
+            spots.append((0, 0.7 * ru * c / m, 0.7 * rv * n_ / m))
+        for k in range(k0, k1):
+            if floors >= MAX_FLOORS:
+                return
+            floors += 1
+            h = k * STOREY_CM + 10
+            put(plate, cu, cv, h, 0, [round(2 * ru / 100, 2), round(2 * rv / 100, 2), 1.0])
+            if has_core:
+                put("SM_Kit_StairCore", cu, cv, h, 0, cs)
+                if not car:
+                    put("SM_Kit_ElevatorCar", cu, cv + 115 * cs[1], h + 15, 0, [cs[0], 1.0, 1.0])
+                    car = True
+            for _, u, v in spots:  # facing the nearest window
+                if rnd:
+                    turn = math.degrees(math.atan2(v, u))
+                elif abs(u) / ru >= abs(v) / rv:
+                    turn = 0 if u >= 0 else 180
+                else:
+                    turn = 90 if v >= 0 else -90
+                put(furniture, cu + u, cv + v, h + 15, round(turn, 1), [1.0, 1.0, 1.0])
 
 
 def _grove(groups: dict, root: str, p: list) -> int:
@@ -262,7 +347,7 @@ def _demo() -> None:
     slab = g2[path("SM_Kit_PathSlab", "/R")][0]
     assert slab[4] == 5.0 and slab[5] == 1.6 and slab[7] < -15, slab
     assert g2[path("SM_Kit_ParkingLot", "/R")][0][4:7] == [40.0, 30.0, 1.0]
-    tall = [p for p, rows in groups.items() if any(r[0] == 0 for r in rows)]
+    tall = [p for p, rows in groups.items() if "SM_Kit_" not in p and any(r[0] == 0 for r in rows)]
     assert len(tall) >= 2 and all("SM_City_DT_" in p or "SM_Sky" in p for p in tall), "a 110 m lot gets a whole multi-part tower"
     assert len({tuple(r) for p in tall for r in groups[p] if r[0] == 0}) == 1, "every part of a tower shares one point"
     for p, rows in groups.items():
@@ -274,6 +359,18 @@ def _demo() -> None:
     g3, b3, _ = bake(park, "/R")
     trees = sum(len(v) for k, v in g3.items() if "SM_V4_Tree" in k)
     assert 25 <= trees <= 40 and b3 == {"Parks": 1}, ("a 40 m park is a grove", trees)
+    # interiors: a 110 m tower has many lit floors, a stair core every storey, one car, desks inside its outline
+    gt, _, _ = bake({"T": {"kind": "buildings", "role": "skyscraper", "points": [[0, 0, 500, 90, 1, 110, 0, 32, 32, 0, []]]}}, "/R")
+    plates = [r for k in ("SM_Kit_FloorRound", "SM_Kit_FloorPlate", "SM_Kit_FloorSolid") for r in gt.get(path(k, "/R"), [])]
+    assert 10 <= len(plates) <= MAX_FLOORS, len(plates)
+    cores = sorted(r[2] for r in gt[path("SM_Kit_StairCore", "/R")])
+    assert len(cores) >= 10 and all(b - a == STOREY_CM for a, b in zip(cores, cores[1:])), ("a stair core every storey", cores)
+    assert len(gt[path("SM_Kit_ElevatorCar", "/R")]) == 1, "one car per tower"
+    desks = gt[path("SM_Kit_DeskSet", "/R")]
+    assert desks and all(math.hypot(r[0], r[1]) < 3200 for r in desks), "desks stay inside the tower"
+    assert max(r[2] for r in plates) < 500 + 11068, "no floor above the roof"
+    gh, _, _ = bake({"H": {"kind": "buildings", "role": "house", "points": [[0, 0, 0, 0, 1, 11, 0, 12, 12, 0, []]]}}, "/R")
+    assert path("SM_Kit_SofaSet", "/R") in gh, "a house gets a living room"
     print("kit bake ok", len(groups), "meshes")
 
 

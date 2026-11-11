@@ -116,6 +116,27 @@ Simple collision comes from the parts. Sizes are mirrored in `KIT` in `backend/k
 - Lots on a hill: the point's z is the level pad; `foundation_m > 0.3` adds a plinth; each path in `paths`
   becomes one slab per run.
 
+## 6a. Interiors (`_interior()` in `backend/kit_bake.py`, meshes in `_STREET_KIT`)
+
+Every building role in `INTERIOR` (not factories / warehouses) is filled per storey on one building-wide grid
+(`STOREY_CM` 400 from the lot's base, so storeys run on through a tower's parts with no gap; the last storey under
+the top part's roof is left out):
+- **Slab** inset from the shell: 0.86 of the part's half size (round parts 0.66 as a circle, `SM_Sky*`, hospital,
+  police 0.6), scaled from a 100 x 100 x 15 cm mesh with light panels (`Light` look, emissive 10) under it, so lit
+  ceilings show through the glass. `SM_Kit_FloorPlate` (square well 30 % of the width in the middle),
+  `SM_Kit_FloorRound` (16 radial boxes, round well radius 21 of 50), `SM_Kit_FloorSolid` (no well) when the well
+  would be under `CORE_MIN_CM` 280.
+- **Stairs + elevator** `SM_Kit_StairCore` in the well, one per storey, scaled 0.7-2.2x to the well (z never):
+  400 x 400 x 400 cm, floor top at 15. Stairs on y < 10: floor landing x -200..-150, flight up +x
+  (11 steps, 25 cm tread, 18.2 cm rise, strip y -190..-90), half landing at 215 (x 120..200), flight back -x
+  (strip y -90..10) ending at 415 = the next storey's floor landing. Elevator shaft y 30..200, walls 10 cm, door
+  opening 120 x 250 facing the stairs, lit indicator over it. `SM_Kit_ElevatorCar` (220 x 140 x 250, lit ceiling)
+  once per building at the ground floor (it does not move: a working lift needs a Verse / device setup).
+- **Furniture** on a ring 70 % of the way to the slab edge, about every 6 m, up to `SETS_PER_FLOOR` 8, facing the
+  nearest window: `SM_Kit_DeskSet` (offices, towers, civic), `SM_Kit_SofaSet` (homes), `SM_Kit_ShopShelf` (shops).
+- At most `MAX_FLOORS` 40 storeys per building (instance budget). Glass is `M_City_Glass` (section 7) so all of
+  this shows from the street.
+
 ## 6b. Forests and parks
 
 - Foliage layers (`Trees`, `Rocks`, `Bushes`) grow in **patches**: `patch(x, y)` (3-octave value noise, 600 m cells,

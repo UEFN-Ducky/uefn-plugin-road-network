@@ -500,7 +500,50 @@ _STREET_LOOKS = {
     "Panel": (("Concrete", 400, 0.6, 0.0, 1.5), (0.9, 0.9, 0.85)), "Wood": (("Oak", 200, 1.0, 0.0, 0.0), (0.35, 0.25, 0.15)),
     "Asphalt": (("Asphalt", 600, 1.0, 0.0, 0.0), (0.6, 0.6, 0.6)), "Pavers": (("Pavers", 150, 1.0, 0.0, 0.0), (0.8, 0.8, 0.78)),
     "Plinth": (("Concrete", 300, 1.0, 0.0, 0.0), (0.7, 0.7, 0.68)),
+    "Floor": (("Tile", 200, 0.5, 0.0, 0.0), (0.72, 0.7, 0.66)), "Light": (("Concrete", 400, 0.5, 0.0, 10.0), (1.0, 0.95, 0.85)),
+    "Shaft": (("Concrete", 300, 0.9, 0.0, 0.0), (0.55, 0.55, 0.58)), "Fabric": (("Concrete", 150, 1.0, 0.0, 0.0), (0.45, 0.22, 0.18)),
+    "Goods": (("Tile", 100, 0.6, 0.0, 0.6), (0.85, 0.45, 0.1)),
 }
+
+
+def _square_ring() -> list:
+    """A 100 x 100 x 15 slab with a 30 x 30 well in the middle (4 strips), light panels under each strip."""
+    out = []
+    for (cx, cy, dx, dy) in ((0, 32.5, 100, 35), (0, -32.5, 100, 35), (32.5, 0, 35, 30), (-32.5, 0, 35, 30)):
+        out.append(("box", 0, (cx, cy, 0), (0, 0, 0), (dx, dy, 15)))
+        out.append(("box", 1, (cx, cy, -3), (0, 0, 0), (dx * 0.6, dy * 0.4, 3)))
+    return out
+
+
+def _round_ring() -> list:
+    """A round slab (radius 50) with a round well (radius 21): 16 radial boxes, light panels under them."""
+    out = []
+    for k in range(16):
+        a = k * 22.5
+        c, s = math.cos(math.radians(a)), math.sin(math.radians(a))
+        out.append(("box", 0, (35.5 * c, 35.5 * s, 0), (0, 0, a), (30, 20, 15)))
+        out.append(("box", 1, (35.5 * c, 35.5 * s, -3), (0, 0, a), (14, 6, 3)))
+    return out
+
+
+def _stair_core() -> list:
+    """One storey (400 cm, floor top at 15) of a 400 x 400 core: a walkable switchback stair on y < 10
+    (two 11-step flights, 25 cm treads, a landing between) and an elevator shaft on y > 30 with a door
+    opening facing the stairs. Stacked every storey, the stairs climb the building."""
+    rise = 200 / 11
+    out = [("box", 0, (-175, -90, 0), (0, 0, 0), (50, 200, 15)),  # floor landing the flights start from
+           ("box", 0, (160, -90, 0), (0, 0, 0), (80, 200, 215))]  # half landing
+    for i in range(11):
+        out.append(("box", 0, (-137.5 + 25 * i, -140, 0), (0, 0, 0), (25, 100, 15 + rise * (i + 1))))  # up +x
+        top = 215 + rise * (i + 1)
+        out.append(("box", 0, (107.5 - 25 * i, -40, top - 30), (0, 0, 0), (25, 100, 30)))  # back up -x
+    out += [("box", 2, (0, 195, 0), (0, 0, 0), (360, 10, 400)),  # shaft walls
+            ("box", 2, (-175, 115, 0), (0, 0, 0), (10, 170, 400)), ("box", 2, (175, 115, 0), (0, 0, 0), (10, 170, 400)),
+            ("box", 2, (-115, 35, 0), (0, 0, 0), (110, 10, 400)), ("box", 2, (115, 35, 0), (0, 0, 0), (110, 10, 400)),
+            ("box", 2, (0, 35, 250), (0, 0, 0), (120, 10, 150)),  # over the door
+            ("box", 1, (0, 29, 255), (0, 0, 0), (40, 2, 10))]  # lit floor indicator
+    return out
+
 _STREET_KIT = {
     "SM_Kit_TrafficLight": (["Metal", "Signal"], [("cyl", 0, (0, 0, 0), (0, 0, 0), (12, 560, 12)),
                                                   ("box", 0, (190, 0, 532), (0, 0, 0), (380, 15, 15)),
@@ -518,6 +561,28 @@ _STREET_KIT = {
     "SM_Kit_ParkingLot": (["Asphalt"], [("box", 0, (0, 0, 0), (0, 0, 0), (100, 100, 8))]),
     "SM_Kit_PathSlab": (["Pavers"], [("box", 0, (0, 0, 0), (0, 0, 0), (100, 100, 8))]),
     "SM_Kit_Plinth": (["Plinth"], [("box", 0, (0, 0, -100), (0, 0, 0), (100, 100, 100))]),
+    "SM_Kit_FloorPlate": (["Floor", "Light"], _square_ring()),
+    "SM_Kit_FloorRound": (["Floor", "Light"], _round_ring()),
+    "SM_Kit_FloorSolid": (["Floor", "Light"], [("box", 0, (0, 0, 0), (0, 0, 0), (100, 100, 15)),
+                                              ("box", 1, (0, 0, -3), (0, 0, 0), (60, 60, 3))]),
+    "SM_Kit_StairCore": (["Plinth", "Light", "Shaft"], _stair_core()),
+    "SM_Kit_ElevatorCar": (["Metal", "Light"], [("box", 0, (0, 0, 0), (0, 0, 0), (220, 140, 5)),
+                                                ("box", 0, (0, 65, 0), (0, 0, 0), (220, 10, 250)),
+                                                ("box", 0, (-105, 0, 0), (0, 0, 0), (10, 140, 250)),
+                                                ("box", 0, (105, 0, 0), (0, 0, 0), (10, 140, 250)),
+                                                ("box", 0, (0, 0, 245), (0, 0, 0), (220, 140, 5)),
+                                                ("box", 1, (0, 0, 241), (0, 0, 0), (120, 60, 4))]),
+    "SM_Kit_DeskSet": (["Wood", "Signal"], [("box", 0, (0, 0, 72), (0, 0, 0), (160, 80, 4)),
+                                            ("box", 0, (0, 35, 0), (0, 0, 0), (150, 4, 72)),
+                                            ("box", 1, (25, 0, 76), (0, 0, 0), (4, 60, 38)),
+                                            ("cyl", 1, (-55, 0, 0), (0, 0, 0), (25, 48, 12)),
+                                            ("box", 1, (-78, 0, 48), (0, 0, 0), (5, 45, 50))]),
+    "SM_Kit_SofaSet": (["Fabric", "Wood"], [("box", 0, (0, 0, 0), (0, 0, 0), (90, 200, 42)),
+                                            ("box", 0, (-40, 0, 42), (0, 0, 0), (20, 200, 43)),
+                                            ("box", 1, (90, 0, 0), (0, 0, 0), (60, 100, 38))]),
+    "SM_Kit_ShopShelf": (["Metal", "Goods"], [("box", 0, (0, 0, 0), (0, 0, 0), (60, 200, 180)),
+                                              ("box", 1, (31, 0, 40), (0, 0, 0), (4, 180, 30)),
+                                              ("box", 1, (31, 0, 110), (0, 0, 0), (4, 180, 30))]),
 }
 
 
