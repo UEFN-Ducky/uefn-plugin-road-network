@@ -97,6 +97,8 @@ KIT = {
     "SM_Kit_DeskSet": ("Kit/Street", -80, -40, 0, 85, 40, 115),
     "SM_Kit_SofaSet": ("Kit/Street", -55, -100, 0, 120, 100, 85),
     "SM_Kit_ShopShelf": ("Kit/Street", -30, -100, 0, 30, 100, 180),
+    "SM_Kit_Bush": ("Kit/Street", -83, -95, 0, 110, 85, 130),
+    "SM_Kit_Rock": ("Kit/Street", -80, -70, -20, 85, 70, 70),
 }
 
 
@@ -134,6 +136,8 @@ PROPS = {
     "bin": ["SM_Prop_TrashCan", "SM_Prop_RecycleBin"],
     "hydrant": ["SM_Prop_FireHydrant"],
     "tree": ["SM_V4_TreeRound", "SM_V4_TreePine", "SM_V4_TreeRound"],
+    "bush": ["SM_Kit_Bush"],
+    "rock": ["SM_Kit_Rock"],
     "traffic_light": ["SM_Kit_TrafficLight"],
     "stop_sign": ["SM_Kit_StopSign"],
     "street_sign": ["SM_Kit_StreetSign"],
@@ -383,6 +387,9 @@ def _demo() -> None:
             assert "SM_Kit_" in p or all(SCALE_RANGE[0] <= v <= SCALE_RANGE[1] for v in r[4:7]) or r[4] == 1.1, r
     assert all(p.startswith("/R/WorldGen/") and p.count(".") == 1 for p in groups)
     assert any("SM_V4_Tree" in p for p in groups), "forest trees are baked"
+    gb, bb, mb = bake({"Bushes": {"kind": "foliage", "role": "bush", "points": [[1, 1, 0, 0, 1.2]]},
+                       "Rocks": {"kind": "foliage", "role": "rock", "points": [[2, 2, 0, 0, 0.9]]}}, "/R")
+    assert path("SM_Kit_Bush", "/R") in gb and path("SM_Kit_Rock", "/R") in gb and not mb, "bushes and rocks are PCG layers too"
     park = {"Parks": {"kind": "buildings", "role": "park", "points": [[0, 0, 0, 0, 1, 0, 0, 40, 40, 0, []]]}}
     g3, b3, _ = bake(park, "/R")
     trees = sum(len(v) for k, v in g3.items() if "SM_V4_Tree" in k)

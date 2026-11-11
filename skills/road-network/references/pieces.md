@@ -141,11 +141,12 @@ the top part's roof is left out):
 
 - Foliage layers (`Trees`, `Rocks`, `Bushes`) grow in **patches**: `patch(x, y)` (3-octave value noise, 600 m cells,
   shared by every foliage layer) below the layer's `cover` is forest, the rest meadow. Inside a patch `density` per
-  100 m2 (Trees 4 = a tree about every 5 m, Bushes 2), within `reach` city radii of a city (3 = the land around each
-  city, so the count stays buildable). Up to `FOREST_LIMIT` (40 000) points per layer are kept and baked.
-- Baked: Trees -> `SM_V4_TreeRound` / `SM_V4_TreePine` (random yaw, preview scale). Rocks and bushes have no kit mesh
-  yet (they show in the preview only).
-- A park lot is a **grove**: a tree every 6 m on a jittered grid, 85 % filled, the middle row left open with a 2.5 m
+  100 m2 (Trees 8 = a tree about every 3.5 m, Bushes 4), in a belt out to `reach` 1.8 city radii around each city
+  (tight, so it stays VERY dense under the cap). Up to `FOREST_LIMIT` (200 000) points per layer are kept and baked.
+- All three are PCG layers (baked into the tiled build like buildings): Trees -> `SM_V4_TreeRound` / `SM_V4_TreePine`,
+  Bushes -> `SM_Kit_Bush` (3 low-poly spheres r 48-65 cm, `Leaf` look), Rocks -> `SM_Kit_Rock` (2 tilted boxes,
+  `RockGrey`, 20 cm sunk); random yaw, preview scale. Both are listener-built street kit pieces.
+- A park lot is a **grove**: a tree every 4 m on a jittered grid, 85 % filled, the middle row left open with a 2.5 m
   path slab along the lot.
 
 ## 7. Materials (`WorldGen/Materials`)

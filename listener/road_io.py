@@ -503,6 +503,7 @@ _STREET_LOOKS = {
     "Floor": (("Tile", 200, 0.5, 0.0, 0.0), (0.72, 0.7, 0.66)), "Light": (("Concrete", 400, 0.5, 0.0, 10.0), (1.0, 0.95, 0.85)),
     "Shaft": (("Concrete", 300, 0.9, 0.0, 0.0), (0.55, 0.55, 0.58)), "Fabric": (("Concrete", 150, 1.0, 0.0, 0.0), (0.45, 0.22, 0.18)),
     "Goods": (("Tile", 100, 0.6, 0.0, 0.6), (0.85, 0.45, 0.1)),
+    "Leaf": (("Rock", 120, 1.0, 0.0, 0.0), (0.13, 0.32, 0.09)), "RockGrey": (("Rock", 200, 1.0, 0.0, 0.0), (0.52, 0.5, 0.47)),
 }
 
 
@@ -580,6 +581,11 @@ _STREET_KIT = {
     "SM_Kit_SofaSet": (["Fabric", "Wood"], [("box", 0, (0, 0, 0), (0, 0, 0), (90, 200, 42)),
                                             ("box", 0, (-40, 0, 42), (0, 0, 0), (20, 200, 43)),
                                             ("box", 1, (90, 0, 0), (0, 0, 0), (60, 100, 38))]),
+    # nature for the Bushes / Rocks PCG layers: low-poly lumps (instanced by the hundred thousand)
+    "SM_Kit_Bush": (["Leaf"], [("sph", 0, (0, 0, 0), (0, 0, 0), (65, 5, 7)), ("sph", 0, (45, 20, 0), (0, 0, 0), (50, 5, 7)),
+                               ("sph", 0, (-35, -30, 0), (0, 0, 0), (48, 5, 7))]),
+    "SM_Kit_Rock": (["RockGrey"], [("box", 0, (0, 0, -20), (12, 8, 25), (160, 120, 90)),
+                                   ("box", 0, (40, -10, -10), (-10, 15, 70), (90, 80, 70))]),
     "SM_Kit_ShopShelf": (["Metal", "Goods"], [("box", 0, (0, 0, 0), (0, 0, 0), (60, 200, 180)),
                                               ("box", 1, (31, 0, 40), (0, 0, 0), (4, 180, 30)),
                                               ("box", 1, (31, 0, 110), (0, 0, 0), (4, 180, 30))]),
@@ -628,6 +634,9 @@ def road_network_street_kit(root: str = "", rebuild: bool = False, plan: bool = 
                                      unreal.Vector(1, 1, 1))
                 if kind == "box":
                     gp.append_box(dm, o, t, dimension_x=dims[0], dimension_y=dims[1], dimension_z=dims[2], origin=base)
+                elif kind == "sph":  # radius, latitude steps, longitude steps (few: a low-poly lump)
+                    gp.append_sphere_lat_long(dm, o, t, radius=dims[0], steps_phi=int(dims[1]), steps_theta=int(dims[2]),
+                                              origin=base)
                 else:
                     gp.append_cylinder(dm, o, t, radius=dims[0], height=dims[1], radial_steps=int(dims[2]), origin=base)
             path = f"{folder}/{name}"
