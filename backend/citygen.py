@@ -185,6 +185,15 @@ OPTIONS = {
 HIGHWAYS = CHOICES["highway"][0]
 
 
+# what one city may have or not, over the world's choice (city["features"], the Cities list's remove / + Add)
+FEATURES = ("airports", "shipyards", "freeways", "waterfront", "canals", "planner")
+
+
+def city_options(city: dict, opts: dict | None = None) -> dict:
+    """The world's options with this city's own feature choices on top."""
+    return options({**(opts or {}), **{k: v for k, v in (city.get("features") or {}).items() if k in FEATURES}})
+
+
 def options(given: dict | None = None) -> dict:
     """Defaults filled in, every number clamped to its range; highway is '4L' or '2L'."""
     given = given or {}
@@ -392,8 +401,8 @@ def grade_to_roads(ter: dict, actors: dict) -> dict:
             half = max(half, 1.5 * max(cw, ch))
             reach = half + ROAD_BLEND_CM
             ga, gb = st.sample_grid(ter, pa["x"], pa["y"]), st.sample_grid(ter, pb["x"], pb["y"])
-            if ga is None or gb is None or min(abs(pa["z"] - ga), abs(pb["z"] - gb)) > 2000:
-                continue  # a structure high off the ground stands free
+            if ga is None or gb is None or min(pa["z"] - ga, pb["z"] - gb) > 2000:
+                continue  # a structure high above the ground stands free (a deep cut is always graded)
             ux, uy = pb["x"] - pa["x"], pb["y"] - pa["y"]
             L2 = ux * ux + uy * uy or 1.0
             for j in range(max(0, int((min(pa["y"], pb["y"]) - reach - y0) / ch)),
@@ -629,7 +638,7 @@ def orientation(city: dict) -> float:
 def canal_lines(city: dict, opts: dict | None = None) -> list:
     """CanalGenerator: the canal city's canals, polylines in world cm: every third grid line (never a collector or
     an axis) through the downtown and normal rings, along the city's own grid."""
-    o = options(opts)
+    o = city_options(city, opts)
     if o["canals"] != "canal_city":
         return []
     block, normal = o["block_m"] * 100, max(o["normal"], o["downtown"])
@@ -685,7 +694,7 @@ def plan_airports(cities: list, ground, wet, keep: list | None, bounds: tuple, o
     from . import airport
     o = options(opts)
     pops = {c["name"]: round(math.pi * (c["radius"] / 100000) ** 2 * 4800) for c in cities}
-    aps = airport.plan_world(cities, ground, wet, keep, bounds, o, pops)
+    aps = airport.plan_world(cities, ground, wet, keep, bounds, o, pops)  # each city's own choice applies there
     for c in cities:
         c["airports"] = aps
     return aps
@@ -698,7 +707,8 @@ def plan_shipyards(cities: list, water: dict, opts: dict | None = None) -> None:
     o = options(opts)
     for c in cities:
         c["shipyards"] = []
-        if o["shipyards"] == "none" or o["waterfront"] != "yes" or not water or water.get("sea") is None:
+        co = city_options(c, o)
+        if co["shipyards"] == "none" or co["waterfront"] != "yes" or not water or water.get("sea") is None:
             continue
         ring_of, industrial = zoning(c, o)
         pop = round(math.pi * (c["radius"] / 100000) ** 2 * 4800)  # ~4,800 people per km2 before the lots exist
@@ -719,7 +729,7 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
     (urban-design transect): a strict grid of short blocks in the core, a looser grid in the
     neighbourhoods, curving streets with cul-de-sacs in the suburbs, all inside an irregular outline.
     Downtown and the two main axes are four-lane; suburbs are two-lane; the rest has pavements."""
-    o = options(opts)
+    o = city_options(city, opts)
     block, down, normal = o["block_m"] * 100, o["downtown"], max(o["normal"], o["downtown"])
     rnd = random.Random(city.get("seed", 1))
     cx, cy, R, style = city["x"], city["y"], city["radius"], city.get("style", "mixed")
@@ -1092,7 +1102,7 @@ _FW_CACHE: dict = {}
 def freeway_plan(city: dict, opts: dict | None = None):
     """The city's freeway layer (freeways.plan), cached: city_graph, city_layout and generate all ask for it."""
     from . import freeways
-    o = options(opts)
+    o = city_options(city, opts)
     key = repr((city.get("name"), city["x"], city["y"], city["radius"], city.get("seed"),
                 [o[k] for k in ("freeways", "block_m", "downtown", "normal", "collector_every", "core_roads",
                                 "neighbourhood_roads", "canals")],
@@ -1242,7 +1252,7 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
     Lots: [[x, y, yaw, width_cm, depth_cm, front x, front y, role ('' = any layer), footprint]]."""
     from . import neighbourhoods as nb
     from . import parcels
-    o = options(opts)
+    o = city_options(city, opts)
     nodes, edges = city_graph(city, opts, wet)
     wet = water_of(city, o, wet)  # canals are water too: no lot in them
     rnd = random.Random(f"lots:{city.get('seed', 1)}")
@@ -2004,6 +2014,14 @@ def _demo() -> None:
     ac = {"name": "Aero", "x": 0, "y": 0, "radius": 120000, "seed": 4, "style": "grid"}  # ~22k people: regional
     aps = plan_airports([ac], lambda x, y: 0.0, None, [], ((-600000, -600000), (600000, 600000)), {})
     assert aps and aps[0]["type"] == "regional", aps
+    # a city's own features beat the world's: its airport taken off, a small town given one, freeways off
+    bounds6 = ((-600000, -600000), (600000, 600000))
+    assert plan_airports([{**ac, "features": {"airports": "none"}}], lambda x, y: 0.0, None, [], bounds6, {}) == []
+    town = {"name": "Tiny", "x": 0, "y": 0, "radius": 30000, "seed": 4, "style": "grid"}
+    assert not plan_airports([dict(town)], lambda x, y: 0.0, None, [], bounds6, {})
+    got = plan_airports([{**town, "features": {"airports": "auto"}}], lambda x, y: 0.0, None, [], bounds6, {"airports": "none"})
+    assert got and got[0]["type"] == "general_aviation", got
+    assert not freeway_plan({**big, "features": {"freeways": "no"}}).lines and freeway_plan(big).lines
     builds: dict = {}
     aw = generate([ac], lambda x, y: 0.0, "/Game/X/Roads", seed=1, opts={"freeways": "no"}, airports=aps,
                   airport_builds=builds)

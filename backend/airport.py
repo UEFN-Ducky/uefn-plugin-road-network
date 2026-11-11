@@ -148,7 +148,10 @@ def plan_world(cities: list, ground, wet, keep: list | None, bounds: tuple, opts
     wanted = []
     for c in order:
         pop = (populations or {}).get(c["name"], 0)
-        t = pick_type(pop, o)
+        own = (c.get("features") or {}).get("airports")  # the city's own choice beats the world's
+        t = pick_type(pop, {**o, "airports": own or o.get("airports", "auto")})
+        if own == "auto" and not t:
+            t = "general_aviation"  # asked for one: even a small town gets an airfield
         if t == "international" and intl:
             t = "regional"
         if t == "international":

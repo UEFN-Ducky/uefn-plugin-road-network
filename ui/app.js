@@ -2071,7 +2071,43 @@ function cityContents(c) {
     military: "Airbase" })[a.type] || "Airport", `${a.report?.stands ?? 0} stands`));
   if ((w.segments || []).length) out.push(kid("water", "Waterfront", `${(w.developments || []).length} sites`));
   (w.shipyards || []).forEach((y) => out.push(kid("wrench", `${y.type[0].toUpperCase() + y.type.slice(1)} shipyard`, y.docks ? `${y.docks} docks` : "")));
+  out.push(cityFeatures(c));
   return out;
+}
+// what this city has (its own choice over the world's): remove one with x, add one from + Add; saving rebuilds it
+const CITY_FEATURES = [  // [key, label, icon, value when on, value when off] (citygen.FEATURES)
+  ["airports", "Airport", "route", "auto", "none"], ["shipyards", "Shipyards", "wrench", "auto", "none"],
+  ["freeways", "Freeways", "road", "yes", "no"], ["waterfront", "Waterfront", "water", "yes", "no"],
+  ["canals", "Canals", "wave", "canal_city", "none"], ["planner", "City services", "layers", "yes", "no"]];
+function cityFeatures(c) {
+  const own = c.features || {};
+  const has = (k, on) => (own[k] ?? state.gen[k]) === on;
+  const set = (k, v) => saveCity(c, { features: JSON.stringify({ [k]: v }) });
+  const box = h("div", { class: "rn-feat" }, h("div", { class: "rn-feat__head" }, "Features"));
+  for (const [k, label, ic, on, off] of CITY_FEATURES) {
+    if (!has(k, on)) continue;
+    const rm = h("button", { type: "button", class: "rn-feat__x", title: `Take ${label.toLowerCase()} off ${c.name}`,
+      "aria-label": `Remove ${label} from ${c.name}` }, icon("x", 12));
+    rm.addEventListener("click", () => set(k, off));
+    box.append(h("div", { class: "rn-city__kid" }, icon(ic, 13), h("span", {}, label), rm));
+  }
+  const missing = CITY_FEATURES.filter(([k, , , on]) => !has(k, on));
+  if (missing.length) {
+    const menu = h("div", { class: "rn-feat__menu", hidden: "" }, ...missing.map(([k, label, ic, on]) => {
+      const b = h("button", { type: "button", class: "rn-feat__opt" }, icon(ic, 13), h("span", {}, label));
+      b.addEventListener("click", () => set(k, on));
+      return b;
+    }));
+    const add = h("button", { type: "button", class: "rn-mini", "aria-expanded": "false", title: `Add something to ${c.name}` },
+      icon("plus", 12), h("span", {}, "Add"));
+    add.addEventListener("click", () => {
+      const open = menu.hidden;
+      menu.hidden = !open;
+      add.setAttribute("aria-expanded", String(open));
+    });
+    box.append(add, menu);
+  }
+  return box;
 }
 function selectCity(id) {
   state.cityPick = id;

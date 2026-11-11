@@ -364,6 +364,11 @@ city tiles to build or remove. The next build in UEFN changes only those.
   have. `Distance between cities` (`city_gap_m`) is the open country between two cities' edges; cities closer
   than that are pushed apart (`citygen.spread`). Under **Selected city**, pick a city and set its radius
   (150 m – 5 km) or road style. That calls `road_network_city_save`, then regenerates.
+- **Per-city features** (`citygen.FEATURES`, `city_options`): one city may differ from the world's choice for
+  airports, shipyards, freeways, waterfront, canals and planner (city services). Use `road_network_city_save`
+  with `features`, for example `{"airports": "none"}` or `{"shipyards": "auto"}`; null returns a feature to the
+  world's choice. A city that asks for an airport gets at least an airfield. In the panel, the Cities list shows
+  each city's features with x to remove one and + Add to add one.
 - **Ground fit (1:1 with the imported landscape)**: a generated terrain is cut and filled to its roads
   (`citygen.grade_to_roads`). Every lot pad is cut into the heightmap a pixel wider than its building
   (`pad_margin`); where pads meet, the one a spot is deepest in wins.

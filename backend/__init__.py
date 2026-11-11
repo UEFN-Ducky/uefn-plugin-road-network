@@ -731,7 +731,8 @@ def register(api) -> None:
                       "radius": float(c.get("radius_m", 450)) * 100, "style": c.get("style") if c.get("style") in cg.STYLES else "mixed",
                       "seed": int(c.get("seed", seed + k))} for k, c in enumerate(given)]
         elif not text and old:  # regenerate the cities already there (their names, styles and buildings stay)
-            towns = [{k: v for k, v in c.items() if k in ("name", "x", "y", "radius", "style", "seed")} for c in old.values()]
+            towns = [{k: v for k, v in c.items() if k in ("name", "x", "y", "radius", "style", "seed", "features")}
+                     for c in old.values()]
             # City size changed since the last run: every city grows / shrinks by the same factor; then they are
             # pushed apart until the distance between cities holds
             grow = opts["city_size"] / float((last.get("options") or {}).get("city_size", 1.0) or 1.0)
@@ -923,9 +924,9 @@ def register(api) -> None:
         return {"ok": True, "id": nid, "items": sorted(items, key=lambda c: c["name"]), "count": len(items)}
 
     def save_city(net_id: str = "", city: str = "", name: str = "", style: str = "", radius_m: float = 0.0,
-                  buildings: str = "", x: float | None = None, y: float | None = None) -> dict:
-        """Change one city's style, size, place (x, y: its new centre in cm) or building sets
-        ({"downtown": [mesh paths], ...})."""
+                  buildings: str = "", x: float | None = None, y: float | None = None, features: str = "") -> dict:
+        """Change one city's style, size, place (x, y: its new centre in cm), building sets
+        ({"downtown": [mesh paths], ...}) or features ({"airports": "none", ...}: cg.FEATURES)."""
         nid, cslug = slug(net_id), slug(city)
         before = data.get(f"net.{nid}.city.{cslug}") if nid and cslug else None
         if not before:
@@ -940,6 +941,17 @@ def register(api) -> None:
         if radius_m:
             doc["radius"] = max(150.0, float(radius_m)) * 100
             doc["districts"] = cg.districts(doc)
+        if features:
+            try:
+                given = json.loads(features)
+            except ValueError as exc:
+                return {"ok": False, "error": f"features is not valid JSON: {exc}"}
+            bad = [k for k, v in given.items() if k not in cg.FEATURES or (v is not None and v not in cg.CHOICES[k][0])]
+            if bad:
+                return {"ok": False, "error": f"Unknown feature or value: {bad}. Features: " + ", ".join(
+                    f"{k} ({'/'.join(cg.CHOICES[k][0])})" for k in cg.FEATURES)}
+            merged = {**(doc.get("features") or {}), **given}
+            doc["features"] = {k: v for k, v in merged.items() if v is not None}  # null = back to the world's choice
         if buildings:
             try:
                 sets = json.loads(buildings)
@@ -1941,12 +1953,14 @@ def register(api) -> None:
     @api.tool(intent=GEN_INTENT, listener=False)
     def road_network_city_save(net_id: str = "", city: str = "", name: str = "", style: str = "",
                                radius_m: float = 0.0, buildings: str = "", x: float | None = None,
-                               y: float | None = None) -> dict:
+                               y: float | None = None, features: str = "") -> dict:
         """Change one city of a generated world: rename it, its road style (mixed / grid / organic), its
-        radius, move it (x, y: its new centre in cm, UE world), or its own building sets (JSON {"downtown":
-        [mesh paths], "normal": [...], "housing": [...]}). Generate again with cities empty to rebuild its
-        roads, freeways, airport, waterfront and everything on it at the new place."""
-        return safe(save_city)(net_id, city, name, style, radius_m, buildings, x, y)
+        radius, move it (x, y: its new centre in cm, UE world), its own building sets (JSON {"downtown":
+        [mesh paths], "normal": [...], "housing": [...]}), or what it has: features JSON, e.g.
+        {"airports": "none"} takes its airport off, {"shipyards": "auto"} adds shipyards, null returns a feature
+        to the world's choice (keys: airports, shipyards, freeways, waterfront, canals, planner). Generate again
+        with cities empty to rebuild its roads, freeways, airport, waterfront and everything on it."""
+        return safe(save_city)(net_id, city, name, style, radius_m, buildings, x, y, features)
 
     @api.tool(intent=GEN_INTENT, listener=False)
     def road_network_heightmap(net_id: str = "") -> dict:
@@ -1967,7 +1981,8 @@ def register(api) -> None:
     api.register_panel_rpc("generate_options", lambda: road_network_generate_options())
     api.register_panel_rpc("cities", lambda net_id="": safe(list_cities)(net_id))
     api.register_panel_rpc("city_save", lambda net_id="", city="", name="", style="", radius_m=0.0, buildings="",
-                           x=None, y=None: safe(save_city)(net_id, city, name, style, radius_m, buildings, x, y))
+                           x=None, y=None, features="": safe(save_city)(net_id, city, name, style, radius_m,
+                                                                         buildings, x, y, features))
     api.register_panel_rpc("heightmap", lambda net_id="": safe(heightmap)(net_id))
     api.register_panel_rpc("city_add", lambda net_id="", name="", x=None, y=None, radius_m=0.0, style="":
                            safe(add_city)(net_id, name, x, y, radius_m, style))
