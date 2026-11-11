@@ -1,7 +1,7 @@
 {
   "id": "road-network",
   "kind": "plugin",
-  "version": "1.14.0",
+  "version": "1.14.1",
   "label": "City Builder",
   "description": "Build whole cities for UEFN: generate worlds with several cities, terrain and roads, lay out every building, street light, sign and tree as PCG layers with a live 3D preview, pick our own kit or Fortnite pieces, and build it in UEFN in one click, together with your team.",
   "min_app_version": "1.0.0",

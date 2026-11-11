@@ -8,6 +8,10 @@ description: "City Builder (plugin id road-network): generate worlds with cities
 The plugin's id and tool names stay `road-network` / `road_network_*` (renaming them would break
 saved data and the Store listing); everything the person sees says **City Builder**.
 
+**Making, changing or placing any piece** (road tile, bridge, junction, interchange, street kit, building,
+material, PCG build): read `references/pieces.md` first. It has every piece's exact sizes, cross-sections,
+offsets, materials and the checklist for adding a new one.
+
 ## Pieces: own kit or Fortnite
 
 `road_network_pcg_assets(net_id, asset_set)` = `own` (the project's WorldGen/City SM_City_*, WorldGen/Kit, and
