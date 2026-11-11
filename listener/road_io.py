@@ -587,10 +587,14 @@ _STREET_KIT = {
 
 
 @register("road_network_street_kit")
-def road_network_street_kit(root: str = "", rebuild: bool = False) -> dict:
+def road_network_street_kit(root: str = "", rebuild: bool = False, plan: bool = False, only: list | None = None,
+                            save: bool = True) -> dict:
     """Make the street pieces the kit lacks (traffic lights, stop / street signs, billboards, power poles,
     parking lot, path slab, plinth) as GeometryScript meshes in WorldGen/Kit/Street, in M_City_WorldPBR
-    instances. Mesh and material assets only; safe to run again (rebuilt in place)."""
+    instances. Mesh and material assets only; safe to run again (rebuilt in place).
+    plan=true only lists what is missing; only=[names] builds just those; save=false leaves saving to one
+    road_network_save_assets call. Call it once per mesh (the backend does): each mesh build opens a
+    progress window whose GPU swap chain UEFN frees only at the end of the frame."""
     if not root.startswith("/"):
         return {"ok": False, "error": "Give root, the project's content root (for example /<mount>/MovieTheater)."}
     eal = unreal.EditorAssetLibrary
@@ -600,12 +604,16 @@ def road_network_street_kit(root: str = "", rebuild: bool = False) -> dict:
             eal.make_directory(f)
     # only the pieces that aren't there yet (rebuild=true remakes all): remaking and saving all of them
     # on every PCG build kept UEFN busy for minutes
-    todo = {n: v for n, v in _STREET_KIT.items() if rebuild or not eal.does_asset_exist(f"{folder}/{n}")}
+    todo = {n: v for n, v in _STREET_KIT.items()
+            if (only is None or n in only) and (rebuild or not eal.does_asset_exist(f"{folder}/{n}"))}
+    if plan:
+        return {"ok": True, "todo": list(todo)}
     if not todo:
-        return {"ok": True, "made": [], "errors": [], "note": "every street kit piece is already there"}
+        return {"ok": True, "made": [], "paths": [], "errors": [], "note": "every street kit piece is already there"}
     master = _world_pbr_master(mat_folder, root)
+    need = {m for mats, _ in todo.values() for m in mats}
     looks = {k: _mi(mat_folder, f"MI_Street_{k}", master, root, look, unreal.LinearColor(*tint, 1))
-             for k, (look, tint) in _STREET_LOOKS.items()}
+             for k, (look, tint) in _STREET_LOOKS.items() if k in need}
     gp = unreal.GeometryScript_Primitives
     base = unreal.GeometryScriptPrimitiveOriginMode.BASE
     made, errors = [], []
@@ -641,8 +649,19 @@ def road_network_street_kit(root: str = "", rebuild: bool = False) -> dict:
             made.append(sm)
         except Exception as exc:  # one bad piece must not stop the rest
             errors.append(f"{name}: {exc}"[:200])
-    _save_batch(made + list(looks.values()))
-    return {"ok": not errors, "made": [m.get_name() for m in made], "errors": errors}
+    assets = made + list(looks.values())
+    if save:
+        _save_batch(assets)
+    return {"ok": not errors, "made": [m.get_name() for m in made], "errors": errors,
+            "paths": [a.get_path_name().split(".")[0] for a in assets]}
+
+
+@register("road_network_save_assets")
+def road_network_save_assets(paths: list | None = None) -> dict:
+    """Save these assets in ONE save_packages batch (its own editor frame, one progress window)."""
+    assets = [unreal.load_asset(p) for p in dict.fromkeys(paths or [])]
+    _save_batch([a for a in assets if a is not None])
+    return {"ok": True, "saved": len([a for a in assets if a is not None])}
 
 
 @register("road_network_kit_materials")

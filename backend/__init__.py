@@ -410,6 +410,8 @@ def register(api) -> None:
         return {"ok": True, "label": head["label"], **result,
                 "problems": {k: len(v) for k, v in st.problems(pts, segs).items()}}
 
+    JUNCTIONS_PER_CALL = 8
+
     def build_pieces(net_id: str = "", actor: str = "", rebuild: bool = False) -> dict:
         """Generate a plain-asphalt piece for every junction the kit has no piece for (rebuild: also
         regenerate the pieces already made, in place)."""
@@ -430,8 +432,10 @@ def register(api) -> None:
         half = (lambda arms: max(by_i[m]["w"] for m in arms)) if gen else (lambda arms: 545.0)  # kit roads: Road1 width
         built = 0
         try:
-            for k in range(0, len(todo), 40):
-                batch = todo[k:k + 40]
+            # few meshes per call: each mesh build opens a progress window that UEFN frees only when the
+            # call's frame ends (see street_kit_build)
+            for k in range(0, len(todo), JUNCTIONS_PER_CALL):
+                batch = todo[k:k + JUNCTIONS_PER_CALL]
                 out = listener("road_network_build_junctions", {"folder": folder, "pieces": [
                     {"name": f"{prefix}{node}", "arms": angles, "half": half(arms)}
                     for node, arms, angles in batch]}, timeout=600)
@@ -940,9 +944,25 @@ def register(api) -> None:
         root = kit_root()
         if not root:
             return {"ok": False, "error": "Couldn't find the project's WorldGen folder (import the roads first)."}
-        street = listener("road_network_street_kit", {"root": root}, timeout=600) if street_kit else None
+        street = street_kit_build(root) if street_kit else None
         out = listener("road_network_kit_materials", {"root": root}, timeout=900)
         return {**out, "street_kit": street}
+
+    def street_kit_build(root: str, rebuild: bool = False) -> dict:
+        """The missing street kit pieces, ONE listener call (one editor frame) per mesh, then one save call.
+        Every mesh build and save opens a progress window, and UEFN frees a window's GPU swap chain only when
+        the frame ends: 16 meshes in one call stacked 32 swap chains in one frame, took UEFN past 120 GB and
+        crashed it on the D3D12 descriptor limit."""
+        todo = listener("road_network_street_kit", {"root": root, "rebuild": rebuild, "plan": True}).get("todo") or []
+        made, errors = [], []
+        for name in todo:
+            got = listener("road_network_street_kit", {"root": root, "rebuild": rebuild, "only": [name], "save": False},
+                           timeout=300)
+            made += got.get("paths") or []
+            errors += got.get("errors") or []
+        if made:
+            listener("road_network_save_assets", {"paths": made}, timeout=300)
+        return {"ok": not errors, "made": [p.rsplit("/", 1)[-1] for p in made], "errors": errors}
 
     BAKE_CHUNK = 1500  # points per Create Points node: keeps each node's settings a sensible size
 

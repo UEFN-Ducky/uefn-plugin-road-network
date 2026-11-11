@@ -62,6 +62,12 @@ Interchanges are tangent: each loop's centre is its radius plus the road's half 
 cross road, it starts on the highway's edge at the deck's height there and ends on the cross road's edge; slip ramps
 end on both road edges. The cross road is a city street (in '<City> Roads'), joined at both ends to the city's
 nearest streets, so it never dead-ends in a field.
+One editor call = one frame: UEFN frees a window's GPU swap chain only when the frame ends, and every mesh
+build, collision build and save opens a progress window. Never build many meshes in one listener / Python call:
+16 street-kit meshes in one call stacked 32 swap chains in one frame (8-20 s apart, nothing else logged), went
+past 120 GB and crashed on "Hit D3D12 device limits on descriptors". Build one mesh per call (street kit) or
+`JUNCTIONS_PER_CALL` 8 (junctions), then save everything in one separate `road_network_save_assets` call.
+Signs in the log: many `LogD3D12RHI: Swap chain created` lines with the SAME frame number in `[...][NNN]`.
 Saving in UEFN: never save assets one by one in a loop. Each save runs revision control's checkout prompt and
 every failed checkout opens a modal dialog with its own swap chain (~14 s each); 50 saves took UEFN past 70 GB.
 The listener saves everything it made in one `save_packages` batch.
