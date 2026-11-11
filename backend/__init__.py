@@ -1569,12 +1569,25 @@ def register(api) -> None:
     def list_chats() -> dict:
         """Recent Ducky chats a note on the map can go to (plus 'new chat' in the panel)."""
         got = api.call_tool("ducky_list_chats", {"limit": 30}) or {}
+        if not isinstance(got, (dict, list)):  # a tool reply can arrive as JSON text
+            got = getattr(got, "text", None) or str(got)
+            try:
+                got = json.loads(got)
+            except ValueError:
+                got = {}
+        if isinstance(got, dict) and got.get("truncated") and got.get("path"):  # a big list is spilled to a file
+            try:
+                with open(got["path"], encoding="utf-8") as fh:
+                    got = json.load(fh)
+            except (OSError, ValueError):
+                got = {}
         rows = (got.get("conversations") or got.get("chats") or got.get("items") or []) if isinstance(got, dict) else got
         rows = sorted((c for c in rows or [] if isinstance(c, dict) and (c.get("id") or c.get("conv_id"))
                        and c.get("folder_id") != "archive"), key=lambda c: -float(c.get("updated") or 0))
         return {"ok": True, "chats": [{"id": c.get("id") or c.get("conv_id"),
                                        "title": (c.get("title") or c.get("name") or "Chat")
-                                       + (f" ({c['ducky']})" if c.get("ducky") else "")} for c in rows][:30]}
+                                       + (f" ({c['ducky']})" if c.get("ducky") and c["ducky"] != c.get("title") else "")}
+                                      for c in rows][:30]}
 
     def note_text(nid: str, text: str, kind: str, points: list) -> str:
         """The message an AI gets for a pin or a drawn area: where it is, what is there, how to act on it."""
