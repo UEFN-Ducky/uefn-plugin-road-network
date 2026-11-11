@@ -193,7 +193,13 @@ def clean(layer: dict) -> dict:
         out["size_jitter"] = max(0.0, min(0.6, float(layer.get("size_jitter", 0.3))))  # lots vary +-30 % by default
     except (TypeError, ValueError):
         out["size_jitter"] = 0.3
+    # buildings: 'mesh' stretches one kit building to the lot; 'modular' builds it from BuildingKit storeys and
+    # 5.12 m wall modules by grammar (grammar.py), so windows and doors keep their real size
+    out["build"] = layer.get("build") if layer.get("build") in BUILD_MODES else "mesh"
     return out
+
+
+BUILD_MODES = ("mesh", "modular")
 
 
 DRIVEWAY_ROLES = ("house", "mansion", "gas_station", "warehouse", "factory", "parking", "fire_station", "police",
@@ -1048,7 +1054,7 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
         if len(pts) > shown_cap:
             pts = rnd.sample(pts, shown_cap)
         out[layer["name"]] = {"kind": layer["kind"], "role": layer["role"], "count": count, "shown": len(pts), "points": pts,
-                              "radius_cm": round(r_base), "meshes": layer["meshes"],
+                              "radius_cm": round(r_base), "meshes": layer["meshes"], "build": layer["build"],
                               **({"size_m": [layer["width_m"], layer["depth_m"]], "setback_m": layer["setback_m"],
                                   "forms": FORM_NAMES, "driveway": layer["driveway"], "walkway": layer["walkway"],
                                   "row": "x, y, pad z, yaw, scale, height_m, form, width_m, depth_m, foundation_m, "

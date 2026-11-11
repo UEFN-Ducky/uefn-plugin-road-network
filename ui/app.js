@@ -1024,7 +1024,12 @@ function layerCard(l, earlier) {
         if (v) forms[f] = forms[f] || 1; else delete forms[f];
         save({ forms: Object.keys(forms).length ? forms : { box: 1 } }, true);
       } }).el)),
-    num("size_jitter", "Size variety", 0, 0.6, 0.05, pct, "How much each lot's width and depth differ from the next"));
+    num("size_jitter", "Size variety", 0, 0.6, 0.05, pct, "How much each lot's width and depth differ from the next"),
+    choices({ label: "Build", value: l.build || "mesh", options: [["mesh", "One mesh, fitted", "A whole kit building stretched to the lot", "city"],
+      ["modular", "Modular storeys", "BuildingKit storeys and wall modules by grammar", "layers"]],
+      onChange: (v) => save({ build: v }, true) }).el,
+    h("div", { class: "rn-hint", style: "margin: -6px 0 12px" },
+      "Modular stacks BuildingKit storeys and 5.12 m wall modules on each lot, so windows and doors keep their size. Factories and warehouses always use whole meshes."));
   if (l.kind === "buildings") spacing.push(
     num("width_m", "Frontage", 1, 200, 1, m, "Width along the street"), num("depth_m", "Depth", 1, 200, 1, m, "Depth away from the street"),
     num("height_min_m", "Lowest", 1, 600, 1, m), num("height_max_m", "Tallest", 1, 600, 1, m, "Pick meshes in this height range"));

@@ -629,6 +629,12 @@ _STREET_KIT = {
                                ("sph", 0, (-35, -30, 0), (0, 0, 0), (48, 5, 7))]),
     "SM_Kit_Rock": (["RockGrey"], [("box", 0, (0, 0, -20), (12, 8, 25), (160, 120, 90)),
                                    ("box", 0, (40, -10, -10), (-10, 15, 70), (90, 80, 70))]),
+    # a street tree's pit in the paving: soil square with a steel grate frame, flush with the sidewalk
+    "SM_Kit_TreePit": (["RockGrey", "Metal"], [("box", 0, (0, 0, -2), (0, 0, 0), (150, 150, 3)),
+                                               ("box", 1, (70, 0, -1), (0, 0, 0), (10, 150, 3)),
+                                               ("box", 1, (-70, 0, -1), (0, 0, 0), (10, 150, 3)),
+                                               ("box", 1, (0, 70, -1), (0, 0, 0), (130, 10, 3)),
+                                               ("box", 1, (0, -70, -1), (0, 0, 0), (130, 10, 3))]),
     # the planned developments' grounds: 1 m unit slabs (stretched to the part), top at their height
     "SM_Kit_Apron": (["Plinth"], [("box", 0, (0, 0, 0), (0, 0, 0), (100, 100, 10))]),
     "SM_Kit_SportsField": (["Turf"], [("box", 0, (0, 0, 0), (0, 0, 0), (100, 100, 2))]),

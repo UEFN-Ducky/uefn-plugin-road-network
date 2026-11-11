@@ -8,6 +8,7 @@ the manifest, the layers and the rules come from the plugin.
 from __future__ import annotations
 
 from . import citygen as cg
+from . import grammar
 from . import kit_bake as kb
 from . import pcg_layers as pl
 
@@ -75,6 +76,12 @@ def manifest(root: str = "/<project>") -> dict:
                        "spec": f"{lanes} lanes{', kerb + sidewalk both sides' if walk else ''}; deck top at z 0, "
                                f"centre line on X, slot Asphalt (+ Curb, Sidewalk); bends as a spline mesh, so "
                                f"enough length loops (every 100 cm)"})
+    for name in grammar.modules():  # the BuildingKit modules a `build: modular` layer stacks by grammar
+        pieces.append({"name": name, "folder": f"WorldGen/{grammar.FOLDER}", "path": f"{root}/WorldGen/{grammar.FOLDER}/{name}.{name}",
+                       "size_cm": [512, 512, 20] if name == grammar.SHARED["roof"] else [512, 30, round(grammar.STOREY_CM)],
+                       "used_by": ["modular buildings (grammar.py)"],
+                       "made_by": "BuildingKit.blend (Blender, metres: export x100). Walls run +X from the pivot, "
+                                  "outside on -Y, one storey tall"})
     pieces.append({"name": "SM_JK_<world>_<actor>_<node>", "folder": "WorldGen/Roads/Junctions/Kit", "size_cm": None,
                    "used_by": ["every junction"], "made_by": "City Builder builds each one to fit its arms (no Blender)"})
     want = []
@@ -96,7 +103,8 @@ def _demo() -> None:
     for role, opts in kb.BUILDINGS.items():
         assert all(part in names for parts in opts for part in parts), role
     assert all(n in names for ns in kb.PROPS.values() for n in ns)
-    assert {"SM_Road_TwoLane_Straight10m", "SM_Kit_RetainingWall", "SM_Kit_StairCore"} <= names
+    assert {"SM_Road_TwoLane_Straight10m", "SM_Kit_RetainingWall", "SM_Kit_StairCore", "SM_Kit_TreePit"} <= names
+    assert set(grammar.modules()) <= names, "every module the grammar places is in the manifest"
     assert all(p["size_cm"] for p in m["pieces"] if not p["name"].startswith("SM_JK_"))
     school = next(w for w in m["wanted"] if w["name"] == "SM_Bld_School")
     assert school["size_cm"][0] > 1000 and "Schools" in school["then"], school

@@ -13,6 +13,9 @@ import hashlib
 import json
 import math
 
+from . import grammar
+from .pcg_layers import FORM_NAMES
+
 # name: (folder under WorldGen, bounds min x/y/z, max x/y/z in cm) - measured from the imported meshes
 KIT = {
     "SM_City_CT_Apartment": ("City", -832, -776, 0, 832, 776, 1644),
@@ -104,6 +107,7 @@ KIT = {
     "SM_Kit_SidewalkCorner": ("Kit/Street", -200, -200, -15, 200, 200, 0),
     "SM_Kit_Bush": ("Kit/Street", -83, -95, 0, 110, 85, 130),
     "SM_Kit_Rock": ("Kit/Street", -80, -70, -20, 85, 70, 70),
+    "SM_Kit_TreePit": ("Kit/Street", -75, -75, -2, 75, 75, 2),  # dirt square + grate under every street tree
     # the planned developments' grounds (urban.ARCHETYPES): 1 m unit slabs stretched to each part, and towers
     "SM_Kit_Apron": ("Kit/Street", -50, -50, 0, 50, 50, 10),
     "SM_Kit_SportsField": ("Kit/Street", -50, -50, 0, 50, 50, 2),
@@ -189,6 +193,7 @@ CORE_MIN_CM = 280  # a well narrower than this gets no core (solid slabs, one st
 MAX_FLOORS = 40  # ponytail: caps instances on the tallest towers; floors above it stay empty
 SETS_PER_FLOOR = 8  # furniture sets per storey, the ones nearest the windows (what you see through glass)
 FLAT = {"parking": "SM_Kit_ParkingLot"}  # lots that are ground, not buildings: stretched to the lot, never up
+TREE_PIT_ROLES = ("street_tree",)  # trees planted in paving get a pit, never straight into the concrete
 PARK_TREE_M = 4.0  # a park is a dense grove: a tree about every 4 m (jittered, 85 % filled), a path slab through it
 SCALE_RANGE = (0.5, 2.0)  # a kit mesh is stretched at most this much to fit its lot
 
@@ -241,6 +246,10 @@ def bake(previewed: dict, root: str) -> tuple:
                 groups.setdefault(path(FLAT[role], root), []).append([p[0], p[1], p[2], p[3], round(d / 100, 2),
                                                                     round(w / 100, 2), 1.0])
             baked[name] = len(pts)
+        elif layer.get("kind") == "buildings" and layer.get("build") == "modular" and role in grammar.STYLE_BY_ROLE:
+            for p in pts:
+                _modular(groups, root, role, p)
+            baked[name] = len(pts)
         elif layer.get("kind") == "buildings" and role in BUILDINGS:
             opts = BUILDINGS[role]
             for p in pts:
@@ -266,6 +275,8 @@ def bake(previewed: dict, root: str) -> tuple:
             for p in pts:
                 s = p[4] if len(p) > 4 else 1.0
                 groups.setdefault(path(opts[_pick(opts, p[0], p[1])], root), []).append([p[0], p[1], p[2], p[3], s, s, s])
+                if role in TREE_PIT_ROLES:
+                    groups.setdefault(path("SM_Kit_TreePit", root), []).append([p[0], p[1], p[2], p[3], 1.0, 1.0, 1.0])
             baked[name] = len(pts)
         elif pts and layer.get("kind") != "foliage":
             missing.append(name)
@@ -298,7 +309,31 @@ def tile_diff(new: dict, stored: dict, force: bool = False) -> tuple:
     return build, remove, sorted(k for k in new if k not in build)
 
 
-def _interior(groups: dict, root: str, parts: list, furniture: str, x, y, z, yaw, sx, sy, sz) -> None:
+def _modular(groups: dict, root: str, role: str, p: list) -> None:
+    """A lot built from BuildingKit modules by the grammar (grammar.py), placed in the lot's frame, with its
+    interiors on the same storey grid and its pad pieces."""
+    x, y, z, yaw = p[0], p[1], p[2], p[3]
+    h = (p[5] if len(p) > 5 else 8) * 100
+    form = FORM_NAMES[p[6]] if len(p) > 6 and isinstance(p[6], int) and 0 <= p[6] < len(FORM_NAMES) else "box"
+    w = (p[7] if len(p) > 7 else 12) * 100
+    d = (p[8] if len(p) > 8 else 12) * 100
+    seed = abs(int(x) * 73856093 ^ int(y) * 19349663)
+    rows, blocks = grammar.build(form, role, d, w, h, seed,
+                                 lambda n: f"{root}/WorldGen/{grammar.FOLDER}/{n}.{n}")
+    fx, fy = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+    for mesh, rs in rows.items():
+        out = groups.setdefault(mesh, [])
+        for u, v, h0, turn, sx, sy, sz in rs:
+            out.append([round(x + fx * u - fy * v), round(y + fy * u + fx * v), round(z + h0),
+                        round((yaw + turn) % 360, 1), sx, sy, sz])
+    if role in INTERIOR:
+        _interior(groups, root, blocks, INTERIOR[role], x, y, z, yaw, 1.0, 1.0, 1.0, storey=grammar.STOREY_CM)
+    _ground_pieces(groups, root, p, x, y, z, yaw, w, d)
+
+
+
+def _interior(groups: dict, root: str, parts: list, furniture: str, x, y, z, yaw, sx, sy, sz,
+              storey: float = 0.0) -> None:
     """Floors inside a building shell, per storey: a slab inset from the walls (glowing ceiling panels under it)
     with a well in the middle, the stair + elevator core standing in that well (walkable switchback stairs,
     one storey per piece, so the stairs climb the whole building), and furniture along the windows facing
@@ -311,9 +346,11 @@ def _interior(groups: dict, root: str, parts: list, furniture: str, x, y, z, yaw
             [round(x + fx * u - fy * v), round(y + fy * u + fx * v), round(z + h), round((yaw + turn) % 360, 1), *s])
 
     floors, below, car = 0, 0.0, False
+    storey = storey or STOREY_CM  # parts may also be bounds (x0, y0, z0, x1, y1, z1): a modular building's blocks
     for part in parts:
-        x0, y0, z0, x1, y1, z1 = KIT[part][1:]
-        roof = 150 if part == parts[-1] else 0
+        x0, y0, z0, x1, y1, z1 = KIT[part][1:] if isinstance(part, str) else part
+        part = part if isinstance(part, str) else ""
+        roof = 150 if part and part == parts[-1] else 0
         rnd = "Round" in part or "SM_Sky" in part
         odd = part in ("SM_Bld_Hospital", "SM_Bld_Police") or "Mansion_P1" in part
         inset = 0.6 if "SM_Sky" in part or odd else 0.66 if rnd else 0.86
@@ -323,15 +360,18 @@ def _interior(groups: dict, root: str, parts: list, furniture: str, x, y, z, yaw
             ru = rv = min(ru, rv)
         # storeys on one building-wide grid, so the stairs run on through the tower's parts without a gap;
         # the last storey under the roof stays clear of it
-        k0, k1 = math.ceil((below or z0 * sz) / STOREY_CM), int((z1 * sz - roof) // STOREY_CM)
+        # a tower's stacked parts continue one grid; a modular building's wings (L, courtyard) each start at their own base
+        k0, k1 = math.ceil(((below if part else 0) or z0 * sz) / storey), int((z1 * sz - roof) // storey)
         if k1 <= k0 or min(ru, rv) < 150:
             continue
-        below = k1 * STOREY_CM
+        below = k1 * storey
         # the well: square 0.6 r x 0.6 r (FloorPlate's hole), or the square inside FloorRound's round hole
         wu, wv = (0.594 * ru, 0.594 * ru) if rnd else (0.6 * ru, 0.6 * rv)
         has_core = min(wu, wv) >= CORE_MIN_CM
         plate = ("SM_Kit_FloorRound" if rnd else "SM_Kit_FloorPlate") if has_core else "SM_Kit_FloorSolid"
-        cs = [round(max(0.7, min(2.2, wu / CORE_CM)), 3), round(max(0.7, min(2.2, wv / CORE_CM)), 3), 1.0]
+        # the core's rise is STOREY_CM: squashed to the building's storey so its top landing is the next floor
+        cs = [round(max(0.7, min(2.2, wu / CORE_CM)), 3), round(max(0.7, min(2.2, wv / CORE_CM)), 3),
+              round(storey / STOREY_CM, 3)]
         # furniture: a ring 70 % of the way out to the slab edge (between the well and the glass), ~6 m apart
         count = max(2, min(SETS_PER_FLOOR, int(2 * math.pi * 0.7 * (ru + rv) / 2 // 600)))
         spots = []
@@ -344,7 +384,7 @@ def _interior(groups: dict, root: str, parts: list, furniture: str, x, y, z, yaw
             if floors >= MAX_FLOORS:
                 return
             floors += 1
-            h = k * STOREY_CM + 10
+            h = k * storey + 10
             put(plate, cu, cv, h, 0, [round(2 * ru / 100, 2), round(2 * rv / 100, 2), 1.0])
             if has_core:
                 put("SM_Kit_StairCore", cu, cv, h, 0, cs)
@@ -530,6 +570,27 @@ def _demo() -> None:
     stored["9_9"] = {"hash": "x"}  # a tile the plan no longer has
     assert tile_diff(t2, stored) == (["2_0"], ["9_9"], ["0_0", "1_0"])
     assert tile_diff(t2, stored, force=True)[0] == ["0_0", "1_0", "2_0"]
+    # street trees stand in a pit, forest trees do not
+    gp = bake({"Street trees": {"kind": "along_roads", "role": "street_tree", "points": [[5, 6, 7, 30, 1.0]]},
+               "Trees": {"kind": "foliage", "role": "tree", "points": [[9, 9, 0, 0, 1.0]]}}, "/R")[0]
+    assert gp[path("SM_Kit_TreePit", "/R")] == [[5, 6, 7, 30, 1.0, 1.0, 1.0]], gp
+    # modular: an L-shaped school on a hill, built from BuildingKit modules in the lot's frame (front = yaw)
+    bk = lambda n: f"/R/WorldGen/{grammar.FOLDER}/{n}.{n}"
+    lot = [10000, 0, 300, 90, 1, 11, FORM_NAMES.index("L"), 44, 36, 1.2, []]
+    gm2, bm2, mm2 = bake({"Schools": {"kind": "buildings", "role": "school", "build": "modular", "points": [lot]}}, "/R")
+    assert bm2 == {"Schools": 1} and not mm2, (bm2, mm2)
+    assert not any("SM_City_" in k for k in gm2), "a modular lot never stretches a whole mesh"
+    glass = gm2[bk("SM_BK_Modern_SlidingGlassWall")]
+    assert glass and all(r[2] >= 300 for r in glass), "walls stand on the pad"
+    assert max(r[1] for r in glass) <= 1800 + 1 and min(r[1] for r in glass) >= -1800 - 1, "walls stay on the 36 m deep lot (+X = north)"
+    floors = gm2[path("SM_Kit_FloorPlate", "/R")] + gm2.get(path("SM_Kit_FloorSolid", "/R"), [])
+    assert len({r[2] for r in floors}) == 3 and all((r[2] - 310) % grammar.STOREY_CM == 0 for r in floors), \
+        ("3 storeys on the BuildingKit grid, both wings furnished", sorted({r[2] for r in floors}))
+    assert all(r[6] == round(grammar.STOREY_CM / STOREY_CM, 3) for r in gm2[path("SM_Kit_StairCore", "/R")]), "core fits the storey"
+    assert path("SM_Kit_Plinth", "/R") in gm2, "pad pieces still come with a modular lot"
+    # a role the grammar has no style for keeps its whole mesh even when the layer asks for modular
+    gw2 = bake({"W": {"kind": "buildings", "role": "warehouse", "build": "modular", "points": [lot]}}, "/R")[0]
+    assert any("SM_V4_Container" in k for k in gw2)
     print("kit bake ok", len(groups), "meshes")
 
 

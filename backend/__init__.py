@@ -48,6 +48,12 @@ def register(api) -> None:
                 return fn(*a, **k)
             except PermissionError as exc:
                 return {"ok": False, "error": str(exc)}
+            except (KeyError, ValueError, TypeError, IndexError) as exc:
+                # never a bare traceback: what failed, and where the names that do exist are listed
+                return {"ok": False, "error": f"{fn.__name__}: {type(exc).__name__}: {exc}",
+                        "fix": "Check the arguments against road_network_describe(net_id): it lists the worlds, "
+                               "cities, layers, roles, forms, build modes and stages that exist. Ids are "
+                               "lower-case slugs; layer and options arguments are JSON strings."}
         run.__name__ = fn.__name__
         run.__doc__ = fn.__doc__
         return run
@@ -1664,6 +1670,37 @@ def register(api) -> None:
                 if p.get("path"):
                     p["in_project"] = have.get(p["path"])
         return {"ok": True, **out}
+
+    @api.tool(intent=GEN_INTENT, listener=False)
+    def road_network_describe(net_id: str = "") -> dict:
+        """Start here: everything City Builder accepts, read from the code so it is never out of date. Layer
+        kinds, where-zones, roles, building forms, build modes ('mesh' stretches one kit building to a lot,
+        'modular' stacks BuildingKit storeys and wall modules by grammar), which roles have a modular style and
+        the grammar each storey uses, the pipeline stages in run order, and the kit folders. With net_id: that
+        world's cities, its layers (name, kind, role, build, order) and its stage states."""
+        from . import grammar
+        out = {"ok": True,
+               "stages": pipeline.RUN_ORDER,
+               "layer": {"kinds": list(pl.KINDS), "where": list(pl.WHERE), "roles": {r: v[0] for r, v in pl.ROLES.items()},
+                         "forms": pl.FORMS, "build": list(pl.BUILD_MODES),
+                         "numbers": {k: {"default": d, "min": lo, "max": hi} for k, (d, lo, hi) in pl.NUMBERS.items()}},
+               "modular": {"styles": grammar.STYLE_BY_ROLE, "storey_cm": grammar.STOREY_CM, "module_cm": grammar.MODULE_CM,
+                           "grammars": {s: {k: v for k, v in st_.items() if k in ("front_ground", "ground", "upper")}
+                                        for s, st_ in grammar.STYLES.items()},
+                           "folder": f"WorldGen/{grammar.FOLDER}"},
+               "kit": {"pieces": len(kit_bake.KIT), "folders": sorted({f"WorldGen/{v[0]}" for v in kit_bake.KIT.values()})},
+               "next": "road_network_pcg_layers -> road_network_pcg_layer_save -> road_network_pcg_preview -> "
+                       "road_network_pcg_build; road_network_piece_manifest for meshes to model"}
+        nid = slug(net_id)
+        if nid:
+            if not data.get(f"net.{nid}"):
+                return {"ok": False, "error": f"no world '{net_id}'",
+                        "fix": "road_network_list() lists the worlds; pass its id."}
+            out["cities"] = sorted(v.get("name") or k for k, v in city_docs(nid).items())
+            out["layers"] = sorted(({"id": k, "name": v.get("name"), "kind": v.get("kind"), "role": v.get("role"),
+                                     "build": v.get("build", "mesh"), "order": v.get("order")}
+                                    for k, v in layer_docs(nid).items()), key=lambda l: (l["order"] or 0, l["name"] or ""))
+        return out
 
     @api.tool(intent=GEN_INTENT, listener=False)
     def road_network_cities(net_id: str = "") -> dict:
