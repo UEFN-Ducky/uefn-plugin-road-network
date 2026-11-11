@@ -53,6 +53,9 @@ stretched to fit a lot never smear), old colour as Tint, Used with Instanced Sta
 put a new mesh on PCG/ISM without a material that has that usage flag. Junctions: with our own road kit
 `road_network_build_pieces(rebuild=true)` regenerates every SM_JK_ piece flat at deck height in the roads'
 `M_Asphalt` with planar UVs (the Fortnite Road1 crown + MI_Apollo_Roads material is only for the Fortnite kit).
+Saving in UEFN: never save assets one by one in a loop. Each save runs revision control's checkout prompt and
+every failed checkout opens a modal dialog with its own swap chain (~14 s each); 50 saves took UEFN past 70 GB.
+The listener saves everything it made in one `save_packages` batch.
 Street kit: the kit had no traffic lights, signs, billboards, power poles, parking lots, path slabs or plinths;
 `road_network_kit_materials` first builds them (GeometryScript, WorldGen/Kit/Street, in the same PBR master), so
 every layer gets a piece and lots on hills get a plinth plus walkway / driveway slabs. pcg_build makes one graph

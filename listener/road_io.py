@@ -420,7 +420,7 @@ def _world_pbr_master(folder: str, root: str):
         except Exception:
             pass
     mel.recompile_material(m)
-    unreal.EditorAssetLibrary.save_loaded_asset(m)
+    _save_batch([m])
     return m
 
 
@@ -432,6 +432,15 @@ def _old_tint(mat) -> unreal.LinearColor:
     except Exception:
         pass
     return unreal.LinearColor(1, 1, 1, 1)
+
+
+def _save_batch(assets: list) -> None:
+    """Save many assets in ONE call. Never save_loaded_asset in a loop: with UEFN revision control every
+    such save runs the checkout prompt, and each failed checkout opens a modal dialog with its own swap
+    chain - hundreds of saves leaked tens of GB and froze the editor."""
+    pkgs = [a.get_outermost() for a in assets if a is not None]
+    if pkgs:
+        unreal.EditorLoadingAndSavingUtils.save_packages(pkgs, True)
 
 
 def _mi(folder: str, name: str, master, root: str, look: tuple, tint=None):
@@ -451,8 +460,7 @@ def _mi(folder: str, name: str, master, root: str, look: tuple, tint=None):
     for pname, v in (("TileCm", tile), ("RoughMul", rough), ("Metallic", metal), ("Emissive", glow)):
         mel.set_material_instance_scalar_parameter_value(mi, pname, float(v))
     mel.update_material_instance(mi)
-    eal.save_loaded_asset(mi)
-    return mi
+    return mi  # saved by the caller in one batch (_save_batch)
 
 
 # The street kit City Builder makes itself: (look name -> look, tint) and per mesh its parts
@@ -531,11 +539,11 @@ def road_network_street_kit(root: str = "") -> dict:
                     dm, sm, unreal.GeometryScriptCollisionFromMeshOptions())
             except Exception:
                 pass
-            eal.save_loaded_asset(sm)
-            made.append(name)
+            made.append(sm)
         except Exception as exc:  # one bad piece must not stop the rest
             errors.append(f"{name}: {exc}"[:200])
-    return {"ok": not errors, "made": made, "errors": errors}
+    _save_batch(made + list(looks.values()))
+    return {"ok": not errors, "made": [m.get_name() for m in made], "errors": errors}
 
 
 @register("road_network_kit_materials")
@@ -552,7 +560,7 @@ def road_network_kit_materials(root: str = "", folders: list | None = None) -> d
     if not eal.does_directory_exist(mat_folder):
         eal.make_directory(mat_folder)
     master = _world_pbr_master(mat_folder, root)
-    made, meshes, slots = {}, 0, 0
+    made, meshes, slots, changed_meshes = {}, 0, 0, []
     for sub in folders or ["City", "Kit"]:
         for path in eal.list_assets(f"{root}/WorldGen/{sub}", recursive=False):
             mesh = eal.load_asset(path)
@@ -579,12 +587,12 @@ def road_network_kit_materials(root: str = "", folders: list | None = None) -> d
                     for pname, v in (("TileCm", tile), ("RoughMul", rough), ("Metallic", metal), ("Emissive", glow)):
                         mel.set_material_instance_scalar_parameter_value(mi, pname, float(v))
                     mel.update_material_instance(mi)
-                    eal.save_loaded_asset(mi)
                     made[key] = mi
                 mesh.set_material(i, made[key])
                 changed = True
                 slots += 1
             if changed:
-                eal.save_loaded_asset(mesh)
+                changed_meshes.append(mesh)
                 meshes += 1
+    _save_batch(list(made.values()) + changed_meshes)
     return {"ok": True, "master": master.get_path_name(), "instances": len(made), "meshes": meshes, "slots": slots}
