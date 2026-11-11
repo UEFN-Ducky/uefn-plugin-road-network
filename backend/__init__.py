@@ -2452,6 +2452,34 @@ def register(api) -> None:
         api.call_tool("ducky_send_chat_message", {"conv_id": conv, "wait_for_reply": False, "message": message})
         return {"ok": True, "chat": conv}
 
+    def note_draft(net_id: str = "", kind: str = "pin", points: str = "") -> dict:
+        """What the chat's typing box starts with after a pin, an area or a build click: where it is and what is
+        there, ending where the person types what they want. Nothing is sent: they finish it and press Enter."""
+        nid = slug(net_id)
+        if not data.get(f"net.{nid}"):
+            return {"ok": False, "error": "Open a world first."}
+        if kind == "build":
+            return {"ok": True, "draft": build_text(nid, "")}
+        try:
+            pts = [[float(p[0]), float(p[1])] for p in (json.loads(points) if isinstance(points, str) else points or [])]
+        except (ValueError, TypeError, IndexError):
+            return {"ok": False, "error": "The marked points could not be read."}
+        if not pts:
+            return {"ok": False, "error": "Place a pin or draw an area first."}
+        lines = [ln for ln in note_text(nid, "", kind, pts).split("\n") if not ln.startswith("How:")]
+        lines[0] = lines[0].rstrip(": ").rstrip() + "."
+        lines.append("How: City Builder tools (skill road-network): an area-limited PCG layer (road_network_pcg_layer_save "
+                     "with \"area\"), checked with road_network_pcg_preview.")
+        return {"ok": True, "draft": "\n".join(lines) + "\n\nWhat I want here: "}
+
+    api.register_panel_rpc("note_draft", lambda net_id="", kind="pin", points="": safe(note_draft)(net_id, kind, points))
+
+    @api.tool(intent=GEN_INTENT, listener=False)
+    def road_network_note_draft(net_id: str = "", kind: str = "pin", points: str = "") -> dict:
+        """The text the City Builder panel puts in the chat's typing box for a pin (kind 'pin', one [x, y]), an
+        area (kind 'area', an outline [[x, y], ...], cm) or a build (kind 'build'): where it is, what is there and
+        how to act on it, ending where the person says what they want. Sends nothing."""
+        return safe(note_draft)(net_id, kind, points)
     api.register_panel_rpc("version", lambda: plugin_version())
     api.register_panel_rpc("chats", lambda: safe(list_chats)())
     api.register_panel_rpc("send_note", lambda net_id="", chat_id="", text="", kind="pin", points="":

@@ -1961,10 +1961,8 @@ function drawRemoteSel() {
 function renderHeader() {
   $("brand").replaceChildren(icon("city", 18), h("span", {}, "City Builder"));
   $("headActions").replaceChildren(button("New world", "plus", newWorld, "secondary", "Set up a new world in the World section"));
-  // City Builder is the blueprint: an AI builds it in UEFN with UEFN's own systems (landscape splines, PCG)
-  $("headPush").replaceChildren(h("span", { id: "syncBadge" }),
-    button("Build in UEFN with AI", "chat", () => openNote("build"), "primary",
-      "Send this world to an AI chat that builds what changed in UEFN: roads as landscape splines, the city as PCG"));
+  // City Builder is the blueprint: an AI builds it in UEFN (the badge opens the chat with the build job typed in)
+  $("headPush").replaceChildren(h("span", { id: "syncBadge" }));
   // the badge fills in once the world's city preview has loaded (loadPcgPreview): checking it first built the
   // whole city a second time while the roads were still loading
 }
@@ -1986,7 +1984,8 @@ async function loadSync() {
       + `only changes these.`;
   const b = h("button", { type: "button", class: "rn-tag", title: detail, style: `cursor: pointer; border: 1px solid ${tone}; color: ${tone}` },
     icon(s.in_sync ? "check" : "refresh", 12), h("span", { style: "margin-left: 4px" }, s.summary));
-  b.addEventListener("click", () => s.in_sync ? loadSync() : openNote("build"));
+  b.addEventListener("click", () => s.in_sync ? loadSync() : askChat("build"));
+  if (!s.in_sync) b.title = `${detail} Click: ask the chat to build it in UEFN.`;
   el.replaceChildren(b);
 }
 let worldDrop = null;
@@ -2353,7 +2352,7 @@ function finishArea() {
   note.kind = "area";
   drawMarks();
   renderTools();
-  openNote();
+  askChat("area");
 }
 function placePin(e) {
   const v = groundAt(e);
@@ -2362,7 +2361,7 @@ function placePin(e) {
   note.points = [toUE(v)];
   drawMarks();
   renderTools();
-  openNote();
+  askChat("pin");
 }
 // Drag a city (Pointer tool): press on it, drag, let go; the world is generated again with it at its new place
 function cityUnder(e) {
@@ -2454,75 +2453,20 @@ function drawMarks() {
 function clearNote() {
   note.kind = ""; note.points = [];
   drawMarks();
-  $("note").hidden = true;
   renderTools();
 }
-async function openNote(mode) {
+// A pin, an area or the build badge: the chat card pops up with where it is typed in; the person finishes the
+// sentence in the chat itself and sends it (no box of our own)
+async function askChat(kind) {
   if (!state.net) { clearNote(); return showError("Open a world first."); }
-  if (mode === "build") { note.kind = "build"; note.points = []; drawMarks(); }
-  const box = $("note");
-  const where = note.kind === "build" ? `Build ${currentNet()?.name || "this world"} in UEFN`
-    : note.kind === "pin"
-    ? `A spot at x ${note.points[0][0]}, y ${note.points[0][1]}`
-    : `An area of about ${Math.round(Math.abs(note.points.reduce((s, p, i) => {
-        const q = note.points[(i + 1) % note.points.length]; return s + p[0] * q[1] - q[0] * p[1]; }, 0)) / 2 / 1e4).toLocaleString()} m²`;
-  const text = h("textarea", { placeholder: note.kind === "pin" ? "What should go here? A school, a park, a bus stop…"
-    : note.kind === "build" ? "Anything to add for the AI (optional)"
-    : "What should happen in this area? More houses, a shopping street, a dense forest…", "aria-label": "Note for the AI" });
-  // the box opens at once: the chat list fills in when it arrives (it can take a moment), never blocking
-  const opts = () => [{ value: "new", label: "New chat" }, ...(note.chats || []).map((c) => ({ value: c.id, label: c.title }))];
-  let target = note.target || "new";
-  const drop = window.DuckyKit?.dropdown
-    ? window.DuckyKit.dropdown({ label: "Send to", options: opts(), value: target, onChange: (v) => { target = v; note.target = v; } })
-    : null;
-  const pickChat = drop ? drop.el : h("span", { class: "dk-muted" }, "Sends to a new chat");
-  if (!note.chats) loadChats().then(() => { drop?.setOptions?.(opts()); drop?.set?.(target); });
-  const send = button(note.kind === "build" ? "Ask AI to build" : "Send to AI", "send", async () => {
-    if (!text.value.trim() && note.kind !== "build") return text.focus();
-    busy("Sending to the AI…");
-    const out = await rpc("send_note", { net_id: state.net, chat_id: target, text: text.value, kind: note.kind,
-      points: JSON.stringify(note.points.map((p) => [p[0], p[1]])) });
-    busy("");
-    if (out.ok === false) return showError(out.error);
-    showError("");
-    const wasBuild = note.kind === "build";
-    note.target = out.chat;
-    note.chats = null;  // a new chat shows up next time
-    loadChats();
-    clearNote();
-    alert("Sent", wasBuild
-      ? "The AI has the build job: roads as landscape splines, the city as PCG tiles, only what changed."
-      : "The AI has the spot, what is there now, and your note. Its changes show up here when it saves layers.");
-  }, "primary");
-  const cancel = button("Cancel", "x", clearNote, "ghost");
-  // a build: what will be built, what is waiting, and what the AI will ask before it starts
-  const brief = note.kind === "build" ? h("div", { class: "rn-brief" }, h("div", { class: "dk-loading" }, "Checking what this build needs…")) : null;
-  box.replaceChildren(h("div", { class: "rn-note__where" }, where), ...(brief ? [brief] : []), text,
-    h("div", { class: "rn-note__row" }, pickChat, cancel, send));
-  box.hidden = false;
-  text.focus();
-  if (brief) rpc("build_brief", { net_id: state.net }).then((b) => {
-    if (b.ok === false) return brief.replaceChildren(h("div", { class: "rn-hint" }, b.error));
-    const pend = b.pending || {};
-    const roads = (pend.roads_changed || []).length + (pend.roads_never_pushed || []).length;
-    const tiles = (pend.tiles?.build || 0) + (pend.tiles?.remove || 0);
-    const env = b.environment || {};
-    const okv = (v) => (v ? "Yes" : v === false ? "No" : "?");
-    brief.replaceChildren(
-      h("div", { class: "rn-kv" },
-        ...b.summary.flatMap((s, i) => i ? [h("span", {}, s.split(":")[0]), h("span", {}, s.split(":").slice(1).join(":").trim())] : []),
-        h("span", {}, "Roads to paste"), h("span", {}, String(roads)),
-        h("span", {}, "City tiles to build"), h("span", {}, String(tiles)),
-        h("span", {}, "Pieces needed"), h("span", {}, `${b.needs_total} meshes`),
-        h("span", {}, "UEFN open"), h("span", {}, okv(env.uefn_online)),
-        h("span", {}, "Blender"), h("span", {}, okv(env.blender))),
-      h("div", { class: "rn-hint", style: "margin-top: 6px" },
-        `The AI checks which pieces your project is missing, then asks you ${b.questions.length} things in one go `
-        + `(${b.questions.map((q) => q.id.replace(/_/g, " ")).join(", ")}) before it touches UEFN.`));
-  });
+  const got = await rpc("note_draft", { net_id: state.net, kind,
+    points: JSON.stringify(note.points.map((p) => [p[0], p[1]])) });
+  if (got.ok === false) return showError(got.error);
+  showError("");
+  await openChatDock(got.draft);
 }
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !$("note").hidden) clearNote();
+document.addEventListener("keydown", (e) => {  // Esc takes the pin or the area off the map
+  if (e.key === "Escape" && (note.kind === "pin" || note.kind === "area")) clearNote();
 });
 // ------------------------------------------------------------------ chat: Ducky's real chat in a card over the map
 // chat.open place "float" shows the chat itself (messages, composer, styles), never a copy, in a card that pops in
@@ -2546,7 +2490,7 @@ function setDockState(s) {
   }
   if (s?.place && s.place !== "float") setTimeout(resize, 50);  // an older Ducky docks it beside the map
 }
-async function openChatDock() {
+async function openChatDock(draft = "") {
   const pick = state.view.chat || OWN_CHAT;
   const world = state.nets.find((n) => n.id === state.net);
   const which = pick === OWN_CHAT
@@ -2554,7 +2498,8 @@ async function openChatDock() {
         + `skill and the road_network_* tools. The open world is net_id '${state.net || ""}'${world?.name ? ` (${world.name})` : ""}.` }
     : { conv_id: pick, title: (note.chats || []).find((c) => c.id === pick)?.title || "Chat" };
   try {
-    let s = await call("chat.open", { ...which, place: "float", expanded: true, size: 420, offset: 80, choices: chatChoices() });
+    let s = await call("chat.open", { ...which, place: "float", expanded: true, size: 420, offset: 80, choices: chatChoices(),
+      ...(draft ? { draft } : {}) });
     if (pick === OWN_CHAT && s?.conv_id && s.conv_id !== state.view.ownChat) {
       state.view.ownChat = s.conv_id;  // the plugin's own chat, so the picker can list it
       savePrefs();
