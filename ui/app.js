@@ -768,26 +768,36 @@ function schedulePcgPreview(delay = 700) {
   clearTimeout(pcgPreviewTimer);
   pcgPreviewTimer = setTimeout(loadPcgPreview, delay);
 }
+// Foliage layers are the big replies (hundreds of thousands of trees): each comes on its own; the rest come
+// PCG_BATCH layers to a call, the road walls with the last (every call re-reads the world's inputs once).
+const PCG_BATCH = 12;
 async function loadPcgPreview() {
-  if (!state.net || !(state.layers || []).length) { state.pcg = {}; buildScene(); return; }
+  if (!state.net || !(state.layers || []).length) { state.pcg = {}; buildScene(); loadSync(); return; }
   const net = state.net;
   const out = {};
   const todo = state.layers.filter((x) => x.enabled);
-  for (const [i, l] of todo.entries()) {  // one layer per reply keeps each one small; the first call computes them all
-    busy("Placing the city", { text: i ? `${l.name} (${i + 1} of ${todo.length})` : "Placing every building, prop and tree…",
-      step: i, of: todo.length + 1 });
-    const r = await rpc("pcg_preview", { net_id: net, layer_id: l.id });
-    if (r.ok === false) { busy(""); return showError(r.error); }
-    Object.assign(out, r.layers || {});
+  const calls = todo.filter((l) => l.kind === "foliage").map((l) => [l]);
+  const rest = todo.filter((l) => l.kind !== "foliage");
+  for (let i = 0; i < rest.length; i += PCG_BATCH) calls.push(rest.slice(i, i + PCG_BATCH));
+  calls.push([{ id: "road-walls", name: "Road walls" }]);  // stone walls from road cut / fill, and the neighbourhood sites
+  const picked = {};
+  for (const [i, ls] of calls.entries()) {  // the first call computes the whole city; the rest read it from the cache
+    busy("Placing the city", { text: i ? `${ls.map((l) => l.name).join(", ")}` : "Placing every building, prop and tree…",
+      step: i, of: calls.length });
+    const r = await rpc("pcg_preview", { net_id: net, layer_id: ls.map((l) => l.id).join(",") });
+    if (r.ok === false && ls[0].id !== "road-walls") { busy(""); return showError(r.error); }
+    if (r.ok !== false) Object.assign(picked, r.layers || {});
   }
-  const walls = await rpc("pcg_preview", { net_id: net, layer_id: "road-walls" });  // stone walls from road cut / fill
-  if (walls.ok !== false) Object.assign(out, walls.layers || {});
+  // the layer order the panel has always drawn: each layer in turn, then the walls and sites
+  for (const l of todo) if (l.name in picked) out[l.name] = picked[l.name];
+  Object.assign(out, picked);
   busy("");
   if (net !== state.net) return;
   state.pcg = out;
   renderPcgCounts();
   state.fadeNext = true;  // the new city rises into place instead of popping in
   buildScene();
+  loadSync();  // after the city: the badge reads the preview just computed instead of building its own
 }
 function renderPcgCounts() {
   document.querySelectorAll("[data-pcg-count]").forEach((el) => {
@@ -1585,7 +1595,7 @@ async function openNet(id) {
   state.net = id; state.framed = false; state.sel = null; state.actor = ""; state.pcg = {};
   call("prefs.set", { id: "last_net", value: id }).catch(() => {});
   renderWorldPick();
-  setTimeout(loadSync, 400);  // after the world's own loads: the badge never holds up the view
+  $("syncBadge")?.replaceChildren();  // filled after this world's city preview (loadPcgPreview)
   document.querySelectorAll("[data-net]").forEach((b) => b.toggleAttribute("aria-current", b.dataset.net === id));
   const g = currentNet()?.generated;
   if (g) {  // the generate tabs show this world's own settings
@@ -1633,16 +1643,31 @@ async function loadAllGeometry(net) {
   if (base.ok === false) return base;
   if (info.ok === false) return info;
   const actors = {};
-  await Promise.all(Object.keys(info.actors || {}).map(async (aslug) => {
-    const a = actors[aslug] = { label: info.actors[aslug].label, pts: [], segs: [] };
+  // small actors (airports, freeways, highways: a few dozen points) share a call; big ones page on their own
+  const batches = [];
+  let group = [], room = PAGE;
+  for (const [aslug, a] of Object.entries(info.actors || {})) {
+    actors[aslug] = { label: a.label, pts: [], segs: [] };
+    const size = Math.max(a.stats?.points ?? PAGE, a.stats?.segments ?? PAGE);  // unknown: a page of its own
+    if (size >= PAGE) { batches.push([aslug]); continue; }
+    if (size > room) { batches.push(group); group = []; room = PAGE; }
+    group.push(aslug);
+    room -= size;
+  }
+  if (group.length) batches.push(group);
+  await Promise.all(batches.map(async (slugs) => {
     for (let offset = 0; ; offset += PAGE) {
-      const page = await rpc("geometry", { net_id: net, actor: aslug, offset, limit: PAGE, terrain: false });
+      const page = await rpc("geometry", { net_id: net, actor: slugs.join(","), offset, limit: PAGE, terrain: false });
       if (page.ok === false) throw new Error(page.error);
-      const part = page.actors?.[aslug];
-      if (!part) break;
-      a.pts.push(...part.pts);
-      a.segs.push(...part.segs);
-      if (offset + PAGE >= Math.max(part.points_total, part.segments_total)) break;
+      let more = false;
+      for (const aslug of slugs) {
+        const part = page.actors?.[aslug];
+        if (!part) continue;
+        actors[aslug].pts.push(...part.pts);
+        actors[aslug].segs.push(...part.segs);
+        if (offset + PAGE < Math.max(part.points_total, part.segments_total)) more = true;
+      }
+      if (!more) break;
     }
   })).catch((err) => { base.ok = false; base.error = err.message; });
   return { ...base, actors };
@@ -1825,7 +1850,8 @@ function renderHeader() {
   $("headPush").replaceChildren(h("span", { id: "syncBadge" }),
     button("Build in UEFN with AI", "chat", () => openNote("build"), "primary",
       "Send this world to an AI chat that builds what changed in UEFN: roads as landscape splines, the city as PCG"));
-  loadSync();
+  // the badge fills in once the world's city preview has loaded (loadPcgPreview): checking it first built the
+  // whole city a second time while the roads were still loading
 }
 // UEFN vs this world: shows when the level is behind (generate as often as you like, nothing is blocked)
 let syncSeq = 0;

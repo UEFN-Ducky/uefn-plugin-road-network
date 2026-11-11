@@ -308,24 +308,63 @@ def register(api) -> None:
                     total[key][mesh] = total[key].get(mesh, 0) + n
         return {"ok": True, "id": got["id"], "total": total, "actors": got["actors"]}
 
+    def actor_page(nid: str, aslug: str, head: dict, lo: int, hi: int) -> tuple | None:
+        """(points, segments, points total, segments total) for [lo, hi) of one actor, reading only the chunks
+        that hold it and the last one (for the totals). Every chunk but the last holds CHUNK items (store_actor
+        and move_point write them that way); None for any other shape: then the caller reads the actor whole."""
+        got = []
+        for kind, field, count in (("p", "pts", "p_chunks"), ("s", "segs", "s_chunks")):
+            n = int(head.get(count) or 0)
+            if n <= 0:
+                got += [[], 0]
+                continue
+            first = min(lo // CHUNK, n - 1)
+            last = max(first, min(n - 1, (hi - 1) // CHUNK))
+            chunks = {k: (data.get(f"net.{nid}.actor.{aslug}.{kind}.{k}") or {}).get(field, [])
+                      for k in {*range(first, last + 1), n - 1}}
+            if any(len(items) != CHUNK for k, items in chunks.items() if k != n - 1):
+                return None
+            rows = [x for k in range(first, last + 1) for x in chunks[k]]
+            got += [rows[lo - first * CHUNK:hi - first * CHUNK], (n - 1) * CHUNK + len(chunks[n - 1])]
+        pts, n_pts, segs, n_segs = got
+        return pts, segs, n_pts, n_segs
+
     def geometry(net_id: str = "", actor: str = "", offset: int = 0, limit: int = 0, terrain: bool = True) -> dict:
         """Everything the 3D view draws for one actor (or all), plus terrain and props.
-        limit > 0 pages one actor: points and segments [offset, offset + limit), with their totals,
-        so no reply nears the 1 MB panel bridge line (a big city is several MB)."""
+        limit > 0 pages: points and segments [offset, offset + limit) of one actor, or of several ("a,b,c": the
+        panel asks for small actors together), with their totals. A page reads only its own chunks (the panel
+        loads a world in pages: every page reading every chunk of the actor made loading quadratic)."""
+        lo, hi = max(0, int(offset)), (max(0, int(offset)) + int(limit)) if int(limit) > 0 else None
+        row = lambda p: [p["i"], round(p["x"]), round(p["y"]), round(p["z"]), round(p["pitch"], 2),
+                         round(p["yaw"], 2), round(p["w"]), p["mesh"], 1 if p["raise"] else 0]
+        seg = lambda s: [s["i"], s["a"], s["b"], round(s["ta"]), round(s["tb"]), s["mesh"]]
+        nid = slug(net_id)
+        if hi is not None and actor and actor != "-" and data.get(f"net.{nid}"):
+            out = {}
+            for aslug in dict.fromkeys(slug(a) for a in str(actor).split(",")):
+                head = data.get(f"net.{nid}.actor.{aslug}")
+                if not head:
+                    continue
+                page = actor_page(nid, aslug, head, lo, hi)
+                if page is None:
+                    _, pts, segs = load_actor(nid, aslug)
+                    page = (pts[lo:hi], segs[lo:hi], len(pts), len(segs))
+                pts, segs, n_pts, n_segs = page
+                out[aslug] = {"label": head.get("label"), "points_total": n_pts, "segments_total": n_segs,
+                              "pts": [row(p) for p in pts], "segs": [seg(s) for s in segs]}
+            scan = (data.get(f"net.{nid}.scan") or {}) if terrain else {}
+            return {"ok": True, "id": nid, "actors": out, "terrain": scan.get("terrain", {}), "props": scan.get("props", [])}
         got = get_network(net_id)
         if not got.get("ok"):
             return got
         nid = got["id"]
         out = {}
-        lo, hi = max(0, int(offset)), (max(0, int(offset)) + int(limit)) if int(limit) > 0 else None
         for aslug, head in actor_docs(nid).items():
             if actor and aslug != slug(actor) and head.get("label") != actor:
                 continue
             _, pts, segs = load_actor(nid, aslug)
             out[aslug] = {"label": head.get("label"), "points_total": len(pts), "segments_total": len(segs),
-                          "pts": [[p["i"], round(p["x"]), round(p["y"]), round(p["z"]), round(p["pitch"], 2),
-                                   round(p["yaw"], 2), round(p["w"]), p["mesh"], 1 if p["raise"] else 0] for p in pts[lo:hi]],
-                          "segs": [[s["i"], s["a"], s["b"], round(s["ta"]), round(s["tb"]), s["mesh"]] for s in segs[lo:hi]]}
+                          "pts": [row(p) for p in pts[lo:hi]], "segs": [seg(s) for s in segs[lo:hi]]}
         scan = (data.get(f"net.{nid}.scan") or {}) if terrain else {}
         return {"ok": True, "id": nid, "actors": out, "terrain": scan.get("terrain", {}), "props": scan.get("props", [])}
 
@@ -1241,11 +1280,16 @@ def register(api) -> None:
             fit = fit_buildings(placed, terrain) if gen and not gen.get("ground_from") and terrain.get("heights") else None
             _PREVIEW_CACHE.update(key=key, out=placed, fit=fit)
         out = _PREVIEW_CACHE["out"]
-        if layer_id == "road-walls":  # the built-in layers the plan never lists: walls and neighbourhood sites
-            out = {k: v for k, v in out.items() if v.get("kind") in ("walls", "site")}
-        elif layer_id:
-            name = (docs.get(slug(layer_id)) or {}).get("name")
-            out = {name: out[name]} if name in out else {}
+        if layer_id:  # one layer, or several "a,b,c" (the panel asks for small layers together: fewer calls)
+            pick: dict = {}
+            for lid in str(layer_id).split(","):
+                if lid == "road-walls":  # the built-in layers the plan never lists: walls and neighbourhood sites
+                    pick.update({k: v for k, v in out.items() if v.get("kind") in ("walls", "site")})
+                else:
+                    name = (docs.get(slug(lid)) or {}).get("name")
+                    if name in out:
+                        pick[name] = out[name]
+            out = pick
         if summary:  # counts only: a quick check for an agent, no point lists
             return {"ok": True, "id": nid, "counts": {k: v["count"] for k, v in out.items()},
                     "ground_fit": fit_summary()}
