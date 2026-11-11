@@ -38,6 +38,7 @@ ROLES = {
     "street_tree": ("Street trees", "WorldGen/Kit V4 trees, small", "tree planter street tree"),
     "traffic_light": ("Traffic lights", "WorldGen/Kit (make SM_TrafficLight if missing)", "traffic light signal"),
     "street_sign": ("Street signs", "WorldGen/Kit signs", "street sign road sign pole"),
+    "sidewalk_corner": ("Sidewalk corners", "WorldGen/Kit/Street SM_Kit_SidewalkCorner", "sidewalk curb corner"),
     "stop_sign": ("Stop signs", "WorldGen/Kit signs", "stop sign"),
     "bench": ("Benches", "WorldGen/Kit props", "bench seat"),
     "bin": ("Trash bins", "WorldGen/Kit props", "trash can bin dumpster"),
@@ -241,6 +242,8 @@ CITY_STREET = [
     _prop("Traffic lights (city)", "at_junctions", "normal", 41, "traffic_light", setback=1.0, corners=2),
     _prop("Stop signs", "at_junctions", "housing", 42, "stop_sign", setback=0.8, corners=2),
     _prop("Street signs", "at_junctions", "cities", 43, "street_sign", setback=1.5, corners=1),
+    # the sidewalk carried round every junction corner (paving + kerb), placed before the poles that stand on it
+    _prop("Sidewalk corners", "at_junctions", "cities", 39, "sidewalk_corner", setback=1.9, corners=4, self_prune=False),
     _prop("Street lamps", "along_roads", "cities", 44, "street_lamp", spacing=30, setback=1.5),
     _prop("Street trees", "along_roads", "normal", 45, "street_tree", spacing=22, setback=3, random_yaw=True,
           scale_min=0.9, scale_max=1.1, footprint=0.4),
@@ -648,6 +651,45 @@ def junctions(actors: list) -> list:
             angles = sorted(math.degrees(math.atan2(m["y"] - p["y"], m["x"] - p["x"])) % 360 for m in mouths)
             out.append((p["x"], p["y"], max(300.0, max(m["w"] for m in mouths)), angles))
     return out
+
+
+WALL_CUT_CM, WALL_FILL_CM = 120.0, 200.0  # road cut / fill deeper than this gets a stone retaining wall
+
+
+def road_walls(actors: list, sample_z, sidewalk_cm: float = 380.0, step_cm: float = 1000.0) -> list:
+    """Stone retaining walls along the roads, read from the height difference between the GRADED road and
+    the original ground just past its sidewalk (like a hillside street: the road is cut into the slope with a
+    wall holding the hill, or built up on a wall where the ground falls away). Every `step_cm` along each
+    ground-level road segment, both sides. Rows [x, y, base z, yaw, 1, length m, height m]."""
+    rows = []
+    for pts, segs in actors:
+        by_i = {p["i"]: p for p in pts}
+        for s in segs:
+            a, b = by_i.get(s["a"]), by_i.get(s["b"])
+            if not a or not b or not s.get("mesh") or not a.get("raise") or not b.get("raise"):
+                continue  # mesh-less joins, bridges and ramps (lifted) never get walls
+            L = math.hypot(b["x"] - a["x"], b["y"] - a["y"])
+            if L < 100:
+                continue
+            ux, uy = (b["x"] - a["x"]) / L, (b["y"] - a["y"]) / L
+            half = max(float(a.get("w") or 500), float(b.get("w") or 500))
+            yaw = round(math.degrees(math.atan2(uy, ux)), 1)
+            n = max(1, int(L // step_cm))
+            for k in range(n):
+                t = (k + 0.5) / n
+                x, y = a["x"] + (b["x"] - a["x"]) * t, a["y"] + (b["y"] - a["y"]) * t
+                zr = a["z"] + (b["z"] - a["z"]) * t
+                for side in (1, -1):
+                    off = half + sidewalk_cm + 30
+                    wx, wy = x - uy * off * side, y + ux * off * side
+                    g = sample_z(wx, wy)
+                    if g is None:
+                        continue
+                    if g - zr > WALL_CUT_CM:  # cut: the hill stands above the road
+                        rows.append([round(wx), round(wy), round(zr), yaw, 1, round(L / n / 100, 2), round((g - zr) / 100 + 0.3, 2)])
+                    elif zr - g > WALL_FILL_CM:  # fill: the road stands above the ground
+                        rows.append([round(wx), round(wy), round(g), yaw, 1, round(L / n / 100, 2), round((zr - g) / 100, 2)])
+    return rows
 
 
 def junction_corners(juncs: list, setback_m: float, corners: int) -> list:
@@ -1083,6 +1125,11 @@ def _demo() -> None:
     assert abs(g(1500, 0) - (-450)) < 30, "the hill away from the lot is untouched"
     bad = clean({"name": "x", "kind": "nope", "density": -5, "scale_min": 3, "scale_max": 1})
     assert bad["kind"] == "scatter" and bad["density"] == 0.01 and bad["scale_min"] == 1 and bad["scale_max"] == 3
+    # road walls: a flat road cut 3 m into a hill on one side gets a stone wall there, none on the flat side
+    road = ([{"i": 0, "x": 0, "y": 0, "z": 0, "w": 500, "raise": True}, {"i": 1, "x": 3000, "y": 0, "z": 0, "w": 500, "raise": True}],
+            [{"a": 0, "b": 1, "mesh": "SM_Road"}])
+    rw = road_walls([road], lambda x, y: 300.0 if y > 0 else 0.0)
+    assert len(rw) == 3 and all(r[1] > 0 and abs(r[6] - 3.3) < 0.01 and r[5] == 10.0 for r in rw), rw
     # parcels: houses fill the lots cut from a real grid city's blocks, one per lot, facing their street
     from . import citygen as cg
     town = {"name": "L", "x": 0, "y": 0, "radius": 40000, "seed": 4, "style": "grid"}

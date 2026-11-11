@@ -308,13 +308,44 @@ function buildScene() {
       (byColor[key] ||= []).push(...ribbon(hermite(a, b, s[3], s[4], 6), f[1], f[2] === "purple" || f[2] === "yellow" ? 0 : 60));
       legend[f[3]] = f[2];
     }
+    // a junction is the crossing of its arms (each arm's asphalt from its mouth through the centre, as wide
+    // as that road), with a sidewalk corner square between neighbouring arms - not a disc
+    const arms = new Map();
+    for (const s of actor.segs) {
+      if (s[5]) continue;
+      for (const [j, m] of [[s[1], s[2]], [s[2], s[1]]]) {
+        const jp = pts.get(j), mp = pts.get(m);
+        if (jp && mp && jp[7] && jp[7] !== "SM_Junc_Empty") (arms.get(j) || arms.set(j, []).get(j)).push(mp);
+      }
+    }
+    for (const [j, list] of arms) {
+      const c = pts.get(j);
+      if ((c[6] || 0) > 8000) continue;  // broken data: drawn as the red disc below
+      const widest = Math.max(...list.map((m) => m[6] || 500));
+      const dirs = list.map((m) => { const dx = m[1] - c[1], dy = m[2] - c[2], l = Math.hypot(dx, dy) || 1; return [dx / l, dy / l, m]; });
+      for (const [ux, uy, m] of dirs) {
+        const from = [c[1] - ux * widest, c[2] - uy * widest, c[3]];
+        (byColor["fg-dim"] ||= []).push(...ribbon([from, [m[1], m[2], m[3]]], m[6] || 500, 65));
+      }
+      dirs.sort((a, b) => Math.atan2(a[1], a[0]) - Math.atan2(b[1], b[0]));
+      dirs.forEach(([ux, uy, m], k) => {  // the sidewalk corner between this arm and the next
+        const [vx, vy, n] = dirs[(k + 1) % dirs.length];
+        const ha = (m[6] || 500) + 190, hb = (n[6] || 500) + 190;
+        const cx = c[1] + ux * hb + vx * ha, cy = c[2] + uy * hb + vy * ha;
+        (byColor["fg"] ||= []).push(...ribbon([[cx - ux * 190, cy - uy * 190, c[3]], [cx + ux * 190, cy + uy * 190, c[3]]], 190, 75));
+      });
+      legend["Junction"] = "fg-dim";
+      legend["Sidewalk corner"] = "fg";
+    }
     for (const p of actor.pts) {
       if (!p[7] || p[7] === "SM_Junc_Empty") continue;
+      const drawn = arms.has(p[0]) && (p[6] || 0) <= 8000;  // its crossing is drawn above: the disc only takes clicks
       // a node wider than 80 m is broken data: drawn red at a capped size so it never hides the map
       const giant = (p[6] || 0) > 8000;
       const r = giant ? 40 : Math.max(6, (p[6] || 600) / 100);
       if (giant) legend["Broken node (run Check and repair)"] = "red";
-      const disc = new THREE.Mesh(new THREE.CircleGeometry(r, 24), new THREE.MeshStandardMaterial({ color: col(giant ? "red" : "fg-dim"), roughness: 0.8, side: THREE.DoubleSide }));
+      const disc = new THREE.Mesh(new THREE.CircleGeometry(r, 24), new THREE.MeshStandardMaterial({ color: col(giant ? "red" : "fg-dim"), roughness: 0.8,
+        side: THREE.DoubleSide, transparent: drawn, opacity: drawn ? 0 : 1, depthWrite: !drawn }));
       disc.rotation.x = -Math.PI / 2;
       disc.position.copy(toV(p[1], p[2], p[3] + 70));
       disc.receiveShadow = true;
@@ -524,6 +555,22 @@ function drawPcg(legend) {
     const pts = layer.points || [];
     if (!pts.length) return;
     const colour = PCG_COLORS[k % PCG_COLORS.length];
+    if (layer.kind === "walls") {  // stone retaining walls along cut / filled roads: [x, y, z, yaw, 1, length m, height m]
+      const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: col("fg-dim").multiplyScalar(0.8), roughness: 1 }), pts.length);
+      const zx = state.view.zx || 1;
+      pts.forEach(([x, y, z, yaw, , len, hgt], i) => {
+        dummy.position.copy(toV(x, y, z));
+        dummy.position.y += hgt * zx / 2;
+        dummy.rotation.set(0, -yaw * Math.PI / 180, 0);
+        dummy.scale.set(len, hgt * zx, 0.5);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+      });
+      mesh.castShadow = true;
+      groups.pcg.add(mesh);
+      legend[`${name} · ${layer.count.toLocaleString()}`] = "fg-dim";
+      return;
+    }
     const building = layer.kind === "buildings";
     if (building) { drawBuildings(layer, colour); legend[`${name} · ${layer.count.toLocaleString()}`] = colour; }
     const [geo, lift] = building ? [null, 0] : pcgShape(name, layer.kind);
@@ -561,6 +608,8 @@ async function loadPcgPreview() {
     if (r.ok === false) { busy(""); return showError(r.error); }
     Object.assign(out, r.layers || {});
   }
+  const walls = await rpc("pcg_preview", { net_id: net, layer_id: "road-walls" });  // stone walls from road cut / fill
+  if (walls.ok !== false) Object.assign(out, walls.layers || {});
   busy("");
   if (net !== state.net) return;
   state.pcg = out;

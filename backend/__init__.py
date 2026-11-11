@@ -973,12 +973,20 @@ def register(api) -> None:
         key = hashlib.sha1(json.dumps([nid, docs, cities, terrain, actors, keep], sort_keys=True, default=str)
                            .encode()).hexdigest()
         if _PREVIEW_CACHE.get("key") != key:  # ponytail: one entry, the world being looked at
-            _PREVIEW_CACHE.update(key=key, out=pl.preview(
-                list(docs.values()), cities, terrain, pl.road_samples(actors),
-                lambda x, y: st.sample_grid(terrain, x, y) if terrain.get("heights") else 0.0,
-                limit=6000, juncs=pl.junctions(actors), keep=keep, foliage_limit=FOREST_LIMIT))  # the whole city
+            ground = lambda x, y: st.sample_grid(terrain, x, y) if terrain.get("heights") else 0.0
+            placed = pl.preview(list(docs.values()), cities, terrain, pl.road_samples(actors), ground,
+                                limit=6000, juncs=pl.junctions(actors), keep=keep, foliage_limit=FOREST_LIMIT)  # the whole city
+            # FoundationGenerator for the roads: stone walls where the graded road is cut into / built up on the
+            # ground, from the height difference (not a layer to edit: it follows the roads and the terrain)
+            walls = pl.road_walls(actors, ground) if terrain.get("heights") else []
+            placed["Road walls"] = {"kind": "walls", "role": "road_wall", "count": len(walls), "shown": len(walls),
+                                    "points": walls, "meshes": [],
+                                    "row": "x, y, base z, yaw, 1, length_m, height_m"}
+            _PREVIEW_CACHE.update(key=key, out=placed)
         out = _PREVIEW_CACHE["out"]
-        if layer_id:
+        if layer_id == "road-walls":
+            out = {"Road walls": out["Road walls"]}
+        elif layer_id:
             name = (docs.get(slug(layer_id)) or {}).get("name")
             out = {name: out[name]} if name in out else {}
         if summary:  # counts only: a quick check for an agent, no point lists

@@ -98,6 +98,8 @@ KIT = {
     "SM_Kit_SofaSet": ("Kit/Street", -55, -100, 0, 120, 100, 85),
     "SM_Kit_ShopShelf": ("Kit/Street", -30, -100, 0, 30, 100, 180),
     "SM_Kit_RetainingWall": ("Kit/Street", -50, -15, 0, 50, 15, 100),
+    "SM_Kit_StoneWall": ("Kit/Street", -50, -25, 0, 50, 25, 100),
+    "SM_Kit_SidewalkCorner": ("Kit/Street", -200, -200, -15, 200, 200, 0),
     "SM_Kit_Bush": ("Kit/Street", -83, -95, 0, 110, 85, 130),
     "SM_Kit_Rock": ("Kit/Street", -80, -70, -20, 85, 70, 70),
 }
@@ -138,6 +140,7 @@ PROPS = {
     "hydrant": ["SM_Prop_FireHydrant"],
     "tree": ["SM_V4_TreeRound", "SM_V4_TreePine", "SM_V4_TreeRound"],
     "bush": ["SM_Kit_Bush"],
+    "sidewalk_corner": ["SM_Kit_SidewalkCorner"],
     "rock": ["SM_Kit_Rock"],
     "traffic_light": ["SM_Kit_TrafficLight"],
     "stop_sign": ["SM_Kit_StopSign"],
@@ -185,7 +188,11 @@ def bake(previewed: dict, root: str) -> tuple:
     for name, layer in previewed.items():
         role = layer.get("role")
         pts = layer.get("points") or []
-        if layer.get("meshes"):  # the person's / an AI's own layer: exactly its meshes, never a guessed kit role
+        if layer.get("kind") == "walls":  # stone retaining walls along cut / filled roads: length x height
+            for p in pts:
+                groups.setdefault(path("SM_Kit_StoneWall", root), []).append([p[0], p[1], p[2], p[3], p[5], 1.0, p[6]])
+            baked[name] = len(pts)
+        elif layer.get("meshes"):  # the person's / an AI's own layer: exactly its meshes, never a guessed kit role
             _own(groups, layer["meshes"], pts, layer.get("kind"), root)
             baked[name] = len(pts)
         elif layer.get("kind") == "buildings" and role == "park":
@@ -452,6 +459,8 @@ def _demo() -> None:
     assert set(go) == {"/Game/Garden/SM_Tulips.SM_Tulips", "/Game/Garden/SM_Roses.SM_Roses"} and bo == {"Flower beds": 400} and not mo, go.keys()
     assert 2.0 < len(go["/Game/Garden/SM_Tulips.SM_Tulips"]) / len(go["/Game/Garden/SM_Roses.SM_Roses"]) < 4.5, "weights hold"
     assert own_meshes(mine) == sorted(go)
+    gw = bake({"Road walls": {"kind": "walls", "points": [[0, 0, 100, 90.0, 1, 10.0, 2.5]]}}, "/R")[0]
+    assert gw[path("SM_Kit_StoneWall", "/R")][0] == [0, 0, 100, 90.0, 10.0, 1.0, 2.5], gw
     # a Blender building with its manifest size fits its lot: 24 m deep lot / 12 m model = x2 (clamped to 2)
     blds = {"Mine": {"kind": "buildings", "role": "shop", "meshes": [{"path": "/G/SM_MyShop", "size_cm": [1200, 1500, 900]}],
                      "points": [[0, 0, 0, 0, 1, 9, 0, 15, 24, 1.0, [], []]]}}

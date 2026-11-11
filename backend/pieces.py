@@ -34,7 +34,6 @@ WANTED = [  # not in the project yet: model them, then put them on a layer (mesh
     ("SM_Kit_Crosswalk", "street", "", "zebra crossing decal slab 400 x 300 x 2 cm, white stripes"),
     ("SM_Kit_CurbRamp", "street", "", "kerb ramp 150 x 120 cm, 8 % slope, tactile strip (where a walkway meets the kerb)"),
     ("SM_Kit_DrivewayApron", "street", "", "drop kerb + apron 460 deep x 400 wide, max 10 % (Toronto T-310.050-1)"),
-    ("SM_Kit_SidewalkCorner", "street", "", "quarter-round sidewalk corner, radius 300 cm, kerb 15 cm high"),
 ]
 
 

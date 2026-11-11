@@ -35,7 +35,8 @@ ROAD_TYPES = {
     "WK": ("SM_Path_Walkway_10m", 80.0, 0, True, "walkway from a door to the sidewalk"),
     "DW": ("SM_Path_Driveway_10m", 175.0, 0, False, "driveway from a garage to the street"),
 }
-NO_SIDEWALK = ("6L", "1W")  # city roads whose mesh has no sidewalk: the sidewalk generator adds them
+NO_SIDEWALK = ("6L", "1W", "2L")  # city roads whose mesh has no sidewalk: the sidewalk generator adds them
+# (dirt roads stay bare); with these every city street has a pavement from kerb to lot line, never grass
 ROAD_MESH = {k: v[0] for k, v in ROAD_TYPES.items()}
 HALF = {k: v[1] for k, v in ROAD_TYPES.items()}
 LOOP_PIECE = "SM_Road_Loop_Big"  # trumpet loop (point piece)

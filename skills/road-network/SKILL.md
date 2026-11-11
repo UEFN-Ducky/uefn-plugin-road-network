@@ -126,6 +126,16 @@ Sidewalks, walkways and driveways are SPLINES (road types `SW` 3.8 m, `WK` 1.6 m
 and cut / fill the ground. Every city street whose mesh has no sidewalk (`6L`, `1W`) gets one both sides. Only
 the wide frontage aprons (plazas) stay PCG slabs. PCG never lines street furniture up on the Paths actor.
 
+Height-aware pieces (read from the GRADED road vs the original terrain, `pl.road_walls`): every 10 m along a
+ground-level road, both sides, just past the sidewalk: ground > 1.2 m above the road (cut) -> a stone retaining
+wall holding the hill; road > 2 m above the ground (fill) -> a stone wall holding the road up
+(`SM_Kit_StoneWall`, 50 cm thick, capped, scaled to the 10 m stretch and the height). The preview shows them as
+the built-in 'Road walls' layer (`pcg_preview(layer_id='road-walls')`); Push city bakes them with the tiles.
+Every city street has a pavement: `2L`, `6L`, `1W` get sidewalk splines (dirt roads stay bare), and every
+junction corner gets a `SM_Kit_SidewalkCorner` paving pad ('Sidewalk corners' layer, 4 per junction). Junction
+meshes are crossings, not discs: each arm out to its mouth with curved kerb returns between arms
+(`_junction_geometry`); the panel draws them the same way.
+
 ## How a city is generated (the math, in order)
 Roads define the city, blocks are what roads enclose, lots are cut from blocks, buildings fit lots.
 1. **Planned grid** (`citygen.city_graph`): one orientation per city; intersections on a block grid (`block_m`
