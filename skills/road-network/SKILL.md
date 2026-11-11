@@ -24,6 +24,22 @@ memory or from this file.
 Tell them in a few lines, ask every question in **one** `ducky_ask_user`, and wait. Then follow the answers; the
 brief's `how` maps each answer to a tool. No editor work before the answers.
 
+## Doors open, everything collides
+Two rules every build keeps (the brief's `doors` and `collision` say what this world needs):
+- **Doors are Scene Graph entities that open.** House, garage, shop, office, revolving, grand, industrial and
+  roller doors: one Entity Prefab per kind (the door leaf + a component that opens it on interact), never a
+  fixed mesh. The door's wall module is an open doorway (frame only). **PCG places them**, where the building
+  grammar put each door module and with its exact transform. If this UEFN's PCG spawn step can't take an Entity
+  Prefab, PCG still decides where: place the prefabs at that step's points with the Scene Graph tools (the
+  `scenegraph` skill), never at hand-picked spots, and tell the person.
+- **Everything put into UEFN has collision.** Buildings, walls, floors, stairs, roofs, road and bridge pieces,
+  props, rocks and tree trunks block players. Only grass, leaves, bushes and flat paint have none. Simple
+  collision (boxes, convex hulls, UCX from Blender) by default; complex as simple only where boxes would be wrong
+  (stairs, ramps, arches, doorways, curved decks), or everywhere if the person chose exact. A park or parking lot
+  collides by its parts (trees, benches, kerbs, lamps), never one box over the whole site: that would be an
+  invisible wall. Set it on each mesh before the PCG build, **tell the person which pieces got simple, complex as
+  simple or none**, and playtest that nothing can be walked through.
+
 ## Gotchas worth knowing
 - **One editor call is one frame.** UEFN frees its GPU windows only when a frame ends, so many mesh builds or
   saves in one call has crashed it. Build one mesh per call, save everything in one batch at the end.

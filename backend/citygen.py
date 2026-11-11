@@ -148,6 +148,19 @@ RULES = [
     "Bridges are typed by the water they span: canal arches (3 m clearance), beam (7.5 m), navigable girder "
     "(15 m), cable-stayed (30 m) and suspension (45 m) with pylons; ramps keep the road's grade.",
     "One editor call does little (one mesh build, a few junctions, one tile): UEFN frees windows only per frame.",
+    "Every door a player can walk through opens: house, garage, shop, office, revolving, grand, industrial and roller "
+    "doors are Scene Graph entities, never fixed meshes. One Entity Prefab per door kind (the door leaf + a component "
+    "that opens it on interact); the door's wall module is modelled as an open doorway (frame only). PCG places the "
+    "doors: they go where the building grammar put each door module, with its exact transform. If the PCG spawn step "
+    "can't take an Entity Prefab in this UEFN version, PCG still decides where: place the prefab instances at that "
+    "step's points (its positions and rotations) with the Scene Graph tools, never at hand-picked spots, and say so.",
+    "Everything put into UEFN has collision: buildings, walls, floors, stairs, roofs, road and bridge pieces, props, "
+    "rocks and tree trunks all block players; only grass, leaves, bushes and flat paint (lines, parking stalls) have "
+    "none. Simple collision (boxes, convex hulls, UCX from Blender) by default; complex as simple only where boxes "
+    "would be wrong (stairs, ramps, arches, doorways, curved decks): it costs more. A site piece (a park, a parking "
+    "lot) collides by its parts (trees, benches, kerbs, lamps), never one box over the whole site, which would be an "
+    "invisible wall. Set it on each mesh before the PCG build, tell the person which pieces got simple, complex as "
+    "simple or none, and check in a playtest that nothing can be walked through.",
 ]
 STYLES = ("mixed", "grid", "organic")
 JUNCTION = "SM_Junc_Gen"  # waits for Build pieces (st.pending_nodes picks it up)

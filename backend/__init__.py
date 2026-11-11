@@ -2168,6 +2168,13 @@ def register(api) -> None:
             src = "street_kit" if "/Kit/Street/" in path else "building_kit" if "/BuildingKit/" in path else \
                 "fortnite" if path.startswith("/Game/Athena") or path.startswith("/Fortnite") else "world_kit"
             needs.append({"mesh": name, "path": path, "uses": len(rows), "for": "PCG city", "source": src})
+        # doors: every door module the building grammar placed is a door spot; each becomes an openable Scene Graph
+        # entity placed by PCG (cg.RULES), so the brief names them and how many
+        doors = {path.rsplit(".", 1)[-1]: len(rows) for path, rows in groups.items()
+                 if re.match(r"SM_BK_.*(Door|Entrance|Garage)", path.rsplit(".", 1)[-1])}
+        # collision: what each PCG layer is set to (cg.RULES: everything solid collides, simple by default)
+        set_layers = [pl.clean(l) for l in layer_docs(nid).values() if l.get("enabled", True)]
+        no_collision = sorted(l["name"] for l in set_layers if not l["collision"])
         # 2. what the project already has (only with UEFN open)
         uefn = {"checked": False}
         if check:
@@ -2244,6 +2251,15 @@ def register(api) -> None:
                       "options": [{"id": "new_landscape", "label": "Import the heightmap as a new landscape",
                                    "description": "Your current landscape is never changed"},
                                   {"id": "keep", "label": "Keep my current landscape", "description": "Roads still grade it"}]})
+        q.append({"id": "collision", "prompt": "How exact should collision be? Every building, wall, floor, stair, road "
+                                               "and prop gets collision either way; only grass, leaves and painted lines "
+                                               "have none.",
+                  "options": [{"id": "simple", "label": "Simple shapes",
+                               "description": "Boxes and convex hulls; stairs, ramps, doorways and curved decks still "
+                                              "get exact collision"},
+                              {"id": "exact", "label": "Exact everywhere",
+                               "description": "Complex as simple on every mesh: what you see is what you hit, heavier "
+                                              "on memory"}]})
         q.append({"id": "save", "prompt": "Save the level after each build step?",
                   "options": [{"id": "yes", "label": "Yes, save after each step"}, {"id": "end", "label": "Only at the end"}]})
         ready = [f"{len(cities)} cities, {len(actor_docs(nid))} road actors, {total:,} city pieces on {len(groups)} meshes"]
@@ -2266,11 +2282,27 @@ def register(api) -> None:
                             "paths": [n["path"] for n in missing][:200],
                             "unknown": None if uefn.get("online") else "call again with check=true while UEFN is open"},
                 "questions": q,
+                # the two rules every build keeps (cg.RULES has the full text)
+                "doors": {"spots": sum(doors.values()), "by_module": doors,
+                          "do": "Each door module's spots get an openable Scene Graph door: one Entity Prefab per kind "
+                                "(the leaf + a component that opens it on interact), the wall module modelled as an "
+                                "open doorway, placed by PCG at those spots (or, if this UEFN's PCG spawn step can't "
+                                "take a prefab, at that step's points with the Scene Graph tools). Never a fixed door."},
+                "collision": {"none_on": no_collision,
+                              "do": "Collision on every mesh before the PCG build: simple (boxes, convex hulls) or, "
+                                    "per the person's answer, complex as simple; stairs, ramps, doorways and curved "
+                                    "decks complex as simple either way. The layers in none_on place without the PCG "
+                                    "collision flag: foliage stays without, but site pieces among them (parks, parking "
+                                    "lots) still need collision on their solid parts (trees, benches, kerbs, lamps; "
+                                    "per-part UCX, never one box over the site). Tell the person which pieces got "
+                                    "which, then playtest that nothing can be walked through."},
                 "how": ("Ask every question in ONE ducky_ask_user (pass `questions` as they are), then follow the "
                         "answers: pieces -> road_network_pcg_assets; missing street pieces -> road_network_kit_materials "
                         "(builds them); interiors -> road_network_pcg_assets(interiors='yes'|'no'); missing art -> "
                         "road_network_piece_manifest specs in Blender or AI 3D, or Fortnite "
-                        "pieces; roads -> road_network_import_all; city -> road_network_pcg_build; lighter detail -> "
+                        "pieces; collision -> set it on each mesh as `collision` says before the city build; doors "
+                        "-> the door prefabs as `doors` says (scenegraph skill), placed by PCG; roads -> "
+                        "road_network_import_all; city -> road_network_pcg_build; lighter detail -> "
                         "lower the foliage layers' density with road_network_pcg_layer_save; read road_network_memory "
                         "after every step.")}
 
@@ -2294,9 +2326,13 @@ def register(api) -> None:
             f"then a paste per actor). Keep the person's hands off UEFN while it pastes.",
             f"2. The city is PCG: road_network_pcg_build(net_id='{nid}') says how many 400 m tiles changed; call it with "
             f"confirm=true (one graph + volume per tile, Generate On Demand).",
-            "3. After each step read road_network_memory: if a call grew UEFN 6+ GB or the guard tripped, stop and "
+            "3. Doors and collision (the brief's `doors` and `collision`): every door a player walks through is an "
+            "openable Scene Graph entity placed by PCG at the door spots, never a fixed mesh; every mesh has collision "
+            "(simple, or complex as simple where the shape matters; none only on grass, leaves and flat paint). Tell "
+            "the person which collision each piece got.",
+            "4. After each step read road_network_memory: if a call grew UEFN 6+ GB or the guard tripped, stop and "
             "report it instead of pushing on. Never restart or close UEFN without asking.",
-            "4. Never touch the cinema (keep zones) or write the existing terrain. Report what was built and what was "
+            "5. Never touch the cinema (keep zones) or write the existing terrain. Report what was built and what was "
             "left unchanged."]
         return "\n".join(lines)
 
