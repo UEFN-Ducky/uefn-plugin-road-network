@@ -29,6 +29,7 @@ ROAD_TYPES = {
     "BRR": ("SM_Road_Bridge_Ramp40m", 925.0, 2, False, "bridge ramp"),
     "ED": ("Elevated/SM_Elev_Deck20m", 1650.0, 4, False, "elevated deck"),
     "ER": ("Elevated/SM_Elev_Ramp20m", 650.0, 1, False, "elevated ramp"),
+    "FR": ("SM_Road_TwoLane_Straight10m", 525.0, 2, False, "frontage road beside a freeway"),
     # pedestrian and access splines (the '<City> Paths' actor): live like roads, so they bend, keep a grade
     # and cut / fill the ground. City Builder builds these three meshes itself (street kit).
     "SW": ("SM_Path_Sidewalk_10m", 190.0, 0, True, "sidewalk (1.8 m clear path + frontage + furniture strip)"),
@@ -63,7 +64,7 @@ CHOICES = {
 # steepest grade per road (rise / run): arterials and highways 4 %, collectors 5-6 %, local streets 8 %,
 # dirt 10 % (CityEngine-style targets for a game, not legal limits). Steeper ground is cut and filled.
 GRADE = {"6L": 0.04, "4L": 0.05, "2S": 0.06, "2L": 0.08, "1W": 0.08, "DT": 0.10,
-         "SW": 0.08, "WK": 0.08, "DW": 0.15, "PR": 0.10, "DD": 0.15}  # walkways at ramp grade (8.3 %), driveways up to 15 %
+         "SW": 0.08, "WK": 0.08, "DW": 0.15, "PR": 0.10, "DD": 0.15, "FR": 0.08}  # walkways at ramp grade (8.3 %), driveways up to 15 %
 BRIDGE_LIFT_CM = 750.0  # clearance a highway rises to over a street it crosses (a real freeway overpass: 7.5 m)
 
 # How City Builder designs a world. Code follows these; an AI building with the plugin follows them too
@@ -1168,6 +1169,7 @@ def _demo() -> None:
     mid = {"name": "Mid", "x": 0, "y": 0, "radius": 120000, "seed": 7, "style": "mixed"}
     mk = [i["kind"] for i in freeway_plan(mid).interchanges]
     assert mk and "stack" not in mk and freeway_report(mid)["validation"]["ok"], mk
+    assert "diamond_frontage" in mk and "Mid Freeways" in generate([mid], lambda x, y: 0.0, "/G", seed=1)  # FR builds
     big = {"name": "Metro", "x": 0, "y": 0, "radius": 220000, "seed": 7, "style": "mixed"}
     fw = freeway_plan(big)
     kinds = [i["kind"] for i in fw.interchanges]
