@@ -65,13 +65,13 @@ CATALOG = {
     # education
     "college": dict(cat="education", method="single", role="school", size=(250, 200), arch="campus", min_pop=50000),
     "high_school": dict(cat="education", method="capacity", role="school", size=(200, 150), arch="high_school",
-                        age="14-17", capacity=1500, min_demand=250),
+                        age="14-17", capacity=1500, min_demand=250, catch=900),
     "middle_school": dict(cat="education", method="capacity", role="school", size=(150, 110), arch="school",
-                          age="11-13", capacity=900, min_demand=200),
+                          age="11-13", capacity=900, min_demand=200, catch=720),
     "elementary_school": dict(cat="education", method="capacity", role="school", size=(120, 90), arch="school",
-                              age="5-10", capacity=600, min_demand=150),
+                              age="5-10", capacity=600, min_demand=150, catch=480),
     "daycare": dict(cat="education", method="capacity", role="school", size=(35, 35), arch="daycare",
-                    age="0-4", capacity=120, min_demand=60),
+                    age="0-4", capacity=120, min_demand=60, catch=300),
     "library": dict(cat="education", method="capacity", role="civic", size=(50, 45), arch="civic_small",
                     rate=1.0, capacity=25000, min_demand=8000),
     # commercial: four retail levels, the higher first (a higher centre also serves the lower need)
@@ -189,6 +189,7 @@ SPEED = {"6L": 1667, "ED": 2222, "ER": 1389, "4L": 1389, "2S": 1111, "FR": 1111,
          "BR": 1389, "BRR": 1389, "PR": 556}  # cm/s (60, 80, 50, 50, 40, 40, 35, 30, 25 km/h ...)
 NO_WALK = ("6L", "ED", "ER")
 MIN_SITE_M2 = 2500.0  # a site may be smaller than its archetype wants (city blocks are ~85 m), never below this
+CAND_CELL = 25000.0  # candidate sites: one per 250 m cell
 
 
 # ------------------------------------------------------------------ network
@@ -444,7 +445,14 @@ def plan(lots: list, nodes: dict, edges: list, ring_of, ground=None, anchors: li
         at_node.setdefault(key, []).append(n)
         return True
 
-    cands = [n for n in node_lots]
+    # candidate sites: one street node per 250 m cell (the one reaching the most free lots), so a 3 km city
+    # weighs a few hundred places per facility instead of every node
+    best_in: dict = {}
+    for n, ks in node_lots.items():
+        cell = (int(net.pos[n][0] // CAND_CELL), int(net.pos[n][1] // CAND_CELL))
+        if cell not in best_in or len(ks) > len(node_lots[best_in[cell]]):
+            best_in[cell] = n
+    cands = list(best_in.values())
     cx0, cy0 = center
 
     def covered_by(keys, metric, limit):
@@ -535,7 +543,7 @@ def plan(lots: list, nodes: dict, edges: list, ring_of, ground=None, anchors: li
                     order = by_score(lambda x: (not industrial(*net.pos[x]),
                                                 -math.hypot(net.pos[x][0] - cx0, net.pos[x][1] - cy0)))[:12]
                 else:
-                    order = p_median_add(weights, at_node.get(key, []), top=12)
+                    order = p_median_add(weights, at_node.get(key, []), limit=spec.get("catch", 900), top=12)
                 if not any(place(key, spec, n, why) for n in order):
                     unmet.append({"type": key, "short": count - len(at_node.get(key, []))})
                     break

@@ -216,6 +216,44 @@ Facilities are never placed at random. After the lots exist, `urban.plan` runs:
 school enrolment, unmet needs, and each facility with the reason it is there. The panel's Cities cards show the
 same. To change the services, change population (city size, district rings) or the catalogue, then generate.
 
+## Waterfront & marine development (`backend/waterfront.py`, options `waterfront`, `canals`)
+- **ShorelineAnalyzer (`analyze`):** the water line S(t) comes from the terrain at the water level (marching
+  squares), resampled every 20 m. Each sample carries:
+  - tangent T and water-facing normal N = (-T_y, T_x), signed curvature;
+  - shelter (rays from the water hitting land within 400 m);
+  - depth 30 m and 80 m out, water width along N, land slope, flood exposure.
+  Waterbodies are typed ocean / lake / river by size, contact with the map edge, and shape.
+- **WaterfrontPlanner (`plan`):** every 100 m of a city's shore gets one use from depth, slope, shelter, water type
+  and district: natural, wetland, beach, residential, commercial, marina, industrial, public. Then the generators
+  build each use:
+
+  | Use | What it gets |
+  |---|---|
+  | Commercial | quay seawall, promenade, piers, waterfront restaurants, ferry terminal on big water |
+  | Marina | main pier, floating branches, slips with boats, gangway, launch, marina building; floating homes when sheltered, a rock breakwater on open sea |
+  | Beach | sand, boardwalk on piles, resort hotel, pool deck, beach club, long pier |
+  | Residential | one shared community marina on long shores (EPA: compact, not a dock per house), else a few private docks; stilt-house fishing village on shallow sea |
+  | Industrial | container port: quay, cranes, container stacks, yard, warehouses |
+  | Public | waterfront park, fishing pier |
+  | Wetland | reeds; natural stays natural |
+
+  There are no seawalls except on commercial and industrial quays.
+- **Foundations:** pilings from the bed to the deck (piers, boardwalks, stilt houses at 3.5 m flood
+  elevation); floating at Z_water + freeboard (docks, homes); quay walls.
+- **Pieces:** rows [x, y, z, yaw, sx, sy, sz, kind] become built-in site layers (Piers and boardwalks, Floating
+  docks, Pilings, Boat slips, Boats, Seawalls and quays, Breakwaters, Beaches, Wetlands, Promenades, Port cranes,
+  Container stacks, Port yards, Boat launches, Stilt houses, Floating homes, Bridge towers). The street kit
+  builds them. Land buildings are footprint lots facing the water (roles shop, office, transit, warehouse).
+- **Validator:** piers start on land, end in water and stay within a third of the width; piles reach the bed;
+  land buildings are within 150 m of a street; waterfront buildings never overlap.
+- **Canals (`canals: canal_city`):** every third inner street line becomes a `<City> Canals` spline (`CN`, laid at
+  the 3 m channel bed so the landscape spline lowers the ground). Cross streets run over it on canal arches.
+  Walkways line both quays, and no lot sits in a canal.
+- **Bridges:** typed by the water they span. Canal arch 3 m, beam 7.5 m, navigable girder 15 m, cable-stayed 30 m,
+  suspension 45 m clearance, with pylons. Ramps are long enough for 6 %.
+- **`road_network_waterfront(net_id, city)`** returns waterbodies, bridges, shoreline by use, developments and
+  the validator result.
+
 ## Generate again, any time
 Regenerating is never blocked. A world on scanned ground keeps using that ground. The header badge
 (`road_network_sync`) says whether UEFN is behind this world: road actors changed or never pushed, and

@@ -29,6 +29,7 @@ from . import pipeline
 from . import splines_text as st
 from . import uefn_input
 from . import uefn_memory
+from . import waterfront
 
 CHUNK = 1000
 
@@ -640,10 +641,40 @@ def register(api) -> None:
 
     def _layout_doc(layout: dict) -> dict:
         return {"lots": layout["lots"], "hoods": layout["hoods"], "plan": layout.get("plan"),
-                "private": {k: layout.get(k) or [] for k in ("streets", "parking", "stalls", "pads", "grounds")}}
+                "waterfront": layout.get("waterfront"),
+                "private": {k: layout.get(k) or [] for k in ("streets", "parking", "stalls", "pads", "grounds", "water")}}
+
+    CHUNK_ROWS = 6000  # a city's private pieces (parking, stalls, grounds, waterfront) go in docs of this many rows
 
     def city_docs(nid: str) -> dict:
-        return {k.rsplit(".", 1)[1]: v for k, v in data.items(f"net.{nid}.city.").items() if k.count(".") == 3}
+        """Every city of a world, its private pieces put back together from their chunk docs."""
+        items = data.items(f"net.{nid}.city.")
+        out = {}
+        for k, v in items.items():
+            if k.count(".") != 3:
+                continue
+            if v.get("private_chunks"):
+                priv: dict = {}
+                for i in range(int(v["private_chunks"])):
+                    part = items.get(f"{k}.private.{i}") or {}
+                    priv.setdefault(part.get("key", ""), []).extend(part.get("rows") or [])
+                v = {**v, "private": priv}
+            out[k.rsplit(".", 1)[1]] = v
+        return out
+
+    def put_city(nid: str, cslug: str, doc: dict) -> None:
+        """Store a city: its big private lists split into chunk docs (one doc stays under the 1 MB share limit)."""
+        head = f"net.{nid}.city.{cslug}"
+        priv = doc.get("private") or {}
+        n = 0
+        for key, rows in priv.items():
+            for i in range(0, len(rows), CHUNK_ROWS):
+                data.put(f"{head}.private.{n}", {"key": key, "rows": rows[i:i + CHUNK_ROWS]})
+                n += 1
+        for k in data.keys(f"{head}.private."):  # chunks of a bigger previous run
+            if int(k.rsplit(".", 1)[1]) >= n:
+                data.delete(k)
+        data.put(head, {**{k: v for k, v in doc.items() if k != "private"}, "private": {}, "private_chunks": n})
 
     def generate(name: str = "", seed: int = 7, cities: str = "", size_km: float = 6.0, relief_m: float = 60.0,
                  ground_from: str = "", folder: str = "", center_x: float = 0.0, center_y: float = 0.0,
@@ -701,7 +732,9 @@ def register(api) -> None:
         road_ground = ((lambda x, y: max(st.sample_grid(ter, x, y) or 0.0, water + 150)) if water is not None
                        else (lambda x, y: st.sample_grid(ter, x, y) or 0.0))
         wet = cg.wet_from(ter)  # roads know the water: main roads and highways bridge it, side streets stop
-        actors = cg.generate(towns, road_ground, folder, int(seed), opts, keep, wet)
+        bridges: list = []
+        actors = cg.generate(towns, road_ground, folder, int(seed), opts, keep, wet, bridges)
+        water = waterfront.analyze(ter)  # ShorelineAnalyzer: waterbodies and shorelines for the planner
         before = data.get(f"net.{nid}")
         saved = save_network(nid, name, "", "live")
         if not saved.get("ok"):
@@ -713,21 +746,28 @@ def register(api) -> None:
                     data.delete(key)
         for cslug in old:
             if cslug not in {slug(t["name"]) for t in towns}:
-                data.delete(f"net.{nid}.city.{cslug}")
+                for k in [f"net.{nid}.city.{cslug}"] + list(data.keys(f"net.{nid}.city.{cslug}.private.")):
+                    data.delete(k)
         stats_out = {label: store_actor(nid, label, a, name)["stats"] for label, a in actors.items()}
         # terrain is a big blob (a 160 grid is ~200 KB): one doc, never edited by hand, so it never conflicts
         data.put(f"net.{nid}.scan", {"name": f"{name} / terrain", "props": [], "terrain": ter})
+        # the world's water: its bodies and every bridge the roads needed (type, span, clearance, pylons)
+        data.put(f"net.{nid}.water", {"name": f"{name} / water", "sea": water["sea"], "bodies": water["bodies"],
+                                       "shorelines_m": sum(s["length_m"] for s in water["shores"]),
+                                       "bridges": bridges,
+                                       "towers": waterfront.towers(bridges, lambda x, y: st.sample_grid(ter, x, y),
+                                                                   water["sea"])})
         freeways = {t["name"]: cg.freeway_report(t, opts) for t in towns}
         for t in towns:
             cslug = slug(t["name"])
             prev = old.get(cslug) or {}
             api.search.upsert(f"net.{nid}.city.{cslug}", t["name"], f"City {t['name']} in world {name}: {t['style']} roads")
-            data.put(f"net.{nid}.city.{cslug}", {**t, "name": t["name"], "roads": f"{t['name']} Roads",
+            put_city(nid, cslug, {**t, "name": t["name"], "roads": f"{t['name']} Roads",
                                                  "districts": cg.districts(t, opts),
                                                  # BlockGenerator + neighbourhoods: lots, private streets, parking
                                                  **_layout_doc(cg.city_layout(
-                                                     t, opts, wet, lambda x, y: st.sample_grid(ter, x, y) or 0.0,
-                                                     ((prev.get("plan") or {}).get("facilities")))),
+                                                     t, opts, wet, lambda x, y: st.sample_grid(ter, x, y),
+                                                     ((prev.get("plan") or {}).get("facilities")), water)),
                                                  "freeways": freeways[t["name"]],
                                                  "buildings": prev.get("buildings") or {"downtown": [], "normal": [], "housing": []}})
         doc = data.get(f"net.{nid}")
@@ -787,6 +827,9 @@ def register(api) -> None:
         if name and slug(name) != cslug:
             key = slug(name)
             doc["name"], doc["roads"] = name, f"{name} Roads"
+            for k in list(data.keys(f"net.{nid}.city.{cslug}.private.")):  # its pieces come back on generate
+                data.delete(k)
+            doc["private_chunks"] = 0
             data.delete(f"net.{nid}.city.{cslug}")
         data.put(f"net.{nid}.city.{key}", doc)
         api.search.upsert(f"net.{nid}.city.{key}", doc["name"], f"City {doc['name']}: {doc.get('style')} roads, "
@@ -1026,6 +1069,8 @@ def register(api) -> None:
                                     "points": walls, "meshes": [],
                                     "row": "x, y, base z, yaw, 1, length_m, height_m"}
             placed.update(pl.site_layers(cities, ground))  # complexes' parking, stalls, turnarounds, garages
+            # waterfront structures (piers, marinas, quays, beaches, ports, stilt / floating homes) + bridge pylons
+            placed.update(waterfront.layers(cities, (data.get(f"net.{nid}.water") or {}).get("towers")))
             _PREVIEW_CACHE.update(key=key, out=placed)
         out = _PREVIEW_CACHE["out"]
         if layer_id == "road-walls":  # the built-in layers the plan never lists: walls and neighbourhood sites
@@ -1154,8 +1199,13 @@ def register(api) -> None:
         for s in pipeline.STAGES:
             info: dict = {}
             if s["id"] == "terrain":
+                flat = [v for row in ter.get("heights") or [] for v in row if v is not None]
+                wdoc = data.get(f"net.{nid}.water") or {}
                 info = {"grid": ter.get("grid"), "slope": pipeline.slope_map(ter), "keep_zones": len(gen.get("keep") or []),
-                        "water_level_cm": ter.get("sea")}
+                        "water_level_cm": ter.get("sea"),
+                        "height_cm": [round(min(flat)), round(max(flat))] if flat else None,
+                        "below_water_cells": sum(1 for v in flat if ter.get("sea") is not None and v < ter["sea"]),
+                        "waterbodies": [(b["type"], b["area_m2"]) for b in wdoc.get("bodies") or []]}
             elif s["id"] == "planner":
                 info = {"cities": [{"name": t["name"], "style": t.get("style"), "radius_m": round(t["radius"] / 100),
                                     "orientation_deg": round(cg.orientation(t), 1),
@@ -1644,6 +1694,28 @@ def register(api) -> None:
             if not facilities:
                 p.pop("facilities", None)
             return {"ok": True, "city": doc["name"], **p}
+        return safe(run)()
+
+    @api.tool(intent=GEN_INTENT, listener=False)
+    def road_network_waterfront(net_id: str = "", city: str = "") -> dict:
+        """The water of a generated world (waterfront.py): waterbodies (ocean / lake / river, area, width),
+        every bridge the roads needed (type by span: canal arch, beam, navigable girder, cable-stayed,
+        suspension; clearance; pylons), and per city its shoreline by development type (natural, wetland,
+        beach, residential, commercial, marina, industrial, public), the developments built on it (quays and
+        promenades, marinas with slips, beach resorts, container ports, stilt and floating homes, ferry
+        terminals, waterfront parks) and the connectivity validator (navigation, access, foundations).
+        Change it by option (waterfront, canals, sea_m) and generate again; never by placing docks by hand."""
+        def run():
+            nid = slug(net_id)
+            if not nid or not data.get(f"net.{nid}"):
+                return {"ok": False, "error": f"No road network {net_id!r}."}
+            w = data.get(f"net.{nid}.water")
+            if not w:
+                return {"ok": False, "error": f"{net_id!r} has no water data yet: generate it again."}
+            docs = city_docs(nid)
+            cities = {d["name"]: d.get("waterfront") for k, d in docs.items() if not city or k == slug(city)}
+            return {"ok": True, "id": nid, "water_level_cm": w.get("sea"), "bodies": w.get("bodies"),
+                    "bridges": w.get("bridges"), "cities": cities}
         return safe(run)()
 
     @api.tool(intent=GEN_INTENT, listener=False)

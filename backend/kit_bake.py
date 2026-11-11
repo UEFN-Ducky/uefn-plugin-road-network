@@ -112,6 +112,22 @@ KIT = {
     "SM_Kit_UtilityYard": ("Kit/Street", -50, -50, 0, 50, 50, 5),
     "SM_Kit_Pond": ("Kit/Street", -50, -50, -5, 50, 50, 0),
     "SM_Kit_WaterTower": ("Kit/Street", -600, -600, 0, 600, 600, 3000),
+    # waterfront (waterfront.KINDS): unit decks / slabs stretched to each part, fixed boats, cranes, homes, pylons
+    "SM_Kit_DockDeck": ("Kit/Street", -50, -50, 0, 50, 50, 30),
+    "SM_Kit_FloatDock": ("Kit/Street", -50, -50, 0, 50, 50, 50),
+    "SM_Kit_Piling": ("Kit/Street", -15, -15, 0, 15, 15, 100),
+    "SM_Kit_BoatSlip": ("Kit/Street", -600, -225, 0, 600, 225, 5),
+    "SM_Kit_Boat": ("Kit/Street", -450, -150, 0, 450, 150, 200),
+    "SM_Kit_Seawall": ("Kit/Street", -50, -30, 0, 50, 30, 100),
+    "SM_Kit_Riprap": ("Kit/Street", -50, -50, 0, 50, 50, 100),
+    "SM_Kit_Sand": ("Kit/Street", -50, -50, 0, 50, 50, 10),
+    "SM_Kit_Wetland": ("Kit/Street", -50, -50, 0, 50, 50, 60),
+    "SM_Kit_PortCrane": ("Kit/Street", -1500, -1000, 0, 1500, 1000, 4500),
+    "SM_Kit_ContainerStack": ("Kit/Street", -610, -125, 0, 610, 125, 780),
+    "SM_Kit_BoatLaunch": ("Kit/Street", -50, -50, 0, 50, 50, 20),
+    "SM_Kit_StiltHouse": ("Kit/Street", -500, -400, 0, 500, 400, 600),
+    "SM_Kit_FloatHome": ("Kit/Street", -500, -350, 0, 500, 350, 500),
+    "SM_Kit_BridgePylon": ("Kit/Street", -300, -300, 0, 300, 300, 10000),
 }
 
 
