@@ -286,6 +286,35 @@ def sample_grid(terrain: dict, x: float, y: float):
     return sum(v * k for v, k in pairs) / total
 
 
+def grid_sampler(terrain: dict):
+    """sample_grid() for one terrain as (x, y) -> height: the same numbers, its setup done once (a city
+    preview samples the ground a million times)."""
+    n = int(terrain.get("grid") or 0)
+    rows = terrain.get("heights") or []
+    if n < 2 or len(rows) < n:
+        return lambda x, y: None
+    lo, hi = terrain["min"], terrain["max"]
+    lo0, lo1, w, d = lo[0], lo[1], hi[0] - lo[0], hi[1] - lo[1]
+    floor, top = math.floor, n - 2
+
+    def sample(x: float, y: float):
+        fx = (x - lo0) / w * n - 0.5
+        fy = (y - lo1) / d * n - 0.5
+        i0 = max(0, min(top, int(floor(fx))))
+        j0 = max(0, min(top, int(floor(fy))))
+        tx, ty = max(0.0, min(1.0, fx - i0)), max(0.0, min(1.0, fy - j0))
+        r0, r1 = rows[j0], rows[j0 + 1]
+        a, b, c, e = r0[i0], r0[i0 + 1], r1[i0], r1[i0 + 1]
+        if a is None or b is None or c is None or e is None:
+            return sample_grid(terrain, x, y)  # a hole in the scan: the general case
+        w0, w1, w2, w3 = (1 - tx) * (1 - ty), tx * (1 - ty), (1 - tx) * ty, tx * ty
+        total = sum((w0, w1, w2, w3))  # sum() itself: its float rounding is sample_grid's
+        if total <= 1e-9:
+            return sum((a, b, c, e)) / 4
+        return sum((a * w0, b * w1, c * w2, e * w3)) / total
+    return sample
+
+
 GIANT_CM = 8000  # a junction piece or join link longer than 80 m is broken data, not a road
 
 

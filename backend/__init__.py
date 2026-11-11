@@ -16,6 +16,7 @@ import hashlib
 import json
 import math
 import os
+import pickle
 import re
 import subprocess
 import threading
@@ -154,7 +155,9 @@ def register(api) -> None:
         return {"ok": True, "items": sorted(items, key=lambda r: -float(r.get("updated") or 0)), "count": len(items)}
 
     def actor_docs(nid: str) -> dict:
-        return {k.rsplit(".", 1)[1]: v for k, v in data.items(f"net.{nid}.actor.").items() if k.count(".") == 3}
+        # the heads only: items() under this prefix would read and decode every point and segment chunk too
+        heads = [k for k in data.keys(f"net.{nid}.actor.") if k.count(".") == 3]
+        return {k.rsplit(".", 1)[1]: v for k in heads if (v := data.get(k)) is not None}
 
     def load_actor(nid: str, aslug: str) -> tuple:
         head = data.get(f"net.{nid}.actor.{aslug}") if nid and aslug else None
@@ -1063,10 +1066,10 @@ def register(api) -> None:
         # Every layer avoids the ones before it, so one layer still needs the whole preview: compute it
         # once per input set and serve the panel's per-layer calls from that.
         keep = ((data.get(f"net.{nid}") or {}).get("generated") or {}).get("keep") or []
-        key = hashlib.sha1(json.dumps([nid, docs, cities, terrain, actors, keep], sort_keys=True, default=str)
-                           .encode()).hexdigest()
+        # pickle, not sorted JSON: the same inputs read back the same way give the same bytes, several times faster
+        key = hashlib.sha1(pickle.dumps([nid, docs, cities, terrain, actors, keep], protocol=5)).hexdigest()
         if _PREVIEW_CACHE.get("key") != key:  # ponytail: one entry, the world being looked at
-            ground = lambda x, y: st.sample_grid(terrain, x, y) if terrain.get("heights") else 0.0
+            ground = st.grid_sampler(terrain) if terrain.get("heights") else (lambda x, y: 0.0)
             placed = pl.preview(list(docs.values()), cities, terrain, pl.road_samples(actors), ground,
                                 limit=6000, juncs=pl.junctions(actors), keep=keep, foliage_limit=FOREST_LIMIT)  # the whole city
             # FoundationGenerator for the roads: stone walls where the graded road is cut into / built up on the

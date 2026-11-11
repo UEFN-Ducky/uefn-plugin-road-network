@@ -15,6 +15,8 @@ and every Difference subtracts the *bounds-modified* points of the other set, ne
 
 from __future__ import annotations
 
+import functools
+import itertools
 import math
 import re
 
@@ -294,12 +296,16 @@ NATURE = [
 PATCH_CM = 60000.0  # forest patch scale: patches a few hundred metres across
 
 
+@functools.lru_cache(maxsize=1 << 16)  # a world has a few thousand lattice points; patch() asks 12 per spot
+def _lattice(i: int, j: int) -> float:
+    n = (i * 374761393 + j * 668265263) & 0xFFFFFFFF
+    n = ((n ^ (n >> 13)) * 1274126177) & 0xFFFFFFFF
+    return (n & 0xFFFF) / 65535.0
+
+
 def patch(x: float, y: float, cell: float = PATCH_CM) -> float:
     """Smooth value noise 0..1 shared by every foliage layer (bushes grow in the same forests as trees)."""
-    def h(i, j):
-        n = (i * 374761393 + j * 668265263) & 0xFFFFFFFF
-        n = ((n ^ (n >> 13)) * 1274126177) & 0xFFFFFFFF
-        return (n & 0xFFFF) / 65535.0
+    h = _lattice
     total, amp, norm = 0.0, 1.0, 0.0
     for octave in range(3):  # three octaves: ragged forest edges, clearings inside
         c = cell / (2 ** octave)
@@ -307,8 +313,9 @@ def patch(x: float, y: float, cell: float = PATCH_CM) -> float:
         i, j = math.floor(gx), math.floor(gy)
         fx, fy = gx - i, gy - j
         sx, sy = fx * fx * (3 - 2 * fx), fy * fy * (3 - 2 * fy)
-        a = h(i, j) + (h(i + 1, j) - h(i, j)) * sx
-        b = h(i, j + 1) + (h(i + 1, j + 1) - h(i, j + 1)) * sx
+        h00, h01 = h(i, j), h(i, j + 1)
+        a = h00 + (h(i + 1, j) - h00) * sx
+        b = h01 + (h(i + 1, j + 1) - h01) * sx
         total += (a + (b - a) * sy) * amp
         norm += amp
         amp *= 0.5
@@ -640,23 +647,45 @@ class _Hash:
 
     def __init__(self, cell: float = 2000.0):
         self.cell, self.cells = cell, {}
+        self.reach = 0.0  # the widest point added (capped at 20 m, the most a look ever reached out for)
 
     def add(self, x, y, r, item=None):
         self.cells.setdefault((int(x // self.cell), int(y // self.cell)), []).append((x, y, r, item))
+        if r > self.reach:
+            self.reach = min(r, 2000.0)
 
-    def near(self, x, y, r):
-        k = int(math.ceil((r + 2000.0) / self.cell))
+    def _keys(self, x, y, r):
+        """The cells a point within r of (x, y) can be in: as far out as r plus the widest point added (a
+        tree is 2-5 m, so 3 x 3 cells instead of 5 x 5 for every candidate of a forest)."""
+        k = int(math.ceil((r + self.reach) / self.cell))
         cx, cy = int(x // self.cell), int(y // self.cell)
         if (2 * k + 1) ** 2 > len(self.cells):
             # A wide look (one-of-a-kind spacing, 100 m+) walks the filled cells: every empty one in a 2 km
             # square is 10 000+ lookups per spot, and the city preview never finished (Nov 11 2026).
-            keys = [c for c in self.cells if abs(c[0] - cx) <= k and abs(c[1] - cy) <= k]
-        else:
-            keys = ((i, j) for i in range(cx - k, cx + k + 1) for j in range(cy - k, cy + k + 1))
-        for key in keys:
-            for px, py, pr, item in self.cells.get(key, ()):
-                if math.hypot(px - x, py - y) < r + pr:
+            return [c for c in self.cells if abs(c[0] - cx) <= k and abs(c[1] - cy) <= k]
+        return [(i, j) for i in range(cx - k, cx + k + 1) for j in range(cy - k, cy + k + 1)]
+
+    def near(self, x, y, r):
+        get, hypot = self.cells.get, math.hypot
+        for key in self._keys(x, y, r):
+            for px, py, pr, item in get(key, ()):
+                if hypot(px - x, py - y) < r + pr:
                     yield item
+
+    def hit(self, x, y, r) -> bool:
+        """Is anything within r of (x, y)? near(), stopping at the first (millions of calls per city)."""
+        cell = self.cell
+        k = int(math.ceil((r + self.reach) / cell))
+        if (2 * k + 1) ** 2 > len(self.cells):
+            return any(True for _ in self.near(x, y, r))  # a wide look, or few points yet
+        get, hypot = self.cells.get, math.hypot
+        cx, cy = int(x // cell), int(y // cell)
+        for i in range(cx - k, cx + k + 1):
+            for j in range(cy - k, cy + k + 1):
+                for px, py, pr, _ in get((i, j), ()):
+                    if hypot(px - x, py - y) < r + pr:
+                        return True
+        return False
 
 
 def junctions(actors: list) -> list:
@@ -824,24 +853,42 @@ def inside(poly: list, x: float, y: float) -> bool:
     return hit
 
 
+OUTLINE_MAX = 1.27  # outline() is 1 +- 0.265 at most: this far past a ring is outside it in every direction
+OUTLINE_MIN = 0.73  # ... and this far inside it is inside it in every direction
+
+
+def _where_test(where: str, cities: list):
+    """_in_where for one layer, as (x, y) -> bool: the rings worked out once, and a point farther than any
+    outline reaches from a city skips that city's outline (most forest candidates are)."""
+    if where == "everywhere" or not cities:
+        return lambda x, y: True
+    rows = [(c, c["x"], c["y"], *rings(c)) for c in cities]
+
+    def test(x: float, y: float) -> bool:
+        for c, cx, cy, down, normal, outer in rows:
+            dist = math.hypot(x - cx, y - cy)
+            if dist >= outer * OUTLINE_MAX:
+                continue
+            if dist < outer * OUTLINE_MIN and where in ("outside", "cities"):
+                return where == "cities"  # inside the outer ring whichever way its outline bends
+            # distance against the outline in this direction: the same bent edges the plan's polygons have
+            d = dist / outline(c, math.degrees(math.atan2(y - cy, x - cx)))
+            if where == "outside" and d < outer:
+                return False
+            if d >= outer:
+                continue
+            wedge = d >= down and _in_wedge(c, x, y)
+            if (where == "cities") or (where == "downtown" and d < down) or (where == "industrial" and wedge) or \
+                    (where == "normal" and down <= d < normal and not wedge) or \
+                    (where == "housing" and normal <= d < outer and not wedge):
+                return True
+        return where == "outside"
+    return test
+
+
 def _in_where(where: str, cities: list, x: float, y: float) -> bool:
     """Same areas as masks(): rings per city, the industrial wedge cut out of normal and housing."""
-    if where == "everywhere" or not cities:
-        return True
-    for c in cities:
-        # distance against the outline in this direction: the same bent edges the plan's polygons have
-        d = math.hypot(x - c["x"], y - c["y"]) / outline(c, math.degrees(math.atan2(y - c["y"], x - c["x"])))
-        down, normal, outer = rings(c)
-        if where == "outside" and d < outer:
-            return False
-        if d >= outer:
-            continue
-        wedge = d >= down and _in_wedge(c, x, y)
-        if (where == "cities") or (where == "downtown" and d < down) or (where == "industrial" and wedge) or \
-                (where == "normal" and down <= d < normal and not wedge) or \
-                (where == "housing" and normal <= d < outer and not wedge):
-            return True
-    return where == "outside"
+    return _where_test(where, cities)(x, y)
 
 
 def _lot_hits_road(road_hash: "_Hash", x: float, y: float, yaw: float, half_w: float, half_d: float) -> bool:
@@ -923,10 +970,10 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
             # density counts inside the patches only: a forest is dense, the meadows between are open
             full = area_m2 * layer["density"] / 100.0 * layer["cover"]
             n = int(min(full / layer["cover"], cap * 4))  # candidates before patches, masks and pruning
-            weights = [r * r for _, _, r in discs]
+            cum = list(itertools.accumulate(r * r for _, _, r in discs))  # choices() sums them per draw otherwise
             for _ in range(n):
                 if discs:
-                    cx, cy, r = rnd.choices(discs, weights)[0]
+                    cx, cy, r = rnd.choices(discs, cum_weights=cum)[0]
                     a, d = rnd.uniform(0, 2 * math.pi), r * math.sqrt(rnd.random())
                     x, y = cx + d * math.cos(a), cy + d * math.sin(a)
                 else:
@@ -969,10 +1016,12 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
         r_base = BASE_RADIUS[layer["kind"]] * layer["footprint"]
         if layer["kind"] == "buildings":  # its lot, not a fixed size: a skyscraper needs far more room than a shop
             r_base = 50.0 * max(layer["width_m"], layer["depth_m"]) * layer["footprint"]
-        own = _Hash()
+        # cells about twice this layer's widest thing (5-20 m): a look at a forest reads a few trees, not dozens
+        own = _Hash(max(500.0, min(2000.0, 2 * r_base * layer["scale_max"])))
         own_heights = _Hash()  # this layer's buildings and their heights, for the neighbour rule
         pts = []
         avoid = avoid_list(layer, [l for l in layers if l["name"] in kept])
+        where_ok = _where_test(layer["where"], cities)
         for cand in cands:
             x, y, yaw = cand[:3]
             along = len(cand) == 5
@@ -998,7 +1047,7 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                     x, y = cand[6] - math.cos(f) * back, cand[7] - math.sin(f) * back
             if along and cand[3] - last_at[cand[4]] < spacing:
                 continue  # too soon after the last one on this side of the street
-            if not lot_role and not _in_where(layer["where"], cities, x, y):
+            if not lot_role and not where_ok(x, y):
                 continue  # (a neighbourhood's own lots are already in the right place)
             if layer["area"] and not inside(layer["area"], x, y):
                 continue  # outside the area this layer was drawn for
@@ -1017,10 +1066,10 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                 if layer["kind"] == "buildings":  # the lot as the rectangle it is, facing its street
                     if _lot_hits_road(road_hash, x, y, yaw, layer["width_m"] * 50, layer["depth_m"] * 50):
                         continue
-                elif any(True for _ in road_hash.near(x, y, r + clear)):
+                elif road_hash.hit(x, y, r + clear):
                     continue
             # lots never overlap each other, so a lot only keeps clear of layers that did NOT use lots (big sites)
-            if any(True for other in avoid if not (lot and other in lot_layers) for _ in kept[other].near(x, y, r)):
+            if any(kept[other].hit(x, y, r) for other in avoid if not (lot and other in lot_layers)):
                 continue
             # one of a kind per `spacing` in any direction (two hospitals never sit across the street from
             # each other); dense layers just must not overlap
@@ -1030,7 +1079,7 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                 gap = 0.0 if cand[9] else spacing * 0.5 if spacing >= 10000 else 0.0
             else:
                 gap = max(r, spacing * 0.5) if along and spacing > 4 * r else r
-            if layer["self_prune"] and gap and any(True for _ in own.near(x, y, gap)):
+            if layer["self_prune"] and gap and own.hit(x, y, gap):
                 continue
             own.add(x, y, r)
             if along:
