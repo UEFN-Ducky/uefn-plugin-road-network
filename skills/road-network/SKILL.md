@@ -53,6 +53,11 @@ stretched to fit a lot never smear), old colour as Tint, Used with Instanced Sta
 put a new mesh on PCG/ISM without a material that has that usage flag. Junctions: with our own road kit
 `road_network_build_pieces(rebuild=true)` regenerates every SM_JK_ piece flat at deck height in the roads'
 `M_Asphalt` with planar UVs (the Fortnite Road1 crown + MI_Apollo_Roads material is only for the Fortnite kit).
+Street kit: the kit had no traffic lights, signs, billboards, power poles, parking lots, path slabs or plinths;
+`road_network_kit_materials` first builds them (GeometryScript, WorldGen/Kit/Street, in the same PBR master), so
+every layer gets a piece and lots on hills get a plinth plus walkway / driveway slabs. pcg_build makes one graph
++ volume per city (PCG_<World>_<City>, 'City Builder <World> <City>') set to Generate On Demand: a single
+world-sized volume regenerated the whole city on every level open / save and took UEFN past 80 GB.
 Build the city in UEFN in one call: `road_network_pcg_build(net_id, confirm=true)` turns every previewed lot and
 street piece into a PCG graph (`WorldGen/CityPCG/PCG_<World>_City`: Create Points -> Static Mesh Spawner per kit
 mesh) plus a volume `City Builder <World>`, and runs it. Lots take the own-kit building nearest their height

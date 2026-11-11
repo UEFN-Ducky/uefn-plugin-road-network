@@ -939,7 +939,9 @@ def register(api) -> None:
         root = kit_root()
         if not root:
             return {"ok": False, "error": "Couldn't find the project's WorldGen folder (import the roads first)."}
-        return listener("road_network_kit_materials", {"root": root}, timeout=900)
+        street = listener("road_network_street_kit", {"root": root}, timeout=600)  # the pieces the kit lacks
+        out = listener("road_network_kit_materials", {"root": root}, timeout=900)
+        return {**out, "street_kit": street}
 
     BAKE_CHUNK = 1500  # points per Create Points node: keeps each node's settings a sensible size
 
@@ -965,53 +967,85 @@ def register(api) -> None:
             if not mats.get("ok"):
                 return {"ok": False, "error": f"Kit materials: {mats.get('error')}"}
         name = doc.get("name") or nid
-        label = f"City Builder {name}"
-        graph_path = f"{root}/WorldGen/CityPCG/PCG_{re.sub(r'[^A-Za-z0-9]', '', name)}_City"
+        tag = re.sub(r"[^A-Za-z0-9]", "", name)
+        towns = list(city_docs(nid).values())
+        if not towns:
+            return {"ok": False, "error": "This world has no cities."}
+        # one graph + volume per city (nearest city centre): a single world-sized volume holding every
+        # instance made each open and save of the level rebuild the whole city at once (80+ GB in UEFN)
+        per_city: dict = {}
+        for mesh, rows in groups.items():
+            for r in rows:
+                town = min(towns, key=lambda c: (c["x"] - r[0]) ** 2 + (c["y"] - r[1]) ** 2)
+                per_city.setdefault(town["name"], {}).setdefault(mesh, []).append(r)
         if not confirm:
-            return {"ok": False, "error": f"This replaces the PCG graph {graph_path} and the volume '{label}' in the open "
-                                          f"UEFN level with {sum(baked.values())} buildings and street pieces on "
-                                          f"{len(groups)} kit meshes. Call again with confirm=true."}
-        gen = doc.get("generated") or {}
-        size = float(gen.get("size_km") or 6) * 100000
-        cx, cy = (gen.get("center") or [0, 0])[:2]
-        for a in epic("EditorToolset.LevelToolset", "FindActors", {"filter": {"name": label}}).get("returnValue", []):
-            if a.get("label") == label:
+            return {"ok": False, "error": f"This replaces the City Builder PCG graphs and volumes of {name} "
+                                          f"({len(per_city)} cities) in the open UEFN level with "
+                                          f"{sum(baked.values())} buildings and street pieces on {len(groups)} kit "
+                                          f"meshes. Call again with confirm=true."}
+        # what an earlier build left: the one world volume/graph of 1.11, and this world's city volumes
+        for a in epic("EditorToolset.LevelToolset", "FindActors", {"filter": {"name": f"City Builder {name}"}}).get("returnValue", []):
+            if str(a.get("label") or "").startswith(f"City Builder {name}"):
                 epic("EditorToolset.LevelToolset", "RemoveFromScene", {"actor": {"refPath": a["actorPath"]}})
-        if epic("EditorToolset.AssetToolset", "Exists", {"path": graph_path}).get("returnValue"):
-            epic("EditorToolset.AssetToolset", "Delete", {"path": graph_path})
-        graph = epic("PCGToolset.PCGToolset", "CreateGraph", {"name": graph_path.rsplit("/", 1)[1],
-                                                              "path": graph_path.rsplit("/", 1)[0]})["returnValue"]
-        nodes = 0
-        for k, (mesh, rows) in enumerate(sorted(groups.items())):
-            spawn = epic("PCGToolset.PCGToolset", "AddNode", {
-                "graph": graph, "nativeNodeType": "Static Mesh Spawner", "nodeName": f"Spawn{k}",
-                "nodeTitle": mesh.rsplit(".", 1)[1], "xPositionIdx": 400, "yPositionIdx": k * 160,
-                "jsonParams": json.dumps({"meshSelector": {"meshes": [mesh]}})})["returnValue"]
-            for c in range(0, len(rows), BAKE_CHUNK):
-                pts = [{"transform": {"location": {"x": r[0], "y": r[1], "z": r[2]},
-                                      "rotation": {"pitch": 0, "yaw": r[3], "roll": 0},
-                                      "scale": {"x": r[4], "y": r[5], "z": r[6]}}} for r in rows[c:c + BAKE_CHUNK]]
-                made = epic("PCGToolset.PCGToolset", "AddNode", {
-                    "graph": graph, "nativeNodeType": "Create Points", "nodeName": f"Lots{k}_{c // BAKE_CHUNK}",
-                    "xPositionIdx": 0, "yPositionIdx": k * 160 + c // BAKE_CHUNK * 40,
-                    "jsonParams": json.dumps({"pointsToCreate": pts, "coordinateSpace": "World",
-                                              "bCullPointsOutsideVolume": False})})["returnValue"]
-                epic("PCGToolset.PCGToolset", "ConnectNodePins", {"fromNode": made, "fromPinLabel": "Out",
-                                                                "toNode": spawn, "toPinLabel": "In"})
+        old = f"{root}/WorldGen/CityPCG/PCG_{tag}_City"
+        if epic("EditorToolset.AssetToolset", "Exists", {"path": old}).get("returnValue"):
+            epic("EditorToolset.AssetToolset", "Delete", {"path": old})
+        built, nodes, messages = {}, 0, []
+        for town in towns:
+            meshes = per_city.get(town["name"])
+            if not meshes:
+                continue
+            ctag = re.sub(r"[^A-Za-z0-9]", "", town["name"])
+            graph_path = f"{root}/WorldGen/CityPCG/PCG_{tag}_{ctag}"
+            if epic("EditorToolset.AssetToolset", "Exists", {"path": graph_path}).get("returnValue"):
+                epic("EditorToolset.AssetToolset", "Delete", {"path": graph_path})
+            graph = epic("PCGToolset.PCGToolset", "CreateGraph", {"name": graph_path.rsplit("/", 1)[1],
+                                                                  "path": graph_path.rsplit("/", 1)[0]})["returnValue"]
+            reach = 0.0
+            for k, (mesh, rows) in enumerate(sorted(meshes.items())):
+                spawn = epic("PCGToolset.PCGToolset", "AddNode", {
+                    "graph": graph, "nativeNodeType": "Static Mesh Spawner", "nodeName": f"Spawn{k}",
+                    "nodeTitle": mesh.rsplit(".", 1)[1], "xPositionIdx": 400, "yPositionIdx": k * 160,
+                    "jsonParams": json.dumps({"meshSelector": {"meshes": [mesh]}})})["returnValue"]
+                for c in range(0, len(rows), BAKE_CHUNK):
+                    pts = [{"transform": {"location": {"x": r[0], "y": r[1], "z": r[2]},
+                                          "rotation": {"pitch": r[7] if len(r) > 7 else 0, "yaw": r[3], "roll": 0},
+                                          "scale": {"x": r[4], "y": r[5], "z": r[6]}}} for r in rows[c:c + BAKE_CHUNK]]
+                    made = epic("PCGToolset.PCGToolset", "AddNode", {
+                        "graph": graph, "nativeNodeType": "Create Points", "nodeName": f"Lots{k}_{c // BAKE_CHUNK}",
+                        "xPositionIdx": 0, "yPositionIdx": k * 160 + c // BAKE_CHUNK * 40,
+                        "jsonParams": json.dumps({"pointsToCreate": pts, "coordinateSpace": "World",
+                                                  "bCullPointsOutsideVolume": False})})["returnValue"]
+                    epic("PCGToolset.PCGToolset", "ConnectNodePins", {"fromNode": made, "fromPinLabel": "Out",
+                                                                    "toNode": spawn, "toPinLabel": "In"})
+                    nodes += 1
                 nodes += 1
-            nodes += 1
-        epic("PCGToolset.PCGToolset", "SetGraphDescription", {
-            "graph": graph, "description": f"City Builder world {name}: every previewed lot on our own kit. "
-                                           f"Rebuild with road_network_pcg_build; edit the layout in City Builder."})
-        volume = epic("PCGToolset.PCGToolset", "SpawnGraphInstance", {
-            "graph": graph, "name": label,
-            "transform": {"location": {"x": cx, "y": cy, "z": 0}, "rotation": {"pitch": 0, "yaw": 0, "roll": 0},
-                          "scale": {"x": size / 200, "y": size / 200, "z": 200}}})["returnValue"]
-        messages = epic("PCGToolset.PCGToolset", "ExecuteGraphInstance", {"pCGVolume": volume["actor"]}).get("returnValue", [])
-        return {"ok": True, "id": nid, "graph": graph["refPath"], "volume": volume["actor"]["refPath"], "nodes": nodes,
+                reach = max([reach] + [math.hypot(r[0] - town["x"], r[1] - town["y"]) for r in rows])
+            epic("PCGToolset.PCGToolset", "SetGraphDescription", {
+                "graph": graph, "description": f"City Builder world {name}, city {town['name']}: every previewed lot "
+                                               f"on our own kit. Rebuild with road_network_pcg_build."})
+            half = reach + 5000.0
+            volume = epic("PCGToolset.PCGToolset", "SpawnGraphInstance", {
+                "graph": graph, "name": f"City Builder {name} {town['name']}",
+                "transform": {"location": {"x": town["x"], "y": town["y"], "z": 0},
+                              "rotation": {"pitch": 0, "yaw": 0, "roll": 0},
+                              "scale": {"x": half / 100, "y": half / 100, "z": 200}}})["returnValue"]
+            # never regenerate on level load: the instances are saved with the level, rebuild on demand only
+            for key in ("PCGComponent.GenerationTrigger", "pCGComponent.generationTrigger"):
+                try:
+                    epic("EditorToolset.ObjectToolset", "SetProperties",
+                         {"instance": volume["actor"], "values": json.dumps({key: "GenerateOnDemand"})})
+                    break
+                except ValueError:
+                    continue
+            messages += epic("PCGToolset.PCGToolset", "ExecuteGraphInstance", {"pCGVolume": volume["actor"]}).get("returnValue", [])
+            built[town["name"]] = {"graph": graph["refPath"], "volume": volume["actor"]["refPath"],
+                                   "pieces": sum(len(v) for v in meshes.values())}
+        return {"ok": True, "id": nid, "cities": built, "nodes": nodes,
                 "meshes": len(groups), "built": baked, "no_kit_piece": missing, "materials": mats,
                 "messages": messages[:20],
-                "note": "Foliage layers stay for painting (Foliage mode); layers in no_kit_piece have no mesh in the kit yet."}
+                "note": "One volume per city, Generate On Demand (the level never rebuilds them on load). Foliage "
+                        "layers stay for painting; layers in no_kit_piece have no mesh in the kit yet."}
 
     def pcg_place(net_id: str = "", confirm: bool = False) -> dict:
         """Hand the plan to an AI chat that builds it in UEFN (Epic PCGToolset); returns the chat id."""

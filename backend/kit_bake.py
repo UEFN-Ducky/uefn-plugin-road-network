@@ -76,6 +76,15 @@ KIT = {
     "SM_Prop_FireHydrant": ("Kit", -33, -27, 0, 33, 27, 83),
     "SM_Prop_ParkingMeter": ("Kit", -22, -18, 0, 22, 18, 165),
     "SM_Prop_Planter": ("Kit", -98, -46, 0, 98, 46, 107),
+    # the street kit City Builder makes itself (listener road_network_street_kit), sizes as built there
+    "SM_Kit_TrafficLight": ("Kit/Street", -15, -25, 0, 380, 25, 600),
+    "SM_Kit_StopSign": ("Kit/Street", -40, -6, 0, 40, 6, 290),
+    "SM_Kit_StreetSign": ("Kit/Street", -50, -50, 0, 50, 50, 330),
+    "SM_Kit_Billboard": ("Kit/Street", -30, -600, 0, 30, 600, 1150),
+    "SM_Kit_PowerPole": ("Kit/Street", -20, -120, 0, 20, 120, 1100),
+    "SM_Kit_ParkingLot": ("Kit/Street", -50, -50, 0, 50, 50, 8),
+    "SM_Kit_PathSlab": ("Kit/Street", -50, -50, 0, 50, 50, 8),
+    "SM_Kit_Plinth": ("Kit/Street", -50, -50, -100, 50, 50, 0),
 }
 
 
@@ -113,7 +122,13 @@ PROPS = {
     "bin": ["SM_Prop_TrashCan", "SM_Prop_RecycleBin"],
     "hydrant": ["SM_Prop_FireHydrant"],
     "park": ["SM_V4_TreeRound", "SM_Prop_Planter"],
+    "traffic_light": ["SM_Kit_TrafficLight"],
+    "stop_sign": ["SM_Kit_StopSign"],
+    "street_sign": ["SM_Kit_StreetSign"],
+    "billboard": ["SM_Kit_Billboard"],
+    "power_pole": ["SM_Kit_PowerPole"],
 }
+FLAT = {"parking": "SM_Kit_ParkingLot"}  # lots that are ground, not buildings: stretched to the lot, never up
 SCALE_RANGE = (0.5, 2.0)  # a kit mesh is stretched at most this much to fit its lot
 
 
@@ -142,7 +157,14 @@ def bake(previewed: dict, root: str) -> tuple:
     for name, layer in previewed.items():
         role = layer.get("role")
         pts = layer.get("points") or []
-        if layer.get("kind") == "buildings" and role in BUILDINGS:
+        if layer.get("kind") == "buildings" and role in FLAT:
+            for p in pts:
+                w = (p[7] if len(p) > 7 else 30) * 100
+                d = (p[8] if len(p) > 8 else 30) * 100
+                groups.setdefault(path(FLAT[role], root), []).append([p[0], p[1], p[2], p[3], round(d / 100, 2),
+                                                                    round(w / 100, 2), 1.0])
+            baked[name] = len(pts)
+        elif layer.get("kind") == "buildings" and role in BUILDINGS:
             opts = BUILDINGS[role]
             for p in pts:
                 x, y, z, yaw = p[0], p[1], p[2], p[3]
@@ -158,6 +180,7 @@ def bake(previewed: dict, root: str) -> tuple:
                 sz = max(lo, min(hi, h / _height(parts)))
                 for part in parts:
                     groups.setdefault(path(part, root), []).append([x, y, z, yaw, round(sx, 3), round(sy, 3), round(sz, 3)])
+                _ground_pieces(groups, root, p, x, y, z, yaw, w, d)
             baked[name] = len(pts)
         elif role in PROPS and layer.get("kind") != "foliage":
             opts = PROPS[role]
@@ -170,6 +193,24 @@ def bake(previewed: dict, root: str) -> tuple:
     return groups, baked, missing
 
 
+def _ground_pieces(groups: dict, root: str, p: list, x, y, z, yaw, w, d) -> None:
+    """A lot's foundation (a plinth as deep as the hill falls away) and its walkway / driveway slabs."""
+    found = p[9] if len(p) > 9 else 0.0
+    if found > 0.3:
+        groups.setdefault(path("SM_Kit_Plinth", root), []).append([x, y, z, yaw, round(d / 100, 2), round(w / 100, 2),
+                                                                  round(found + 0.3, 2)])
+    for width, flat in (p[10] if len(p) > 10 else []):
+        for i in range(3, len(flat) - 2, 3):
+            ax, ay, az, bx, by, bz = flat[i - 3], flat[i - 2], flat[i - 1], flat[i], flat[i + 1], flat[i + 2]
+            run = math.hypot(bx - ax, by - ay)
+            if run < 50:
+                continue
+            pitch = math.degrees(math.atan2(bz - az, run))
+            groups.setdefault(path("SM_Kit_PathSlab", root), []).append(
+                [(ax + bx) / 2, (ay + by) / 2, (az + bz) / 2, round(math.degrees(math.atan2(by - ay, bx - ax)), 1),
+                 round(run / 100, 2), round(width, 2), 1.0, round(pitch, 1)])
+
+
 def _demo() -> None:
     pv = {
         "Skyscrapers": {"kind": "buildings", "role": "skyscraper",
@@ -180,13 +221,23 @@ def _demo() -> None:
         "Traffic lights": {"kind": "at_junctions", "role": "traffic_light", "points": [[7, 7, 7, 0, 1]]},
     }
     groups, baked, missing = bake(pv, "/R")
-    assert baked == {"Skyscrapers": 2, "Houses": 1, "Street lamps": 1} and missing == ["Traffic lights"], (baked, missing)
+    assert baked == {"Skyscrapers": 2, "Houses": 1, "Street lamps": 1, "Traffic lights": 1} and missing == [], (baked, missing)
+    # a house on a hill: a plinth under it and a sloped walkway slab from its door
+    hill = {"Houses": {"kind": "buildings", "role": "house",
+                       "points": [[0, 0, 500, 0, 1, 7, 0, 12, 12, 1.8, [[1.6, [600, 0, 500, 1100, 0, 350]]]]]},
+            "Parking lots": {"kind": "buildings", "role": "parking", "points": [[0, 0, 0, 0, 1, 0, 0, 30, 40, 0, []]]}}
+    g2, _, _ = bake(hill, "/R")
+    plinth = g2[path("SM_Kit_Plinth", "/R")][0]
+    assert plinth[4:7] == [12.0, 12.0, 2.1], plinth
+    slab = g2[path("SM_Kit_PathSlab", "/R")][0]
+    assert slab[4] == 5.0 and slab[5] == 1.6 and slab[7] < -15, slab
+    assert g2[path("SM_Kit_ParkingLot", "/R")][0][4:7] == [40.0, 30.0, 1.0]
     tall = [p for p, rows in groups.items() if any(r[0] == 0 for r in rows)]
     assert len(tall) >= 2 and all("SM_City_DT_" in p or "SM_Sky" in p for p in tall), "a 110 m lot gets a whole multi-part tower"
     assert len({tuple(r) for p in tall for r in groups[p] if r[0] == 0}) == 1, "every part of a tower shares one point"
-    for rows in groups.values():
+    for p, rows in groups.items():
         for r in rows:
-            assert all(SCALE_RANGE[0] <= v <= SCALE_RANGE[1] for v in r[4:]) or r[4] == 1.1, r
+            assert "SM_Kit_" in p or all(SCALE_RANGE[0] <= v <= SCALE_RANGE[1] for v in r[4:7]) or r[4] == 1.1, r
     assert all(p.startswith("/R/WorldGen/") and p.count(".") == 1 for p in groups)
     assert not any("Tree" in p for p in groups), "foliage is painted, not baked"
     print("kit bake ok", len(groups), "meshes")

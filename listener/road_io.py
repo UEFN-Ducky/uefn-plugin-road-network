@@ -434,6 +434,110 @@ def _old_tint(mat) -> unreal.LinearColor:
     return unreal.LinearColor(1, 1, 1, 1)
 
 
+def _mi(folder: str, name: str, master, root: str, look: tuple, tint=None):
+    """An instance of the world PBR master: look = (texture set, tile cm, roughness x, metallic, emissive)."""
+    mel, eal = unreal.MaterialEditingLibrary, unreal.EditorAssetLibrary
+    path = f"{folder}/{name}"
+    mi = eal.load_asset(path) if eal.does_asset_exist(path) else unreal.AssetToolsHelpers.get_asset_tools().create_asset(
+        name, folder, unreal.MaterialInstanceConstant, unreal.MaterialInstanceConstantFactoryNew())
+    mel.set_material_instance_parent(mi, master)
+    tex, tile, rough, metal, glow = look
+    for ch, pname in (("B", "Base"), ("R", "Rough")):
+        t = eal.load_asset(_PBR_SET.format(root=root, set=tex, ch=ch))
+        if t:
+            mel.set_material_instance_texture_parameter_value(mi, pname, t)
+    if tint is not None:
+        mel.set_material_instance_vector_parameter_value(mi, "Tint", tint)
+    for pname, v in (("TileCm", tile), ("RoughMul", rough), ("Metallic", metal), ("Emissive", glow)):
+        mel.set_material_instance_scalar_parameter_value(mi, pname, float(v))
+    mel.update_material_instance(mi)
+    eal.save_loaded_asset(mi)
+    return mi
+
+
+# The street kit City Builder makes itself: (look name -> look, tint) and per mesh its parts
+# (box|cyl, material slot, location, (roll, pitch, yaw), dims) in cm; box dims x/y/z, cyl radius/height/sides.
+_STREET_LOOKS = {
+    "Metal": (("Frame", 200, 0.6, 0.7, 0.0), (0.25, 0.27, 0.3)), "Signal": (("Frame", 200, 0.4, 0.2, 0.3), (0.06, 0.06, 0.05)),
+    "SignRed": (("Tile", 200, 0.5, 0.0, 0.3), (0.7, 0.03, 0.03)), "SignGreen": (("Tile", 200, 0.5, 0.0, 0.2), (0.02, 0.35, 0.12)),
+    "Panel": (("Concrete", 400, 0.6, 0.0, 1.5), (0.9, 0.9, 0.85)), "Wood": (("Oak", 200, 1.0, 0.0, 0.0), (0.35, 0.25, 0.15)),
+    "Asphalt": (("Asphalt", 600, 1.0, 0.0, 0.0), (0.6, 0.6, 0.6)), "Pavers": (("Pavers", 150, 1.0, 0.0, 0.0), (0.8, 0.8, 0.78)),
+    "Plinth": (("Concrete", 300, 1.0, 0.0, 0.0), (0.7, 0.7, 0.68)),
+}
+_STREET_KIT = {
+    "SM_Kit_TrafficLight": (["Metal", "Signal"], [("cyl", 0, (0, 0, 0), (0, 0, 0), (12, 560, 12)),
+                                                  ("box", 0, (190, 0, 532), (0, 0, 0), (380, 15, 15)),
+                                                  ("box", 1, (360, 0, 420), (0, 0, 0), (40, 40, 110))]),
+    "SM_Kit_StopSign": (["Metal", "SignRed"], [("cyl", 0, (0, 0, 0), (0, 0, 0), (4, 250, 8)),
+                                               ("cyl", 1, (0, 2, 252), (90, 0, 0), (38, 4, 8))]),
+    "SM_Kit_StreetSign": (["Metal", "SignGreen"], [("cyl", 0, (0, 0, 0), (0, 0, 0), (4, 300, 8)),
+                                                   ("box", 1, (0, 0, 290), (0, 0, 0), (90, 2, 22)),
+                                                   ("box", 1, (0, 0, 314), (0, 0, 0), (2, 90, 22))]),
+    "SM_Kit_Billboard": (["Metal", "Panel"], [("box", 0, (0, -400, 0), (0, 0, 0), (30, 30, 700)),
+                                              ("box", 0, (0, 400, 0), (0, 0, 0), (30, 30, 700)),
+                                              ("box", 1, (0, 0, 700), (0, 0, 0), (30, 1200, 450))]),
+    "SM_Kit_PowerPole": (["Wood"], [("cyl", 0, (0, 0, 0), (0, 0, 0), (18, 1100, 10)),
+                                    ("box", 0, (0, 0, 1000), (0, 0, 0), (20, 240, 15))]),
+    "SM_Kit_ParkingLot": (["Asphalt"], [("box", 0, (0, 0, 0), (0, 0, 0), (100, 100, 8))]),
+    "SM_Kit_PathSlab": (["Pavers"], [("box", 0, (0, 0, 0), (0, 0, 0), (100, 100, 8))]),
+    "SM_Kit_Plinth": (["Plinth"], [("box", 0, (0, 0, -100), (0, 0, 0), (100, 100, 100))]),
+}
+
+
+@register("road_network_street_kit")
+def road_network_street_kit(root: str = "") -> dict:
+    """Make the street pieces the kit lacks (traffic lights, stop / street signs, billboards, power poles,
+    parking lot, path slab, plinth) as GeometryScript meshes in WorldGen/Kit/Street, in M_City_WorldPBR
+    instances. Mesh and material assets only; safe to run again (rebuilt in place)."""
+    if not root.startswith("/"):
+        return {"ok": False, "error": "Give root, the project's content root (for example /<mount>/MovieTheater)."}
+    eal = unreal.EditorAssetLibrary
+    mat_folder, folder = f"{root}/WorldGen/Materials", f"{root}/WorldGen/Kit/Street"
+    for f in (mat_folder, folder):
+        if not eal.does_directory_exist(f):
+            eal.make_directory(f)
+    master = _world_pbr_master(mat_folder, root)
+    looks = {k: _mi(mat_folder, f"MI_Street_{k}", master, root, look, unreal.LinearColor(*tint, 1))
+             for k, (look, tint) in _STREET_LOOKS.items()}
+    gp = unreal.GeometryScript_Primitives
+    base = unreal.GeometryScriptPrimitiveOriginMode.BASE
+    made, errors = [], []
+    for name, (mats, parts) in _STREET_KIT.items():
+        try:
+            dm = unreal.DynamicMesh()
+            unreal.GeometryScript_Materials.enable_material_i_ds(dm)
+            for kind, slot, loc, rot, dims in parts:
+                o = unreal.GeometryScriptPrimitiveOptions()
+                o.material_id = slot
+                t = unreal.Transform(unreal.Vector(*loc), unreal.Rotator(roll=rot[0], pitch=rot[1], yaw=rot[2]),
+                                     unreal.Vector(1, 1, 1))
+                if kind == "box":
+                    gp.append_box(dm, o, t, dimension_x=dims[0], dimension_y=dims[1], dimension_z=dims[2], origin=base)
+                else:
+                    gp.append_cylinder(dm, o, t, radius=dims[0], height=dims[1], radial_steps=int(dims[2]), origin=base)
+            path = f"{folder}/{name}"
+            sm = eal.load_asset(path) if eal.does_asset_exist(path) else None
+            if sm is None:
+                res = unreal.GeometryScript_NewAssetUtils.create_new_static_mesh_asset_from_mesh(
+                    dm, path, unreal.GeometryScriptCreateNewStaticMeshAssetOptions())
+                sm = res[0] if isinstance(res, tuple) else res
+            opts = unreal.GeometryScriptCopyMeshToAssetOptionsV2()
+            opts.replace_materials = True
+            opts.new_materials = [looks[m] for m in mats]
+            opts.new_material_slot_names = mats
+            unreal.GeometryScript_AssetUtils.copy_mesh_to_static_mesh_v2(dm, sm, opts, unreal.GeometryScriptMeshWriteLOD())
+            try:  # walkable / bumpable: simple collision from the parts
+                unreal.GeometryScript_Collision.set_static_mesh_collision_from_mesh(
+                    dm, sm, unreal.GeometryScriptCollisionFromMeshOptions())
+            except Exception:
+                pass
+            eal.save_loaded_asset(sm)
+            made.append(name)
+        except Exception as exc:  # one bad piece must not stop the rest
+            errors.append(f"{name}: {exc}"[:200])
+    return {"ok": not errors, "made": made, "errors": errors}
+
+
 @register("road_network_kit_materials")
 def road_network_kit_materials(root: str = "", folders: list | None = None) -> dict:
     """Give every mesh in the kit folders (WorldGen/City, WorldGen/Kit) textured, instance-safe materials:
