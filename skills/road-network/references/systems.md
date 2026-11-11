@@ -1,3 +1,10 @@
+---
+description: "Every City Builder system in detail: pipeline, parcels, neighbourhoods, freeways, urban planner, waterfront, shipyards, water and bridges, PCG tiles, push/pull, tools and rules."
+metadata:
+  label: "City Builder: every system in detail"
+  load_condition: "When SKILL.md points to a system (freeways, urban planner, waterfront, shipyards, PCG layers, pipeline) and you need its details"
+---
+
 # City Builder: every system in detail
 
 Read the section you need, when you need it (SKILL.md says which). Exact option names and defaults come from

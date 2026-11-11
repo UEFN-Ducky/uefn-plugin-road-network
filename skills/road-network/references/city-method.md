@@ -1,3 +1,10 @@
+---
+description: "How procedural cities are built in PCG (Epic's City Sample method, Polygon 2D, shape grammar) and how City Builder maps onto it."
+metadata:
+  label: "City Builder: the PCG city method"
+  load_condition: "Before designing PCG city graphs, shape-grammar buildings or comparing City Builder with Epic's City Sample"
+---
+
 # How procedural cities are built (and where City Builder differs)
 
 Epic's PCG City Sample (UE 5.8) and City Builder follow the same idea: a few hand-drawn shapes are cut into
