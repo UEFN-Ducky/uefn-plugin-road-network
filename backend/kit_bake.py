@@ -239,7 +239,7 @@ INTERIOR = {"skyscraper": "SM_Kit_DeskSet", "office": "SM_Kit_DeskSet", "hospita
             "shop": "SM_Kit_ShopShelf", "mall": "SM_Kit_ShopShelf", "gas_station": "SM_Kit_ShopShelf"}
 STOREY_CM = 400  # = SM_Kit_StairCore's rise: its top landing is the next storey's floor
 CORE_CM = 400  # SM_Kit_StairCore's footprint; scaled 0.7-1.6x to the slab's well
-CORE_MIN_CM = 280  # a well narrower than this gets no core (solid slabs, one storey of furniture each)
+CORE_MIN_CM = 250  # a well narrower than this gets no core (two-storey houses' 2.7 m wells must still get stairs)
 MAX_FLOORS = 40  # ponytail: caps instances on the tallest towers; floors above it stay empty
 SETS_PER_FLOOR = 8  # furniture sets per storey, the ones nearest the windows (what you see through glass)
 FLAT = {"parking": "SM_Kit_ParkingLot"}  # lots that are ground, not buildings: stretched to the lot, never up
