@@ -8,6 +8,11 @@ export function syncPlan(keys, net) {
   for (const key of keys) {
     const k = String(key);
     if (/^net\.[^.]+$/.test(k) || k.startsWith("project.")) out.nets = true;  // a world's own doc: names, settings
+    if (net && k.startsWith(`world/${net}/`)) {  // the world's files: a city's, or a road actor's
+      if (k.startsWith(`world/${net}/city/`)) out.cities = true; else out.geometry = true;
+      out.layers = true;
+      continue;
+    }
     if (!mine || !(k === mine || k.startsWith(mine + "."))) continue;  // another world: only the list above
     if (k === mine) out.nets = true;
     else if (k.startsWith(mine + ".pcg.") || k === mine + ".assets") out.layers = true;

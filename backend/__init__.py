@@ -1,13 +1,15 @@
 """Road Network: city road networks for UEFN, viewed and edited in 3D, reimported in one go.
 
-Data (team-shared through api.data, one doc per record):
+Data (team-shared through api.data: small head docs, and a file per road actor and per city):
   project.<pid>                         {name, description}
   net.<nid>                             {name, project, actors, terrain_mode, ...}
-  net.<nid>.actor.<slug>                {name, label, chunks, counts}
-  net.<nid>.actor.<slug>.p.<k>          {name, pts: [...]}   (1000 control points each)
-  net.<nid>.actor.<slug>.s.<k>          {name, segs: [...]}  (1000 segments each)
+  net.<nid>.actor.<slug>                {name, label, file, sha, points, segments, stats}
+  world/<nid>/<slug>.json               file {pts: [...], segs: [...]}, a line per point / segment
   net.<nid>.scan                        {name, props, terrain}
-  net.<nid>.city.<slug>                 {name, x, y, radius, style, districts, buildings}  (generated worlds)
+  net.<nid>.city.<slug>                 {name, x, y, radius, style, districts, buildings, file, sha}  (generated worlds)
+  world/<nid>/city/<slug>.json          file {private: {...}, lots, plan, ...}: the city's big fields
+A world from before files keeps net.<nid>.actor.<slug>.p.<k> / .s.<k> chunk docs and city .private / .piece
+docs until its next write.
 """
 
 from __future__ import annotations
@@ -172,6 +174,66 @@ def register(api) -> None:
             items.append({"id": key.split(".", 1)[1], **{k: v for k, v in doc.items() if k != "history"}})
         return {"ok": True, "items": sorted(items, key=lambda r: -float(r.get("updated") or 0)), "count": len(items)}
 
+    # A world's big data is files, one per road actor and one per city (world/<world>/...), next to small
+    # head docs: one change is one updated file, and team sync sends only the parts of it that changed. A
+    # rebuild of 1,000-point chunk docs sent 800+ changes, mostly deletes of old chunks (Nov 11 2026). A
+    # file is a line per row, so a change touches only its own lines (and a diff reads like one). A head
+    # carries its file's sha: an unchanged actor or city writes nothing at all.
+    file_cache: dict = {}  # (path, sha) -> parsed actor file, the last few read (panel pages hit the same one)
+    file_cache_lock = threading.Lock()
+    FILE_CACHE_MAX = 8
+
+    def actor_path(nid: str, aslug: str) -> str:
+        return f"world/{nid}/{aslug}.json"
+
+    def city_path(nid: str, cslug: str) -> str:
+        return f"world/{nid}/city/{cslug}.json"
+
+    def canon(obj: dict) -> bytes:
+        """``obj`` as JSON with every list item on a line of its own (a dict of lists nests the same way)."""
+        dump = lambda v: json.dumps(v, ensure_ascii=False, separators=(",", ":"))
+        out = []
+        for k, v in obj.items():
+            if isinstance(v, list):
+                out.append(f"{json.dumps(k)}:[\n" + ",\n".join(dump(x) for x in v) + "\n]")
+            elif isinstance(v, dict) and v and all(isinstance(x, list) for x in v.values()):
+                out.append(f"{json.dumps(k)}:" + canon(v).decode("utf-8").rstrip("\n"))
+            else:
+                out.append(f"{json.dumps(k)}:{dump(v)}")
+        return ("{\n" + ",\n".join(out) + "\n}\n").encode("utf-8")
+
+    def put_json_file(path: str, obj: dict) -> str:
+        raw = canon(obj)
+        data.put_file(path, raw)  # the same bytes as stored: no write, nothing to send
+        return hashlib.sha256(raw).hexdigest()
+
+    def read_json_file(path: str, cache: bool = False) -> dict:
+        """A world file parsed ({} when it isn't here: not written yet, or still on its way from a teammate).
+        ``cache``: the parsed object is shared, by its stored sha (callers never change it)."""
+        sha = next((r["sha256"] for r in data.files(path) if r["path"] == path), "") if path else ""
+        if not sha:
+            return {}
+        if cache:
+            with file_cache_lock:
+                hit = file_cache.get((path, sha))
+            if hit is not None:
+                return hit
+        raw = data.get_file(path)
+        try:
+            got = json.loads(raw) if raw else {}
+        except ValueError:
+            return {}
+        if cache:
+            with file_cache_lock:
+                file_cache[(path, sha)] = got
+                while len(file_cache) > FILE_CACHE_MAX:
+                    file_cache.pop(next(iter(file_cache)))
+        return got
+
+    def drop_world_files(prefix: str) -> None:
+        for f in data.files(prefix):
+            data.delete_file(f["path"])
+
     def actor_docs(nid: str) -> dict:
         # the heads only: items() under this prefix would read and decode every point and segment chunk too
         heads = [k for k in data.keys(f"net.{nid}.actor.") if k.count(".") == 3]
@@ -181,31 +243,41 @@ def register(api) -> None:
         head = data.get(f"net.{nid}.actor.{aslug}") if nid and aslug else None
         if not head:
             return None, [], []
-        pts, segs = [], []
+        if head.get("file"):  # copies: the parsed file is shared
+            got = read_json_file(head["file"], cache=True)
+            return head, [dict(p) for p in got.get("pts") or []], [dict(s) for s in got.get("segs") or []]
+        pts, segs = [], []  # a world from before files: its point and segment chunk docs
         for k in range(int(head.get("p_chunks") or 0)):
             pts += (data.get(f"net.{nid}.actor.{aslug}.p.{k}") or {}).get("pts", [])
         for k in range(int(head.get("s_chunks") or 0)):
             segs += (data.get(f"net.{nid}.actor.{aslug}.s.{k}") or {}).get("segs", [])
         return head, pts, segs
 
-    def store_actor(nid: str, label: str, parsed: dict, net_name: str) -> dict:
-        aslug = slug(label)
-        pts, segs = parsed["points"], parsed["segments"]
-        old = data.get(f"net.{nid}.actor.{aslug}") or {}
-        pc = (len(pts) + CHUNK - 1) // CHUNK
-        sc = (len(segs) + CHUNK - 1) // CHUNK
-        for k in range(pc):
-            data.put(f"net.{nid}.actor.{aslug}.p.{k}", {"name": f"{net_name} / {label} points {k + 1}", "pts": pts[k * CHUNK:(k + 1) * CHUNK]})
-        for k in range(sc):
-            data.put(f"net.{nid}.actor.{aslug}.s.{k}", {"name": f"{net_name} / {label} segments {k + 1}", "segs": segs[k * CHUNK:(k + 1) * CHUNK]})
-        for k in range(pc, int(old.get("p_chunks") or 0)):
-            data.delete(f"net.{nid}.actor.{aslug}.p.{k}")
-        for k in range(sc, int(old.get("s_chunks") or 0)):
-            data.delete(f"net.{nid}.actor.{aslug}.s.{k}")
-        head = {"name": f"{net_name} / {label}", "label": label, "p_chunks": pc, "s_chunks": sc,
+    def save_actor(nid: str, aslug: str, label: str, name: str, pts: list, segs: list) -> dict:
+        """An actor's file and head; an older world's chunk docs of it go (once). Unchanged: nothing written."""
+        key = f"net.{nid}.actor.{aslug}"
+        old = data.get(key) or {}
+        path = actor_path(nid, aslug)
+        sha = put_json_file(path, {"pts": pts, "segs": segs})
+        for k in range(int(old.get("p_chunks") or 0)):
+            data.delete(f"{key}.p.{k}")
+        for k in range(int(old.get("s_chunks") or 0)):
+            data.delete(f"{key}.s.{k}")
+        if old.get("file") == path and old.get("sha") == sha and old.get("name") == name:
+            return old
+        head = {"name": name, "label": label, "file": path, "sha": sha, "points": len(pts), "segments": len(segs),
                 "stats": st.stats(pts, segs), "updated": time.time()}
-        data.put(f"net.{nid}.actor.{aslug}", head)
+        data.put(key, head)
         return head
+
+    def store_actor(nid: str, label: str, parsed: dict, net_name: str) -> dict:
+        return save_actor(nid, slug(label), label, f"{net_name} / {label}", parsed["points"], parsed["segments"])
+
+    def drop_actor(nid: str, aslug: str) -> None:
+        head = f"net.{nid}.actor.{aslug}"
+        for key in [k for k in data.keys(head) if k == head or k.startswith(head + ".")]:
+            data.delete(key)
+        data.delete_file(actor_path(nid, aslug))
 
     def get_network(net_id: str = "") -> dict:
         nid = slug(net_id)
@@ -241,6 +313,7 @@ def register(api) -> None:
             return {"ok": False, "error": f"No road network {net_id!r}."}
         for key in list(data.keys(f"net.{nid}.")):
             data.delete(key)
+        drop_world_files(f"world/{nid}/")
         data.delete(f"net.{nid}")
         record("road_network_delete", "network", nid, before, [])
         push({"what": "network", "id": nid})
@@ -323,7 +396,12 @@ def register(api) -> None:
     def actor_page(nid: str, aslug: str, head: dict, lo: int, hi: int) -> tuple | None:
         """(points, segments, points total, segments total) for [lo, hi) of one actor, reading only the chunks
         that hold it and the last one (for the totals). Every chunk but the last holds CHUNK items (store_actor
-        and move_point write them that way); None for any other shape: then the caller reads the actor whole."""
+        and move_point write them that way); None for any other shape: then the caller reads the actor whole.
+        An actor in a file: its slice of the (cached) file."""
+        if head.get("file"):
+            whole = read_json_file(head["file"], cache=True)
+            pts, segs = whole.get("pts") or [], whole.get("segs") or []
+            return pts[lo:hi], segs[lo:hi], len(pts), len(segs)
         got = []
         for kind, field, count in (("p", "pts", "p_chunks"), ("s", "segs", "s_chunks")):
             n = int(head.get(count) or 0)
@@ -389,12 +467,8 @@ def register(api) -> None:
         if before is None:
             return {"ok": False, "error": f"No point {index} in {actor}."}
         st.move_point(pts, segs, int(index), x, y, z)
-        # rewrite only the chunks that changed: the point's chunk and the touched segments' chunks
-        k = next(n for n, p in enumerate(pts) if p["i"] == int(index)) // CHUNK
-        data.put(f"net.{nid}.actor.{aslug}.p.{k}", {"name": f"{head['name']} points {k + 1}", "pts": pts[k * CHUNK:(k + 1) * CHUNK]})
-        touched = {n // CHUNK for n, s in enumerate(segs) if int(index) in (s["a"], s["b"])}
-        for c in touched:
-            data.put(f"net.{nid}.actor.{aslug}.s.{c}", {"name": f"{head['name']} segments {c + 1}", "segs": segs[c * CHUNK:(c + 1) * CHUNK]})
+        # the actor's file again: team sync sends only the lines (parts) that changed
+        save_actor(nid, aslug, head.get("label") or aslug, head.get("name") or aslug, pts, segs)
         record("road_network_move_point", "point", f"{nid}-{aslug}-{index}", before,
                [{"command": "road_network_move_point", "params": {"net_id": nid, "actor": aslug, "index": int(index),
                                                                   "x": before["x"], "y": before["y"], "z": before["z"]}}])
@@ -680,14 +754,27 @@ def register(api) -> None:
         return ""
 
     def road_folder() -> str:
-        """The project's own road meshes folder, read off any stored network's first segments."""
-        for key in data.keys("net."):
-            if re.fullmatch(r"net\.[^.]+\.actor\.[^.]+\.s\.0", key):
-                for s in (data.get(key) or {}).get("segs", []):
-                    for ln in s.get("lines", []):
-                        m = re.search(r"'(/[^']+?/WorldGen/Roads)/SM_Road_", ln)
-                        if m:
-                            return m.group(1)
+        """The project's own road meshes folder: a generated world's own, else read off any stored network's
+        first segments (an actor's file, or an older world's first segment chunk)."""
+        keys = data.keys("net.")
+        for key in keys:
+            if re.fullmatch(r"net\.[^.]+", key):
+                folder = ((data.get(key) or {}).get("generated") or {}).get("folder")
+                if folder:
+                    return folder
+        for key in keys:
+            head_key = re.fullmatch(r"net\.[^.]+\.actor\.[^.]+", key)
+            old_chunk = re.fullmatch(r"net\.[^.]+\.actor\.[^.]+\.s\.0", key)
+            if not head_key and not old_chunk:
+                continue
+            doc = data.get(key) or {}
+            if head_key and not doc.get("file"):
+                continue
+            for s in (read_json_file(doc["file"], cache=True) if head_key else doc).get("segs", []):
+                for ln in s.get("lines", []):
+                    m = re.search(r"'(/[^']+?/WorldGen/Roads)/SM_Road_", ln)
+                    if m:
+                        return m.group(1)
         return ""
 
     def heightmap_path(nid: str) -> str:
@@ -713,23 +800,31 @@ def register(api) -> None:
                 "private": {k: layout.get(k) or [] for k in ("streets", "parking", "stalls", "pads", "grounds", "water",
                                                              "airport")}}
 
-    CHUNK_ROWS = 6000  # a city's private pieces (parking, stalls, grounds, waterfront) go in docs of this many rows
-    FIELD_SPLIT = 32_000  # any other city field whose JSON is bigger (its lots, its plan) goes in piece docs
-    PIECE_BYTES = 700_000  # one piece doc's encoded size at most: under the 1 MB share limit, escapes included
+    FIELD_SPLIT = 32_000  # a city field whose JSON is bigger (its lots, its plan) goes in the city's file
     CITY_KEEP = ("name", "x", "y", "radius", "style", "seed", "roads")  # always in the head itself
 
     def city_parts(head: str) -> list:
-        """The chunk and piece docs a city head owns (deleted with it)."""
+        """The chunk and piece docs a city head of an older world owns (deleted with it)."""
         return list(data.keys(f"{head}.private.")) + list(data.keys(f"{head}.piece."))
 
+    def drop_city(nid: str, cslug: str) -> None:
+        head = f"net.{nid}.city.{cslug}"
+        for k in [head] + city_parts(head):
+            data.delete(k)
+        data.delete_file(city_path(nid, cslug))
+
     def city_docs(nid: str) -> dict:
-        """Every city of a world, put back together from its chunk docs (private pieces) and piece docs (big
-        fields such as a large city's lots)."""
+        """Every city of a world: its head doc with its file's fields (private pieces, big fields such as a
+        large city's lots); an older world's city from its chunk and piece docs."""
         items = data.items(f"net.{nid}.city.")
         out = {}
         for k, v in items.items():
             if k.count(".") != 3:
                 continue
+            if v.get("file"):
+                got = read_json_file(v["file"])  # parsed here each time: callers may change what they get
+                v = {**v, "private": got.get("private") or {},
+                     **{key: val for key, val in got.items() if key != "private" and key not in v}}
             if v.get("private_chunks"):
                 priv: dict = {}
                 for i in range(int(v["private_chunks"])):
@@ -752,40 +847,18 @@ def register(api) -> None:
         return out
 
     def put_city(nid: str, cslug: str, doc: dict) -> None:
-        """Store a city: its big private lists split into chunk docs, and any other big field (a large city's
-        lots run past 1 MB: 'doc too big to share' lost the whole rebuild, Nov 11 2026) into piece docs of its
-        JSON, so every doc stays under the 1 MB share limit."""
+        """Store a city: its private pieces and every big field (a large city's lots run past 1 MB: 'doc too
+        big to share' lost the whole rebuild, Nov 11 2026) in its file, the rest in its head doc. Unchanged:
+        nothing written. An older world's chunk and piece docs of it go (once)."""
         head = f"net.{nid}.city.{cslug}"
-        priv = doc.get("private") or {}
-        n = 0
-        for key, rows in priv.items():
-            for i in range(0, len(rows), CHUNK_ROWS):
-                data.put(f"{head}.private.{n}", {"key": key, "rows": rows[i:i + CHUNK_ROWS]})
-                n += 1
-        for k in data.keys(f"{head}.private."):  # chunks of a bigger previous run
-            if int(k.rsplit(".", 1)[1]) >= n:
-                data.delete(k)
-        rest = {k: v for k, v in doc.items() if k not in ("private", "private_chunks", "piece_chunks")}
-        big = {k: json.dumps(v, ensure_ascii=False, separators=(",", ":")) for k, v in rest.items() if k not in CITY_KEEP}
-        big = {k: text for k, text in big.items() if len(text) > FIELD_SPLIT}
-        m = 0
-        for key, text in big.items():
-            i = 0
-            while i < len(text):
-                step = PIECE_BYTES
-                while True:  # the piece as stored (quotes escaped, UTF-8) must fit, not just its characters
-                    piece = {"key": key, "text": text[i:i + step]}
-                    if len(json.dumps(piece, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) <= PIECE_BYTES:
-                        break
-                    step //= 2
-                data.put(f"{head}.piece.{m}", piece)
-                m += 1
-                i += step
-        for k in data.keys(f"{head}.piece."):  # pieces of a bigger previous run
-            if int(k.rsplit(".", 1)[1]) >= m:
-                data.delete(k)
-        data.put(head, {**{k: v for k, v in rest.items() if k not in big}, "private": {}, "private_chunks": n,
-                        "piece_chunks": m})
+        rest = {k: v for k, v in doc.items() if k not in ("private", "private_chunks", "piece_chunks", "file", "sha")}
+        big = [k for k, v in rest.items()
+               if k not in CITY_KEEP and len(json.dumps(v, ensure_ascii=False, separators=(",", ":"))) > FIELD_SPLIT]
+        path = city_path(nid, cslug)
+        sha = put_json_file(path, {"private": doc.get("private") or {}, **{k: rest[k] for k in big}})
+        for k in city_parts(head):
+            data.delete(k)
+        data.put(head, {**{k: v for k, v in rest.items() if k not in big}, "file": path, "sha": sha})
 
     @one_run_at_a_time  # a waiting rebuild with the same settings takes one that started after it asked
     @holds_the_world
@@ -871,15 +944,10 @@ def register(api) -> None:
         saved = save_network(nid, name, "", "live")
         if not saved.get("ok"):
             return saved
-        for aslug in actor_docs(nid):  # roads of a previous run
-            if aslug not in {slug(label) for label in actors}:
-                head = f"net.{nid}.actor.{aslug}"
-                for key in [k for k in data.keys(head) if k == head or k.startswith(head + ".")]:
-                    data.delete(key)
+        stale = [a for a in actor_docs(nid) if a not in {slug(label) for label in actors}]  # gone after the paths
         for cslug in old:
             if cslug not in {slug(t["name"]) for t in towns}:
-                for k in [f"net.{nid}.city.{cslug}"] + city_parts(f"net.{nid}.city.{cslug}"):
-                    data.delete(k)
+                drop_city(nid, cslug)
         stats_out = {label: store_actor(nid, label, a, name)["stats"] for label, a in actors.items()}
         # terrain is a big blob (a 160 grid is ~200 KB): one doc, never edited by hand, so it never conflicts
         data.put(f"net.{nid}.scan", {"name": f"{name} / terrain", "props": [], "terrain": ter})
@@ -930,6 +998,11 @@ def register(api) -> None:
         progress(steps - 1, "Sidewalks, walkways and driveways")
         paths = sidewalks_stage(nid)  # SidewalkGenerator: sidewalks, walkways, driveways as spline actors
         stats_out.update((paths.get("actors") or {}) if paths.get("ok") else {})
+        # roads of a previous run that this one didn't make again: dropped only now, so a city's Paths and Access
+        # actors (written by the sidewalk stage) are rewritten in place, not deleted and re-made every rebuild
+        for aslug in stale:
+            if aslug not in {slug(label) for label in stats_out}:
+                drop_actor(nid, aslug)
         record("road_network_generate", "network", nid, before,
                [] if before else [{"command": "road_network_delete", "params": {"net_id": nid}}])
         push({"what": "network", "id": nid})
@@ -1015,8 +1088,7 @@ def register(api) -> None:
         if not confirm:
             return {"ok": False, "error": f"This removes {before.get('name')} and everything on it. Call again with "
                                           f"confirm=true."}
-        for k in [head] + city_parts(head):
-            data.delete(k)
+        drop_city(nid, cslug)
         push({"what": "city", "id": nid})
         return {"ok": True, "id": cslug, "note": "Generate again (cities empty) to rebuild the world without it."}
 
@@ -1065,10 +1137,9 @@ def register(api) -> None:
         if name and slug(name) != cslug:
             key = slug(name)
             doc["name"], doc["roads"] = name, f"{name} Roads"
-            for k in city_parts(f"net.{nid}.city.{cslug}"):  # its pieces come back on generate
-                data.delete(k)
+            drop_city(nid, cslug)  # its file's fields come back on generate
             doc["private_chunks"] = doc["piece_chunks"] = 0
-            data.delete(f"net.{nid}.city.{cslug}")
+            doc["file"] = doc["sha"] = ""
         data.put(f"net.{nid}.city.{key}", doc)
         api.search.upsert(f"net.{nid}.city.{key}", doc["name"], f"City {doc['name']}: {doc.get('style')} roads, "
                                                                  f"{round(doc['radius'] / 100)} m radius")

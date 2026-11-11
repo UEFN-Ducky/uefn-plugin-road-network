@@ -28,3 +28,11 @@ test("the group's screen opens the world and tab", () => {
   assert.deepEqual(parseLiveView("valley:pcg"), { net: "valley", tab: "pcg" });
   assert.deepEqual(parseLiveView("networks:world"), { net: "", tab: "world" });
 });
+
+test("a world's files: a road actor's reloads geometry, a city's the cities; another world's nothing", () => {
+  const road = syncPlan(["world/valley/kingsport-roads.json"], "valley");
+  assert.deepEqual(road, { nets: false, geometry: true, cities: false, layers: true });
+  const city = syncPlan(["world/valley/city/kingsport.json"], "valley");
+  assert.deepEqual(city, { nets: false, geometry: false, cities: true, layers: true });
+  assert.deepEqual(syncPlan(["world/city/city-roads.json"], "valley"), { nets: false, geometry: false, cities: false, layers: false });
+});
