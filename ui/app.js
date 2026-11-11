@@ -642,7 +642,8 @@ function drawBuildings(layer, colour) {
       dummy.position.copy(toV(ux, uy, z + part.z * 100));
       dummy.position.y += part.sz * zx / 2;
       dummy.rotation.set(0, -r, 0);
-      dummy.scale.set(part.sx, Math.max(0.2, part.sz) * zx, part.sy);
+      // part.sx runs along the facing (fx), part.sy across it: after this rotation the facing is the box's z
+      dummy.scale.set(part.sy, Math.max(0.2, part.sz) * zx, part.sx);
       dummy.updateMatrix();
       (part.c ? cyls : boxes).push(dummy.matrix.clone());
     }
@@ -669,14 +670,14 @@ function drawLotGround(layer) {
       dummy.position.copy(toV(wx, wy, z));
       dummy.position.y += hgt * zx / 2;
       dummy.rotation.set(0, -wyaw * Math.PI / 180, 0);
-      dummy.scale.set(len, hgt * zx, 0.3);
+      dummy.scale.set(0.3, hgt * zx, len);  // along the edge (its yaw) is the box's z
       dummy.updateMatrix();
       found.push(dummy.matrix.clone());
     }
     if (depth > 0.3) {
       dummy.position.copy(toV(x, y, z - depth * 50));
       dummy.rotation.set(0, -yaw * Math.PI / 180, 0);
-      dummy.scale.set(d * 0.94, depth * zx, w * 0.94);
+      dummy.scale.set(w * 0.94, depth * zx, d * 0.94);  // frontage across the facing, depth along it (the box's z)
       dummy.updateMatrix();
       found.push(dummy.matrix.clone());
     }
@@ -732,7 +733,7 @@ function drawPcg(legend) {
         dummy.position.copy(toV(x, y, z));
         dummy.position.y += hgt * zx / 2;
         dummy.rotation.set(0, -yaw * Math.PI / 180, 0);
-        dummy.scale.set(len, hgt * zx, 0.5);
+        dummy.scale.set(0.5, hgt * zx, len);  // along yaw is the box's z here (toV turns x into -z), as site pieces
         dummy.updateMatrix();
         mesh.setMatrixAt(i, dummy.matrix);
       });

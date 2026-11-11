@@ -7,6 +7,14 @@
   <style>
     :root { --left-w: 236px; --right-w: 328px; }  /* the side panels' widths: their handles change these */
     html, body { height: 100%; margin: 0; }
+    /* Ducky's own scrollbars (global.css): 6 px, no arrow buttons, a round thumb only while the area is
+       hovered. Declaring them here makes the app's injected thin native fallback step aside. */
+    ::-webkit-scrollbar { width: 6px; height: 6px; background: transparent; }
+    ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+    ::-webkit-scrollbar-button { display: none; }
+    ::-webkit-scrollbar-thumb { background-color: transparent; border-radius: 10px; transition: background-color 0.15s ease; }
+    *:hover::-webkit-scrollbar-thumb { background-color: var(--border-light); }
+    *:hover::-webkit-scrollbar-thumb:hover { background-color: var(--muted); }
     body { overflow: hidden; font-family: var(--font-ui); display: flex; flex-direction: column; }
     .dk-layout { flex: 1; min-height: 0; }
 
