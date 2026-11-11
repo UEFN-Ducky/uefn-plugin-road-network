@@ -763,6 +763,8 @@ def register(api) -> None:
         airport_builds: dict = {}
         progress(2, "Laying roads, freeways, bridges and runways")
         actors = cg.generate(towns, road_ground, folder, int(seed), opts, keep, wet, bridges, airports, airport_builds)
+        if not base:  # our own terrain is cut and filled to the roads (a scanned landscape never is)
+            ter = cg.grade_to_roads(ter, actors)
         before = data.get(f"net.{nid}")
         saved = save_network(nid, name, "", "live")
         if not saved.get("ok"):

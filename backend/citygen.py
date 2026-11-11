@@ -361,6 +361,56 @@ def graded(ter: dict, pads: list):
     return at
 
 
+ROAD_BLEND_CM = 3000.0  # generated ground meets a road at its kerb and blends back to the hills over this
+STRUCTURES = {ROAD_MESH[k].split("/")[-1] for k in ("BR", "BRR", "ED", "ER")}  # bridges and viaducts stand free
+
+
+def grade_to_roads(ter: dict, actors: dict) -> dict:
+    """The generated terrain cut and filled to its roads (what the live splines do to a landscape in UEFN), so
+    the ground meets every street at its kerb instead of the street floating on a wall over a valley. Bridges,
+    viaducts, structures more than 20 m off the ground, docks, canals and water cells are left alone.
+    Only for terrain the world owns: a scanned UEFN landscape is never written."""
+    if not ter or not ter.get("heights"):
+        return ter
+    grid, (x0, y0), (x1, y1) = ter["grid"], ter["min"], ter["max"]
+    cw, ch = (x1 - x0) / grid, (y1 - y0) / grid
+    sea = ter.get("sea")
+    best: dict = {}  # (j, i) -> (weight, road z)
+    for label, a in actors.items():
+        if label.endswith(("Docks", "Canals")):
+            continue
+        by_i = {p["i"]: p for p in a["points"]}
+        for s in a["segments"]:
+            pa, pb = by_i.get(s["a"]), by_i.get(s["b"])
+            mesh = (s.get("mesh") or "").split("/")[-1]
+            if not pa or not pb or mesh in STRUCTURES:
+                continue
+            half = HALF.get(next((k for k, m in ROAD_MESH.items() if m.split("/")[-1] == mesh), ""), 800.0)
+            half = max(half, 0.75 * max(cw, ch))  # the cells the road crosses sit exactly at road height
+            reach = half + ROAD_BLEND_CM
+            L = math.hypot(pb["x"] - pa["x"], pb["y"] - pa["y"])
+            n = max(1, int(L / (min(cw, ch) / 2)))
+            for k in range(n + 1):
+                t = k / n
+                x, y, z = (pa[c] + (pb[c] - pa[c]) * t for c in ("x", "y", "z"))
+                g = st.sample_grid(ter, x, y)
+                if g is None or abs(z - g) > 2000:
+                    continue
+                for j in range(max(0, int((y - reach - y0) / ch)), min(grid, int((y + reach - y0) / ch) + 1)):
+                    for i in range(max(0, int((x - reach - x0) / cw)), min(grid, int((x + reach - x0) / cw) + 1)):
+                        d = math.hypot(x0 + (i + 0.5) * cw - x, y0 + (j + 0.5) * ch - y)
+                        w = 1 - _smoothstep(half, reach, d)
+                        if w > best.get((j, i), (0.0, 0.0))[0]:
+                            best[(j, i)] = (w, z)
+    rows = [list(r) for r in ter["heights"]]
+    for (j, i), (w, z) in best.items():
+        h = rows[j][i]
+        if sea is not None and h < sea:
+            continue  # the water stays water
+        rows[j][i] = round(h + (z - h) * w, 1)
+    return {**ter, "heights": rows}
+
+
 def heightmap_png(ter: dict, res: int = 1009, pads: list | None = None) -> tuple:
     """16-bit greyscale PNG of the terrain for Landscape > Import, plus the import settings
     (Z scale 100: 1 unit = 100/128 cm, so +-256 m fits). pads: lots levelled into it."""
@@ -1539,6 +1589,12 @@ def _demo() -> None:
         assert abs(z - z2) < 50, "flatten: a city sits on a flat plateau"
     actors = generate(cities, lambda x, y: st.sample_grid(ter, x, y) or 0.0, "/Game/X/WorldGen/Roads", seed=3)
     assert set(actors) == {f"{c['name']} Roads" for c in cities} | {"Highways"}
+    # natural ground graded to the roads: every street point sits on the ground, no road on a wall
+    gt = grade_to_roads(ter, actors)
+    off = [abs(p["z"] - st.sample_grid(gt, p["x"], p["y"])) for c in cities for p in actors[f"{c['name']} Roads"]["points"]
+           if abs(p["z"] - st.sample_grid(ter, p["x"], p["y"])) < 2000]
+    before = [abs(p["z"] - st.sample_grid(ter, p["x"], p["y"])) for c in cities for p in actors[f"{c['name']} Roads"]["points"]]
+    assert sorted(off)[int(len(off) * 0.95)] < 150, ("graded ground meets the streets", max(off), max(before))
     for label, a in actors.items():
         bad = st.problems(a["points"], a["segments"])
         assert not any(bad.values()), (label, {k: len(v) for k, v in bad.items()})
