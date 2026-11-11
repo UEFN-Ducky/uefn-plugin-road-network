@@ -140,9 +140,13 @@ meshes are crossings, not discs: each arm out to its mouth with curved kerb retu
 (`_junction_geometry`); the panel draws them the same way.
 
 ## The panel
-Header: the world dropdown, New world, Push roads, Push city. Left sidebar (drag its edge to resize): sections
-(World, Terrain, Roads, Cities, Layers, Edit roads, Push to UEFN), the layers (click one to open it, drag to
-change the order they are placed in), road actors, Pull from UEFN, and the version at the foot. Bottom of the
+City Builder is the BLUEPRINT; an AI builds it in UEFN with UEFN's own systems (landscape splines for roads,
+paths and access; PCG tiles for the city). The panel has no push buttons: the header's "Build in UEFN with AI"
+sends the world to a chat (`road_network_send_note`, kind 'build') with the job: `road_network_import_all` then
+`road_network_pcg_build` (both with confirm=true, only what changed), `road_network_memory` after each step.
+Header: the world dropdown, New world, Build in UEFN with AI. Left sidebar (drag its edge to resize): sections
+(World, Terrain, Roads, Cities, Layers, Edit roads), the layers numbered in the order they are placed (click
+one to open it, drag to reorder), road actors, Pull from UEFN, and the version at the foot. Bottom of the
 map: Select, Pin (click a spot) and Area (draw round an area), then a note box with "Send to" (a recent chat
 or a new one): `road_network_send_note` sends the AI the spot / outline, the city and district, what is already
 placed inside, and how to act (save a PCG layer with `"area": [[x, y], ...]` - a layer with an area places only

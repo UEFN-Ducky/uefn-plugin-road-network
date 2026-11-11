@@ -1619,6 +1619,27 @@ def register(api) -> None:
                      "tiles that changed. Follow road_network_generate_options().rules.")
         return "\n".join(lines)
 
+    def build_text(nid: str, text: str) -> str:
+        """The job an AI gets to build the blueprint in UEFN, with UEFN's own systems, only what changed."""
+        doc = data.get(f"net.{nid}") or {}
+        actors = sorted((h_.get("label") or a) for a, h_ in actor_docs(nid).items())
+        lines = [f"Build City Builder world '{doc.get('name') or nid}' (net_id '{nid}') in the open UEFN level. City Builder "
+                 f"is the blueprint; build it with UEFN's own systems, only what changed since the last build."]
+        if str(text or "").strip():
+            lines.append(f"The person adds: {text.strip()}")
+        lines += [
+            "Read skill road-network first (SKILL.md: pipeline, rules, memory-safe calls).",
+            f"1. Roads, paths and private access are landscape splines: road_network_import_all(net_id='{nid}') lists the "
+            f"actors that changed ({', '.join(actors)}); call it again with confirm=true (junction meshes 8 per call, "
+            f"then a paste per actor). Keep the person's hands off UEFN while it pastes.",
+            f"2. The city is PCG: road_network_pcg_build(net_id='{nid}') says how many 400 m tiles changed; call it with "
+            f"confirm=true (one graph + volume per tile, Generate On Demand).",
+            "3. After each step read road_network_memory: if a call grew UEFN 6+ GB or the guard tripped, stop and "
+            "report it instead of pushing on. Never restart or close UEFN without asking.",
+            "4. Never touch the cinema (keep zones) or write the existing terrain. Report what was built and what was "
+            "left unchanged."]
+        return "\n".join(lines)
+
     def send_note(net_id: str = "", chat_id: str = "", text: str = "", kind: str = "pin", points: str = "") -> dict:
         nid = slug(net_id)
         if not data.get(f"net.{nid}"):
@@ -1627,9 +1648,12 @@ def register(api) -> None:
             pts = [[float(p[0]), float(p[1])] for p in (json.loads(points) if isinstance(points, str) else points or [])]
         except (ValueError, TypeError, IndexError):
             return {"ok": False, "error": "The marked points could not be read."}
-        if not pts or not str(text or "").strip():
+        if kind == "build":
+            message = build_text(nid, text)
+        elif not pts or not str(text or "").strip():
             return {"ok": False, "error": "Mark a spot or an area and write what should happen there."}
-        message = note_text(nid, text, "area" if kind == "area" and len(pts) >= 3 else "pin", pts)
+        else:
+            message = note_text(nid, text, "area" if kind == "area" and len(pts) >= 3 else "pin", pts)
         conv = chat_id
         if not conv or conv == "new":
             made = api.call_tool("ducky_create_chat", {"title": f"City Builder: {str(text).strip()[:40]}"}) or {}
@@ -1658,7 +1682,8 @@ def register(api) -> None:
     def road_network_send_note(net_id: str = "", chat_id: str = "", text: str = "", kind: str = "pin", points: str = "") -> dict:
         """Send a note about a spot (kind 'pin', one [x, y]) or an area (kind 'area', an outline [[x, y], ...], cm)
         of a world to a Ducky chat (chat_id, or 'new'), with where it is, what is already there and how to act
-        on it with City Builder (an area-limited PCG layer). The panel's map comment tool calls this."""
+        on it with City Builder (an area-limited PCG layer); or kind 'build' (no points): ask that chat to build
+        the world in UEFN (landscape splines + PCG tiles, only what changed). The panel's tools call this."""
         return safe(send_note)(net_id, chat_id, text, kind, points)
     api.register_panel_rpc("import_all", lambda net_id="", confirm=False, force=False: safe(import_all)(net_id, confirm, force))
 

@@ -787,7 +787,8 @@ function select(aslug, p) {
 
 // ------------------------------------------------------------------ sections (the left sidebar's nav)
 const TABS = [["world", "World", "world"], ["terrain", "Terrain", "terrain"], ["roads", "Roads", "road"],
-  ["cities", "Cities", "city"], ["pcg", "Layers", "layers"], ["edit", "Edit roads", "edit"], ["uefn", "Push to UEFN", "upload"]];
+  ["cities", "Cities", "city"], ["pcg", "Layers", "layers"], ["edit", "Edit roads", "edit"]];
+// (UEFN is built by an AI from this blueprint - the header's Build in UEFN - so there is no push section)
 const GEN_TABS = new Set(["world", "terrain", "roads"]);
 function renderTabs() {
   $("nav").replaceChildren(...TABS.map(([id, label, ic]) => {
@@ -808,6 +809,7 @@ function renderTabs() {
 }
 function openTab(id) {
   state.tab = id;
+  $("pane-uefn")?.classList.remove("is-open");
   for (const [t] of TABS) {
     $(`pane-${t}`).classList.toggle("is-open", t === id);
     const b = $(`tab-${t}`);
@@ -1563,9 +1565,10 @@ function drawRemoteSel() {
 function renderHeader() {
   $("brand").replaceChildren(icon("city", 18), h("span", {}, "City Builder"));
   $("headActions").replaceChildren(button("New world", "plus", newWorld, "secondary", "Set up a new world in the World section"));
+  // City Builder is the blueprint: an AI builds it in UEFN with UEFN's own systems (landscape splines, PCG)
   $("headPush").replaceChildren(
-    button("Push roads", "push", onImportAll, "secondary", "Paste the roads, paths and private access that changed into UEFN"),
-    button("Push city", "upload", onPcgPlace, "primary", "Build the changed 400 m tiles of the city in UEFN"));
+    button("Build in UEFN with AI", "chat", () => openNote("build"), "primary",
+      "Send this world to an AI chat that builds what changed in UEFN: roads as landscape splines, the city as PCG"));
 }
 let worldDrop = null;
 function renderWorldPick() {
@@ -1608,12 +1611,15 @@ function renderLayerList() {
     return;
   }
   let dragId = "";
-  host.replaceChildren(...layers.map((l) => {
+  const hint = h("div", { class: "rn-order-hint" }, "Placed top to bottom: drag to reorder");
+  host.replaceChildren(hint, ...layers.map((l, i) => {
     const row = h("button", { type: "button", class: `dk-nav-item rn-layer${l.enabled ? "" : " is-off"}`, draggable: "true",
       "data-layer": l.id, "aria-current": state.pcgOpen === l.id && state.tab === "pcg" ? "page" : null,
-      title: `${l.name}: drag to change the order layers are placed in` },
+      title: `${i + 1}. ${l.name}: placed after the layers above it; drag to change the order` },
+      h("span", { class: "rn-num" }, `${i + 1}`),
       h("span", { class: "rn-dot", style: `background: ${swatch(ROLE_COLOR[l.role] || "fg-dim")}` }),
-      h("span", {}, l.name), h("span", { class: "rn-count", "data-pcg-count": l.name }, ""));
+      h("span", {}, l.name), h("span", { class: "rn-count", "data-pcg-count": l.name }, ""), icon("grip", 14));
+    row.lastChild.classList.add("rn-grab");
     row.addEventListener("click", () => {
       state.pcgOpen = l.id;
       openTab("pcg");
@@ -1744,36 +1750,42 @@ function clearNote() {
   drawMarks();
   $("note").hidden = true;
 }
-async function openNote() {
+async function openNote(mode) {
   if (!state.net) { clearNote(); return showError("Open a world first."); }
+  if (mode === "build") { note.kind = "build"; note.points = []; drawMarks(); }
   const box = $("note");
-  const where = note.kind === "pin"
+  const where = note.kind === "build" ? `Build ${currentNet()?.name || "this world"} in UEFN`
+    : note.kind === "pin"
     ? `A spot at x ${note.points[0][0]}, y ${note.points[0][1]}`
     : `An area of about ${Math.round(Math.abs(note.points.reduce((s, p, i) => {
         const q = note.points[(i + 1) % note.points.length]; return s + p[0] * q[1] - q[0] * p[1]; }, 0)) / 2 / 1e4).toLocaleString()} m²`;
   const text = h("textarea", { placeholder: note.kind === "pin" ? "What should go here? A school, a park, a bus stop…"
+    : note.kind === "build" ? "Anything to add for the AI (optional)"
     : "What should happen in this area? More houses, a shopping street, a dense forest…", "aria-label": "Note for the AI" });
-  if (!note.chats) {
-    const got = await rpc("chats");
-    note.chats = got.ok === false ? [] : got.chats || [];
-  }
-  const opts = [{ value: "new", label: "New chat" }, ...note.chats.map((c) => ({ value: c.id, label: c.title }))];
-  let target = note.target && opts.some((o) => o.value === note.target) ? note.target : "new";
-  const pickChat = window.DuckyKit?.dropdown
-    ? window.DuckyKit.dropdown({ label: "Send to", options: opts, value: target, onChange: (v) => { target = v; note.target = v; } }).el
-    : h("span", { class: "dk-muted" }, "Sends to a new chat");
-  const send = button("Send to AI", "send", async () => {
-    if (!text.value.trim()) return text.focus();
+  // the box opens at once: the chat list fills in when it arrives (it can take a moment), never blocking
+  const opts = () => [{ value: "new", label: "New chat" }, ...(note.chats || []).map((c) => ({ value: c.id, label: c.title }))];
+  let target = note.target || "new";
+  const drop = window.DuckyKit?.dropdown
+    ? window.DuckyKit.dropdown({ label: "Send to", options: opts(), value: target, onChange: (v) => { target = v; note.target = v; } })
+    : null;
+  const pickChat = drop ? drop.el : h("span", { class: "dk-muted" }, "Sends to a new chat");
+  if (!note.chats) loadChats().then(() => { drop?.setOptions?.(opts()); drop?.set?.(target); });
+  const send = button(note.kind === "build" ? "Ask AI to build" : "Send to AI", "send", async () => {
+    if (!text.value.trim() && note.kind !== "build") return text.focus();
     busy("Sending to the AI…");
     const out = await rpc("send_note", { net_id: state.net, chat_id: target, text: text.value, kind: note.kind,
       points: JSON.stringify(note.points.map((p) => [p[0], p[1]])) });
     busy("");
     if (out.ok === false) return showError(out.error);
     showError("");
+    const wasBuild = note.kind === "build";
     note.target = out.chat;
     note.chats = null;  // a new chat shows up next time
+    loadChats();
     clearNote();
-    alert("Sent", "The AI has the spot, what is there now, and your note. Its changes show up here when it saves layers.");
+    alert("Sent", wasBuild
+      ? "The AI has the build job: roads as landscape splines, the city as PCG tiles, only what changed."
+      : "The AI has the spot, what is there now, and your note. Its changes show up here when it saves layers.");
   }, "primary");
   const cancel = button("Cancel", "x", clearNote, "ghost");
   box.replaceChildren(h("div", { class: "rn-note__where" }, where), text, h("div", { class: "rn-note__row" }, pickChat, cancel, send));
@@ -1783,6 +1795,11 @@ async function openNote() {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !$("note").hidden) clearNote();
 });
+let chatsLoading = null;
+function loadChats() {  // fetched once in the background (on start), refreshed after a send
+  chatsLoading ||= rpc("chats").then((got) => { note.chats = got.ok === false ? [] : got.chats || []; chatsLoading = null; });
+  return chatsLoading;
+}
 
 // ------------------------------------------------------------------ start
 (async () => {
@@ -1803,6 +1820,7 @@ document.addEventListener("keydown", (e) => {
   renderTools();
   initGrip();
   showVersion();
+  setTimeout(loadChats, 1500);  // the Send to list is ready before anyone draws
   buildPanes();
   openTab(state.tab);
   resize();
