@@ -34,14 +34,28 @@
     .rn-layer.is-off { color: var(--muted); }
 
     /* ---------- bottom tool bar: point, draw, tell an AI */
+    /* the map tool bar: the Workflows canvas bar (icon buttons, a zoom readout), same variables */
     .rn-tools { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 4; display: flex; align-items: center; gap: 2px;
-                padding: 4px; border-radius: 999px; background: var(--bg-panel); border: 1px solid var(--border); box-shadow: var(--shadow-md); }
-    .rn-tool { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; color: var(--fg-dim); font: inherit; font-size: 12px;
-               padding: 6px 12px; border-radius: 999px; cursor: pointer; transition: background-color 140ms ease, color 140ms ease; }
+                padding: 4px; border-radius: 10px; background: var(--wf-panel); backdrop-filter: blur(var(--wf-panel-blur));
+                -webkit-backdrop-filter: blur(var(--wf-panel-blur)); border: 1px solid var(--border); box-shadow: var(--shadow-md); }
+    .rn-tool { position: relative; display: inline-grid; place-items: center; width: 32px; height: 32px; border: 0; background: transparent;
+               color: var(--fg-dim); border-radius: 8px; cursor: pointer; transition: background-color 120ms ease, color 120ms ease; }
     .rn-tool:hover { color: var(--fg); background: var(--bg-hover); }
-    .rn-tool[aria-pressed="true"] { color: var(--fg-inverse); background: var(--accent); }
-    .rn-tool:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
-    .rn-tools .rn-sep { width: 1px; align-self: stretch; background: var(--border); margin: 4px 4px; }
+    .rn-tool[aria-pressed="true"] { color: var(--fg); background: var(--btn-pressed); box-shadow: inset 0 0 0 1px var(--border-light); }
+    .rn-tool:focus-visible, .rn-zoom:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+    .rn-tools .rn-sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
+    .rn-zoom { min-width: 44px; height: 32px; border: 0; background: transparent; color: var(--fg-dim); font: inherit; font-size: 12px;
+               font-variant-numeric: tabular-nums; border-radius: 8px; cursor: pointer; padding: 0 6px; }
+    .rn-zoom:hover { color: var(--fg); background: var(--bg-hover); }
+    #view.is-hand canvas { cursor: grab; }
+    #view.is-hand canvas:active { cursor: grabbing; }
+    .rn-help { position: absolute; left: 50%; bottom: 64px; transform: translateX(-50%); z-index: 5; width: 280px; padding: 10px 12px;
+               background: var(--wf-panel); backdrop-filter: blur(var(--wf-panel-blur)); -webkit-backdrop-filter: blur(var(--wf-panel-blur));
+               border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow-lg); font-size: 12px; animation: rn-pop 160ms ease; }
+    .rn-help[hidden] { display: none; }
+    .rn-help__title { font-weight: 600; color: var(--fg); margin-bottom: 6px; }
+    .rn-help__row { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; color: var(--fg-dim); }
+    .rn-help__keys { color: var(--fg); font-family: var(--font-mono); font-size: 11px; }
     .rn-note { position: absolute; left: 50%; bottom: 68px; transform: translateX(-50%); z-index: 4; width: min(420px, calc(100% - 32px));
                background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-lg); padding: 12px;
                display: flex; flex-direction: column; gap: 8px; }
@@ -52,6 +66,7 @@
     .rn-note__row { display: flex; gap: 8px; align-items: center; }
     .rn-note__row > :first-child { flex: 1; min-width: 0; }
     .rn-note__where { font-size: 12px; color: var(--fg-dim); }
+    .rn-brief { background: var(--input-bg); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; }
     #view.is-drawing canvas { cursor: crosshair; }
     .dk-main.rn-main { position: relative; min-width: 0; padding: 0; overflow: hidden; }
     #view { position: absolute; inset: 0; }

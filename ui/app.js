@@ -219,23 +219,30 @@ function placeCamera() {
 let liveReady = false;  // set once the page has started (the live helpers below exist then)
 let drag = null;
 renderer.domElement.addEventListener("contextmenu", (e) => e.preventDefault());
+// Pointer tool (like the Workflows canvas): press on a city and drag it to move it; drag empty ground to orbit.
+// Hand tool: drag to pan. Always: right drag orbits, Shift / middle drag pans, the wheel zooms.
 renderer.domElement.addEventListener("pointerdown", (e) => {
-  drag = { x: e.clientX, y: e.clientY, button: e.button, moved: false };
+  drag = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, button: e.button, moved: false };
   renderer.domElement.setPointerCapture(e.pointerId);
   if (e.button === 0 && state.tool === "area") { drag.drawing = true; note.points = []; addAreaPoint(e); }
-  if (e.button === 0 && state.tool === "move") startCityMove(e);
+  if (e.button === 0 && state.tool === "select" && !e.shiftKey) {
+    const hit = cityUnder(e);  // a city to move once the pointer really moves (a plain click selects it)
+    if (hit) { drag.cityCand = hit; renderer.domElement.style.cursor = "grab"; }
+  }
 });
 renderer.domElement.addEventListener("pointermove", (e) => {
-  if (!drag) return;
+  if (!drag) { hoverCursor(e); return; }
   const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-  if (Math.abs(dx) + Math.abs(dy) > 2) drag.moved = true;
+  if (Math.abs(e.clientX - drag.x0) + Math.abs(e.clientY - drag.y0) > 5) drag.moved = true;
+  if (drag.cityCand && drag.moved && !drag.city) startCityDrag(drag.cityCand);
   if (drag.city) { dragCity(e); return; }  // moving a city: it follows the pointer, the camera stays
   if (drag.drawing) {  // drawing an area: a point every few pixels, no orbit
     if (Math.abs(dx) + Math.abs(dy) > 6) { drag.x = e.clientX; drag.y = e.clientY; addAreaPoint(e); }
     return;
   }
   drag.x = e.clientX; drag.y = e.clientY;
-  if (drag.button === 2 || e.shiftKey) {
+  const pan = drag.button === 1 || e.shiftKey || (drag.button === 0 && state.tool === "hand");
+  if (pan) {
     const s = orbit.dist / 900;
     const right = new THREE.Vector3().subVectors(camera.position, orbit.target).cross(camera.up).normalize();
     const fwd = new THREE.Vector3(Math.sin(orbit.az), 0, Math.cos(orbit.az));
@@ -245,12 +252,16 @@ renderer.domElement.addEventListener("pointermove", (e) => {
     orbit.el = Math.max(0.05, Math.min(1.55, orbit.el + dy * 0.005));
   }
   placeCamera();
+  renderZoom();
 });
 renderer.domElement.addEventListener("pointerup", (e) => {
+  renderer.domElement.style.cursor = "";
   if (drag?.drawing) { drag = null; finishArea(); return; }
-  if (drag?.city) { const d = drag; drag = null; dropCity(d); return; }
+  if (drag?.city) { const d = drag; drag = null; dropCity(d.city); return; }
   if (drag && !drag.moved && drag.button === 0) {
-    if (state.tool === "pin") placePin(e); else if (state.tool === "addcity") addCityAt(e); else pick(e);
+    if (state.tool === "pin") placePin(e);
+    else if (state.tool === "addcity") addCityAt(e);
+    else if (state.tool === "select" && !pick(e) && drag.cityCand) selectCity(drag.cityCand.id);
   }
   drag = null;
 });
@@ -258,8 +269,8 @@ renderer.domElement.addEventListener("wheel", (e) => {
   e.preventDefault();
   orbit.dist = Math.max(30, Math.min(150000, orbit.dist * (e.deltaY > 0 ? 1.15 : 0.87)));
   placeCamera();
+  renderZoom();
 }, { passive: false });
-
 let needsDraw = true;
 let visible = true;
 function resize() {
@@ -827,9 +838,8 @@ function sampleZ(t, x, y) {
 function frame(box) {
   box = box || state.box;
   if (!box || box.isEmpty()) return;
-  box.getCenter(orbit.target);
-  orbit.dist = box.getSize(new THREE.Vector3()).length() * 0.75;
-  placeCamera();
+  flyTo(box.getCenter(new THREE.Vector3()), box.getSize(new THREE.Vector3()).length() * 0.75, state.framed ? 450 : 1);
+  setTimeout(renderZoom, 500);
 }
 // city name tags that follow the camera
 function placeLabels() {
@@ -840,7 +850,8 @@ function placeLabels() {
   }
   const w = view.clientWidth, hh = view.clientHeight, t = state.geo.terrain || {};
   state.cities.forEach((c, k) => {
-    const v = toV(c.x, c.y, (sampleZ(t, c.x, c.y) ?? 0) + 4000).project(camera);
+    const [cx, cy] = c.dragTo || [c.x, c.y];  // a city being dragged: its tag goes with it
+    const v = toV(cx, cy, (sampleZ(t, cx, cy) ?? 0) + 4000).project(camera);
     const el = host.children[k];
     if (!el) return;
     el.style.display = v.z > 1 ? "none" : "";
@@ -857,11 +868,12 @@ function pick(e) {
   ray.setFromCamera(m, camera);
   ray.params.Points.threshold = orbit.dist / 400;
   const hits = ray.intersectObjects([...groups.points.children, ...groups.pieces.children], false);
-  if (!hits.length) return;
+  if (!hits.length) return false;
   const hit = hits[0];
   if (hit.object.isPoints) select(hit.object.userData.actor, hit.object.userData.pts[hit.index]);
   else select(hit.object.userData.actor, hit.object.userData.point);
   openTab("edit");
+  return true;
 }
 function select(aslug, p) {
   state.sel = { actor: aslug, p };
@@ -1929,30 +1941,66 @@ async function showVersion() {
 
 // ------------------------------------------------------------------ map tools: point or draw, tell an AI
 const note = { kind: "", points: [], chats: null };
+// the map tool bar: the same bar as the Workflows canvas (icon buttons, tool tips, a zoom readout)
 function renderTools() {
-  const tool = (id, label, ic, hint) => {
-    const b = h("button", { type: "button", class: "rn-tool", "aria-pressed": state.tool === id ? "true" : "false", title: hint },
-      icon(ic, 16), h("span", {}, label));
-    b.addEventListener("click", () => setTool(id));
+  const tool = (id, ic, hint, key) => {
+    const b = h("button", { type: "button", class: "rn-tool", "aria-pressed": state.tool === id ? "true" : "false",
+      title: key ? `${hint} (${key})` : hint, "aria-label": hint }, icon(ic, 16));
+    b.addEventListener("click", () => setTool(state.tool === id && id !== "select" ? "select" : id));
     return b;
   };
-  const act = (label, ic, fn, hint) => {
-    const b = h("button", { type: "button", class: "rn-tool", title: hint }, icon(ic, 16), h("span", {}, label));
+  const act = (ic, fn, hint, key) => {
+    const b = h("button", { type: "button", class: "rn-tool", title: key ? `${hint} (${key})` : hint, "aria-label": hint }, icon(ic, 16));
     b.addEventListener("click", fn);
     return b;
   };
+  const zoom = h("button", { type: "button", class: "rn-zoom", id: "zoomPct", title: "Zoom: click to fit the whole world (F)",
+    "aria-label": "Zoom, fit the world" }, "100%");
+  zoom.addEventListener("click", () => frame());
+  const hasNote = note.points.length > 0;
   $("tools").replaceChildren(
-    tool("select", "Select", "pointer", "Click roads and junctions to edit them"),
-    tool("pin", "Pin", "pin", "Click a spot, then tell an AI what to do there"),
-    tool("area", "Area", "pen", "Draw round an area, then tell an AI what to do there"),
-    tool("move", "Move city", "move", "Drag a city to a new place: its roads, freeways, airport, waterfront and buildings are rebuilt there"),
+    tool("select", "pointer", "Pointer: click to select, drag a city to move it", "V"),
+    tool("hand", "hand", "Hand: drag to pan the view", "H"),
     h("span", { class: "rn-sep" }),
-    act("Frame", "frame", () => frame(), "Show the whole world"),
-    act("Clear", "x", clearNote, "Remove the pin or area"));
+    tool("pin", "pin", "Pin a spot, then tell an AI what to do there", "P"),
+    tool("area", "pen", "Draw round an area, then tell an AI what to do there", "A"),
+    ...(currentNet()?.generated ? [tool("addcity", "plus", "Add a city: click where it goes", "C")] : []),
+    ...(hasNote ? [act("x", clearNote, "Remove the pin or area")] : []),
+    h("span", { class: "rn-sep" }),
+    act("frame", () => frame(), "Fit the whole world", "F"),
+    zoom,
+    act("top", () => topView(), "Top view", "T"),
+    act("help", toggleHelp, "Controls", "?"));
+  renderZoom();
+}
+// zoom readout: 100 % is the whole world in view
+function renderZoom() {
+  const el = $("zoomPct");
+  if (!el || !state.box || state.box.isEmpty()) return;
+  const fit = state.box.getSize(new THREE.Vector3()).length() * 0.75;
+  el.textContent = `${Math.round((fit / orbit.dist) * 100)}%`;
+}
+function topView() {
+  orbit.el = 1.55;
+  placeCamera();
+  renderZoom();
+}
+function toggleHelp() {
+  const pop = $("toolHelp");
+  if (pop && !pop.hidden) { pop.hidden = true; return; }
+  const row = (keys, what) => h("div", { class: "rn-help__row" }, h("span", { class: "rn-help__keys" }, keys), h("span", {}, what));
+  const box = pop || h("div", { class: "rn-help", id: "toolHelp", role: "dialog", "aria-label": "Map controls" });
+  box.replaceChildren(h("div", { class: "rn-help__title" }, "Map controls"),
+    row("Drag a city", "Move it (Pointer)"), row("Click a city", "Select it"), row("Left drag", "Orbit (Pointer) / pan (Hand)"),
+    row("Right drag", "Orbit"), row("Shift / middle drag", "Pan"), row("Wheel", "Zoom"),
+    row("V H P A C", "Pointer, Hand, Pin, Area, Add city"), row("F / T", "Fit / top view"), row("Esc", "Back to Pointer"));
+  box.hidden = false;
+  if (!pop) $("view").parentElement.append(box);
 }
 function setTool(id) {
   state.tool = id;
-  $("view").classList.toggle("is-drawing", id !== "select");
+  $("view").classList.toggle("is-drawing", id === "pin" || id === "area" || id === "addcity");
+  $("view").classList.toggle("is-hand", id === "hand");
   renderTools();
   const banner = $("banner");
   if (id === "addcity") {  // placing a new city: click the map, or let City Builder find room
@@ -1960,13 +2008,19 @@ function setTool(id) {
       h("button", { type: "button", class: "rn-mini", onclick: () => addCityAt(null) }, "Find a free spot"),
       h("button", { type: "button", class: "rn-mini", onclick: () => setTool("select"), "aria-label": "Cancel" }, icon("x", 12)));
     banner.hidden = false;
-  } else if (id === "move") {
-    banner.replaceChildren(h("span", {}, "Press inside a city and drag it"),
-      h("button", { type: "button", class: "rn-mini", onclick: () => setTool("select"), "aria-label": "Done" }, icon("x", 12)));
-    banner.hidden = false;
   } else banner.hidden = true;
 }
-window.addEventListener("keydown", (e) => { if (e.key === "Escape" && state.tool !== "select") setTool("select"); });
+window.addEventListener("keydown", (e) => {
+  if (e.target.closest?.("input, textarea, [contenteditable]")) return;  // typing, not shortcuts
+  if (e.key === "Escape") { if (state.tool !== "select") setTool("select"); $("toolHelp")?.setAttribute("hidden", ""); return; }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const k = e.key.toLowerCase();
+  const tools = { v: "select", h: "hand", p: "pin", a: "area", c: "addcity" };
+  if (tools[k] && (k !== "c" || currentNet()?.generated)) setTool(tools[k]);
+  else if (k === "f") frame();
+  else if (k === "t") topView();
+  else if (k === "?") toggleHelp();
+});
 
 // ------------------------------------------------------------------ left: the world's cities (outliner)
 const fmtK = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n || 0));
@@ -2063,6 +2117,7 @@ function finishArea() {
   if (note.points.length < 3) { clearNote(); return; }
   note.kind = "area";
   drawMarks();
+  renderTools();
   openNote();
 }
 function placePin(e) {
@@ -2071,18 +2126,26 @@ function placePin(e) {
   note.kind = "pin";
   note.points = [toUE(v)];
   drawMarks();
+  renderTools();
   openNote();
 }
-// Move city: press on a city, drag it, let go; the world is generated again with the city at its new place
-function startCityMove(e) {
+// Drag a city (Pointer tool): press on it, drag, let go; the world is generated again with it at its new place
+function cityUnder(e) {
   const v = groundAt(e);
-  if (!v || !state.cities.length) return;
+  if (!v || !state.cities.length) return null;
   const [x, y] = toUE(v);
-  const c = state.cities.map((k) => [k, Math.hypot(k.x - x, k.y - y)]).filter(([k, d]) => d < k.radius)
-    .sort((a, b) => a[1] - b[1])[0]?.[0];
-  if (!c) return showError("Press inside a city's ring to move it.");
-  showError("");
+  return state.cities.map((k) => [k, Math.hypot(k.x - x, k.y - y)]).filter(([k, d]) => d < k.radius)
+    .sort((a, b) => a[1] - b[1])[0]?.[0] || null;
+}
+function startCityDrag(c) {
+  const v = groundAt({ clientX: drag.x0, clientY: drag.y0 });
+  if (!v) return;
+  const [x, y] = toUE(v);
   drag.city = { c, dx: c.x - x, dy: c.y - y, to: [c.x, c.y] };
+  renderer.domElement.style.cursor = "grabbing";
+  state.cityPick = c.id;
+  renderCityList();
+  busy(`Moving ${c.name}`, { text: "Let go where it should be: its roads, freeways, airport and buildings are rebuilt there" });
   drawCityGhost(drag.city);
 }
 function dragCity(e) {
@@ -2090,24 +2153,42 @@ function dragCity(e) {
   if (!v) return;
   const [x, y] = toUE(v);
   drag.city.to = [x + drag.city.dx, y + drag.city.dy];
+  drag.city.c.dragTo = drag.city.to;  // its name tag follows
   drawCityGhost(drag.city);
 }
 function drawCityGhost(m) {
   clear(marks);
-  const pts = [];
-  for (let k = 0; k <= 64; k++) {
-    const a = (k / 64) * Math.PI * 2;
-    pts.push(toV(m.to[0] + Math.cos(a) * m.c.radius, m.to[1] + Math.sin(a) * m.c.radius, 300));
+  clear(cityMark);
+  const t = state.geo?.terrain || {};
+  const ring = [], fan = [];
+  for (let k = 0; k <= 72; k++) {
+    const a = (k / 72) * Math.PI * 2;
+    const x = m.to[0] + Math.cos(a) * m.c.radius, y = m.to[1] + Math.sin(a) * m.c.radius;
+    ring.push(toV(x, y, (sampleZ(t, x, y) ?? 0) + 600));
   }
-  marks.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
-    new THREE.LineBasicMaterial({ color: col("accent"), depthTest: false })));
+  const cz = (sampleZ(t, m.to[0], m.to[1]) ?? 0) + 600;
+  for (let k = 0; k < 72; k++) fan.push(toV(m.to[0], m.to[1], cz), ring[k], ring[k + 1]);
+  const accent = col("accent");
+  marks.add(new THREE.Mesh(new THREE.BufferGeometry().setFromPoints(fan),
+    new THREE.MeshBasicMaterial({ color: accent, transparent: true, opacity: 0.18, depthTest: false, side: THREE.DoubleSide })));
+  marks.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(ring),
+    new THREE.LineBasicMaterial({ color: accent, depthTest: false })));
   needsDraw = true;
 }
 async function dropCity(m) {
   clear(marks);
+  delete m.c.dragTo;
   needsDraw = true;
-  if (Math.hypot(m.to[0] - m.c.x, m.to[1] - m.c.y) < 1000) return;  // a click, not a move
+  busy("");
+  if (Math.hypot(m.to[0] - m.c.x, m.to[1] - m.c.y) < 1000) { drawCityMark(); return; }  // barely moved: nothing to do
   await saveCity(m.c, { x: Math.round(m.to[0]), y: Math.round(m.to[1]) });
+}
+function hoverCursor(e) {  // the Pointer tool shows a grab hand over a city
+  if (state.tool !== "select" || !state.cities.length) return;
+  const now = performance.now();
+  if (now - (hoverCursor.t || 0) < 60) return;  // raycasts at most ~16 times a second
+  hoverCursor.t = now;
+  renderer.domElement.style.cursor = cityUnder(e) ? "grab" : "";
 }
 function drawMarks() {
   clear(marks);
@@ -2131,6 +2212,7 @@ function clearNote() {
   note.kind = ""; note.points = [];
   drawMarks();
   $("note").hidden = true;
+  renderTools();
 }
 async function openNote(mode) {
   if (!state.net) { clearNote(); return showError("Open a world first."); }
@@ -2170,9 +2252,31 @@ async function openNote(mode) {
       : "The AI has the spot, what is there now, and your note. Its changes show up here when it saves layers.");
   }, "primary");
   const cancel = button("Cancel", "x", clearNote, "ghost");
-  box.replaceChildren(h("div", { class: "rn-note__where" }, where), text, h("div", { class: "rn-note__row" }, pickChat, cancel, send));
+  // a build: what will be built, what is waiting, and what the AI will ask before it starts
+  const brief = note.kind === "build" ? h("div", { class: "rn-brief" }, h("div", { class: "dk-loading" }, "Checking what this build needs…")) : null;
+  box.replaceChildren(h("div", { class: "rn-note__where" }, where), ...(brief ? [brief] : []), text,
+    h("div", { class: "rn-note__row" }, pickChat, cancel, send));
   box.hidden = false;
   text.focus();
+  if (brief) rpc("build_brief", { net_id: state.net }).then((b) => {
+    if (b.ok === false) return brief.replaceChildren(h("div", { class: "rn-hint" }, b.error));
+    const pend = b.pending || {};
+    const roads = (pend.roads_changed || []).length + (pend.roads_never_pushed || []).length;
+    const tiles = (pend.tiles?.build || 0) + (pend.tiles?.remove || 0);
+    const env = b.environment || {};
+    const okv = (v) => (v ? "Yes" : v === false ? "No" : "?");
+    brief.replaceChildren(
+      h("div", { class: "rn-kv" },
+        ...b.summary.flatMap((s, i) => i ? [h("span", {}, s.split(":")[0]), h("span", {}, s.split(":").slice(1).join(":").trim())] : []),
+        h("span", {}, "Roads to paste"), h("span", {}, String(roads)),
+        h("span", {}, "City tiles to build"), h("span", {}, String(tiles)),
+        h("span", {}, "Pieces needed"), h("span", {}, `${b.needs_total} meshes`),
+        h("span", {}, "UEFN open"), h("span", {}, okv(env.uefn_online)),
+        h("span", {}, "Blender"), h("span", {}, okv(env.blender))),
+      h("div", { class: "rn-hint", style: "margin-top: 6px" },
+        `The AI checks which pieces your project is missing, then asks you ${b.questions.length} things in one go `
+        + `(${b.questions.map((q) => q.id.replace(/_/g, " ")).join(", ")}) before it touches UEFN.`));
+  });
 }
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !$("note").hidden) clearNote();

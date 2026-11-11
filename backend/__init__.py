@@ -1103,23 +1103,32 @@ def register(api) -> None:
     def asset_set_of(nid: str) -> str:
         return (data.get(f"net.{nid}.assets") or {}).get("asset_set") or "own"
 
-    def pcg_assets(net_id: str = "", asset_set: str = "") -> dict:
-        """Which pieces a world's layers use: 'own' (the project's kit), 'fortnite' or 'mixed'. Empty = read it."""
+    def interiors_of(nid: str) -> bool:
+        return (data.get(f"net.{nid}.assets") or {}).get("interiors", True) is not False
+
+    def pcg_assets(net_id: str = "", asset_set: str = "", interiors: str = "") -> dict:
+        """Which pieces a world's layers use: 'own' (the project's kit), 'fortnite' or 'mixed', and whether
+        buildings get interiors ('yes' / 'no'). Empty = read them."""
         nid = slug(net_id)
         doc = data.get(f"net.{nid}") if nid else None
         if not doc:
             return {"ok": False, "error": f"No road network {net_id!r}."}
-        if asset_set:
-            if asset_set not in pl.ASSET_SETS:
-                return {"ok": False, "error": f"asset_set is one of {', '.join(pl.ASSET_SETS)}."}
+        if asset_set and asset_set not in pl.ASSET_SETS:
+            return {"ok": False, "error": f"asset_set is one of {', '.join(pl.ASSET_SETS)}."}
+        if interiors and str(interiors).lower() not in ("yes", "no", "true", "false"):
+            return {"ok": False, "error": "interiors is yes or no."}
+        if asset_set or interiors:
             before = data.get(f"net.{nid}.assets")
-            data.put(f"net.{nid}.assets", {"name": f"{doc.get('name', nid)} pieces", "asset_set": asset_set})
+            new = {"name": f"{doc.get('name', nid)} pieces", "asset_set": asset_set or asset_set_of(nid),
+                   "interiors": interiors_of(nid) if not interiors else str(interiors).lower() in ("yes", "true")}
+            data.put(f"net.{nid}.assets", new)
             record("road_network_pcg_assets", "pcg-assets", nid, before,
-                   [{"command": "road_network_pcg_assets", "params": {"net_id": nid,
-                                                                      "asset_set": (before or {}).get("asset_set", "own")}}])
+                   [{"command": "road_network_pcg_assets", "params": {
+                       "net_id": nid, "asset_set": (before or {}).get("asset_set", "own"),
+                       "interiors": "no" if (before or {}).get("interiors") is False else "yes"}}])
             push({"what": "pcg", "id": nid})
         cur = asset_set_of(nid)
-        return {"ok": True, "id": nid, "asset_set": cur,
+        return {"ok": True, "id": nid, "asset_set": cur, "interiors": interiors_of(nid),
                 "roles": {r: pl.asset_hint(r, cur) for r in pl.ROLES}}
 
     def world_actors(nid: str) -> list:
@@ -1392,7 +1401,7 @@ def register(api) -> None:
         if "/WorldGen/Roads" in folder:
             got = pcg_preview(nid)
             if got.get("ok"):
-                groups = kit_bake.bake(got.get("layers") or {}, folder.split("/WorldGen/Roads")[0])[0]
+                groups = kit_bake.bake(got.get("layers") or {}, folder.split("/WorldGen/Roads")[0], interiors_of(nid))[0]
                 build, remove, keep = kit_bake.tile_diff(kit_bake.tiles(groups), state.get("tiles") or {}, False)
                 tiles = {"build": len(build), "remove": len(remove), "same": len(keep)}
         pushed_any = same or changed or state.get("tiles")
@@ -1421,7 +1430,7 @@ def register(api) -> None:
         got = pcg_preview(nid)
         if not got.get("ok"):
             return got
-        groups, baked, missing = kit_bake.bake(got.get("layers") or {}, root)
+        groups, baked, missing = kit_bake.bake(got.get("layers") or {}, root, interiors_of(nid))
         name = doc.get("name") or nid
         tag = re.sub(r"[^A-Za-z0-9]", "", name)
         new = kit_bake.tiles(groups)
@@ -1999,6 +2008,142 @@ def register(api) -> None:
                      "tiles that changed. Follow road_network_generate_options().rules.")
         return "\n".join(lines)
 
+    STREET_KIT_PREFIXES = ("SM_Path_", "SM_Water_", "SM_Air_")  # road pieces City Builder makes itself
+
+    def build_brief(net_id: str = "", check: bool = False) -> dict:
+        """Everything a build of this world in UEFN needs, what is missing, and what to ask the person first."""
+        nid = slug(net_id)
+        doc = data.get(f"net.{nid}") if nid else None
+        if not doc:
+            return {"ok": False, "error": f"No road network {net_id!r}."}
+        root = kit_root() or "/<project>"
+        folder = road_folder() or f"{root}/WorldGen/Roads"
+        cities = list(city_docs(nid).values())
+        # 1. the pieces: every road mesh the splines use, every kit mesh the PCG layers and sites place
+        by_name = {v.rsplit("/", 1)[-1]: v for v in cg.ROAD_MESH.values()}
+        road_meshes: dict = {}
+        for aslug in actor_docs(nid):
+            _, _, segs = load_actor(nid, aslug)
+            for s in segs:
+                if s.get("mesh"):
+                    road_meshes[s["mesh"]] = road_meshes.get(s["mesh"], 0) + 1
+        needs = []
+        for name, n in sorted(road_meshes.items()):
+            sub = by_name.get(name, name)
+            needs.append({"mesh": name, "path": f"{folder}/{sub}.{name}", "uses": n, "for": "road splines",
+                          "source": "street_kit" if name.startswith(STREET_KIT_PREFIXES) else "road_kit"})
+        got = pcg_preview(nid)
+        layers = got.get("layers") or {} if got.get("ok") else {}
+        groups = kit_bake.bake(layers, root, interiors_of(nid))[0] if layers else {}
+        for path, rows in sorted(groups.items()):
+            name = path.rsplit(".", 1)[-1]
+            src = "street_kit" if "/Kit/Street/" in path else "building_kit" if "/BuildingKit/" in path else \
+                "fortnite" if path.startswith("/Game/Athena") or path.startswith("/Fortnite") else "world_kit"
+            needs.append({"mesh": name, "path": path, "uses": len(rows), "for": "PCG city", "source": src})
+        # 2. what the project already has (only with UEFN open)
+        uefn = {"checked": False}
+        if check:
+            try:
+                have = {}
+                paths = [n["path"] for n in needs]
+                for k in range(0, len(paths), 50):
+                    have.update(listener("road_network_assets_exist", {"paths": paths[k:k + 50]}, timeout=120).get("exist") or {})
+                for n in needs:
+                    n["in_project"] = bool(have.get(n["path"]))
+                uefn = {"checked": True, "online": True}
+            except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
+                uefn = {"checked": True, "online": False, "why": str(exc)[:200]}
+        missing = [n for n in needs if n.get("in_project") is False]
+        # 3. the tools around: UEFN, Epic's MCP, Blender, AI 3D models
+        env = {}
+        try:
+            stt = api.call_tool("ducky_get_status", {}) or {}
+            env.update(uefn_online=bool(stt.get("online")), epic_mcp=bool(stt.get("epic_mcp_online")),
+                       island=stt.get("uefn_project_name") or "")
+        except Exception:
+            env.update(uefn_online=None)
+        for key, pat in (("blender", "blender_"), ("ai_3d", "meshy"), ("ai_3d_tripo", "tripo")):
+            try:
+                found = api.call_tool("ducky_get_tools", {"pattern": pat, "limit": 1}) or {}
+                env[key] = bool(found.get("count") or found.get("matches"))
+            except Exception:
+                env[key] = None
+        sync = sync_status(nid) if not check or uefn.get("online") is not False else {}
+        asset_set = asset_set_of(nid)
+        counts = {name: l.get("count", 0) for name, l in layers.items()}
+        total = sum(counts.values())
+        street_missing = [n["mesh"] for n in missing if n["source"] == "street_kit"]
+        art_missing = [n["mesh"] for n in missing if n["source"] in ("road_kit", "world_kit", "building_kit")]
+        gen = doc.get("generated") or {}
+        # 4. the decisions only the person can make, ready for one ducky_ask_user
+        q = [{"id": "uefn", "prompt": f"Build '{doc.get('name')}' in the open UEFN island now?" if env.get("uefn_online")
+              else f"UEFN is closed. Build '{doc.get('name')}' into which island?",
+              "options": ([{"id": "now", "label": "Yes, build in the open island", "description": env.get("island") or ""}]
+                          if env.get("uefn_online") else
+                          [{"id": "open", "label": "Open my island and build", "description": "Ducky asks before launching UEFN"}]) +
+              [{"id": "later", "label": "Not now", "description": "Only check what is missing"}]},
+             {"id": "pieces", "prompt": "Which pieces should the city be built from?",
+              "options": [{"id": "own", "label": "City Builder's own kit", "description": "WorldGen kit, BuildingKit storeys, street kit"},
+                          {"id": "fortnite", "label": "Fortnite's own props and buildings", "description": "No modelling needed"},
+                          {"id": "mixed", "label": "Mixed", "description": "Own kit first, Fortnite for anything missing"}]},
+             {"id": "scope", "prompt": "What should be built?",
+              "options": [{"id": "changed", "label": "Only what changed", "description": "Roads and city tiles that differ from the last build"},
+                          {"id": "all", "label": "Everything again", "description": "Every road actor and every city tile"},
+                          {"id": "roads", "label": "Roads only", "description": "Splines, junctions, freeways, runways"},
+                          {"id": "city", "label": "City only", "description": "PCG buildings, props and trees"}]},
+             {"id": "detail", "prompt": f"The city places {total:,} pieces. How dense?",
+              "options": [{"id": "full", "label": "Full detail", "description": "Every tree, prop and building"},
+                          {"id": "lighter", "label": "Lighter", "description": "Half the trees, bushes and rocks: faster, less memory"},
+                          {"id": "buildings", "label": "Buildings and roads only", "description": "No foliage or street props"}]},
+             {"id": "interiors", "prompt": "Furnish building interiors (floors, stairs, furniture seen through windows)?",
+              "options": [{"id": "yes", "label": "Yes"}, {"id": "no", "label": "No, shells only"}]}]
+        if art_missing or street_missing:
+            opts = []
+            if street_missing:
+                opts.append({"id": "street_kit", "label": f"Make the {len(street_missing)} street pieces automatically",
+                             "description": "City Builder builds them in UEFN itself"})
+            if art_missing and env.get("blender"):
+                opts.append({"id": "blender", "label": f"Model the {len(art_missing)} missing kit pieces in Blender",
+                             "description": "From road_network_piece_manifest specs"})
+            if art_missing and (env.get("ai_3d") or env.get("ai_3d_tripo")):
+                opts.append({"id": "ai_3d", "label": "Generate the missing pieces with AI 3D", "description": "Billed per model"})
+            opts += [{"id": "fortnite", "label": "Use Fortnite pieces for what is missing"},
+                     {"id": "skip", "label": "Skip what is missing", "description": "Those layers stay empty"}]
+            q.insert(2, {"id": "missing", "prompt": f"{len(missing)} pieces are not in the project yet. How should they be made?",
+                         "options": opts, "allow_multiple": True})
+        if gen and not gen.get("ground_from"):
+            q.append({"id": "terrain", "prompt": "This world has its own generated terrain. Import it?",
+                      "options": [{"id": "new_landscape", "label": "Import the heightmap as a new landscape",
+                                   "description": "Your current landscape is never changed"},
+                                  {"id": "keep", "label": "Keep my current landscape", "description": "Roads still grade it"}]})
+        q.append({"id": "save", "prompt": "Save the level after each build step?",
+                  "options": [{"id": "yes", "label": "Yes, save after each step"}, {"id": "end", "label": "Only at the end"}]})
+        ready = [f"{len(cities)} cities, {len(actor_docs(nid))} road actors, {total:,} city pieces on {len(groups)} meshes"]
+        for c in cities:
+            p = (c.get("plan") or {}).get("population") or {}
+            extras = [x for x in ((c.get("airport") or {}).get("type"), ", ".join(y["type"] + " shipyard" for y in
+                      ((c.get("waterfront") or {}).get("shipyards") or []))) if x]
+            ready.append(f"{c['name']}: {p.get('total', 0):,} people" + (f", {', '.join(extras)}" if extras else ""))
+        return {"ok": True, "id": nid, "world": doc.get("name"), "asset_set": asset_set, "summary": ready,
+                "environment": env, "uefn_check": uefn, "pending": {k: sync.get(k) for k in ("summary", "roads_changed",
+                                                                                                "roads_never_pushed", "tiles")},
+                # compact: counts per source, the most-used 40 meshes, and with check=true every missing one
+                "needs_by_source": {s: sum(1 for n in needs if n["source"] == s) for s in {n["source"] for n in needs}},
+                "needs_top": [{k: n[k] for k in ("mesh", "uses", "for", "source")}
+                              for n in sorted(needs, key=lambda n: -n["uses"])[:40]],
+                "needs_total": len(needs),
+                "missing": {"street_kit": street_missing, "art": art_missing,
+                            "paths": [n["path"] for n in missing][:200],
+                            "unknown": None if uefn.get("online") else "call again with check=true while UEFN is open"},
+                "questions": q,
+                "how": ("Ask every question in ONE ducky_ask_user (pass `questions` as they are), then follow the "
+                        "answers: pieces -> road_network_pcg_assets; missing street pieces -> road_network_kit_materials "
+                        "(builds them); interiors -> road_network_pcg_assets(interiors='yes'|'no'); missing art -> "
+                        "road_network_piece_manifest specs in Blender or AI 3D, or Fortnite "
+                        "pieces; roads -> road_network_import_all; city -> road_network_pcg_build; lighter detail -> "
+                        "lower the foliage layers' density with road_network_pcg_layer_save; read road_network_memory "
+                        "after every step.")}
+
     def build_text(nid: str, text: str) -> str:
         """The job an AI gets to build the blueprint in UEFN, with UEFN's own systems, only what changed."""
         doc = data.get(f"net.{nid}") or {}
@@ -2009,6 +2154,11 @@ def register(api) -> None:
             lines.append(f"The person adds: {text.strip()}")
         lines += [
             "Read skill road-network first (SKILL.md: pipeline, rules, memory-safe calls).",
+            f"0. FIRST call road_network_build_brief(net_id='{nid}', check=true): what this world needs, what is missing "
+            f"from the project, what tools are around (UEFN, Epic MCP, Blender, AI 3D) and what is waiting to be built. "
+            f"Tell the person in a few lines, then ask its `questions` in ONE ducky_ask_user (as they are) and wait. "
+            f"Do no editor work before the answers; follow them (its `how` maps each answer to a tool). If UEFN is "
+            f"closed and they chose to open it, launch it with ducky_launch_uefn (it asks them) and wait for it.",
             f"1. Roads, paths and private access are landscape splines: road_network_import_all(net_id='{nid}') lists the "
             f"actors that changed ({', '.join(actors)}); call it again with confirm=true (junction meshes 8 per call, "
             f"then a paste per actor). Keep the person's hands off UEFN while it pastes.",
@@ -2049,6 +2199,17 @@ def register(api) -> None:
                            safe(send_note)(net_id, chat_id, text, kind, points))
 
     api.register_panel_rpc("sync", lambda net_id="": safe(sync_status)(net_id))
+    api.register_panel_rpc("build_brief", lambda net_id="", check=False: safe(build_brief)(net_id, check))
+
+    @api.tool(intent=GEN_INTENT, listener=False)
+    def road_network_build_brief(net_id: str = "", check: bool = False) -> dict:
+        """Start of every build in UEFN: everything this world needs (every road mesh the splines use and every kit
+        mesh the PCG city places, how often, and where each comes from: street kit City Builder makes itself,
+        road / world / building kit art, Fortnite), what the project is missing (check=true asks the open UEFN),
+        what tools are around (UEFN, Epic MCP, Blender, AI 3D), what is waiting to be built (roads to paste, city
+        tiles), a summary per city, and the `questions` to ask the person in ONE ducky_ask_user before any editor
+        work (open UEFN?, which pieces, how to make missing ones, scope, density, interiors, terrain, saving)."""
+        return safe(build_brief)(net_id, check)
 
     @api.tool(intent=GEN_INTENT, listener=False)
     def road_network_sync(net_id: str = "") -> dict:
@@ -2119,11 +2280,12 @@ def register(api) -> None:
         return safe(pcg_plan)(net_id, road_tag)
 
     @api.tool(intent=PCG_INTENT, listener=False)
-    def road_network_pcg_assets(net_id: str = "", asset_set: str = "") -> dict:
+    def road_network_pcg_assets(net_id: str = "", asset_set: str = "", interiors: str = "") -> dict:
         """Which pieces City Builder uses for a world's layers: 'own' (the project's own kit: WorldGen/City,
-        WorldGen/Kit, BuildingKit storeys), 'fortnite' (Fortnite's props and buildings) or 'mixed'. Empty
-        asset_set reads it, with where each role (traffic light, skyscraper, bench...) comes from."""
-        return safe(pcg_assets)(net_id, asset_set)
+        WorldGen/Kit, BuildingKit storeys), 'fortnite' (Fortnite's props and buildings) or 'mixed', and whether
+        buildings get interiors (interiors 'yes' / 'no': floors, stair cores, furniture seen through windows).
+        Empty arguments read them, with where each role (traffic light, skyscraper, bench...) comes from."""
+        return safe(pcg_assets)(net_id, asset_set, interiors)
 
     @api.tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_preview(net_id: str = "", layer_id: str = "", summary: bool = False) -> dict:
@@ -2153,7 +2315,7 @@ def register(api) -> None:
     api.register_panel_rpc("pcg_preset", lambda net_id="", preset="full_city", reorder=False:
                            safe(pcg_preset)(net_id, preset, reorder))
     api.register_panel_rpc("pcg_plan", lambda net_id="", road_tag="": safe(pcg_plan)(net_id, road_tag))
-    api.register_panel_rpc("pcg_assets", lambda net_id="", asset_set="": safe(pcg_assets)(net_id, asset_set))
+    api.register_panel_rpc("pcg_assets", lambda net_id="", asset_set="", interiors="": safe(pcg_assets)(net_id, asset_set, interiors))
     api.register_panel_rpc("pcg_preview", lambda net_id="", layer_id="": safe(pcg_preview)(net_id, layer_id))
     api.register_panel_rpc("pcg_place", lambda net_id="", confirm=False: safe(pcg_place)(net_id, confirm))
     api.register_panel_rpc("pcg_build", lambda net_id="", confirm=False, force=False: safe(pcg_build)(net_id, confirm, force))

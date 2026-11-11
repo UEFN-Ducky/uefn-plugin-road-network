@@ -15,6 +15,15 @@ Call `road_network_describe` (with the world's id once you have one). It lists w
 cities, layers, roles, forms, build modes, grammar styles and pipeline stages. Take names from it, not from
 memory or from this file.
 
+**Building a world in UEFN starts with `road_network_build_brief(net_id, check=true)`.** It returns:
+- the pieces the world needs and which are missing from the project;
+- which tools are around (UEFN, Epic MCP, Blender, AI 3D);
+- what is waiting to be built;
+- the `questions` to ask the person.
+
+Tell them in a few lines, ask every question in **one** `ducky_ask_user`, and wait. Then follow the answers; the
+brief's `how` maps each answer to a tool. No editor work before the answers.
+
 ## Gotchas worth knowing
 - **One editor call is one frame.** UEFN frees its GPU windows only when a frame ends, so many mesh builds or
   saves in one call has crashed it. Build one mesh per call, save everything in one batch at the end.

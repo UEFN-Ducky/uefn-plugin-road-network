@@ -314,8 +314,13 @@ def path(name: str, root: str) -> str:
     return f"{root}/WorldGen/{KIT[name][0]}/{name}.{name}"
 
 
-def bake(previewed: dict, root: str) -> tuple:
-    """(groups {mesh path: [[x, y, z, yaw, sx, sy, sz]]}, {layer: points baked}, [layers with no kit piece])."""
+_BAKE = {"interiors": True}  # ponytail: one switch for the bake in progress; bakes run one at a time
+
+
+def bake(previewed: dict, root: str, interiors: bool = True) -> tuple:
+    """(groups {mesh path: [[x, y, z, yaw, sx, sy, sz]]}, {layer: points baked}, [layers with no kit piece]).
+    interiors=False: building shells only (no floors, stair cores or furniture)."""
+    _BAKE["interiors"] = interiors
     lo, hi = SCALE_RANGE
     groups: dict = {}
     baked, missing = {}, []
@@ -521,6 +526,8 @@ def _interior(groups: dict, root: str, parts: list, furniture: str, x, y, z, yaw
     one storey per piece, so the stairs climb the whole building), and furniture along the windows facing
     out. One elevator car waits at the ground floor. Round / sculpted towers get a round slab well inside
     their outline so nothing pokes through the glass; a building too small for the core gets solid slabs."""
+    if not _BAKE["interiors"]:
+        return
     fx, fy = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
 
     def put(mesh, u, v, h, turn, s):
