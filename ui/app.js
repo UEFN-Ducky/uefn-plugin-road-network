@@ -2524,6 +2524,52 @@ async function openNote(mode) {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !$("note").hidden) clearNote();
 });
+// ------------------------------------------------------------------ chat: Ducky's real chat docked beside the map
+// chat.open shows the chat itself (messages, composer, styles), never a copy; the dropdown picks which agent's chat
+const OWN_CHAT = "own";
+let dockOpen = false;
+const chatOptions = () => [{ value: OWN_CHAT, label: "City Builder chat" },
+  ...(note.chats || []).map((c) => ({ value: c.id, label: c.title }))];
+function setDockState(s) {
+  dockOpen = !!(s && s.open);
+  const b = $("chatToggle");
+  if (b) {
+    b.setAttribute("aria-pressed", String(dockOpen));
+    b.title = dockOpen ? "Hide the chat" : "Show the chat beside the map";
+  }
+  setTimeout(resize, 50);  // the dock takes room from the map
+}
+async function openChatDock() {
+  const pick = state.view.chat || OWN_CHAT;
+  const world = state.nets.find((n) => n.id === state.net);
+  const which = pick === OWN_CHAT
+    ? { key: "main", title: "City Builder", brief: "The person is in City Builder (plugin road-network). Use the road-network "
+        + `skill and the road_network_* tools. The open world is net_id '${state.net || ""}'${world?.name ? ` (${world.name})` : ""}.` }
+    : { conv_id: pick, title: chatOptions().find((o) => o.value === pick)?.label || "Chat" };
+  try {
+    setDockState(await call("chat.open", { ...which, place: "right", expanded: true, size: 420 }));
+  } catch (e) {
+    showError(e.message);
+  }
+}
+async function closeChatDock() {
+  setDockState(await call("chat.close").catch(() => null));
+}
+function renderChatBar() {
+  const drop = window.DuckyKit?.dropdown?.({ label: "Chat", options: chatOptions(), value: state.view.chat || OWN_CHAT,
+    onChange: (v) => { state.view.chat = v; savePrefs(); if (dockOpen) openChatDock(); } });
+  const btn = h("button", { type: "button", class: "dk-btn dk-btn--secondary rn-chatbtn", id: "chatToggle", "aria-pressed": "false",
+    title: "Show the chat beside the map" }, icon("chat", 16), h("span", {}, "Chat"));
+  btn.addEventListener("click", () => (dockOpen ? closeChatDock() : openChatDock()));
+  $("chatBar").replaceChildren(...(drop ? [drop.el] : []), btn);
+  loadChats().then(() => { drop?.setOptions?.(chatOptions()); drop?.set?.(state.view.chat || OWN_CHAT); });
+  call("chat.state").then(setDockState).catch(() => {});
+}
+window.addEventListener("message", (ev) => {  // the dock's own close / expand buttons report back here
+  const e = ev.data?.channel === CHANNEL ? ev.data.event : null;
+  if (e?.type === "chat.state") setDockState(e);
+});
+
 let chatsLoading = null;
 function loadChats() {  // fetched once in the background (on start), refreshed after a send
   chatsLoading ||= rpc("chats").then((got) => { note.chats = got.ok === false ? [] : got.chats || []; chatsLoading = null; });
@@ -2547,6 +2593,7 @@ function loadChats() {  // fetched once in the background (on start), refreshed 
   renderTabs();
   renderToolbar();
   renderTools();
+  renderChatBar();
   initSplits();
   showVersion();
   setTimeout(loadChats, 1500);  // the Send to list is ready before anyone draws

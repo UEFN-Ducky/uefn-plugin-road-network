@@ -279,6 +279,15 @@
                  color: var(--fg); box-shadow: var(--shadow-md); }
     .rn-banner[hidden] { display: none; }
     .rn-empty-view { position: absolute; inset: 0; display: grid; place-items: center; z-index: 1; pointer-events: none; }
+    /* bottom right of the map: pick an agent's chat and show it docked beside the map (Ducky's real chat) */
+    .rn-chatbar { position: absolute; right: 16px; bottom: 16px; z-index: 5; display: flex; align-items: center; gap: 8px; padding: 6px;
+                  background: var(--wf-panel); backdrop-filter: blur(var(--wf-panel-blur)); -webkit-backdrop-filter: blur(var(--wf-panel-blur));
+                  border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow-lg); }
+    .rn-chatbar .dk-field { margin: 0; min-width: 180px; max-width: 260px; }
+    .rn-chatbar .dk-field__label, .rn-chatbar label { display: none; }
+    .rn-chatbtn { display: inline-flex; align-items: center; gap: 6px; }
+    .rn-chatbtn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+    .rn-chatbtn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
     #err:empty { display: none; }
     #err { padding: 0 12px; }
   </style>
@@ -328,6 +337,7 @@
       <div class="rn-empty-view" id="emptyView"></div>
       <div class="rn-tools" id="tools" role="toolbar" aria-label="Map tools"></div>
       <div class="rn-note" id="note" hidden></div>
+      <div class="rn-chatbar" id="chatBar" role="group" aria-label="Chat"></div>
     </main>
     <div class="rn-split" id="splitRight" role="separator" aria-orientation="vertical" aria-label="Resize the right panel" tabindex="0"></div>
     <aside class="dk-sidebar dk-sidebar--right rn-right" id="rightPanel" aria-label="Section settings">
