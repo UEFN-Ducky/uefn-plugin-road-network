@@ -517,6 +517,40 @@ def paths_actor(city: dict, opts: dict | None, rows: list, ground, folder: str) 
     return build_actor({**sn, **pn}, se + pe, ground, folder)
 
 
+FILLET_CM = 900.0  # private street corners: a 9 m kerb radius, not a spline's wide arc
+
+
+def fillet(pts: list, radius: float = FILLET_CM) -> list:
+    """A polyline with every real corner (turn > 20 degrees) replaced by a short arc of `radius` (or less on a
+    short leg), so a spline through it turns tight at the corner and runs straight between corners. A closed
+    ring (first point == last) is restarted mid-side so every one of its corners is rounded too."""
+    pts = [tuple(p[:2]) for p in pts]
+    closed = len(pts) > 3 and math.dist(pts[0], pts[-1]) < 1
+    if closed:
+        ring = pts[:-1]
+        mid = ((ring[0][0] + ring[1][0]) / 2, (ring[0][1] + ring[1][1]) / 2)
+        pts = [mid] + ring[1:] + ring[:1] + [mid]
+    out = [pts[0]]
+    for a, b, c in zip(pts, pts[1:], pts[2:]):
+        d1, d2 = (b[0] - a[0], b[1] - a[1]), (c[0] - b[0], c[1] - b[1])
+        l1, l2 = math.hypot(*d1), math.hypot(*d2)
+        if l1 < 1 or l2 < 1:
+            continue
+        u1, u2 = (d1[0] / l1, d1[1] / l1), (d2[0] / l2, d2[1] / l2)
+        turn = math.acos(max(-1.0, min(1.0, u1[0] * u2[0] + u1[1] * u2[1])))
+        if turn < math.radians(20):
+            out.append(b)
+            continue
+        r = min(radius, 0.4 * l1, 0.4 * l2)
+        t = r * math.tan(turn / 2)  # distance from the corner to where the arc starts and ends
+        p0, p3 = (b[0] - u1[0] * t, b[1] - u1[1] * t), (b[0] + u2[0] * t, b[1] + u2[1] * t)
+        for s in (0.0, 1 / 3, 2 / 3, 1.0):  # a quadratic through the corner: tangent to both legs
+            out.append(((1 - s) ** 2 * p0[0] + 2 * (1 - s) * s * b[0] + s * s * p3[0],
+                        (1 - s) ** 2 * p0[1] + 2 * (1 - s) * s * b[1] + s * s * p3[1]))
+    out.append(pts[-1])
+    return [[round(x), round(y)] for x, y in out]
+
+
 def access_actor(city: dict, rows: list, ground, folder: str) -> dict:
     """Private access network: the city's '<City> Access' spline actor: every subdivision / complex street
     (the city doc's private streets) and every driveway (single DW, double DD), graded like roads."""
@@ -524,6 +558,7 @@ def access_actor(city: dict, rows: list, ground, folder: str) -> dict:
     for k, s in enumerate((city.get("private") or {}).get("streets") or []):
         if len(s) < 2:
             continue
+        s = fillet(s)
         a, b = ("pr", k, 0), ("pr", k, 1)
         nodes[a], nodes[b] = list(s[0]), list(s[-1])
         edges.append([a, b, "PR", [list(p) for p in s[1:-1]]])
@@ -956,6 +991,12 @@ def _demo() -> None:
                       "/Game/X/WorldGen/Roads")
     am = {s["mesh"] for s in ac["segments"]}
     assert {"SM_Path_PrivateStreet_10m", "SM_Path_Driveway_10m"} <= am, am
+    # a square ring road keeps its straight sides: every corner becomes a 9 m arc, nothing bulges out
+    sq = fillet([[0, 0], [10000, 0], [10000, 10000], [0, 10000], [0, 0]])
+    assert all(-1 <= x <= 10001 and -1 <= y <= 10001 for x, y in sq), "inside the square"
+    corner = min(sq, key=lambda p: math.dist(p, (10000, 0)))
+    assert 200 < math.dist(corner, (10000, 0)) < 900, corner  # cut by the arc, not by a wide curve
+    assert len(sq) == 4 * 4 + 2, len(sq)  # 4 arcs of 4 points + the restart point twice
     # a street turning 90 degrees gets an elbow piece (square corner), a gentle bend stays a spline point
     el = build_actor({0: [0, 0], 1: [10000, 0], 2: [10000, 10000], 3: [20000, 10500]},
                      [[0, 1, "2L"], [1, 2, "2L"], [2, 3, "2L"]], lambda x, y: 0.0, "/Game/X")
