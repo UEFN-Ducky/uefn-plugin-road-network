@@ -206,6 +206,8 @@ STACK_MIN_R = 200000.0  # two freeways and a stack only from 2 km radius (its fl
 IC_SPACING = 80000.0  # interchanges at least 800 m apart along a freeway (urban practice: ~1 km, a mile rural)
 STACK_GAP = STACK_FLY + DIAMOND_A + 20000.0  # no service interchange inside the stack's own ramps
 FW_HALF = 1650.0  # urban freeway: 3 lanes each way + shoulders (the ED deck / FW mesh half width)
+MAP_EDGE = 5000.0  # nothing closer than 50 m to the map's edge
+IC_ROOM = 35000.0  # an interchange's ramps and frontage roads reach ~300 m from its centre
 CORRIDOR = 1500.0  # right of way past a road's edge: no building lot inside it
 
 
@@ -313,19 +315,43 @@ def plan(city: dict, o: dict) -> Plan:
     span, fade = 1.3 * R, 1.6 * LEVEL_CM / MAX_GRADE["freeway"]
     two = R >= STACK_MIN_R
     stack_at = (off, -off)
+    end = span + fade + 20000  # how far a freeway runs each way from the city: back at grade 200 m past the fade
+    box = city.get("map")  # [x0, y0, x1, y1]: a freeway comes down and ends before the map's edge (Nov 11 2026)
 
-    def lift(along, other):  # (distance along the freeway, distance from the stack along it, is upper)
-        z = LEVEL_CM * _smooth((span + fade - abs(along)) / fade)
+    def room(px, py, dx, dy):
+        """How far from (px, py) along (dx, dy) before the map's edge (less MAP_EDGE); unlimited with no map."""
+        t = math.inf
+        if box:
+            for p, d, lo, hi in ((px, dx, box[0], box[2]), (py, dy, box[1], box[3])):
+                if d > 1e-9:
+                    t = min(t, (hi - MAP_EDGE - p) / d)
+                elif d < -1e-9:
+                    t = min(t, (lo + MAP_EDGE - p) / d)
+        return max(0.0, t)
+
+    def lift(along, other, sides=(span, span)):  # (distance along the freeway, from the stack along it, its spans)
+        sp = sides[1] if along >= 0 else sides[0]
+        z = LEVEL_CM * _smooth((sp + fade - abs(along)) / fade)
         if two and other is not None:  # the upper freeway climbs to level 2 around the stack
             z += LEVEL_CM * _smooth((60000 - abs(other)) / 35000)
         return z
 
     mains = [("ns", (1.0, 0.0), off, (0.0, 1.0))] + ([("ew", (0.0, 1.0), -off, (1.0, 0.0))] if two else [])
+    sides_of, reach_of = {}, {}
+    for name, normal_axis, at, axis in mains:  # each way: the full run, or as far as the map lets it go
+        px, py = W(normal_axis[0] * at, normal_axis[1] * at)
+        dx, dy = c * axis[0] - s * axis[1], s * axis[0] + c * axis[1]
+        back, ahead = room(px, py, -dx, -dy), room(px, py, dx, dy)
+        reach_of[name] = (back, ahead)
+        sides_of[name] = tuple(span if r >= end + 2000 else max(0.0, min(span, r - fade - 2000)) for r in (back, ahead))
     for name, normal_axis, at, axis in mains:
         stack_along = stack_at[1] if name == "ns" else stack_at[0]
         upper = name == "ns"
-        lf = lambda t, sa=stack_along, up=upper: lift(t, (t - sa) if up else None)
-        ts = [k * 2000.0 for k in range(int(-(span + fade + 20000) // 2000), int((span + fade + 20000) // 2000) + 1)]
+        sides, (back, ahead) = sides_of[name], reach_of[name]
+        lf = lambda t, sa=stack_along, up=upper, sd=sides: lift(t, (t - sa) if up else None, sd)
+        first = int(-end // 2000) if back >= end + 2000 else -int(back // 2000)
+        last = int(end // 2000) if ahead >= end + 2000 else int(ahead // 2000)
+        ts = [k * 2000.0 for k in range(first, last + 1)]
         pts = []
         for t in ts:
             lx, ly = normal_axis[0] * at + axis[0] * t, normal_axis[1] * at + axis[1] * t
@@ -354,8 +380,12 @@ def plan(city: dict, o: dict) -> Plan:
                 continue  # only collectors and the main axis
             if any(abs(t - d) < (gap if d == stack_along and two else IC_SPACING) for d in done):
                 continue
+            if not -back + IC_ROOM <= t <= ahead - IC_ROOM:
+                continue  # its ramps would run past the map's edge
             lx, ly = normal_axis[0] * at + axis[0] * t, normal_axis[1] * at + axis[1] * t
             cx, cy = W(lx, ly)
+            if box and min(room(cx, cy, 1, 0), room(cx, cy, -1, 0), room(cx, cy, 0, 1), room(cx, cy, 0, -1)) < IC_ROOM:
+                continue
             share = cg.zone_share(city, cx, cy)
             if share > 0.9:
                 continue
@@ -371,11 +401,13 @@ def plan(city: dict, o: dict) -> Plan:
             out.interchanges.append({"kind": kind, "at": [round(cx), round(cy)], "freeway": name, "cross_road": road,
                                      "b_axis": [round(-ax_w[1], 4), round(ax_w[0], 4)], "group": ("ic", name, n)})
             done.append(t)
-    if two and not (hard and hard(*W(*stack_at))):
+    sx, sy = W(*stack_at)
+    near_edge = box and min(room(sx, sy, 1, 0), room(sx, sy, -1, 0), room(sx, sy, 0, 1), room(sx, sy, 0, -1)) < STACK_FLY + 20000
+    if two and not (hard and hard(sx, sy)) and not near_edge:  # its flyovers reach 1.15 km out: all on the map
         cx, cy = W(*stack_at)
         f = Frame(cx, cy, -s, c)  # a along the north-south freeway (upper), b along the east-west one
-        ns = lambda a: lift(a + stack_at[1], a)
-        ew = lambda b: lift(-b + stack_at[0], None)  # frame b runs along -x local
+        ns = lambda a: lift(a + stack_at[1], a, sides_of["ns"])
+        ew = lambda b: lift(-b + stack_at[0], None, sides_of["ew"])  # frame b runs along -x local
         out.add(interchange("stack", f, FW_HALF, FW_HALF, ns, ew, ("stack",)), "6L", ("stack",))
         out.interchanges.append({"kind": "stack", "at": [round(cx), round(cy)], "freeway": "ns+ew", "group": ("stack",)})
     return out

@@ -4,27 +4,39 @@ import { syncPlan, parseLiveView } from "./sync.js";
 
 // ------------------------------------------------------------------ bridge
 const CHANNEL = "uefn-plugin-ui";
-function call(method, params = {}) {
+function call(method, params = {}, timeoutMs = 0) {
   const id = crypto.randomUUID();
   return new Promise((resolve, reject) => {
+    let timer = 0;
     function onMsg(ev) {
       const d = ev.data;
       if (!d || d.channel !== CHANNEL || d.id !== id) return;
       window.removeEventListener("message", onMsg);
+      clearTimeout(timer);
       d.ok ? resolve(d.result) : reject(new Error(d.error || "bridge error"));
     }
     window.addEventListener("message", onMsg);
+    // a reply lost on the way (Ducky restarted, the plugin reinstalled) must never leave the panel waiting forever
+    if (timeoutMs) timer = setTimeout(() => {
+      window.removeEventListener("message", onMsg);
+      reject(new Error(`Ducky didn't answer (${params.method || method}, ${Math.round(timeoutMs / 1000)} s). Try again.`));
+    }, timeoutMs);
     parent.postMessage({ channel: CHANNEL, id, method, params }, "*");
   });
 }
-const rpc = (method, params = {}) => call("plugin.call", { method, params }).catch((err) => ({ ok: false, error: err.message }));
+// reads answer in seconds; a rebuild, a push into UEFN or a city preview can take minutes
+const RPC_WAIT = { generate: 0, import_all: 0, reimport: 0, pull: 0, pcg_build: 0, repair: 0, drape: 0, scan_ground: 0, tune: 0,
+  heightmap: 0, pcg_preview: 600000, sync: 300000, city_add: 300000, city_save: 300000, city_delete: 300000 };
+const rpc = (method, params = {}) => call("plugin.call", { method, params }, RPC_WAIT[method] ?? 90000)
+  .catch((err) => ({ ok: false, error: err.message }));
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const $ = (id) => document.getElementById(id);
 const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue("--" + name).trim();
 const alert = (title, message) => call("ui.alert", { title, message }).catch(() => {});
 
-function showError(msg) {
+function showError(msg, retry) {
   $("err").innerHTML = msg ? `<div class="dk-error"><div class="dk-error__title">Problem</div>${esc(msg)}</div>` : "";
+  if (msg && retry) $("err").firstElementChild.append(button("Try again", "refresh", () => { showError(""); retry(); }));
 }
 // the loading card: a title, what is happening now, and a bar (filled when the step count is known)
 const loading = { title: "", text: "", step: 0, of: 0 };
@@ -66,7 +78,7 @@ const GEN_DEFAULTS = {
 const OPTION_KEYS = ["hill_km", "roughness", "detail", "ridges", "peaks", "flatten_m", "sea_m", "water_depth_m", "terrace_m", "block_m", "wobble",
   "prune", "downtown", "normal", "highway", "highway_curve", "core_roads", "neighbourhood_roads", "suburb_roads", "one_way_core",
   "interchange", "overpasses", "city_size", "city_gap_m", "freeways", "waterfront", "canals", "shipyards", "airports", "military_base", "wind_deg", "city_ground"];
-const VIEW_DEFAULTS = { zx: 1, pcg: true, terrain: true, water: true, districts: true, points: false, look: "natural", sunAz: 135, sunEl: 38, shadows: true };
+const VIEW_DEFAULTS = { zx: 1, pcg: true, terrain: true, water: true, districts: true, points: false, look: "natural", sunAz: 135, sunEl: 52, shadows: true };
 const state = {
   nets: [], net: "", actor: "", geo: null, sel: null, cities: [], tab: "world", framed: false, live: false,
   gen: { ...GEN_DEFAULTS }, view: { ...VIEW_DEFAULTS }, tune: { side: 8, end: 10, tol: 50 },
@@ -138,6 +150,19 @@ function col(name) {
   const c = new THREE.Color();
   c.setStyle(cssVar(s) || cssVar("fg") || "transparent");
   return c;
+}
+// The outdoors in the theme's own hues, toned like the real thing (the UI's greens and blues are signal colours:
+// grass in pure --green read neon). sat scales the hue's saturation, light is the sRGB lightness.
+function tone(name, sat, light) {
+  const c = col(name), hsl = {};
+  c.getHSL(hsl, THREE.SRGBColorSpace);
+  return c.setHSL(hsl.h, Math.min(1, hsl.s * sat), light, THREE.SRGBColorSpace);
+}
+// one small, steady variation per building or tree (from where it stands), so a block isn't one flat colour
+function vary(base, x, y, amount = 1) {
+  const r = Math.sin(x * 0.0123 + y * 0.0457) * 43758.5453, f = r - Math.floor(r);
+  const r2 = Math.sin(x * 0.0311 - y * 0.0173) * 24634.6345, g = r2 - Math.floor(r2);
+  return base.clone().offsetHSL((g - 0.5) * 0.03 * amount, (f - 0.5) * 0.1 * amount, (f - 0.5) * 0.14 * amount);
 }
 const swatch = (c) => {
   const s = String(c);
@@ -353,9 +378,10 @@ function terrainMesh(t) {
   for (let k = 0; k < nrm.count; k++) if (nrm.getY(k) < 0) down++;
   if (down > nrm.count / 2) { geo.setIndex(idx.map((_, k) => idx[k - (k % 3) + [0, 2, 1][k % 3]])); geo.computeVertexNormals(); }
   // colour by look: natural (sand, grass, rock, snow), height bands or slope
-  const pal = { sand: col("amber").lerp(col("fg"), 0.35), grassLo: col("green-dim").lerp(col("green"), 0.35), grassHi: col("green").multiplyScalar(0.75),
-    dirt: col("amber-dim").lerp(col("fg-dim"), 0.3), rock: col("fg-dim").multiplyScalar(0.85), snow: col("fg"),
-    low: col("blue"), mid: col("green"), high: col("amber"), top: col("red") };
+  const pal = { sand: tone("amber", 0.38, 0.68), grassLo: tone("green", 0.36, 0.42).lerp(tone("amber", 0.4, 0.42), 0.22),
+    grassHi: tone("green", 0.42, 0.29), dirt: tone("amber", 0.3, 0.4), rock: tone("fg-dim", 1, 0.52).lerp(tone("amber", 0.15, 0.5), 0.2),
+    snow: col("fg"), low: col("blue"), mid: col("green"), high: col("amber"), top: col("red") };
+  const snowFrom = lo + 60000;  // snow only on real mountains (600 m up), never on a valley's hilltops
   const sea = t.sea ?? null;
   const colors = new Float32Array(nrm.count * 3);
   const c = new THREE.Color();
@@ -375,7 +401,7 @@ function terrainMesh(t) {
       c.copy(pal.grassLo).lerp(pal.grassHi, smooth(0.2, 0.75, tH));
       c.lerp(pal.dirt, smooth(0.04, 0.1, slope) * 0.6);
       c.lerp(pal.rock, smooth(0.1, 0.22, slope));
-      c.lerp(pal.snow, smooth(0.82, 0.95, tH) * (1 - smooth(0.15, 0.3, slope)));
+      c.lerp(pal.snow, smooth(snowFrom, snowFrom + 15000, z) * (1 - smooth(0.15, 0.3, slope)));
       if (sea !== null) c.lerp(pal.sand, 1 - smooth(sea + 150, sea + 600, z));
       c.multiplyScalar(0.94 + 0.08 * Math.abs(jitter));
     }
@@ -499,8 +525,8 @@ function buildScene() {
     if (box.isEmpty()) box.copy(tb);
     if (t.sea !== null && t.sea !== undefined && state.view.water) {
       const w = (t.max[0] - t.min[0]) / 100, d = (t.max[1] - t.min[1]) / 100;
-      const water = new THREE.Mesh(new THREE.PlaneGeometry(d, w), new THREE.MeshStandardMaterial({ color: col("blue"), roughness: 0.15,
-        metalness: 0.1, transparent: true, opacity: 0.72 }));
+      const water = new THREE.Mesh(new THREE.PlaneGeometry(d, w), new THREE.MeshStandardMaterial({ color: tone("blue", 0.55, 0.4),
+        roughness: 0.12, metalness: 0.1, transparent: true, opacity: 0.84 }));
       water.rotation.x = -Math.PI / 2;
       water.position.copy(toV((t.min[0] + t.max[0]) / 2, (t.min[1] + t.max[1]) / 2, t.sea));
       water.receiveShadow = true;
@@ -632,11 +658,14 @@ function drawBuildings(layer, colour) {
   const forms = layer.forms || [];
   const boxes = [], cyls = [];
   const dummy = new THREE.Object3D();
+  const base = layer.role === "park" ? tone("green", 0.5, 0.34) : col(colour);  // lawns, not the UI's signal green
+  const glass = layer.role === "skyscraper" || layer.role === "office";
   for (const p of layer.points || []) {
     const [x, y, z, yaw, , hgt, fi, wv, dv] = p;
     const [w0, d0] = layer.size_m || [12, 12];
     const w = (wv || w0) * 0.92, d = (dv || d0) * 0.92;
     const r = yaw * Math.PI / 180, fxv = Math.cos(r), fyv = Math.sin(r);
+    const tint = vary(base, x, y, glass ? 1.6 : 1);  // each building its own shade of its kind
     for (const part of formParts(forms[fi] || "box", w, d, hgt || 6)) {
       const ux = x + (part.fx * fxv - part.fy * fyv) * 100, uy = y + (part.fx * fyv + part.fy * fxv) * 100;
       dummy.position.copy(toV(ux, uy, z + part.z * 100));
@@ -645,14 +674,14 @@ function drawBuildings(layer, colour) {
       // part.sx runs along the facing (fx), part.sy across it: after this rotation the facing is the box's z
       dummy.scale.set(part.sy, Math.max(0.2, part.sz) * zx, part.sx);
       dummy.updateMatrix();
-      (part.c ? cyls : boxes).push(dummy.matrix.clone());
+      (part.c ? cyls : boxes).push([dummy.matrix.clone(), tint]);
     }
   }
-  const mat = new THREE.MeshStandardMaterial({ color: col(colour), roughness: 0.55, metalness: 0.2 });
+  const mat = new THREE.MeshStandardMaterial({ roughness: glass ? 0.35 : 0.7, metalness: glass ? 0.35 : 0.05 });
   for (const [list, geo] of [[boxes, new THREE.BoxGeometry(1, 1, 1)], [cyls, new THREE.CylinderGeometry(0.5, 0.5, 1, 20)]]) {
     if (!list.length) continue;
     const mesh = new THREE.InstancedMesh(geo, mat, list.length);
-    list.forEach((mtx, i) => mesh.setMatrixAt(i, mtx));
+    list.forEach(([mtx, tint], i) => { mesh.setMatrixAt(i, mtx); mesh.setColorAt(i, tint); });
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     groups.pcg.add(mesh);
@@ -746,7 +775,11 @@ function drawPcg(legend) {
     if (building) { drawBuildings(layer, colour); legend[`${name} · ${layer.count.toLocaleString()}`] = colour; }
     const [geo, lift] = building ? [null, 0] : pcgShape(name, layer.kind);
     if (!building) {
-      const mesh = new THREE.InstancedMesh(geo, new THREE.MeshStandardMaterial({ color: col(colour), roughness: 0.85 }), pts.length);
+      // trees and bushes in leaf greens, not the UI's signal green; each one a little different
+      const leafy = layer.role === "tree" || layer.role === "street_tree" || layer.role === "bush" || layer.kind === "foliage" && !/rock|stone|boulder/i.test(name);
+      const base = leafy ? tone("green", 0.45, layer.role === "bush" ? 0.4 : 0.33).lerp(tone("amber", 0.4, 0.34), layer.role === "bush" ? 0.25 : 0.12)
+        : col(colour);
+      const mesh = new THREE.InstancedMesh(geo, new THREE.MeshStandardMaterial({ roughness: 0.85 }), pts.length);
       pts.forEach(([x, y, z, yaw, s], i) => {
         dummy.position.copy(toV(x, y, z));
         dummy.rotation.set(0, -yaw * Math.PI / 180, 0);
@@ -754,6 +787,7 @@ function drawPcg(legend) {
         dummy.position.y += lift * s;
         dummy.updateMatrix();
         mesh.setMatrixAt(i, dummy.matrix);
+        mesh.setColorAt(i, leafy ? vary(base, x, y, 1.4) : base);
       });
       mesh.castShadow = true;
       mesh.receiveShadow = true;
@@ -781,17 +815,20 @@ async function loadPcgPreview() {
   for (let i = 0; i < rest.length; i += PCG_BATCH) calls.push(rest.slice(i, i + PCG_BATCH));
   calls.push([{ id: "road-walls", name: "Road walls" }]);  // stone walls from road cut / fill, and the neighbourhood sites
   const picked = {};
+  // the card is the city's own: a rebuild's or an edit's card stays up while the city fills in under it
+  const card = (msg, opts) => { if (!loading.title || loading.title === "Placing the city") busy(msg, opts); };
   for (const [i, ls] of calls.entries()) {  // the first call computes the whole city; the rest read it from the cache
-    busy("Placing the city", { text: i ? `${ls.map((l) => l.name).join(", ")}` : "Placing every building, prop and tree…",
+    card("Placing the city", { text: i ? `${ls.map((l) => l.name).join(", ")}` : "Placing every building, prop and tree…",
       step: i, of: calls.length });
     const r = await rpc("pcg_preview", { net_id: net, layer_id: ls.map((l) => l.id).join(",") });
-    if (r.ok === false && ls[0].id !== "road-walls") { busy(""); return showError(r.error); }
+    if (net !== state.net) return card("");
+    if (r.ok === false && ls[0].id !== "road-walls") { card(""); return showError(r.error, () => loadPcgPreview()); }
     if (r.ok !== false) Object.assign(picked, r.layers || {});
   }
   // the layer order the panel has always drawn: each layer in turn, then the walls and sites
   for (const l of todo) if (l.name in picked) out[l.name] = picked[l.name];
   Object.assign(out, picked);
-  busy("");
+  card("");
   if (net !== state.net) return;
   state.pcg = out;
   renderPcgCounts();
@@ -1340,11 +1377,54 @@ function renderCitiesPane() {
   pane.replaceChildren(section(`Cities · ${state.cities.length}`, ...cards),
     h("div", { class: "rn-hint" }, "Each city keeps its own roads actor, style and building sets. Changing one rebuilds the world with the same seed."));
 }
-async function saveCity(c, change) {
-  busy(`Rebuilding ${c.name}`, { text: "Saving the change…" });
-  const out = await rpc("city_save", { net_id: state.net, city: c.id, ...change });
-  if (out.ok === false) { busy(""); return showError(out.error); }
-  await regenerate(`Rebuilding ${c.name}`);
+// ------------------------------------------------------------------ city edits: queued into one rebuild
+// Moving, resizing, restyling, adding and deleting cities never rebuilds per edit: each edit shows at once and
+// waits; a moment after the last one, one rebuild takes them all, and edits made while a rebuild runs go into the
+// next one. A rebuild per edit kept the person waiting, and rebuilds side by side undid each other's edits.
+const edits = { list: [], running: false, timer: 0 };
+const QUIET_MS = 1200;  // the pause after the last edit before the rebuild starts
+function queueEdit(title, apply, after) {
+  edits.list.push({ title, apply, after });
+  clearTimeout(edits.timer);
+  const n = edits.list.length;
+  if (edits.running) {
+    busy(loading.title || title, { text: `${n} more change${n > 1 ? "s" : ""} waiting for the next rebuild…`,
+      step: loading.step, of: loading.of });
+    return;
+  }
+  busy(title, { text: n > 1 ? `${n} changes: rebuilding once you pause…` : "Rebuilding once you pause…" });
+  edits.timer = setTimeout(runEdits, QUIET_MS);
+}
+async function runEdits() {
+  if (edits.running) return;
+  edits.running = true;
+  try {
+    while (edits.list.length) {
+      const batch = edits.list.splice(0);
+      const saved = [], failed = [];
+      for (const e of batch) {  // saved only now: never while a rebuild runs (it would write the old city back)
+        busy(e.title, { text: "Saving the change…" });
+        const out = await e.apply();
+        if (out?.ok === false) failed.push(out.error);
+        else saved.push([e, out]);
+      }
+      if (saved.length) await regenerate(saved.length > 1 ? `Rebuilding: ${saved.length} changes` : saved[0][0].title);
+      else { busy(""); await loadGeometry(true); }  // nothing changed: the world as it is (undoes what the panel showed)
+      if (failed.length) showError(failed.join(" "));
+      for (const [e, out] of saved) e.after?.(out);
+    }
+  } finally {
+    edits.running = false;
+  }
+}
+function saveCity(c, change) {
+  // the ring and the panel follow at once; the city itself is rebuilt with the next rebuild
+  if (change.radius_m) c.radius = change.radius_m * 100;
+  if (change.style) c.style = change.style;
+  if (change.x != null && change.y != null) { c.x = change.x; c.y = change.y; }
+  drawCityMark();
+  needsDraw = true;
+  queueEdit(`Rebuilding ${c.name}`, () => rpc("city_save", { net_id: state.net, city: c.id, ...change }));
 }
 // generate the open world again with the cities it has (moved, added, removed, resized), on the ground it uses:
 // never new terrain for a world that sits on scanned ground
@@ -1359,8 +1439,10 @@ async function regenerate(title) {
     ground_from: gen.ground_from || "", options: JSON.stringify(optionsOf(state.gen)) });
   state.generating = false;
   busy("");
-  if (out.ok === false) return showError(out.error);
-  showError("");
+  if (out.ok === false) showError(out.error);
+  else showError("");
+  if (out.fitted?.length) alert("Cities kept on the map", out.fitted.join("\n"));
+  // the world as it now is, also after a failed rebuild (a deleted city must not stay on screen)
   await loadNets(false);
   await loadGeometry(true);
 }
@@ -1607,12 +1689,15 @@ async function openNet(id) {
   renderUefnPane();
   await loadGeometry(false);
 }
-async function loadGeometry(keep) {
+let loadSeq = 0;
+async function loadGeometry(keep, quiet = false) {
   if (!state.net) return;
-  busy("Loading the world", { text: "Roads, cities and their plans…" });
-  const [geo, st, cities] = await Promise.all([loadAllGeometry(state.net), rpc("stats", { net_id: state.net }), rpc("cities", { net_id: state.net })]);
-  busy("");
-  if (geo.ok === false) return showError(geo.error);
+  const seq = ++loadSeq, net = state.net;
+  if (!quiet) busy("Loading the world", { text: "Roads, cities and their plans…" });
+  const [geo, st, cities] = await Promise.all([loadAllGeometry(net), rpc("stats", { net_id: net }), rpc("cities", { net_id: net })]);
+  if (seq !== loadSeq || net !== state.net) return;  // a newer load (or another world) took over
+  if (!quiet || loading.title === "Loading the world") busy("");
+  if (geo.ok === false) return showError(`Couldn't load ${currentNet()?.name || "the world"}: ${geo.error}`, () => loadGeometry(keep));
   state.geo = geo;
   state.cities = cities.ok === false ? [] : cities.items || [];
   if (state.cities.length) {  // the Cities count follows the world's cities (added or removed ones included)
@@ -1739,7 +1824,11 @@ $("pullRow").append(pullName, pullBtn);
 window.addEventListener("message", (ev) => {
   const e = ev.data?.channel === CHANNEL ? ev.data.event : null;
   if (!e) return;
-  if (e.type === "panel.visibility") { visible = !!e.visible; needsDraw = true; }
+  if (e.type === "panel.visibility") {
+    visible = !!e.visible;
+    needsDraw = true;
+    if (visible && (reloads.geometry || reloads.layers)) reloadSoon();  // changes made while the tab was hidden
+  }
   if (e.type === "appearance_theme") { themeColors(); buildScene(); }
   if (e.type === "plugin_scope_changed") {
     if (e.reason === "synced") applySync(e.keys);  // teammates' changes: reload only what changed, keep what's open
@@ -1750,9 +1839,9 @@ window.addEventListener("message", (ev) => {
       if (loading.title) busy(loading.title, { text: e.text, step: (e.step || 0) + 1, of: (e.of || 1) + 1 });
     } else if (e.what === "city") {
       // a city was added or removed: the regenerate that follows reloads everything
-    } else if (state.generating) {
-      // our own generate: reloaded when it returns
-    } else if (e.what === "pcg") loadLayers(); else loadGeometry(true);
+    } else if (state.generating || edits.running) {
+      // our own rebuild: reloaded when it returns
+    } else reloadSoon(e.what === "pcg" ? "layers" : "geometry");
   }
   if (e.type === "live.memberState") onMemberState(e.from, e.state);
   if (e.type === "live.shared" && e.key === "selection") onSharedSelection(e.value, e.by);
@@ -1763,10 +1852,36 @@ window.addEventListener("ducky-live-goto", (ev) => {  // the group moved to anot
   if (tab && tab !== state.tab && TABS.some((t) => t[0] === tab)) openTab(tab);
 });
 
+// An agent edits a world point by point and every change sends an event. A whole-world reload per event piled up
+// dozens of reloads at once, and the panel lagged while nobody touched it (Nov 11 2026): events now only mark what
+// changed, and one quiet reload follows a pause (none while the tab is hidden: it catches up when shown).
+const reloads = { geometry: false, layers: false, timer: 0, running: false };
+const RELOAD_PAUSE_MS = 800;
+function reloadSoon(what) {
+  if (what) reloads[what] = true;
+  clearTimeout(reloads.timer);
+  reloads.timer = setTimeout(runReloads, RELOAD_PAUSE_MS);
+}
+async function runReloads() {
+  if (!visible || reloads.running) return;  // shown again / the running reload ends: it looks again
+  if (state.generating || edits.running) { reloads.geometry = reloads.layers = false; return; }  // they reload after
+  reloads.running = true;
+  try {
+    while (reloads.geometry || reloads.layers) {
+      const geo = reloads.geometry, layers = reloads.layers;
+      reloads.geometry = reloads.layers = false;
+      if (geo) await loadGeometry(true, true);  // keeps the selection and camera; reloads the layers too
+      else if (layers) await loadLayers();
+    }
+  } finally {
+    reloads.running = false;
+  }
+}
+
 async function applySync(keys) {
   const plan = syncPlan(keys, state.net);
   if (plan.nets) await loadNets(false);
-  if (plan.geometry) await loadGeometry(true);  // keeps the selection and camera
+  if (plan.geometry) reloadSoon("geometry");
   else if (plan.cities) {
     const c = await rpc("cities", { net_id: state.net });
     if (c.ok !== false) { state.cities = c.items || []; renderCitiesPane(); buildScene(); }
@@ -2187,22 +2302,24 @@ async function addCityAt(e) {
   const v = e ? groundAt(e) : null;
   const at = v ? toUE(v) : null;
   setTool("select");
-  busy("Adding a city", { text: at ? "Saving it where you clicked…" : "Finding a free spot…" });
-  const out = await rpc("city_add", { net_id: state.net, ...(at ? { x: at[0], y: at[1] } : {}) });
-  if (out.ok === false) { busy(""); return showError(out.error); }
-  state.cityPick = out.id;
-  await regenerate(`Building ${out.item.name}`);
-  selectCity(out.id);
+  queueEdit("Adding a city", () => rpc("city_add", { net_id: state.net, ...(at ? { x: at[0], y: at[1] } : {}) }),
+    (out) => { if (out?.id) selectCity(out.id); });
 }
 async function deleteCity(c) {
   const ok = await call("ui.confirm", { title: `Delete ${c.name}`, danger: true, confirm: "Delete",
     message: `${c.name} and everything on it (roads, buildings, services, airport, waterfront) go; the other cities are rebuilt and their highways re-join without it. Nothing in UEFN changes until you build.` }).catch(() => null);
   if (!ok?.confirmed) return;
-  busy(`Deleting ${c.name}`, { text: "Removing it…" });
-  const out = await rpc("city_delete", { net_id: state.net, city: c.id, confirm: true });
-  if (out.ok === false) { busy(""); return showError(out.error); }
+  // gone from the panel and the view at once; a city already deleted (another chat, an earlier try) is not an error
+  state.cities = state.cities.filter((x) => x.id !== c.id);
   if (state.cityPick === c.id) state.cityPick = "";
-  await regenerate("Rebuilding the world");
+  renderCityList();
+  renderWorldCity();
+  drawCityMark();
+  needsDraw = true;
+  queueEdit("Rebuilding the world", async () => {
+    const out = await rpc("city_delete", { net_id: state.net, city: c.id, confirm: true });
+    return out.ok === false && /^No city /.test(out.error || "") ? { ok: true, gone: true } : out;
+  });
 }
 function groundAt(e) {
   const r = renderer.domElement.getBoundingClientRect();

@@ -86,6 +86,18 @@ def register(api) -> None:
         run.__doc__ = fn.__doc__
         return run
 
+    world_lock = threading.RLock()
+
+    def holds_the_world(fn):
+        """A rebuild holds the world for its whole run and a city edit (add, move, resize, delete) waits for it: a
+        rebuild writes back the cities it started with, so an edit made during one was undone (Nov 11 2026)."""
+        def run(*a, **k):
+            with world_lock:
+                return fn(*a, **k)
+        run.__name__ = fn.__name__
+        run.__doc__ = fn.__doc__
+        return run
+
     def record(command: str, kind: str, ident: str, before, inverse: list) -> None:
         api.changeset.record(command=command, kind=kind, ident=ident, facet="record", before=before,
                              inverse=inverse, slot=f"{pid_}://{kind}/{ident}/record")
@@ -775,6 +787,8 @@ def register(api) -> None:
         data.put(head, {**{k: v for k, v in rest.items() if k not in big}, "private": {}, "private_chunks": n,
                         "piece_chunks": m})
 
+    @one_run_at_a_time  # a waiting rebuild with the same settings takes one that started after it asked
+    @holds_the_world
     def generate(name: str = "", seed: int = 7, cities: str = "", size_km: float = 6.0, relief_m: float = 60.0,
                  ground_from: str = "", folder: str = "", center_x: float = 0.0, center_y: float = 0.0,
                  options: str = "") -> dict:
@@ -819,12 +833,16 @@ def register(api) -> None:
             grow = opts["city_size"] / float((last.get("options") or {}).get("city_size", 1.0) or 1.0)
             for t in towns:
                 t["radius"] = max(15000.0, t["radius"] * grow)
-            towns = cg.spread(towns, opts["city_gap_m"] * 100, keep)
         else:
             towns = cg.place_cities(int(seed), max(1, min(12, int(text or 3))), bounds, keep, opts["city_size"],
                                     opts["city_gap_m"] * 100)
         if not towns:
             return {"ok": False, "error": "No room for that many cities: make the map bigger or ask for fewer."}
+        # every city stays on the map: pushed apart (a grown city's neighbours make room) and pulled back inside,
+        # smaller if the map has no room (a grown city pushed its neighbours off the map, Nov 11 2026)
+        towns, fit_notes = cg.fit_inside(towns, bounds, opts["city_gap_m"] * 100, keep)
+        for t in towns:  # the map's edges: freeways come back to grade and end before them
+            t["map"] = [bounds[0][0], bounds[0][1], bounds[1][0], bounds[1][1]]
         steps = 4 + len(towns)
 
         def progress(step: int, text: str) -> None:  # the panel's loading card follows these
@@ -917,6 +935,7 @@ def register(api) -> None:
         push({"what": "network", "id": nid})
         return {"ok": True, "id": nid, "cities": [{"name": t["name"], "style": t["style"], "x": round(t["x"]),
                                                     "y": round(t["y"]), "radius_m": round(t["radius"] / 100)} for t in towns],
+                **({"fitted": fit_notes} if fit_notes else {}),
                 "actors": stats_out,
                 "freeways": {n: {"interchanges": [i["kind"] for i in r["interchanges"]],
                                  "validator_ok": r["validation"]["ok"],
@@ -926,6 +945,7 @@ def register(api) -> None:
                         "(road_network_heightmap) and import it first, then Import into UEFN." if not base else
                         "Roads follow this network's ground. Import into UEFN when it looks right."}
 
+    @holds_the_world
     def add_city(net_id: str = "", name: str = "", x: float | None = None, y: float | None = None,
                  radius_m: float = 0.0, style: str = "") -> dict:
         """Add a city to a generated world (generate again to build it): at x, y (cm) or, without them, a free
@@ -982,6 +1002,7 @@ def register(api) -> None:
         return {"ok": True, "id": slug(name), "item": city,
                 "note": "Generate again (cities empty) to build it and join it to the others by highway."}
 
+    @holds_the_world
     def delete_city(net_id: str = "", city: str = "", confirm: bool = False) -> dict:
         """Remove a city from a generated world (generate again to rebuild the rest without it)."""
         nid, cslug = slug(net_id), slug(city)
@@ -1004,6 +1025,7 @@ def register(api) -> None:
         items = [{"id": k, **v} for k, v in city_docs(nid).items()]
         return {"ok": True, "id": nid, "items": sorted(items, key=lambda c: c["name"]), "count": len(items)}
 
+    @holds_the_world
     def save_city(net_id: str = "", city: str = "", name: str = "", style: str = "", radius_m: float = 0.0,
                   buildings: str = "", x: float | None = None, y: float | None = None, features: str = "") -> dict:
         """Change one city's style, size, place (x, y: its new centre in cm), building sets

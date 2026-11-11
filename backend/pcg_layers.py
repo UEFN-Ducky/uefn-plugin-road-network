@@ -943,6 +943,9 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
     import random
     layers = sorted((clean(l) for l in layers if l.get("enabled", True)), key=lambda l: (l["order"], l["name"]))
     lo, hi = terrain.get("min"), terrain.get("max")
+    # with a terrain, nothing is placed past its edge (its sampler answers the edge's height out there, so the
+    # ground check alone let forests and a pushed-out city's buildings off the map, Nov 11 2026)
+    on_map = (lambda x, y: lo[0] <= x <= hi[0] and lo[1] <= y <= hi[1]) if lo and hi else (lambda x, y: True)
     if not lo or not hi:
         xs = [r[0] for r in roads] + [c["x"] for c in cities] or [0]
         ys = [r[1] for r in roads] + [c["y"] for c in cities] or [0]
@@ -1056,7 +1059,7 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
             if layer["kind"] == "buildings" and layer["height_min_m"] >= 40 and rnd.random() > 0.08 + 0.92 * core_peak(cities, x, y):
                 continue  # towers cluster at the core and thin out toward the edge: no wall of equal towers
             z = sample_z(x, y)
-            if z is None or (sea is not None and z < sea + 50):
+            if z is None or (sea is not None and z < sea + 50) or not on_map(x, y):
                 continue  # nothing grows under water or off the map
             s = rnd.uniform(layer["scale_min"], layer["scale_max"])
             r = r_base * s

@@ -594,6 +594,50 @@ def place_cities(seed: int, count: int, bounds: tuple, keep: list | None = None,
     return out
 
 
+EDGE_REACH = 1.3  # a city's outline reaches 1.265 x its radius in places (outline()): its edge, as a factor of radius
+EDGE_MARGIN_CM = 20000.0  # and this much more stays on the map (gates, interchanges, the first trees)
+
+
+def fit_inside(towns: list, bounds: tuple, gap_cm: float, keep: list | None = None) -> tuple:
+    """Cities pushed apart (spread) and kept on the map: every city's outline plus EDGE_MARGIN_CM stays inside
+    bounds ((x0, y0), (x1, y1)). A city wider than the map shrinks to fit; when they can't all fit apart, every
+    city shrinks a little until they do. Returns (towns, notes): one note per city that had to shrink."""
+    (x0, y0), (x1, y1) = bounds
+    span = min(x1 - x0, y1 - y0)
+    asked = {t["name"]: t["radius"] for t in towns}
+    towns = [dict(t) for t in towns]
+    for t in towns:
+        t["radius"] = min(t["radius"], max(15000.0, (span / 2 - EDGE_MARGIN_CM) / EDGE_REACH))
+
+    def clamp() -> bool:
+        moved = False
+        for t in towns:
+            m = t["radius"] * EDGE_REACH + EDGE_MARGIN_CM
+            x = min(max(t["x"], x0 + m), x1 - m) if x1 - x0 > 2 * m else (x0 + x1) / 2
+            y = min(max(t["y"], y0 + m), y1 - m) if y1 - y0 > 2 * m else (y0 + y1) / 2
+            if abs(x - t["x"]) > 1 or abs(y - t["y"]) > 1:
+                t["x"], t["y"], moved = round(x), round(y), True
+        return moved
+
+    def crowded() -> bool:
+        return any(math.hypot(a["x"] - b["x"], a["y"] - b["y"]) < a["radius"] + b["radius"] + gap_cm - 100
+                   for i, a in enumerate(towns) for b in towns[i + 1:])
+
+    for _ in range(12):
+        for _ in range(30):  # push apart, pull back onto the map, until both hold
+            towns[:] = spread(towns, gap_cm, keep)
+            if not clamp():
+                break
+        if not crowded():
+            break
+        for t in towns:  # no room for them all at this size: every city a little smaller
+            t["radius"] = max(15000.0, t["radius"] * 0.92)
+    clamp()
+    notes = [f"{t['name']} is {round(t['radius'] / 100)} m, not {round(asked[t['name']] / 100)} m: the map has no "
+             f"room for more" for t in towns if t["radius"] < asked.get(t["name"], 0) - 100]
+    return towns, notes
+
+
 def spread(towns: list, gap_cm: float, keep: list | None = None) -> list:
     """Existing cities pushed apart (each pair moves equally along the line between them) until at least gap_cm
     of open country lies between every two edges; cities already far enough apart stay where they are."""
@@ -1117,7 +1161,7 @@ def freeway_plan(city: dict, opts: dict | None = None):
     """The city's freeway layer (freeways.plan), cached: city_graph, city_layout and generate all ask for it."""
     from . import freeways
     o = city_options(city, opts)
-    key = repr((city.get("name"), city["x"], city["y"], city["radius"], city.get("seed"),
+    key = repr((city.get("name"), city["x"], city["y"], city["radius"], city.get("seed"), city.get("map"),
                 [o[k] for k in ("freeways", "block_m", "downtown", "normal", "collector_every", "core_roads",
                                 "neighbourhood_roads", "canals")],
                 [(a.get("center"), a.get("heading"), a.get("type")) for a in city.get("airports") or []],
@@ -1603,6 +1647,9 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
         bend = rnd.uniform(-1, 1) * o["highway_curve"] * L  # one gentle curve per highway
         via = [[x0 + (x1 - x0) * t + nx * bend * math.sin(math.pi * t), y0 + (y1 - y0) * t + ny * bend * math.sin(math.pi * t)]
                for t in (k / steps for k in range(1, steps))]
+        box = cities[a].get("map")
+        if box:  # its curve stays on the map
+            via = [[min(max(v[0], box[0] + 5000), box[2] - 5000), min(max(v[1], box[1] + 5000), box[3] - 5000)] for v in via]
         if keep:  # a highway goes round a keep zone, never through it
             line, dense = [ends[0]] + via + [ends[1]], []
             for p, q in zip(line, line[1:]):
