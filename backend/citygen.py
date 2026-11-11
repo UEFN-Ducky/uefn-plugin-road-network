@@ -44,6 +44,9 @@ CHOICES = {
     "one_way_core": (("no", "yes"), "no"),  # core side streets as alternating one-way lanes
     "overpasses": (("yes", "no"), "yes"),  # highways bridge over the streets they cross
 }
+# steepest grade per road (rise / run): arterials and highways 4 %, collectors 5-6 %, local streets 8 %,
+# dirt 10 % (CityEngine-style targets for a game, not legal limits). Steeper ground is cut and filled.
+GRADE = {"6L": 0.04, "4L": 0.05, "2S": 0.06, "2L": 0.08, "1W": 0.08, "DT": 0.10}
 BRIDGE_LIFT_CM = 750.0  # clearance a highway rises to over a street it crosses (a real freeway overpass: 7.5 m)
 
 # How City Builder designs a world. Code follows these; an AI building with the plugin follows them too
@@ -84,8 +87,11 @@ OPTIONS = {
     "water_depth_m": (12.0, 0.0, 80.0),  # how deep lake beds drop below the water line
     # roads
     "block_m": (100.0, 50.0, 250.0),   # city block, centre line to centre line
-    "wobble": (0.28, 0.0, 0.45),       # how far organic streets drift (share of a block)
-    "prune": (0.22, 0.0, 0.5),         # share of side streets removed in organic areas
+    # planned grid (Parish & Mueller hierarchy; real cities ~80 % planned): an intersection moves at most 8 %
+    # of a block, the whole intersection at once, so streets stay straight and blocks stay rectangular
+    "wobble": (0.04, 0.0, 0.08),       # how far an intersection may move (share of a block)
+    "prune": (0.12, 0.0, 0.35),        # share of local side streets removed in neighbourhoods / suburbs
+    "collector_every": (4, 2, 8),      # every Nth grid line is a collector (wider, through the city)
     "downtown": (0.4, 0.1, 0.8),       # downtown ring, share of the radius
     "normal": (0.75, 0.2, 0.95),       # normal-city ring; housing beyond it
     "highway_curve": (0.08, 0.0, 0.3), # how far a highway bows out, share of its length
@@ -364,13 +370,9 @@ def city_graph(city: dict, opts: dict | None = None) -> tuple:
             share = zone_share(city, wx, wy)
             if share > 1.0:
                 continue  # outside this city's irregular edge
-            # wobble grows outward: core streets stay straight, suburbs curve (style can force either)
-            if style == "grid":
-                amount = 0.0
-            elif style == "organic":
-                amount = o["wobble"] * (0.6 if share <= down else 1.2)
-            else:
-                amount = 0.0 if share <= down else o["wobble"] * (0.5 if share <= normal else 1.3)
+            # controlled irregularity: the core is exact, everything else moves whole intersections by at
+            # most `wobble` (<= 8 % of a block), so roads stay straight between them
+            amount = 0.0 if style == "grid" or (style == "mixed" and share <= down) else o["wobble"]
             if amount and (ix or iy):
                 lx += rnd.uniform(-1, 1) * amount * block
                 ly += rnd.uniform(-1, 1) * amount * block
@@ -382,8 +384,12 @@ def city_graph(city: dict, opts: dict | None = None) -> tuple:
             if nb not in nodes:
                 continue
             share = max(ring[(ix, iy)], ring[nb])
-            axis = (ix == 0 == nb[0]) or (iy == 0 == nb[1])
-            if axis or share <= down:
+            axis = (ix == 0 == nb[0]) or (iy == 0 == nb[1])  # arterials: the two main axes
+            line = ix if nb[0] == ix else iy  # the grid line this street runs along
+            collector = line % o["collector_every"] == 0
+            if not axis and collector and share > down:  # collectors: a wider street every Nth line
+                kind = o["neighbourhood_roads"] if share > normal else "4L"
+            elif axis or share <= down:
                 kind = o["core_roads"]
                 # one-way pairs: every other side street in the core is a narrow one-way lane
                 if not axis and o["one_way_core"] == "yes" and (ix if nb[0] == ix else iy) % 2:
@@ -404,7 +410,9 @@ def city_graph(city: dict, opts: dict | None = None) -> tuple:
             suburb = min(ring[a], ring[b]) > normal
             floor = 1 if suburb else 2  # a suburb street may end in a cul-de-sac
             chance = o["prune"] * (1.6 if suburb else 1.0)
-            if kind != o["core_roads"] and degree[a] > floor and degree[b] > floor and rnd.random() < chance:
+            line = a[0] if b[0] == a[0] else a[1]
+            local = kind != o["core_roads"] and kind != "4L" and line % o["collector_every"] != 0
+            if local and degree[a] > floor and degree[b] > floor and rnd.random() < chance:
                 degree[a] -= 1
                 degree[b] -= 1
                 continue
@@ -426,6 +434,19 @@ def city_graph(city: dict, opts: dict | None = None) -> tuple:
         edges = [e for e in edges if e[0] in seen]
         nodes = {n: p for n, p in nodes.items() if n in seen}
     return nodes, edges
+
+
+LOT_W_CM, LOT_D_CM = 1600.0, 3500.0  # a lot: 16 m frontage, up to 35 m deep (two back to back in a block)
+
+
+def city_lots(city: dict, opts: dict | None = None) -> list:
+    """The city's lots, cut from the blocks its streets enclose (parcels.lots): [[x, y, yaw, width_cm,
+    depth_cm, front x, front y]]. Buildings fill these, so every one fronts a street square on."""
+    from . import parcels
+    nodes, edges = city_graph(city, opts)
+    rnd = random.Random(f"lots:{city.get('seed', 1)}")
+    return [[x, y, yaw, w, d, fx, fy] for x, y, yaw, w, d, _poly, fx, fy in
+            parcels.lots(nodes, edges, HALF, LOT_W_CM, LOT_D_CM, rnd)]
 
 
 def gate(nodes: dict, city: dict, toward: tuple):
@@ -489,6 +510,7 @@ def build_actor(nodes: dict, edges: list, ground, folder: str, pieces: dict | No
         adj.setdefault(e[0], []).append(e)
         adj.setdefault(e[1], []).append(e)
     pts, segs, ends = [], [], {}
+    glim: dict = {}  # point -> steepest grade of the roads through it (the flattest road wins)
     ids = iter(range(1 << 30))
 
     def angle(p, q):
@@ -514,6 +536,8 @@ def build_actor(nodes: dict, edges: list, ground, folder: str, pieces: dict | No
                 pts.append(m)
                 segs.append(_segment(next(ids), j["i"], m["i"], "", folder))
                 ends[(id(e), n)] = m["i"]
+                for i in (j["i"], m["i"]):
+                    glim[i] = min(glim.get(i, 1.0), GRADE.get(e[2], 0.08))
         else:
             steps = [first_step(e, n) for e in arms]
             yaw = angle(steps[0], steps[1]) if len(steps) == 2 else angle((x, y), steps[0])
@@ -543,10 +567,12 @@ def build_actor(nodes: dict, edges: list, ground, folder: str, pieces: dict | No
         lift[chain[-1]] = float(nodes[e[1]][2]) if len(nodes[e[1]]) > 2 else 0.0
         for k, (a, b) in enumerate(zip(chain, chain[1:])):
             segs.append(_segment(next(ids), a, b, kinds[k], folder, lifted=lift.get(a, 0) > 0 or lift.get(b, 0) > 0))
+            for i in (a, b):
+                glim[i] = min(glim.get(i, 1.0), GRADE.get(kinds[k], 0.08))
     by_i = {p["i"]: p for p in pts}
     for s in segs:
         st.retangent(by_i, s)
-    st.drape(pts, segs, {p["i"]: p["z"] for p in pts}, iters=4)
+    st.drape(pts, segs, {p["i"]: p["z"] for p in pts}, iters=4, max_grade=glim)
     return {"points": pts, "segments": segs}
 
 
@@ -761,6 +787,26 @@ def _demo() -> None:
     city = actors[f"{cities[0]['name']} Roads"]
     assert st.pending_nodes(city["points"], city["segments"]), "junctions wait for generated pieces"
     assert len(actors["Highways"]["segments"]) >= 2
+    # planned grid: every street between neighbouring intersections is one block long within the 8 % jitter
+    # (both ends move at most 8 % each), and collectors run every 4th line
+    for style in ("mixed", "organic"):
+        city = {"x": 0, "y": 0, "radius": 60000, "seed": 11, "style": style}
+        gn, ge = city_graph(city, {"wobble": 0.2})  # asked for more: clamped to 0.08
+        block = OPTIONS["block_m"][0] * 100
+        for a, b, _ in ge:
+            L = math.dist(gn[a], gn[b])
+            assert block * (1 - 2 * 0.08 * 1.42) <= L <= block * (1 + 2 * 0.08 * 1.42), (style, L)
+        assert {"4L"} <= {k for _, _, k in ge}, "collectors / arterials exist"
+    # graded roads: on a 20 % hill no ground-level street segment is steeper than its class allows
+    hill = lambda x, y: x * 0.2
+    ga = build_actor({0: [0, 0], 1: [10000, 0], 2: [20000, 0], 3: [30000, 0]},
+                     [[0, 1, "2L"], [1, 2, "2L"], [2, 3, "2L"]], hill, "/Game/X")
+    gb = {p["i"]: p for p in ga["points"]}
+    for s in ga["segments"]:
+        a, b = gb[s["a"]], gb[s["b"]]
+        run = math.hypot(a["x"] - b["x"], a["y"] - b["y"])
+        if a["raise"] and b["raise"] and run > 0:
+            assert abs(a["z"] - b["z"]) <= GRADE["2L"] * run + 2, (abs(a["z"] - b["z"]) / run)
     # rule: one city alone gets no highway and so no interchange
     solo = generate(cities[:1], lambda x, y: 0.0, "/Game/X/WorldGen/Roads", seed=3, opts={"interchange": "cloverleaf"})
     assert "Highways" not in solo, "no stand-alone highway or cloverleaf"

@@ -151,7 +151,11 @@ def clean(layer: dict) -> dict:
                 weight = max(0.01, float((m or {}).get("weight", 1) if isinstance(m, dict) else 1))
             except (TypeError, ValueError):
                 weight = 1.0
-            meshes.append({"path": path, "weight": weight})
+            entry = {"path": path, "weight": weight}
+            size = (m or {}).get("size_cm") if isinstance(m, dict) else None
+            if isinstance(size, (list, tuple)) and len(size) == 3 and all(isinstance(v, (int, float)) and v > 0 for v in size):
+                entry["size_cm"] = [float(v) for v in size]  # buildings: the model's size, so lots fit it
+            meshes.append(entry)
     out["meshes"] = meshes
     out["avoid_roads"] = bool(layer.get("avoid_roads", True))
     out["avoid"] = [str(a) for a in (layer.get("avoid") or []) if str(a).strip()]
@@ -765,6 +769,8 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
     for x, y, half, _, _ in roads:
         road_hash.add(x, y, half, (x, y, half))
     kept: dict = {}
+    taken: set = set()  # lots already built on (by front point)
+    lot_layers: set = set()  # layers that filled lots
     out = {}
     for layer in layers:
         rnd = random.Random(f"{layer['seed']}:{layer['name']}")  # different densities never share spots in PCG either
@@ -791,6 +797,14 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                     continue  # a meadow, not a forest
                 cands.append((x, y, rnd.uniform(0, 360)))
             thin = full / max(1, len(cands)) if cands else 1.0
+        elif layer["kind"] == "buildings" and layer["width_m"] < BIG_SITE_M and any(c.get("lots") for c in cities):
+            # everyday buildings fill the lots cut from the city's blocks (parcels): each faces its street square
+            # on, its front yard is the layer's setback, and it is sized to its lot, never over a road
+            for c in cities:
+                for lx, ly, lyaw, lw, ld, frx, fry in c.get("lots") or []:
+                    cands.append((lx, ly, lyaw, "lot", lw, ld, frx, fry))
+            rnd.shuffle(cands)  # which layer gets which free lot is mixed, not swept from one corner
+            thin = 1.0
         else:
             # every road sample on both sides is a candidate; the placing loop below takes the first good one
             # once `spacing` has passed since the last placed one on that side (a lot blocked by a cross
@@ -821,6 +835,18 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
         for cand in cands:
             x, y, yaw = cand[:3]
             along = len(cand) == 5
+            lot = len(cand) == 8
+            if lot:
+                if (cand[6], cand[7]) in taken:
+                    continue  # an earlier layer built on this lot
+                lw, ld = cand[4] / 100, cand[5] / 100
+                bw = round(min(layer["width_m"] * (1 + layer["size_jitter"] * 0.5), lw * 0.85), 1)
+                bd = round(min(layer["depth_m"] * (1 + layer["size_jitter"] * 0.3), ld - layer["setback_m"] - 2), 1)
+                if bw < layer["width_m"] * 0.6 or bd < layer["depth_m"] * 0.5:
+                    continue  # the lot is too small for this kind of building
+                f = math.radians(yaw)  # centre: the front lot line, back by the setback and half the building
+                back = (layer["setback_m"] + bd / 2) * 100
+                x, y = cand[6] - math.cos(f) * back, cand[7] - math.sin(f) * back
             if along and cand[3] - last_at[cand[4]] < spacing:
                 continue  # too soon after the last one on this side of the street
             if not _in_where(layer["where"], cities, x, y):
@@ -836,18 +862,22 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
             r = r_base * s
             # scatter keeps the clearance; roadside layers sit at their setback, so only their own size counts
             clear = layer["road_clear_m"] * 100 if layer["kind"] in SCATTERED else 0.0
-            if layer["avoid_roads"]:
+            if layer["avoid_roads"] and not lot:  # a lot is off the roads by construction
                 if layer["kind"] == "buildings":  # the lot as the rectangle it is, facing its street
                     if _lot_hits_road(road_hash, x, y, yaw, layer["width_m"] * 50, layer["depth_m"] * 50):
                         continue
                 elif any(True for _ in road_hash.near(x, y, r + clear)):
                     continue
-            if any(True for other in avoid for _ in kept[other].near(x, y, r)):
+            # lots never overlap each other, so a lot only keeps clear of layers that did NOT use lots (big sites)
+            if any(True for other in avoid if not (lot and other in lot_layers) for _ in kept[other].near(x, y, r)):
                 continue
             # one of a kind per `spacing` in any direction (two hospitals never sit across the street from
             # each other); dense layers just must not overlap
-            gap = max(r, spacing * 0.5) if along and spacing > 4 * r else r
-            if layer["self_prune"] and any(True for _ in own.near(x, y, gap)):
+            if lot:  # only one-of-a-kind spacing (100 m+) applies on lots; neighbours sit lot to lot
+                gap = spacing * 0.5 if spacing >= 10000 else 0.0
+            else:
+                gap = max(r, spacing * 0.5) if along and spacing > 4 * r else r
+            if layer["self_prune"] and gap and any(True for _ in own.near(x, y, gap)):
                 continue
             own.add(x, y, r)
             if along:
@@ -860,14 +890,18 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                 names, weights = list(layer["forms"]), list(layer["forms"].values())
                 j = layer["size_jitter"]
                 row += [FORM_NAMES.index(rnd.choices(names, weights)[0]),
-                        round(layer["width_m"] * rnd.uniform(1 - j, 1 + j * 0.5), 1),
-                        round(layer["depth_m"] * rnd.uniform(1 - j, 1 + j * 0.3), 1)]
+                        bw if lot else round(layer["width_m"] * rnd.uniform(1 - j, 1 + j * 0.5), 1),
+                        bd if lot else round(layer["depth_m"] * rnd.uniform(1 - j, 1 + j * 0.3), 1)]
+                if lot:
+                    taken.add((cand[6], cand[7]))
                 own_heights.add(x, y, 0.0, row[5])
-                pad, found, paths = _lot_ground(layer, sample_z, x, y, yaw, row[7], row[8])
+                pad, found, paths, walls = _lot_ground(layer, sample_z, x, y, yaw, row[7], row[8])
                 row[2] = round(pad - layer["sink_cm"])
-                row += [found, paths]
+                row += [found, paths, walls]
             pts.append(row)
         kept[layer["name"]] = own
+        if any(len(c) == 8 for c in cands[:1]):
+            lot_layers.add(layer["name"])
         count = int(len(pts) * thin) if layer["kind"] in SCATTERED else len(pts)
         shown_cap = (foliage_limit or limit) if layer["kind"] == "foliage" else limit
         if len(pts) > shown_cap:
@@ -877,11 +911,17 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                               **({"size_m": [layer["width_m"], layer["depth_m"]], "setback_m": layer["setback_m"],
                                   "forms": FORM_NAMES, "driveway": layer["driveway"], "walkway": layer["walkway"],
                                   "row": "x, y, pad z, yaw, scale, height_m, form, width_m, depth_m, foundation_m, "
-                                         "paths [[width_m, [x, y, z, ...]]]"} if layer["kind"] == "buildings" else {})}
+                                         "paths [[width_m, [x, y, z, ...]]], walls [[x, y, yaw, length_m, height_m]]"} if layer["kind"] == "buildings" else {})}
     return out
 
 
+BIG_SITE_M = 25.0  # wider than a lot (~17 m frontage, fits up to ~1.5x): offices, towers, civic, mansions take
+# road frontage; apartments, shops, gas stations and houses fill the lots cut from the blocks
 WALK_M, DRIVE_M = 1.6, 3.5  # path widths
+WALL_MIN_CM = 50.0  # a cut deeper than this along a lot edge gets a retaining wall
+# lots whose front is a full-width sidewalk apron (plaza) to the kerb rather than a garden walkway
+FRONTAGE_ROLES = ("shop", "mall", "office", "skyscraper", "apartment", "hospital", "school", "police",
+                  "fire_station", "gas_station")
 STEEP = 0.15  # a driveway steeper than 15 % winds across the slope instead of straight down it
 
 
@@ -889,7 +929,10 @@ def _lot_ground(layer: dict, sample_z, x: float, y: float, yaw: float, w_m: floa
     """A lot on a hill the way it is built: a level pad at the corners' mean height (cut uphill, fill
     downhill), a foundation as deep as the ground falls away under it, and the paths from its front to
     the kerb: a walkway from the door, a driveway at one side (winding when steep).
-    Returns (pad z cm, foundation m, paths [[width_m, [x, y, z, ...]]])."""
+    Shops, offices, apartments and civic buildings get a full-width frontage (a sidewalk apron from the facade
+    to the kerb, ramped from the pad to the street) instead of a narrow walkway. Where the ground stands above
+    the pad along a lot edge (the uphill cut) a retaining wall holds it.
+    Returns (pad z cm, foundation m, paths [[width_m, [x, y, z, ...]]], walls [[x, y, yaw, length_m, height_m]])."""
     fx, fy = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))  # +X faces the street
     sx, sy = -fy, fx
     hd, hw = d_m * 50, w_m * 50
@@ -913,10 +956,22 @@ def _lot_ground(layer: dict, sample_z, x: float, y: float, yaw: float, w_m: floa
         paths.append([width, [round(v) for p in pts for v in p]])
 
     if layer["walkway"]:
-        path(WALK_M, 0.0)
+        path(round(w_m * 0.9, 1) if layer["role"] in FRONTAGE_ROLES else WALK_M, 0.0)
     if layer["driveway"]:
         path(DRIVE_M, -hw * 0.6)
-    return pad, found, paths
+    walls = []
+    for (ea, eb), (la, lb), along in ((((1, 0), (0, 1)), (hd, hw), w_m), (((-1, 0), (0, 1)), (hd, hw), w_m),
+                                       (((0, 1), (1, 0)), (hw, hd), d_m), (((0, -1), (1, 0)), (hw, hd), d_m)):
+        # the edge at offset (ea * hd along +X, eb * hw sideways); sample its middle and both ends
+        mx, my = x + fx * ea[0] * hd + sx * ea[1] * hw, y + fy * ea[0] * hd + sy * ea[1] * hw
+        ux, uy = fx * eb[0] + sx * eb[1], fy * eb[0] + sy * eb[1]  # along the edge
+        half = along * 50
+        zs = [sample_z(mx + ux * t, my + uy * t) for t in (-half, 0.0, half)]
+        top = max([z for z in zs if z is not None] or [pad])
+        if top - pad > WALL_MIN_CM:
+            walls.append([round(mx), round(my), round(math.degrees(math.atan2(uy, ux)), 1), round(along, 1),
+                          round((top - pad) / 100, 2)])
+    return pad, found, paths, walls
 
 
 def pads(previewed: dict, margin_cm: float = 400.0) -> list:
@@ -1012,8 +1067,12 @@ def _demo() -> None:
     # the walkway goes straight down and the driveway winds across the slope
     house = clean({"name": "H", "kind": "buildings", "role": "house"})
     slope = lambda x, y: -0.3 * x  # +X (the street side) is downhill
-    pad, found, paths = _lot_ground(house, slope, 0, 0, 0.0, 12, 12)
+    pad, found, paths, walls = _lot_ground(house, slope, 0, 0, 0.0, 12, 12)
     assert abs(pad) < 1 and found == 1.8, (pad, found)
+    # the back edge (-X) is 1.8 m above the pad: a retaining wall there, as long as the lot is wide
+    assert any(abs(w[4] - 1.8) < 0.05 and w[3] == 12 for w in walls), walls
+    shop = clean({"name": "S", "kind": "buildings", "role": "shop"})
+    assert _lot_ground(shop, lambda x, y: 0.0, 0, 0, 0.0, 20, 15)[2][0][0] == 18.0, "a shop fronts the street full width"
     walk, drive = paths
     assert len(walk[1]) == 6 and len(drive[1]) == 9 and drive[1][2] == round(pad) and drive[1][-1] < pad - 100, paths
     from . import citygen as cg
@@ -1024,6 +1083,24 @@ def _demo() -> None:
     assert abs(g(1500, 0) - (-450)) < 30, "the hill away from the lot is untouched"
     bad = clean({"name": "x", "kind": "nope", "density": -5, "scale_min": 3, "scale_max": 1})
     assert bad["kind"] == "scatter" and bad["density"] == 0.01 and bad["scale_min"] == 1 and bad["scale_max"] == 3
+    # parcels: houses fill the lots cut from a real grid city's blocks, one per lot, facing their street
+    from . import citygen as cg
+    town = {"name": "L", "x": 0, "y": 0, "radius": 40000, "seed": 4, "style": "grid"}
+    town["districts"] = cg.districts(town)
+    town["lots"] = cg.city_lots(town)
+    assert len(town["lots"]) > 200, len(town["lots"])
+    houses = clean({"name": "Houses", "kind": "buildings", "role": "house", "where": "cities", "width_m": 12,
+                    "depth_m": 12, "setback_m": 6, "spacing_m": 20})
+    hv = preview([houses], [town], {"min": [-50000, -50000], "max": [50000, 50000]}, [], lambda x, y: 0.0)["Houses"]
+    assert hv["count"] > 150, hv["count"]
+    by_front = {}
+    for lx, ly, lyaw, lw, ld, frx, fry in town["lots"]:
+        by_front[(round(lx), round(ly))] = (lyaw, frx, fry)
+    for row in hv["points"]:
+        f = math.radians(row[3])  # the house's front faces +X: one setback + half its depth behind a lot's front
+        front = (row[0] + math.cos(f) * (600 + row[8] * 50), row[1] + math.sin(f) * (600 + row[8] * 50))
+        assert any(math.dist(front, (frx, fry)) < 30 and abs((row[3] - lyaw + 180) % 360 - 180) < 1
+                   for lyaw, frx, fry in by_front.values()), row[:4]
     print("pcg layers ok", len(full), "layers,", len(out["nodes"]), "nodes", len(out["edges"]), "wires,",
           {n: v["count"] for n, v in pv.items() if v["count"]})
 if __name__ == "__main__":

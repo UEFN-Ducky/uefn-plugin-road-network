@@ -23,6 +23,7 @@ import time
 from . import citygen as cg
 from . import kit_bake
 from . import pcg_layers as pl
+from . import pieces
 from . import splines_text as st
 from . import uefn_input
 from . import uefn_memory
@@ -687,6 +688,8 @@ def register(api) -> None:
             api.search.upsert(f"net.{nid}.city.{cslug}", t["name"], f"City {t['name']} in world {name}: {t['style']} roads")
             data.put(f"net.{nid}.city.{cslug}", {**t, "name": t["name"], "roads": f"{t['name']} Roads",
                                                  "districts": cg.districts(t, opts),
+                                                 # lots cut from its blocks: everyday buildings fill these
+                                                 "lots": cg.city_lots(t, opts),
                                                  "buildings": prev.get("buildings") or {"downtown": [], "normal": [], "housing": []}})
         doc = data.get(f"net.{nid}")
         doc["generated"] = {"seed": int(seed), "size_km": size / 100000, "relief_m": float(relief_m),
@@ -1375,6 +1378,25 @@ def register(api) -> None:
         an AI building a world with this plugin follows these rules, never its own."""
         return {"ok": True, "options": {k: {"default": d, "min": lo, "max": hi} for k, (d, lo, hi) in cg.OPTIONS.items()},
                 "highway": list(cg.HIGHWAYS), "styles": list(cg.STYLES), "rules": cg.RULES}
+
+    @api.tool(intent=GEN_INTENT, listener=False)
+    def road_network_piece_manifest(check: bool = False) -> dict:
+        """Every mesh a City Builder city is made of, with the spec to model it in Blender: name, folder, size
+        in cm, pivot / facing / material-slot conventions, what places it (building role, layer, interior,
+        grading) and the pieces still WANTED (with the lot size they must fit). An AI builds the missing ones
+        in Blender from this, imports them under the listed folder, and adds new buildings to a layer's meshes
+        with `size_cm` - no plugin code. check=true also asks UEFN which pieces the project already has."""
+        root = kit_root() or "/<project>"
+        out = pieces.manifest(root)
+        if check and kit_root():
+            paths = [p["path"] for p in out["pieces"] if p.get("path")]
+            have = {}
+            for k in range(0, len(paths), 50):
+                have.update(listener("road_network_assets_exist", {"paths": paths[k:k + 50]}).get("exist") or {})
+            for p in out["pieces"]:
+                if p.get("path"):
+                    p["in_project"] = have.get(p["path"])
+        return {"ok": True, **out}
 
     @api.tool(intent=GEN_INTENT, listener=False)
     def road_network_cities(net_id: str = "") -> dict:

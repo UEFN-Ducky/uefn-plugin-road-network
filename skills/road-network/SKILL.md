@@ -107,6 +107,28 @@ at its corners' mean height (cut and fill) and `foundation_m` (plinth depth wher
 rows add `foundation_m, paths`. The generated heightmap (road_network_heightmap) has the pads cut in; an
 existing terrain is never edited, so there the foundations and paths do the work.
 
+## How a city is generated (the math, in order)
+Roads define the city, blocks are what roads enclose, lots are cut from blocks, buildings fit lots.
+1. **Planned grid** (`citygen.city_graph`): one orientation per city; intersections on a block grid (`block_m`
+   100), each moved as a whole by at most `wobble` (default 4 %, max 8 % of a block), so streets stay straight;
+   hierarchy: the two main axes are arterials, every `collector_every` (4th) line a collector, the rest local;
+   `prune` (12 %) drops only local side streets (suburb cul-de-sacs allowed).
+2. **Grading** (`GRADE`, `st.drape(max_grade=...)`): steepest rise per road (6L 4 %, 4L 5 %, 2S 6 %, 2L / 1W
+   8 %, dirt 10 %); steeper ground is cut and filled by the live splines. Bridges / ramps sit over the highest
+   ground within 15 m.
+3. **Blocks -> lots** (`parcels.py`, Vanegas 2012): faces of the street graph, inset by road half width +
+   3.8 m sidewalk zone, cut into back-to-back strips then 16 m frontages (`LOT_W_CM` / `LOT_D_CM` 16 x 35 m);
+   every lot fronts a street square on; corner lots front their short side; stored as each city's `lots`.
+4. **Buildings**: layers narrower than 25 m (houses, shops, apartments, gas stations) fill lots, one per lot,
+   set back from the front lot line; wider ones (offices, towers, civic, mansions, industry) take road frontage
+   first and the lot fill keeps clear of them.
+5. **Lot grading** (`_lot_ground`): level pad at the corners' mean, plinth where the ground falls away,
+   retaining wall (`SM_Kit_RetainingWall`) on any edge where the ground stands > 0.5 m above the pad, a
+   full-width frontage apron (shops, offices, apartments, civic) or walkway + driveway (houses) to the kerb.
+6. **Pieces**: `road_network_piece_manifest` lists every mesh with size, pivot, slots and what places it, plus
+   the WANTED ones; build them in Blender to that spec, import to the folder, add buildings to a layer's
+   meshes with `size_cm` (they fit lots like kit buildings).
+
 ## Design rules (the concept comes from the plugin, not from the AI)
 `road_network_generate_options().rules` is the list City Builder's code follows; an AI building with the plugin
 follows the same list and never invents its own layout. In short: highways only join two cities; interchanges only

@@ -581,6 +581,8 @@ _STREET_KIT = {
     "SM_Kit_SofaSet": (["Fabric", "Wood"], [("box", 0, (0, 0, 0), (0, 0, 0), (90, 200, 42)),
                                             ("box", 0, (-40, 0, 42), (0, 0, 0), (20, 200, 43)),
                                             ("box", 1, (90, 0, 0), (0, 0, 0), (60, 100, 38))]),
+    # retaining wall for an uphill lot edge: 1 m long, 30 cm thick, 1 m tall, scaled to the edge and the cut
+    "SM_Kit_RetainingWall": (["Plinth"], [("box", 0, (0, 0, 0), (0, 0, 0), (100, 30, 100))]),
     # nature for the Bushes / Rocks PCG layers: low-poly lumps (instanced by the hundred thousand)
     "SM_Kit_Bush": (["Leaf"], [("sph", 0, (0, 0, 0), (0, 0, 0), (65, 5, 7)), ("sph", 0, (45, 20, 0), (0, 0, 0), (50, 5, 7)),
                                ("sph", 0, (-35, -30, 0), (0, 0, 0), (48, 5, 7))]),
@@ -689,6 +691,13 @@ def road_network_ism_ready(meshes: list | None = None) -> dict:
             fixed.append(base)
     _save_batch(fixed)
     return {"ok": True, "fixed": [m.get_name() for m in fixed], "locked": sorted(set(locked)), "missing": missing}
+
+
+@register("road_network_assets_exist")
+def road_network_assets_exist(paths: list | None = None) -> dict:
+    """Which of these asset paths the project has (read-only, no loading)."""
+    eal = unreal.EditorAssetLibrary
+    return {"ok": True, "exist": {p: bool(eal.does_asset_exist(p.split(".")[0])) for p in (paths or [])}}
 
 
 @register("road_network_save_assets")

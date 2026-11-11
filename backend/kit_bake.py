@@ -97,6 +97,7 @@ KIT = {
     "SM_Kit_DeskSet": ("Kit/Street", -80, -40, 0, 85, 40, 115),
     "SM_Kit_SofaSet": ("Kit/Street", -55, -100, 0, 120, 100, 85),
     "SM_Kit_ShopShelf": ("Kit/Street", -30, -100, 0, 30, 100, 180),
+    "SM_Kit_RetainingWall": ("Kit/Street", -50, -15, 0, 50, 15, 100),
     "SM_Kit_Bush": ("Kit/Street", -83, -95, 0, 110, 85, 130),
     "SM_Kit_Rock": ("Kit/Street", -80, -70, -20, 85, 70, 70),
 }
@@ -185,7 +186,7 @@ def bake(previewed: dict, root: str) -> tuple:
         role = layer.get("role")
         pts = layer.get("points") or []
         if layer.get("meshes"):  # the person's / an AI's own layer: exactly its meshes, never a guessed kit role
-            _own(groups, layer["meshes"], pts)
+            _own(groups, layer["meshes"], pts, layer.get("kind"), root)
             baked[name] = len(pts)
         elif layer.get("kind") == "buildings" and role == "park":
             trees = 0
@@ -326,9 +327,11 @@ def object_path(path: str) -> str:
     return path if "." in tail else f"{path}.{tail}"
 
 
-def _own(groups: dict, meshes: list, pts: list) -> None:
+def _own(groups: dict, meshes: list, pts: list, kind: str = "", root: str = "") -> None:
     """Points of a layer with its own meshes: a weighted pick per point (stable for its position), the point's
-    yaw and scale as the preview placed it (random yaw, scale range, sink: the layer's settings)."""
+    yaw and scale as the preview placed it (random yaw, scale range, sink: the layer's settings).
+    A buildings layer whose mesh gives `size_cm` [x depth, y width, z height] (the piece manifest's spec) is
+    fitted to each lot like a kit building and gets its pad pieces (plinth, paths, retaining walls)."""
     paths = [object_path(m["path"] if isinstance(m, dict) else m) for m in meshes]
     weights = [float(m.get("weight", 1)) if isinstance(m, dict) else 1.0 for m in meshes]
     total = sum(weights) or 1.0
@@ -339,6 +342,14 @@ def _own(groups: dict, meshes: list, pts: list) -> None:
             roll -= weights[k]
             k += 1
         s = p[4] if len(p) > 4 else 1.0
+        size = meshes[k].get("size_cm") if isinstance(meshes[k], dict) else None
+        if kind == "buildings" and size and len(p) > 8:
+            lo, hi = SCALE_RANGE
+            fit = [max(lo, min(hi, p[8] * 100 / size[0])), max(lo, min(hi, p[7] * 100 / size[1])),
+                   max(lo, min(hi, p[5] * 100 / size[2]))]
+            groups.setdefault(paths[k], []).append([p[0], p[1], p[2], p[3], *[round(v, 3) for v in fit]])
+            _ground_pieces(groups, root, p, p[0], p[1], p[2], p[3], p[7] * 100, p[8] * 100)
+            continue
         groups.setdefault(paths[k], []).append([p[0], p[1], p[2], p[3], s, s, s])
 
 
@@ -378,6 +389,9 @@ def _ground_pieces(groups: dict, root: str, p: list, x, y, z, yaw, w, d) -> None
     if found > 0.3:
         groups.setdefault(path("SM_Kit_Plinth", root), []).append([x, y, z, yaw, round(d / 100, 2), round(w / 100, 2),
                                                                   round(found + 0.3, 2)])
+    for wx, wy, wyaw, length, height in (p[11] if len(p) > 11 else []):  # uphill cut: a wall from pad to ground
+        groups.setdefault(path("SM_Kit_RetainingWall", root), []).append(
+            [wx, wy, z, wyaw, round(length, 2), 1.0, round(height + 0.2, 2)])
     for width, flat in (p[10] if len(p) > 10 else []):
         for i in range(3, len(flat) - 2, 3):
             ax, ay, az, bx, by, bz = flat[i - 3], flat[i - 2], flat[i - 1], flat[i], flat[i + 1], flat[i + 2]
@@ -410,6 +424,10 @@ def _demo() -> None:
     assert plinth[4:7] == [12.0, 12.0, 2.1], plinth
     slab = g2[path("SM_Kit_PathSlab", "/R")][0]
     assert slab[4] == 5.0 and slab[5] == 1.6 and slab[7] < -15, slab
+    walled = {"Houses": {"kind": "buildings", "role": "house",
+                         "points": [[0, 0, 500, 0, 1, 7, 0, 12, 12, 0, [], [[-600, 0, 90.0, 12, 1.8]]]]}}
+    wall = bake(walled, "/R")[0][path("SM_Kit_RetainingWall", "/R")][0]
+    assert wall[:4] == [-600, 0, 500, 90.0] and wall[4:7] == [12, 1.0, 2.0], wall
     assert g2[path("SM_Kit_ParkingLot", "/R")][0][4:7] == [40.0, 30.0, 1.0]
     tall = [p for p, rows in groups.items() if "SM_Kit_" not in p and any(r[0] == 0 for r in rows)]
     assert len(tall) >= 2 and all("SM_City_DT_" in p or "SM_Sky" in p for p in tall), "a 110 m lot gets a whole multi-part tower"
@@ -429,6 +447,11 @@ def _demo() -> None:
     assert set(go) == {"/Game/Garden/SM_Tulips.SM_Tulips", "/Game/Garden/SM_Roses.SM_Roses"} and bo == {"Flower beds": 400} and not mo, go.keys()
     assert 2.0 < len(go["/Game/Garden/SM_Tulips.SM_Tulips"]) / len(go["/Game/Garden/SM_Roses.SM_Roses"]) < 4.5, "weights hold"
     assert own_meshes(mine) == sorted(go)
+    # a Blender building with its manifest size fits its lot: 24 m deep lot / 12 m model = x2 (clamped to 2)
+    blds = {"Mine": {"kind": "buildings", "role": "shop", "meshes": [{"path": "/G/SM_MyShop", "size_cm": [1200, 1500, 900]}],
+                     "points": [[0, 0, 0, 0, 1, 9, 0, 15, 24, 1.0, [], []]]}}
+    gm = bake(blds, "/R")[0]
+    assert gm["/G/SM_MyShop.SM_MyShop"][0][4:7] == [2.0, 1.0, 1.0] and path("SM_Kit_Plinth", "/R") in gm, gm
     park = {"Parks": {"kind": "buildings", "role": "park", "points": [[0, 0, 0, 0, 1, 0, 0, 40, 40, 0, []]]}}
     g3, b3, _ = bake(park, "/R")
     trees = sum(len(v) for k, v in g3.items() if "SM_V4_Tree" in k)
