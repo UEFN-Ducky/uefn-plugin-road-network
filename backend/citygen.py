@@ -550,8 +550,13 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
             # most `wobble` (<= 8 % of a block), so roads stay straight between them
             amount = 0.0 if style == "grid" or (style == "mixed" and share <= down) else o["wobble"]
             if amount and (ix or iy):
-                lx += rnd.uniform(-1, 1) * amount * block
-                ly += rnd.uniform(-1, 1) * amount * block
+                # main roads (collectors and the axes, every collector_every-th line) stay dead straight, as real
+                # arterials do; freeway interchanges and ramps land on them exactly
+                jx, jy = rnd.uniform(-1, 1), rnd.uniform(-1, 1)
+                if ix % o["collector_every"]:
+                    lx += jx * amount * block
+                if iy % o["collector_every"]:
+                    ly += jy * amount * block
             nodes[(ix, iy)] = [cx + c * lx - s * ly, cy + s * lx + c * ly]
             ring[(ix, iy)] = share
     edges = []
@@ -619,6 +624,19 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
         nodes = {n: p for n, p in nodes.items() if n in seen}
     fw = freeway_plan(city, o)
     if fw.lines:  # a street a low ramp or an at-grade freeway would cut gives way (streets pass under viaducts)
+        # the cross road keeps its interchange width through the whole interchange (ramps were sized for it)
+        for ic in fw.interchanges:
+            if not ic.get("b_axis"):
+                continue
+            bx, by = ic["b_axis"]
+            for e in edges:
+                p, q = nodes[e[0]], nodes[e[1]]
+                L = math.dist(p[:2], q[:2]) or 1.0
+                along = abs((q[0] - p[0]) * bx + (q[1] - p[1]) * by) / L
+                mx, my = (p[0] + q[0]) / 2 - ic["at"][0], (p[1] + q[1]) / 2 - ic["at"][1]
+                off = abs(mx * by - my * bx)  # distance of the edge's middle from the cross road's line
+                if along > 0.97 and off < 1500 and math.hypot(mx, my) < 20000 and HALF.get(e[2], 0) < HALF[ic["cross_road"]]:
+                    e[2] = ic["cross_road"]
         edges = [e for e in edges if not fw.street_blocked(nodes[e[0]], nodes[e[1]], HALF.get(e[2], 500.0))]
         used = {n for e in edges for n in e[:2]}
         nodes = {n: p for n, p in nodes.items() if n in used}
@@ -1532,6 +1550,11 @@ def _demo() -> None:
     assert "stack" in kinds and {"diamond", "parclo"} & set(kinds), kinds
     rep = freeway_report(big)
     assert rep["validation"]["ok"], {k: v for k, v in rep["validation"].items() if v}
+    # every ramp lands on its road in jittered (mixed) cities of any seed: main roads are straight lines
+    for s in range(1, 9):
+        r = freeway_report({"name": "K", "x": 0, "y": 0, "radius": 160000, "seed": s, "style": "mixed"},
+                           {"core_roads": "6L", "one_way_core": "yes"})["validation"]
+        assert r["ok"], (s, {k: v for k, v in r.items() if v and k != "ok"})
     lay = city_layout(big)
     assert lay["lots"] and not any(fw.blocked(r[0], r[1], 0 if r[8] is True else 0.5 * max(r[3], r[4]))
                                    for r in lay["lots"])

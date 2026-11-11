@@ -328,7 +328,8 @@ def plan(city: dict, o: dict) -> Plan:
             bld = interchange(kind, f, FW_HALF, cg.HALF.get(road, 1400.0), lambda a, t=t, lf=lf: lf(t + a), lambda b: 0.0,
                               ("ic", name, n), frontage_b=block / 2, frontage_a=math.ceil((DIAMOND_A + 4000) / block) * block)
             out.add(bld, "6L")
-            out.interchanges.append({"kind": kind, "at": [round(cx), round(cy)], "freeway": name, "cross_road": road})
+            out.interchanges.append({"kind": kind, "at": [round(cx), round(cy)], "freeway": name, "cross_road": road,
+                                     "b_axis": [round(-ax_w[1], 4), round(ax_w[0], 4)]})
             done.append(t)
     if two:
         cx, cy = W(*stack_at)

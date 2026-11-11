@@ -50,8 +50,13 @@ def register(api) -> None:
             except PermissionError as exc:
                 return {"ok": False, "error": str(exc)}
             except (KeyError, ValueError, TypeError, IndexError) as exc:
-                # never a bare traceback: what failed, and where the names that do exist are listed
-                return {"ok": False, "error": f"{fn.__name__}: {type(exc).__name__}: {exc}",
+                # never a bare traceback: what failed, the plugin line it failed on, and where the names that do
+                # exist are listed
+                import traceback
+                own = [f for f in traceback.extract_tb(exc.__traceback__) if "road-network" in f.filename
+                       or "road_network" in f.filename or "backend" in f.filename]
+                at = f" (at {os.path.basename(own[-1].filename)}:{own[-1].lineno} in {own[-1].name})" if own else ""
+                return {"ok": False, "error": f"{fn.__name__}: {type(exc).__name__}: {exc}{at}",
                         "fix": "Check the arguments against road_network_describe(net_id): it lists the worlds, "
                                "cities, layers, roles, forms, build modes and stages that exist. Ids are "
                                "lower-case slugs; layer and options arguments are JSON strings."}
@@ -736,9 +741,9 @@ def register(api) -> None:
             return {"ok": False, "error": "No room for that many cities: make the map bigger or ask for fewer."}
         ter = base or cg.terrain(int(seed), size, max(0.0, float(relief_m)) * 100, towns, center=(center_x, center_y),
                                  opts=opts, keep=keep)
-        water = ter.get("sea")
+        sea_level = ter.get("sea")
         # roads never dive into a lake: across water they stay 1.5 m above it (a causeway)
-        road_ground = ((lambda x, y: max(st.sample_grid(ter, x, y) or 0.0, water + 150)) if water is not None
+        road_ground = ((lambda x, y: max(st.sample_grid(ter, x, y) or 0.0, sea_level + 150)) if sea_level is not None
                        else (lambda x, y: st.sample_grid(ter, x, y) or 0.0))
         wet = cg.wet_from(ter)  # roads know the water: main roads and highways bridge it, side streets stop
         bridges: list = []
