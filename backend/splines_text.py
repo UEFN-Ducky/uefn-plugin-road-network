@@ -147,7 +147,7 @@ def move_point(points: list, segments: list, index: int, x: float, y: float, z: 
 
 
 def drape(points: list, segments: list, ground: dict, iters: int = 4, pin_joints: bool = True,
-          max_grade: dict | None = None) -> dict:
+          max_grade: dict | None = None, max_cut: float | None = None) -> dict:
     """Set every live (Raise/Lower) point onto the ground, smoothed along the roads.
 
     ground: {point index: base ground z}. Junction groups (points joined by mesh-less links)
@@ -223,6 +223,11 @@ def drape(points: list, segments: list, ground: dict, iters: int = 4, pin_joints
             pin_groups()
             if moved < 1.0:
                 break
+    if max_cut:  # a road is never cut or filled deeper than this: across a valley it takes a steeper grade instead
+        for i in live - fixed:
+            g = float(ground[i])
+            z[i] = min(max(z[i], g - max_cut), g + max_cut)
+        pin_groups()
     shifts = []
     old = {i: (by_i[i]["x"], by_i[i]["y"], by_i[i]["z"]) for i in by_i}
     for i in live:

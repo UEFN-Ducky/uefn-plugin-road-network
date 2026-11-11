@@ -95,6 +95,7 @@ GRADE = {"6L": 0.04, "4L": 0.05, "2S": 0.06, "2L": 0.08, "1W": 0.08, "DT": 0.10,
          "SW": 0.08, "WK": 0.08, "DW": 0.15, "PR": 0.10, "DD": 0.15, "FR": 0.08,
          "CN": 0.01, "DK": 0.01,  # canals and dry docks: nearly level (locks are not modelled)
          "RW": 0.01, "RS": 0.015, "TW": 0.015}  # runways and taxiways: FAA-like longitudinal grades
+MAX_CUT_CM = 600.0  # deepest a road is cut into / built up on the ground; past that it follows the hill more steeply
 CANAL_DEPTH_CM = 300.0  # walkways at ramp grade (8.3 %), driveways up to 15 %
 BRIDGE_LIFT_CM = 750.0  # clearance a highway rises to over a street it crosses (a real freeway overpass: 7.5 m)
 
@@ -416,10 +417,10 @@ def grade_to_roads(ter: dict, actors: dict) -> dict:
                     t = max(0.0, min(1.0, ((cx - pa["x"]) * ux + (cy - pa["y"]) * uy) / L2))
                     d = math.hypot(cx - pa["x"] - ux * t, cy - pa["y"] - uy * t)
                     w = 1 - _smoothstep(half, reach, d)
-                    if w > 0 and (w, -d) > best.get((j, i), (0.0, -1e18, 0.0))[:2]:
-                        best[(j, i)] = (w, -d, pa["z"] + (pb["z"] - pa["z"]) * t)
+                    if w > 0 and (w, -d) > best.get((j, i), (0.0, -1e18))[:2]:
+                        best[(j, i)] = (w, -d, pa["z"] + (pb["z"] - pa["z"]) * t, w)
     rows = [list(r) for r in ter["heights"]]
-    for (j, i), (w, _d, z) in best.items():
+    for (j, i), (_r, _d, z, w) in best.items():
         h = rows[j][i]
         if sea is not None and h < sea:
             continue  # the water stays water
@@ -1452,7 +1453,7 @@ def build_actor(nodes: dict, edges: list, ground, folder: str, pieces: dict | No
     by_i = {p["i"]: p for p in pts}
     for s in segs:
         st.retangent(by_i, s)
-    st.drape(pts, segs, {p["i"]: p["z"] for p in pts}, iters=4, max_grade=glim)
+    st.drape(pts, segs, {p["i"]: p["z"] for p in pts}, iters=4, max_grade=glim, max_cut=MAX_CUT_CM)
     return {"points": pts, "segments": segs}
 
 
@@ -1754,16 +1755,19 @@ def _demo() -> None:
             L = math.dist(gn[a], gn[b])
             assert block * (1 - 2 * 0.08 * 1.42) <= L <= block * (1 + 2 * 0.08 * 1.42), (style, L)
         assert {"4L"} <= {k for _, _, k in ge}, "collectors / arterials exist"
-    # graded roads: on a 20 % hill no ground-level street segment is steeper than its class allows
-    hill = lambda x, y: x * 0.2
-    ga = build_actor({0: [0, 0], 1: [10000, 0], 2: [20000, 0], 3: [30000, 0]},
-                     [[0, 1, "2L"], [1, 2, "2L"], [2, 3, "2L"]], hill, "/Game/X")
-    gb = {p["i"]: p for p in ga["points"]}
-    for s in ga["segments"]:
-        a, b = gb[s["a"]], gb[s["b"]]
-        run = math.hypot(a["x"] - b["x"], a["y"] - b["y"])
-        if a["raise"] and b["raise"] and run > 0:
-            assert abs(a["z"] - b["z"]) <= GRADE["2L"] * run + 2, (abs(a["z"] - b["z"]) / run)
+    # graded roads: on a 10 % hill no ground-level street segment is steeper than its class allows (the cut and
+    # fill it takes stay under MAX_CUT_CM); on a 20 % hill the street follows the hill instead of a 6 m+ wall
+    for slope, holds in ((0.1, True), (0.2, False)):
+        hill = lambda x, y, k=slope: x * k
+        ga = build_actor({0: [0, 0], 1: [10000, 0], 2: [20000, 0], 3: [30000, 0]},
+                         [[0, 1, "2L"], [1, 2, "2L"], [2, 3, "2L"]], hill, "/Game/X")
+        gb = {p["i"]: p for p in ga["points"]}
+        assert all(abs(p["z"] - hill(p["x"], p["y"])) <= MAX_CUT_CM + 1 for p in ga["points"] if p["raise"]), slope
+        for s in ga["segments"]:
+            a, b = gb[s["a"]], gb[s["b"]]
+            run = math.hypot(a["x"] - b["x"], a["y"] - b["y"])
+            if holds and a["raise"] and b["raise"] and run > 0:
+                assert abs(a["z"] - b["z"]) <= GRADE["2L"] * run + 2, (abs(a["z"] - b["z"]) / run)
     # SidewalkGenerator: a 6-lane boulevard gets a sidewalk spline on both sides; lot paths become splines
     sn, se = sidewalks({0: [0, 0], 1: [10000, 0]}, [[0, 1, "6L"]])
     assert len(se) == 2 and all(abs(abs(p[1]) - (HALF["6L"] + HALF["SW"])) < 1 for p in sn.values())
