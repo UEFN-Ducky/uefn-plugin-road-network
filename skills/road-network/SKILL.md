@@ -78,13 +78,16 @@ every failed checkout opens a modal dialog with its own swap chain (~14 s each);
 The listener saves everything it made in one `save_packages` batch.
 Street kit: the kit had no traffic lights, signs, billboards, power poles, parking lots, path slabs or plinths;
 `road_network_kit_materials` first builds them (GeometryScript, WorldGen/Kit/Street, in the same PBR master), so
-every layer gets a piece and lots on hills get a plinth plus walkway / driveway slabs. pcg_build makes one graph
-+ volume per city (PCG_<World>_<City>, 'City Builder <World> <City>') set to Generate On Demand: a single
-world-sized volume regenerated the whole city on every level open / save and took UEFN past 80 GB.
-Build the city in UEFN in one call: `road_network_pcg_build(net_id, confirm=true)` turns every previewed lot and
-street piece into a PCG graph (`WorldGen/CityPCG/PCG_<World>_City`: Create Points -> Static Mesh Spawner per kit
-mesh) plus a volume `City Builder <World>`, and runs it. Lots take the own-kit building nearest their height
-(multi-part towers share one point), scaled to the lot; `no_kit_piece` lists layers the kit has no mesh for.
+every layer gets a piece and lots on hills get a plinth plus walkway / driveway slabs.
+PCG is tiled and incremental: `road_network_pcg_build(net_id, confirm=true)` cuts the baked city into 400 m tiles
+(`kit_bake.tiles`, a sha1 per tile), one graph `WorldGen/CityPCG/PCG_<World>_T<tx>_<ty>` (Create Points ->
+Static Mesh Spawner per kit mesh) + volume `City Builder <World> <tx>_<ty>` each, Generate On Demand. The tile
+hashes live in `net.<nid>.pcg`; a build rebuilds only tiles whose hash changed, removes tiles gone from the
+plan and leaves the rest (and the roads) untouched. So: edit the city plan, build again - never delete
+everything. Without confirm it reports what would change; force=true rebuilds all. Each tile's execute is a
+small editor call (memory-safe); a stopped build keeps finished tiles and resumes. The first tiled build removes
+the old whole-world / whole-city volumes and graphs by exact name. Lots take the own-kit building nearest their
+height (multi-part towers share one point), scaled to the lot; `no_kit_piece` lists layers with no kit mesh.
 Foliage layers are left for painting. Order for a fresh world: generate (with keep zones) -> heightmap ->
 Landscape New > Import (Location = the map's centre, not its corner) -> import_all -> pcg_build.
 Keep-out zones: `options.keep = [{"name", "x0", "y0", "x1", "y1", "z"}]` (cm) protects something already built

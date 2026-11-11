@@ -9,6 +9,8 @@ Static Mesh Spawner pairs, so the city in UEFN is the city in the preview.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 
 # name: (folder under WorldGen, bounds min x/y/z, max x/y/z in cm) - measured from the imported meshes
@@ -221,6 +223,32 @@ def bake(previewed: dict, root: str) -> tuple:
     return groups, baked, missing
 
 
+TILE_CM = 40000  # PCG tile: 400 m squares, one graph + volume each, rebuilt only when its content changes
+
+
+def tiles(groups: dict) -> dict:
+    """{tile key 'tx_ty': {'meshes': {mesh: rows}, 'hash': sha1, 'centre': (x, y)}} - the baked city cut into
+    TILE_CM squares by each point's position. An edit to the plan changes only the tiles it touches, so
+    pcg_build rebuilds those and leaves the rest of the city (and the roads) alone."""
+    out: dict = {}
+    for mesh, rows in groups.items():
+        for r in rows:
+            tx, ty = math.floor(r[0] / TILE_CM), math.floor(r[1] / TILE_CM)
+            t = out.setdefault(f"{tx}_{ty}", {"meshes": {}, "centre": ((tx + 0.5) * TILE_CM, (ty + 0.5) * TILE_CM)})
+            t["meshes"].setdefault(mesh, []).append(r)
+    for t in out.values():
+        t["hash"] = hashlib.sha1(json.dumps(t["meshes"], sort_keys=True).encode()).hexdigest()
+    return out
+
+
+def tile_diff(new: dict, stored: dict, force: bool = False) -> tuple:
+    """(build, remove, unchanged): tile keys to (re)build because they are new or their hash changed,
+    stored tiles that are gone from the plan, and tiles left exactly as they are."""
+    build = sorted(k for k, t in new.items() if force or (stored.get(k) or {}).get("hash") != t["hash"])
+    remove = sorted(k for k in stored if k not in new)
+    return build, remove, sorted(k for k in new if k not in build)
+
+
 def _interior(groups: dict, root: str, parts: list, furniture: str, x, y, z, yaw, sx, sy, sz) -> None:
     """Floors inside a building shell, per storey: a slab inset from the walls (glowing ceiling panels under it)
     with a well in the middle, the stair + elevator core standing in that well (walkable switchback stairs,
@@ -371,6 +399,18 @@ def _demo() -> None:
     assert max(r[2] for r in plates) < 500 + 11068, "no floor above the roof"
     gh, _, _ = bake({"H": {"kind": "buildings", "role": "house", "points": [[0, 0, 0, 0, 1, 11, 0, 12, 12, 0, []]]}}, "/R")
     assert path("SM_Kit_SofaSet", "/R") in gh, "a house gets a living room"
+    # tiles: moving one house changes only its tile's hash
+    city = {"H": {"kind": "buildings", "role": "house",
+                  "points": [[x, 20000, 0, 0, 1, 7, 0, 12, 12, 0, []] for x in (10000, 20000, 50000, 60000, 90000, 100000)]}}
+    t1 = tiles(bake(city, "/R")[0])
+    city["H"]["points"][5][1] = 20500  # move the last house (x 100000 -> tile 2_0)
+    t2 = tiles(bake(city, "/R")[0])
+    assert set(t1) == set(t2) == {"0_0", "1_0", "2_0"}, sorted(t1)
+    assert [k for k in t1 if t1[k]["hash"] != t2[k]["hash"]] == ["2_0"], "only the edited tile changes"
+    stored = {k: {"hash": t["hash"]} for k, t in t1.items()}
+    stored["9_9"] = {"hash": "x"}  # a tile the plan no longer has
+    assert tile_diff(t2, stored) == (["2_0"], ["9_9"], ["0_0", "1_0"])
+    assert tile_diff(t2, stored, force=True)[0] == ["0_0", "1_0", "2_0"]
     print("kit bake ok", len(groups), "meshes")
 
 
