@@ -68,6 +68,11 @@ build, collision build and save opens a progress window. Never build many meshes
 past 120 GB and crashed on "Hit D3D12 device limits on descriptors". Build one mesh per call (street kit) or
 `JUNCTIONS_PER_CALL` 8 (junctions), then save everything in one separate `road_network_save_assets` call.
 Signs in the log: many `LogD3D12RHI: Swap chain created` lines with the SAME frame number in `[...][NNN]`.
+Memory meter: every listener / Epic call and every paste is measured (UEFN private GB before and after);
+`road_network_memory` shows the log and the 10 calls that grew UEFN most. The guard refuses the next call
+when one call grew UEFN 6+ GB (until it settles back) or UEFN is above 80 % of RAM: save and restart UEFN,
+then `road_network_memory(reset_guard=true)`. Read it after every big step (import, pcg_build) and fix the
+step that grows, never push on.
 Saving in UEFN: never save assets one by one in a loop. Each save runs revision control's checkout prompt and
 every failed checkout opens a modal dialog with its own swap chain (~14 s each); 50 saves took UEFN past 70 GB.
 The listener saves everything it made in one `save_packages` batch.

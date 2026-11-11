@@ -25,6 +25,7 @@ from . import kit_bake
 from . import pcg_layers as pl
 from . import splines_text as st
 from . import uefn_input
+from . import uefn_memory
 
 CHUNK = 1000
 
@@ -59,15 +60,16 @@ def register(api) -> None:
             pass
 
     def listener(command: str, params: dict | None = None, timeout: float = 120):
-        return api.listener(command, params or {}, timeout=timeout)
+        # every editor call is metered: UEFN's memory before/after, refused when the last call blew up
+        return uefn_memory.metered(command, lambda: api.listener(command, params or {}, timeout=timeout))
 
     def epic(toolset: str, tool: str, arguments: dict):
         # Same route as Ducky's own Epic callers: the pool keeps the nested arguments intact
         # (api.call_tool's dispatcher drops them for unreal__call_tool).
         from backend.mcp_plugins.client_pool import get_plugin_pool
         pool = get_plugin_pool()
-        out = pool.run_sync(pool.call_tool("unreal__call_tool", {"toolset_name": toolset, "tool_name": tool,
-                                                                  "arguments": arguments}), timeout=120)
+        out = uefn_memory.metered(f"{toolset.rsplit('.', 1)[-1]}.{tool}", lambda: pool.run_sync(pool.call_tool(
+            "unreal__call_tool", {"toolset_name": toolset, "tool_name": tool, "arguments": arguments}), timeout=120))
         if not isinstance(out, (str, dict)):
             out = getattr(out, "text", None) or str(out)
         if isinstance(out, str):
@@ -543,7 +545,7 @@ def register(api) -> None:
         known = {row["path"] for row in listener("road_network_actors").get("actors", [])}
         pasted = None
         for attempt in range(2):
-            res = uefn_input.paste_in_splines_tool()
+            res = uefn_memory.metered(f"paste {label}", uefn_input.paste_in_splines_tool)
             if not res.get("ok"):
                 if attempt == 0:  # a window over UEFN or a slow panel: one more go
                     time.sleep(1.5)
@@ -1162,6 +1164,15 @@ def register(api) -> None:
     def road_network_stats(net_id: str = "") -> dict:
         """Which pieces a road network uses: road meshes, junction pieces, kit pieces, length."""
         return safe(stats)(net_id)
+
+    @api.tool(intent=INTENT, listener=False)
+    def road_network_memory(last: int = 60, reset_guard: bool = False) -> dict:
+        """UEFN's memory now and per editor call City Builder made (before / after / grew GB, seconds), the
+        10 calls that grew it most, and whether the guard has stopped work (a call grew UEFN 6+ GB, or UEFN is
+        above 80 % of RAM). reset_guard=true clears a trip once UEFN has been saved / restarted."""
+        if reset_guard:
+            uefn_memory._state["trip"] = None
+        return {"ok": True, **uefn_memory.report(int(last))}
 
     @api.tool(intent=INTENT, listener=False)
     def road_network_move_point(net_id: str = "", actor: str = "", index: int = -1, x: float = 0.0, y: float = 0.0, z: float = 0.0) -> dict:
