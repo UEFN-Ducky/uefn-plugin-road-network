@@ -679,8 +679,8 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
         used = {n for e in edges for n in e[:2]}
         nodes = {n: p for n, p in nodes.items() if n in used}
         wet = water_of(city, o, wet)
-    if wet:  # main roads bridge water, side streets stop at the shore
-        nodes, edges = over_water(nodes, edges, wet, bridges=bridges)
+    if wet:  # streets cross water on bridges (one edge bank to bank), the rest stop at the shore
+        nodes, edges = over_water(*cross_water(nodes, edges, wet), wet, bridges=bridges)
     # freeways last: every street that water, canals, an airport or a shipyard took is gone by now, so an
     # interchange whose cross road is gone is dropped before any street is cut for its ramps
     fw = freeway_plan(city, o)
@@ -721,9 +721,85 @@ def _dist_seg(p, a, b):
     return math.hypot(p[0] - a[0] - t * (b[0] - a[0]), p[1] - a[1] - t * (b[1] - a[1]))
 
 
-WATER_SPAN = {"6L": 300000.0, "4L": 40000.0, "2S": 40000.0, "ED": 300000.0, "ER": 300000.0,
-              "BR": 300000.0, "BRR": 300000.0}  # longest water a road of this kind bridges; others stop at the shore
+WATER_SPAN = {"6L": 300000.0, "FR": 300000.0, "4L": 150000.0, "2S": 60000.0, "2L": 20000.0,
+              "ED": 300000.0, "ER": 300000.0, "BR": 300000.0, "BRR": 300000.0}  # longest water a road of
+# this kind bridges (avenues cross a lake, local streets a river); a wider crossing is not built
 SHORT_SPAN = 6000.0  # any street (not dirt) bridges a creek this narrow
+SHORE_MARGIN_CM = 2500.0  # a road cut at the shore stops this far inland of the last wet sample
+
+
+def cross_water(nodes: dict, edges: list, wet) -> tuple:
+    """A street whose junctions fall in the water crosses it in one edge, bank to bank: from each dry node into
+    the water, follow the straightest street on through the wet junctions to the first dry one and join the two
+    (over_water then bridges it or, too wide for the road, drops it). Streets left in the water are removed;
+    a street into open water keeps its land part (over_water cuts it at the shore)."""
+    def dry(n):
+        p = nodes[n]
+        return (len(p) > 2 and p[2] >= BRIDGE_LIFT_CM - 1) or not wet(p[0], p[1])
+    is_dry = {n: dry(n) for n in nodes}
+    if all(is_dry.values()):
+        return nodes, edges
+    adj: dict = {}
+    for e in edges:
+        if len(e) > 3 and e[3]:
+            continue  # an edge with its own shape (ramps, curves) keeps it
+        adj.setdefault(e[0], []).append((e[1], e[2]))
+        adj.setdefault(e[1], []).append((e[0], e[2]))
+    out, seen, used_first = [], set(), set()
+    for a in nodes:
+        if not is_dry[a]:
+            continue
+        for b, kind in adj.get(a, []):
+            if is_dry[b]:
+                continue
+            prev, cur, kinds = a, b, [kind]
+            dx, dy = nodes[b][0] - nodes[a][0], nodes[b][1] - nodes[a][1]
+            for _ in range(80):  # ponytail: straight-line walk, enough for grid and organic streets
+                if is_dry[cur]:
+                    break
+                L = math.hypot(dx, dy) or 1.0
+                best, bd = None, 0.9
+                for nb, k in adj.get(cur, []):
+                    if nb == prev:
+                        continue
+                    ux, uy = nodes[nb][0] - nodes[cur][0], nodes[nb][1] - nodes[cur][1]
+                    d = (ux * dx + uy * dy) / (L * (math.hypot(ux, uy) or 1.0))
+                    if d > bd:
+                        best, bd = (nb, k), d
+                if best is None:
+                    break
+                prev, cur = cur, best[0]
+                kinds.append(best[1])
+                dx, dy = nodes[cur][0] - nodes[a][0], nodes[cur][1] - nodes[a][1]
+            if not is_dry[cur] or cur == a:  # the street breaks off in the water: the nearest dry junction
+                ax, ay = nodes[a][0], nodes[a][1]  # straight ahead on the far bank, if the road may span to it
+                ux, uy = nodes[b][0] - ax, nodes[b][1] - ay
+                ul = math.hypot(ux, uy) or 1.0
+                reach = max(WATER_SPAN.get(kind, 0.0), SHORT_SPAN) + 2 * ul
+                best, bd = None, reach
+                for c, p in nodes.items():
+                    if not is_dry[c] or c == a or not adj.get(c):
+                        continue
+                    vx, vy = p[0] - ax, p[1] - ay
+                    d = math.hypot(vx, vy)
+                    if ul < d < bd and (vx * ux + vy * uy) / (d * ul) > 0.985:
+                        best, bd = c, d
+                if best is None:
+                    continue
+                cur = best
+            used_first.add((a, b))
+            key = frozenset((a, cur))
+            if key not in seen:
+                seen.add(key)
+                out.append([a, cur, max(kinds, key=lambda k: HALF.get(k, 0.0))])
+    for e in edges:
+        a, b = e[0], e[1]
+        if (len(e) > 3 and e[3]) or (is_dry[a] and is_dry[b]):
+            out.append(e)
+        elif is_dry[a] != is_dry[b] and ((a, b) not in used_first and (b, a) not in used_first):
+            out.append(e)  # into open water: over_water keeps the part on land
+    used = {n for e in out for n in e[:2]}
+    return {n: p for n, p in nodes.items() if n in used}, out
 
 
 def wet_from(ter: dict):
@@ -782,11 +858,11 @@ def over_water(nodes: dict, edges: list, wet, span: dict | None = None, bridges:
         # an end in the water: the road is cut back to the shore (a freeway running out into a lake ends there)
         s_a, s_b, na, nb, first = 0.0, cum, a, b, kind
         if runs[0][0] <= 0:
-            s_a = runs.pop(0)[1] + 1000
+            s_a = runs.pop(0)[1] + SHORE_MARGIN_CM
             na = ("shore", a, b, 0)
             first = next((v[3] for s, v in reversed(list(zip(vcum, via))) if s <= s_a and len(v) > 3 and v[3]), kind)
         if runs and runs[-1][1] >= cum:
-            s_b = runs.pop()[0] - 1000
+            s_b = runs.pop()[0] - SHORE_MARGIN_CM
             nb = ("shore", a, b, 1)
         if s_b - s_a < 3000 or (s_a > 0 and s_b < cum and s_a >= s_b):
             continue  # nothing left on land
@@ -817,12 +893,17 @@ def over_water(nodes: dict, edges: list, wet, span: dict | None = None, bridges:
         keep = [(s, v) for s, v in zip(vcum, via)
                 if not any(r0 - rl - 1000 < s < r1 + rl + 1000 for r0, r1, _, rl, _ in plan)]
         for r0, r1, lift, rl, btype in plan:
-            pa, pb = at(max(s_a, r0 - rl)), at(min(s_b, r1 + rl))
+            fa, fb = max(s_a + 1, r0 - rl), min(s_b - 1, r1 + rl)  # ramp feet, never past the edge's ends
+            pa, pb = at(fa), at(fb)
             top = max(lift, at(r0)[2], at(r1)[2])
-            keep += [(max(s_a + 1, r0 - rl), [pa[0], pa[1], pa[2], ramp]),
-                     (r0, at(r0)[:2] + [top, deck]),
-                     (r1, at(r1)[:2] + [top, ramp]),
-                     (min(s_b - 1, r1 + rl), [pb[0], pb[1], pb[2], kind])]
+            d0, d1 = max(r0, fa + rl), min(r1, fb - rl)  # deck ends where the ramps reach the top
+            if d1 - d0 < 1000:  # a junction close to the bank: the ramps meet mid-span on a lower deck
+                d0 = d1 = (fa + fb) / 2  # ponytail: short approaches trade clearance for an 8 % ramp
+                top = min(top, max(300.0, (d0 - fa) * 0.08))
+            keep += [(fa, [pa[0], pa[1], pa[2], ramp])]
+            keep += [(d0, at(d0)[:2] + [top, deck]), (d1, at(d1)[:2] + [top, ramp])] if d1 > d0 else \
+                [(d0, at(d0)[:2] + [top, ramp])]
+            keep += [(fb, [pb[0], pb[1], pb[2], kind])]
             if bridges is not None:
                 mid = at((r0 + r1) / 2)
                 a_, b_ = at(r0), at(r1)
@@ -1657,8 +1738,8 @@ def _demo() -> None:
     # shore, nothing ends in the lake; a highway crosses the lake on a long bridge
     wet = lambda x, y: 4000 < x < 13000 or x > 40000
     wn, we = over_water({0: [-10000, 0], 1: [25000, 0], 2: [-10000, 5000], 3: [25000, 5000], 4: [30000, 0], 5: [50000, 0]},
-                        [[0, 1, "4L"], [2, 3, "2L"], [4, 5, "4L"]], wet)
-    assert [e[2] for e in we] == ["4L", "4L"], we  # the 2L stops at the river
+                        [[0, 1, "4L"], [2, 3, "DT"], [4, 5, "4L"]], wet)
+    assert [e[2] for e in we] == ["4L", "4L"], we  # the dirt road stops at the river
     cut = we[1]  # the street into the lake ends at the shore
     assert cut[0] == 4 and cut[1] == ("shore", 4, 5, 1) and not wet(*wn[cut[1]][:2]) and wn[cut[1]][0] > 37000, cut
     vb = we[0][3]
@@ -1675,6 +1756,16 @@ def _demo() -> None:
     ln, le = city_graph(lake, {"freeways": "no"}, shore)
     assert all(x <= 30000 or len(e) > 3 for e in le for x in (ln[e[0]][0], ln[e[1]][0])), "no street node in the lake"
     assert not any(shore(r[0], r[1]) for r in city_layout(lake, {"freeways": "no"}, shore)["lots"])
+    # a 100 m river through a grid city: the streets cross it on bridges, none dead-ends at the bank
+    river = lambda x, y: 10000 < x < 20000
+    rb: list = []
+    rn, re_ = city_graph(lake, {"freeways": "no"}, river, bridges=rb)
+    assert not any(river(*rn[n][:2]) for e in re_ for n in e[:2]), "no junction in the river"
+    over = [e for e in re_ if min(rn[e[0]][0], rn[e[1]][0]) < 10000 < 20000 < max(rn[e[0]][0], rn[e[1]][0])]
+    assert len(over) >= 5 and all(max(v[2] for v in e[3]) >= 300 for e in over), over[:2]
+    assert len(rb) == len(over), (len(rb), len(over))
+    ends = [rn[n] for n in rn if isinstance(n, tuple) and n and n[0] == "shore"]
+    assert all(math.hypot(*p[:2]) > 0.85 * lake["radius"] for p in ends), ("only the city edge ends at the bank", ends)
     # city size and distance between cities
     small_c = place_cities(5, 3, ((-300000, -300000), (300000, 300000)), size=0.6, gap_cm=50000)
     big_c = place_cities(5, 3, ((-300000, -300000), (300000, 300000)), size=1.5, gap_cm=50000)

@@ -366,8 +366,13 @@ city tiles to build or remove. The next build in UEFN changes only those.
   (150 m – 5 km) or road style. That calls `road_network_city_save`, then regenerates.
 - **Water** (`citygen.over_water`, the terrain's water line `sea`): every road edge is sampled for water.
   - Highways and freeways always cross on a bridge: BRR ramp on land, then a BR / ED deck 7.5 m up, then a ramp.
-  - Main roads (2S / 4L / 6L) bridge up to 400 m of water, and any paved street bridges a creek up to 60 m.
-  - Anything else, or a road with an end in the water, is removed. Streets stop at the shore.
+  - `citygen.cross_water` runs first: a street whose junctions fall in the water becomes one edge from bank to
+    bank. It follows the straightest street through the wet junctions, or else picks the nearest dry junction
+    straight ahead. Then that edge is bridged.
+  - Spans: 4L up to 1.5 km, 2S up to 600 m, 2L up to 200 m, 6L and freeways 3 km, any paved street a 60 m creek.
+    A crossing wider than that is not built, so the street ends at its last dry junction.
+  - When a junction sits close to the bank, the two ramps meet mid-span on a lower deck (8 % ramp, at least 3 m up).
+  - A street into open water keeps its land part, cut 25 m inland of the water line (`SHORE_MARGIN_CM`).
   - Lots, parking and private streets are never in the water. There are no sidewalk splines on bridges.
 
 ## How a city is generated (the math, in order)
