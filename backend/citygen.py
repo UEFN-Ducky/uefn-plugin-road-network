@@ -78,6 +78,7 @@ RULES = [
 STYLES = ("mixed", "grid", "organic")
 JUNCTION = "SM_Junc_Gen"  # waits for Build pieces (st.pending_nodes picks it up)
 MOUTH_CM = 1500.0
+CORNER_DEG = 30.0  # a 2-street node turning more than this gets a square elbow piece, not a spline bend
 NAMES = ["Northgate", "Riverton", "Ashford", "Kingsport", "Millbrook", "Eastvale", "Stonebridge", "Westmoor",
          "Harbor Point", "Lakeside", "Redcliff", "Oakhurst"]
 
@@ -581,9 +582,19 @@ def build_actor(nodes: dict, edges: list, ground, folder: str, pieces: dict | No
             return via[0] if e[0] == n else via[-1]
         return nodes[e[1] if e[0] == n else e[0]]
 
+    def turn(n, arms):  # degrees a 2-arm node turns (0 = straight on)
+        x, y = nodes[n][:2]
+        (ax, ay), (bx, by) = first_step(arms[0], n)[:2], first_step(arms[1], n)[:2]
+        a1, a2 = math.atan2(ay - y, ax - x), math.atan2(by - y, bx - x)
+        return 180.0 - abs((math.degrees(a1 - a2) + 180.0) % 360.0 - 180.0)
+
     for n, arms in adj.items():
         x, y = nodes[n][:2]
-        if len(arms) >= 3:
+        lifted_node = len(nodes[n]) > 2 and float(nodes[n][2]) > 0
+        # a junction piece where 3+ streets meet, and an ELBOW piece where a street turns sharply (a square
+        # corner): a plain spline point would smooth a 90 degree turn into a wide arc that loops out
+        corner = len(arms) == 2 and not lifted_node and turn(n, arms) > CORNER_DEG
+        if len(arms) >= 3 or corner:
             w = max(HALF[e[2]] for e in arms) + 300.0
             j = _point(next(ids), x, y, ground(x, y), 0.0, w, JUNCTION)
             pts.append(j)
@@ -874,6 +885,12 @@ def _demo() -> None:
     pa = paths_actor({"x": 0, "y": 0, "radius": 1, "seed": 1}, None, rows, lambda x, y: 0.0, "/Game/X/WorldGen/Roads")
     meshes = {s["mesh"] for s in pa["segments"]}
     assert "SM_Path_Walkway_10m" in meshes and "SM_Path_Driveway_10m" in meshes, meshes
+    # a street turning 90 degrees gets an elbow piece (square corner), a gentle bend stays a spline point
+    el = build_actor({0: [0, 0], 1: [10000, 0], 2: [10000, 10000], 3: [20000, 10500]},
+                     [[0, 1, "2L"], [1, 2, "2L"], [2, 3, "2L"]], lambda x, y: 0.0, "/Game/X")
+    pieces_at = {(round(p["x"]), round(p["y"])) for p in el["points"] if p["mesh"] == JUNCTION}
+    assert pieces_at == {(10000, 0), (10000, 10000)}, pieces_at
+    assert st.pending_nodes(el["points"], el["segments"]), "elbows wait for a generated piece too"
     # rule: one city alone gets no highway and so no interchange
     solo = generate(cities[:1], lambda x, y: 0.0, "/Game/X/WorldGen/Roads", seed=3, opts={"interchange": "cloverleaf"})
     assert "Highways" not in solo, "no stand-alone highway or cloverleaf"

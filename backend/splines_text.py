@@ -649,7 +649,8 @@ def pending_nodes(points: list, segments: list, rebuild: bool = False) -> list:
     out = []
     for p in points:
         waiting = p["mesh"].startswith("SM_Junc_") and p["mesh"] != "SM_Junc_Empty"
-        if (waiting or (rebuild and p["mesh"].startswith("SM_JK_"))) and len(links.get(p["i"], [])) >= 3:
+        # 3+ arms: a junction; 2 arms: an elbow (a street's square corner)
+        if (waiting or (rebuild and p["mesh"].startswith("SM_JK_"))) and len(links.get(p["i"], [])) >= 2:
             arms = links[p["i"]]
             out.append((p["i"], arms, [math.degrees(math.atan2(by_i[m]["y"] - p["y"], by_i[m]["x"] - p["x"])) for m in arms]))
     return out

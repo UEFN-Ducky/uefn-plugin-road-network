@@ -132,7 +132,10 @@ wall holding the hill; road > 2 m above the ground (fill) -> a stone wall holdin
 (`SM_Kit_StoneWall`, 50 cm thick, capped, scaled to the 10 m stretch and the height). The preview shows them as
 the built-in 'Road walls' layer (`pcg_preview(layer_id='road-walls')`); Push city bakes them with the tiles.
 Every city street has a pavement: `2L`, `6L`, `1W` get sidewalk splines (dirt roads stay bare), and every
-junction corner gets a `SM_Kit_SidewalkCorner` paving pad ('Sidewalk corners' layer, 4 per junction). Junction
+junction corner gets a `SM_Kit_SidewalkCorner` paving pad ('Sidewalk corners' layer, 4 per junction). A street that turns more than
+30 degrees where only two streets meet (`CORNER_DEG`, the city's edge, cul-de-sac returns) gets an ELBOW piece,
+built like a junction (2 arms): kerb return inside the turn, a square corner outside where the road edges meet.
+A plain spline point there smoothed a 90 degree turn into a wide arc that looped out past the block. Junction
 meshes are crossings, not discs: each arm out to its mouth with curved kerb returns between arms
 (`_junction_geometry`); the panel draws them the same way.
 

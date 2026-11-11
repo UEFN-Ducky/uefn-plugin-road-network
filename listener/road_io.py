@@ -202,15 +202,29 @@ def _junction_geometry(arm_deg: list, half: float = _R1_W, flat: bool = False) -
         j = (k + 1) % n
         L, R = pt(k, d[k], _R1_W_), pt(j, d[j], -_R1_W_)
         g = gap[k]
+        square = False
         if g < math.radians(179):
             c = _R1_W_ / math.tan(g / 2)
             C = pt(k, c, _R1_W_)
+        elif g > math.radians(181) and n == 2:
+            # the outside of an elbow: the two road edges run on to meet in a SQUARE corner
+            # (edge k: N_k*W + U_k*s; edge j: -N_j*W + U_j*t)
+            p1, p2 = (N[k][0] * _R1_W_, N[k][1] * _R1_W_), (-N[j][0] * _R1_W_, -N[j][1] * _R1_W_)
+            den = U[k][0] * U[j][1] - U[k][1] * U[j][0]
+            s_ = ((p2[0] - p1[0]) * U[j][1] - (p2[1] - p1[1]) * U[j][0]) / den if abs(den) > 1e-6 else 0.0
+            C = (p1[0] + U[k][0] * s_, p1[1] + U[k][1] * s_)
+            square = True
         else:
             C = ((L[0] + R[0]) / 2, (L[1] + R[1]) / 2)
         chain = [L]
         for t in (1 / 6, 2 / 6, 3 / 6, 4 / 6, 5 / 6):
-            a, b, cc = (1 - t) ** 2, 2 * (1 - t) * t, t * t
-            q = (a * L[0] + b * C[0] + cc * R[0], a * L[1] + b * C[1] + cc * R[1])
+            if square:  # straight in to the corner and straight out: no rounding
+                u = min(1.0, 2 * t)
+                v = max(0.0, 2 * t - 1)
+                q = (L[0] + (C[0] - L[0]) * u + (R[0] - C[0]) * v, L[1] + (C[1] - L[1]) * u + (R[1] - C[1]) * v)
+            else:
+                a, b, cc = (1 - t) ** 2, 2 * (1 - t) * t, t * t
+                q = (a * L[0] + b * C[0] + cc * R[0], a * L[1] + b * C[1] + cc * R[1])
             chain.append(q)
             ring.append((q[0], q[1], edge_z))
         chain.append(R)
@@ -264,8 +278,8 @@ def road_network_build_junctions(folder: str = "", pieces: list | None = None) -
     out, errors = {}, []
     for piece in pieces or []:
         name, arms = str(piece.get("name") or ""), list(piece.get("arms") or [])
-        if not name or len(arms) < 3:
-            errors.append(f"{name or '?'}: needs a name and 3+ arms")
+        if not name or len(arms) < 2:
+            errors.append(f"{name or '?'}: needs a name and 2+ arms")
             continue
         verts, uvs, tris, mouth = _junction_geometry(arms, float(piece.get("half") or _R1_W), flat)
         buf = unreal.GeometryScriptSimpleMeshBuffers()
