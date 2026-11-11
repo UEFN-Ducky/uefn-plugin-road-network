@@ -32,6 +32,14 @@ const PATHS = {
   network: "M4 20 10 4M20 20 14 4M12 6v2M12 11v2M12 16v2",
   shadow: "M12 3a9 9 0 0 0 0 18V3Z M12 3a9 9 0 0 1 0 18",
   play: "M7 4v16l13-8Z",
+  pointer: "M5 3l14 7-6 2-2 6Z",
+  pen: "M4 20c4-1 5-6 9-6s4 4 7 3M14.5 4.5l5 5L12 17l-5-5Z",
+  send: "M4 12 20 4l-6 16-3-7Z M11 13l9-9",
+  plus: "M12 5v14M5 12h14",
+  x: "M6 6l12 12M18 6 6 18",
+  grip: "M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01",
+  chat: "M4 5h16v11H9l-5 4Z",
+  push: "M12 20V9M7.5 13.5 12 9l4.5 4.5M5 4h14",
 };
 
 export function icon(name, size = 16) {

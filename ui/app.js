@@ -64,7 +64,7 @@ function family(mesh) {
   for (const f of FAMILY) if (f[0].test(mesh)) return f;
   return [null, 500, "fg-dim", "Other"];
 }
-const savePrefs = () => call("prefs.set", { id: "ui", value: { gen: state.gen, view: state.view, tab: state.tab, tune: state.tune, live: state.live } }).catch(() => {});
+const savePrefs = () => call("prefs.set", { id: "ui", value: { gen: state.gen, view: state.view, tab: state.tab, tune: state.tune, live: state.live } }).catch(() => {});  // view.leftW: the sidebar width
 
 // ------------------------------------------------------------------ 3D scene
 const view = $("view");
@@ -81,6 +81,8 @@ const camera = new THREE.PerspectiveCamera(50, 1, 5, 400000);
 const groups = { terrain: new THREE.Group(), water: new THREE.Group(), roads: new THREE.Group(), pieces: new THREE.Group(),
   props: new THREE.Group(), points: new THREE.Group(), districts: new THREE.Group(), pcg: new THREE.Group() };
 Object.values(groups).forEach((g) => scene.add(g));
+const marks = new THREE.Group();  // the person's pin / drawn area: kept when the scene is rebuilt
+scene.add(marks);
 const hemi = new THREE.HemisphereLight(0xffffff, 0xffffff, 0.55);
 scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xffffff, 2.2);
@@ -93,10 +95,27 @@ scene.add(sun, sun.target);
 // UE (cm, X fwd, Y right, Z up, left-handed) -> three (m, right-handed, Y up)
 // z is scaled by the Terrain tab's height exaggeration so gentle hills read in the preview
 const toV = (x, y, z) => new THREE.Vector3(y / 100, z * (state.view.zx || 1) / 100, -x / 100);
-function col(name) { const c = new THREE.Color(); c.setStyle(String(name).startsWith("#") ? name : cssVar(name) || cssVar("fg") || "transparent"); return c; }
-const swatch = (c) => (String(c).startsWith("#") ? c : `var(--${c})`);
+// A colour is an Appearance variable ("fg-dim") or a mix of two ("mix:fg-dim:amber:0.25" = fg-dim, 25 % toward
+// amber), so the 3D view and its legend follow the person's theme and the panel holds no colour literals
+function col(name) {
+  const s = String(name);
+  if (s.startsWith("mix:")) {
+    const [, a, b, t] = s.split(":");
+    return col(a).lerp(col(b), parseFloat(t) || 0);
+  }
+  const c = new THREE.Color();
+  c.setStyle(cssVar(s) || cssVar("fg") || "transparent");
+  return c;
+}
+const swatch = (c) => {
+  const s = String(c);
+  if (!s.startsWith("mix:")) return `var(--${s})`;
+  const [, a, b, t] = s.split(":");
+  return `color-mix(in srgb, var(--${b}) ${Math.round((parseFloat(t) || 0) * 100)}%, var(--${a}))`;
+};
 // what the city is made of, so the preview reads like the place (road types are told apart by width, not colour)
-const MAT = { asphalt: "#3b3d42", sidewalk: "#bdbab2", pavers: "#a89d8c", drive: "#55575c", deck: "#8c8f96" };
+const MAT = { asphalt: "mix:bg:fg:0.16", sidewalk: "mix:fg-dim:fg:0.35", pavers: "mix:fg-dim:amber:0.3",
+  drive: "mix:bg:fg:0.26", deck: "mix:fg-dim:blue:0.2" };
 // the asphalt part of a road whose mesh carries its own sidewalks (2S 8.75 m -> 5.25 m, 4L 14 m -> 10.5 m)
 const ASPHALT_HALF = { 875: 525, 1400: 1050 };
 function roadMaterial(mesh) {
@@ -107,16 +126,16 @@ function roadMaterial(mesh) {
   if (/Bridge|Elev_/.test(mesh)) return [MAT.deck, "Bridge / deck"];
   return [MAT.asphalt, "Road"];
 }
-// buildings by what they are: warm masonry houses, pale civic, grey glass towers - never grass green or water blue
-const ROLE_COLOR = { house: "#c9a27e", mansion: "#e0cfb5", apartment: "#b9a497", shop: "#d4b78f", mall: "#cdbf9e",
-  office: "#9aa4af", skyscraper: "#7f8fa3", hospital: "#e9e6df", school: "#c47f5f", police: "#6c7a8f",
-  fire_station: "#b24a3b", factory: "#8c8577", warehouse: "#9b9183", gas_station: "#d6d0c4", park: "#4f8a3c",
-  parking: "#55575c",
+// buildings by what they are: warm houses, pale civic, cool glass towers - never grass green or water blue
+const ROLE_COLOR = { house: "mix:fg-dim:amber:0.45", mansion: "mix:fg:amber:0.25", apartment: "mix:fg-dim:red:0.25",
+  shop: "mix:fg-dim:yellow:0.35", mall: "mix:fg:yellow:0.2", office: "mix:fg-dim:blue:0.3", skyscraper: "mix:fg-dim:blue:0.5",
+  hospital: "fg", school: "mix:amber:red:0.35", police: "mix:blue:bg:0.35", fire_station: "red", factory: "mix:fg-dim:amber:0.15",
+  warehouse: "mix:fg-dim:bg:0.25", gas_station: "mix:fg:amber:0.12", park: "green", parking: MAT.drive,
   // nature and street pieces
-  tree: "#2f6b2c", street_tree: "#3c7d34", bush: "#4f7f33", rock: "#7b7872", street_lamp: "#2f3236",
-  traffic_light: "#2a2c30", stop_sign: "#b03a2e", street_sign: "#2e6b45", sidewalk_corner: "#bdbab2",
-  bench: "#7a5a3c", bin: "#3f4a3f", hydrant: "#c0392b", bus_stop: "#8a9099", billboard: "#d8d2c4",
-  power_pole: "#6b5038" };
+  tree: "mix:green:bg:0.35", street_tree: "green", bush: "mix:green:yellow:0.2", rock: "fg-dim", street_lamp: "mix:bg:fg:0.3",
+  traffic_light: "mix:bg:fg:0.25", stop_sign: "red", street_sign: "mix:green:bg:0.3", sidewalk_corner: MAT.sidewalk,
+  bench: "mix:amber:bg:0.45", bin: "mix:green:bg:0.6", hydrant: "red", bus_stop: "fg-dim", billboard: "fg",
+  power_pole: "mix:amber:bg:0.55" };
 
 function themeColors() {
   const bg = col("bg");
@@ -170,11 +189,16 @@ renderer.domElement.addEventListener("contextmenu", (e) => e.preventDefault());
 renderer.domElement.addEventListener("pointerdown", (e) => {
   drag = { x: e.clientX, y: e.clientY, button: e.button, moved: false };
   renderer.domElement.setPointerCapture(e.pointerId);
+  if (e.button === 0 && state.tool === "area") { drag.drawing = true; note.points = []; addAreaPoint(e); }
 });
 renderer.domElement.addEventListener("pointermove", (e) => {
   if (!drag) return;
   const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
   if (Math.abs(dx) + Math.abs(dy) > 2) drag.moved = true;
+  if (drag.drawing) {  // drawing an area: a point every few pixels, no orbit
+    if (Math.abs(dx) + Math.abs(dy) > 6) { drag.x = e.clientX; drag.y = e.clientY; addAreaPoint(e); }
+    return;
+  }
   drag.x = e.clientX; drag.y = e.clientY;
   if (drag.button === 2 || e.shiftKey) {
     const s = orbit.dist / 900;
@@ -188,7 +212,10 @@ renderer.domElement.addEventListener("pointermove", (e) => {
   placeCamera();
 });
 renderer.domElement.addEventListener("pointerup", (e) => {
-  if (drag && !drag.moved && drag.button === 0) pick(e);
+  if (drag?.drawing) { drag = null; finishArea(); return; }
+  if (drag && !drag.moved && drag.button === 0) {
+    if (state.tool === "pin") placePin(e); else pick(e);
+  }
   drag = null;
 });
 renderer.domElement.addEventListener("wheel", (e) => {
@@ -334,10 +361,10 @@ function buildScene() {
       const lift = f[2] === "purple" || f[2] === "yellow" ? 0 : 60;
       const inner = ASPHALT_HALF[f[1]];
       if (inner && m === MAT.asphalt) {  // a road with its own sidewalks: concrete to the full width, asphalt inside
-        (byColor[MAT.sidewalk + (dim ? ":dim" : "")] ||= []).push(...ribbon(curve, f[1], lift - 4));
+        (byColor[MAT.sidewalk + (dim ? "|dim" : "")] ||= []).push(...ribbon(curve, f[1], lift - 4));
         legend["Sidewalk"] = MAT.sidewalk;
       }
-      (byColor[m + (dim ? ":dim" : "")] ||= []).push(...ribbon(curve, inner && m === MAT.asphalt ? inner : f[1], lift));
+      (byColor[m + (dim ? "|dim" : "")] ||= []).push(...ribbon(curve, inner && m === MAT.asphalt ? inner : f[1], lift));
       legend[label] = m;
     }
     // a junction is the crossing of its arms (each arm's asphalt from its mouth through the centre, as wide
@@ -397,7 +424,7 @@ function buildScene() {
     for (const p of actor.pts) box.expandByPoint(toV(p[1], p[2], p[3]));
   }
   for (const [key, arr] of Object.entries(byColor)) {
-    const [c, dim] = key.split(":");
+    const [c, dim] = key.split("|");
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.Float32BufferAttribute(arr, 3));
     geo.computeVertexNormals();
@@ -589,7 +616,7 @@ function drawPcg(legend) {
     const colour = ROLE_COLOR[layer.role] || PCG_COLORS[k % PCG_COLORS.length];
     if (layer.kind === "site") {  // a neighbourhood's pieces, pre-scaled: [x, y, z, yaw, sx, sy, sz] x box_m
       const [bx, by, bz] = layer.box_m || [1, 1, 1];
-      const tint = layer.mesh === "SM_Kit_ParkingStall" ? "#e8e6df" : layer.mesh === "SM_City_CT_MidRise" ? "#8f9196" : MAT.drive;
+      const tint = layer.mesh === "SM_Kit_ParkingStall" ? "mix:fg:bg:0.05" : layer.mesh === "SM_City_CT_MidRise" ? "fg-dim" : MAT.drive;
       const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: col(tint), roughness: 0.9 }), pts.length);
       const zx = state.view.zx || 1;
       pts.forEach(([x, y, z, yaw, sx, sy, sz], i) => {
@@ -758,21 +785,22 @@ function select(aslug, p) {
   shareSelection(aslug, p);  // the group sees the picked point
 }
 
-// ------------------------------------------------------------------ tabs
+// ------------------------------------------------------------------ sections (the left sidebar's nav)
 const TABS = [["world", "World", "world"], ["terrain", "Terrain", "terrain"], ["roads", "Roads", "road"],
-  ["cities", "Cities", "city"], ["pcg", "PCG", "layers"], ["edit", "Edit", "edit"], ["uefn", "UEFN", "upload"]];
+  ["cities", "Cities", "city"], ["pcg", "Layers", "layers"], ["edit", "Edit roads", "edit"], ["uefn", "Push to UEFN", "upload"]];
 const GEN_TABS = new Set(["world", "terrain", "roads"]);
 function renderTabs() {
-  $("tabs").innerHTML = "";
-  for (const [id, label, ic] of TABS) {
-    const b = h("button", { type: "button", class: "dk-tab", role: "tab", id: `tab-${id}`, "aria-controls": `pane-${id}`,
-      "aria-selected": id === state.tab ? "true" : "false", tabindex: id === state.tab ? "0" : "-1", "data-live-id": `tab:${id}` }, icon(ic, 14), h("span", {}, label));
+  $("nav").replaceChildren(...TABS.map(([id, label, ic]) => {
+    const b = h("button", { type: "button", class: "dk-nav-item", role: "tab", id: `tab-${id}`, "aria-controls": `pane-${id}`,
+      "aria-selected": id === state.tab ? "true" : "false", "aria-current": id === state.tab ? "page" : null,
+      tabindex: id === state.tab ? "0" : "-1", "data-live-id": `tab:${id}` }, icon(ic, 16), h("span", {}, label));
     b.addEventListener("click", () => openTab(id));
-    $("tabs").append(b);
-  }
-  $("tabs").onkeydown = (e) => {
-    const k = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
+    return b;
+  }));
+  $("nav").onkeydown = (e) => {
+    const k = { ArrowDown: 1, ArrowUp: -1 }[e.key];
     if (!k) return;
+    e.preventDefault();
     const i = TABS.findIndex((t) => t[0] === state.tab);
     openTab(TABS[(i + k + TABS.length) % TABS.length][0]);
     $(`tab-${state.tab}`).focus();
@@ -782,9 +810,12 @@ function openTab(id) {
   state.tab = id;
   for (const [t] of TABS) {
     $(`pane-${t}`).classList.toggle("is-open", t === id);
-    $(`tab-${t}`)?.setAttribute("aria-selected", t === id ? "true" : "false");
-    $(`tab-${t}`)?.setAttribute("tabindex", t === id ? "0" : "-1");
+    const b = $(`tab-${t}`);
+    b?.setAttribute("aria-selected", t === id ? "true" : "false");
+    b?.setAttribute("tabindex", t === id ? "0" : "-1");
+    b?.toggleAttribute("aria-current", t === id);
   }
+  $("paneTitle").textContent = (TABS.find((t) => t[0] === id) || [])[1] || "";
   $("foot").hidden = !GEN_TABS.has(id);
   document.body.dataset.liveView = `${state.net || "networks"}:${id}`;
   savePrefs();
@@ -1027,9 +1058,10 @@ function layerCard(l, earlier) {
   return card;
 }
 async function loadLayers() {
-  if (!state.net) { state.layers = []; renderPcgPane(); return; }
+  if (!state.net) { state.layers = []; renderPcgPane(); renderLayerList(); return; }
   const [out, assets] = await Promise.all([rpc("pcg_layers", { net_id: state.net }), rpc("pcg_assets", { net_id: state.net })]);
   state.layers = out.ok === false ? [] : out.items || [];
+  renderLayerList();
   state.assetSet = assets.ok === false ? "own" : assets.asset_set;
   const pane = $("pane-pcg");
   if (pane && pane.contains(document.activeElement) && document.activeElement !== document.body) {
@@ -1307,6 +1339,7 @@ async function loadNets(autoOpen = true) {
     return b;
   }) : [h("div", { class: "dk-empty" }, h("div", { class: "dk-empty__title" }, "No networks yet"), "Generate a world, or pull roads from UEFN below.")]));
   if (state.net && !currentNet()) state.net = "";
+  renderWorldPick();
   if (!autoOpen) return;
   if (!state.net && state.nets[0]) openNet(state.nets[0].id);
   else if (!state.net) buildScene();
@@ -1314,6 +1347,7 @@ async function loadNets(autoOpen = true) {
 async function openNet(id) {
   state.net = id; state.framed = false; state.sel = null; state.actor = ""; state.pcg = {};
   call("prefs.set", { id: "last_net", value: id }).catch(() => {});
+  renderWorldPick();
   document.querySelectorAll("[data-net]").forEach((b) => b.toggleAttribute("aria-current", b.dataset.net === id));
   const g = currentNet()?.generated;
   if (g) {  // the generate tabs show this world's own settings
@@ -1525,6 +1559,231 @@ function drawRemoteSel() {
   needsDraw = true;
 }
 
+// ------------------------------------------------------------------ header: the open world, new, push
+function renderHeader() {
+  $("brand").replaceChildren(icon("city", 18), h("span", {}, "City Builder"));
+  $("headActions").replaceChildren(button("New world", "plus", newWorld, "secondary", "Set up a new world in the World section"));
+  $("headPush").replaceChildren(
+    button("Push roads", "push", onImportAll, "secondary", "Paste the roads, paths and private access that changed into UEFN"),
+    button("Push city", "upload", onPcgPlace, "primary", "Build the changed 400 m tiles of the city in UEFN"));
+}
+let worldDrop = null;
+function renderWorldPick() {
+  const host = $("worldPick");
+  if (!state.nets.length) { worldDrop = null; host.replaceChildren(h("span", { class: "dk-muted" }, "No worlds yet")); return; }
+  const opts = state.nets.map((n) => ({ value: n.id, label: n.generated ? n.name : `${n.name} (from UEFN)` }));
+  if (!window.DuckyKit?.dropdown) {  // the kit not loaded yet: plain buttons, never a native select
+    host.replaceChildren(...state.nets.map((n) => button(n.name, n.generated ? "world" : "network", () => openNet(n.id),
+      n.id === state.net ? "primary" : "ghost")));
+    return;
+  }
+  if (!worldDrop) {
+    worldDrop = window.DuckyKit.dropdown({ label: "World", options: opts, value: state.net || opts[0].value,
+      onChange: (v) => { if (v && v !== state.net) openNet(v); } });
+    host.replaceChildren(worldDrop.el);
+  } else {
+    worldDrop.setOptions?.(opts);
+    worldDrop.set?.(state.net);
+  }
+}
+function newWorld() {
+  state.net = ""; state.geo = null; state.cities = []; state.layers = []; state.pcg = {}; state.sel = null; state.actor = "";
+  state.gen.name = "New world";
+  if (ctl.name?.input) ctl.name.input.value = state.gen.name;
+  renderLayerList();
+  $("actors").replaceChildren(h("div", { class: "rn-hint" }, "Generate the world first."));
+  worldDrop?.set?.("");
+  openTab("world");
+  buildScene();
+  ctl.name?.input?.focus();
+  ctl.name?.input?.select?.();
+}
+
+// ------------------------------------------------------------------ sidebar: layers (click to open, drag to reorder)
+function renderLayerList() {
+  const host = $("layerList");
+  const layers = [...(state.layers || [])].sort((a, b) => (a.order - b.order) || a.name.localeCompare(b.name));
+  if (!layers.length) {
+    host.replaceChildren(h("div", { class: "rn-hint" }, state.net ? "No layers: add the starter set in Layers." : "Open a world."));
+    return;
+  }
+  let dragId = "";
+  host.replaceChildren(...layers.map((l) => {
+    const row = h("button", { type: "button", class: `dk-nav-item rn-layer${l.enabled ? "" : " is-off"}`, draggable: "true",
+      "data-layer": l.id, "aria-current": state.pcgOpen === l.id && state.tab === "pcg" ? "page" : null,
+      title: `${l.name}: drag to change the order layers are placed in` },
+      h("span", { class: "rn-dot", style: `background: ${swatch(ROLE_COLOR[l.role] || "fg-dim")}` }),
+      h("span", {}, l.name), h("span", { class: "rn-count", "data-pcg-count": l.name }, ""));
+    row.addEventListener("click", () => {
+      state.pcgOpen = l.id;
+      openTab("pcg");
+      renderPcgPane();
+      renderLayerList();
+      document.querySelector(`[data-live-id="layer:${l.id}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+    row.addEventListener("dragstart", (e) => { dragId = l.id; row.classList.add("is-dragging"); e.dataTransfer.effectAllowed = "move"; });
+    row.addEventListener("dragend", () => row.classList.remove("is-dragging"));
+    row.addEventListener("dragover", (e) => { e.preventDefault(); row.classList.add("is-over"); });
+    row.addEventListener("dragleave", () => row.classList.remove("is-over"));
+    row.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      row.classList.remove("is-over");
+      if (!dragId || dragId === l.id) return;
+      const order = layers.filter((x) => x.id !== dragId);
+      order.splice(order.findIndex((x) => x.id === l.id), 0, layers.find((x) => x.id === dragId));
+      busy("Saving the layer order…");
+      for (const [i, x] of order.entries()) {  // placing order: earlier layers claim their spots first
+        if (x.order !== i + 1) await rpc("pcg_layer_save", { net_id: state.net, layer_id: x.id, layer: JSON.stringify({ ...x, order: i + 1 }) });
+      }
+      busy("");
+      await loadLayers();
+    });
+    return row;
+  }));
+  renderPcgCounts();
+}
+
+// ------------------------------------------------------------------ sidebar: width grip and version
+function initGrip() {
+  const grip = $("leftGrip"), root = document.documentElement;
+  const setW = (w) => { state.view.leftW = Math.max(180, Math.min(480, Math.round(w))); root.style.setProperty("--left-w", `${state.view.leftW}px`); };
+  if (state.view.leftW) setW(state.view.leftW);
+  grip.addEventListener("pointerdown", (e) => {
+    const start = e.clientX, w0 = grip.parentElement.getBoundingClientRect().width;
+    grip.setPointerCapture(e.pointerId);
+    grip.classList.add("is-dragging");
+    const move = (ev) => { setW(w0 + ev.clientX - start); resize(); };
+    const up = () => { grip.classList.remove("is-dragging"); grip.removeEventListener("pointermove", move); savePrefs(); };
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", up, { once: true });
+  });
+  grip.addEventListener("keydown", (e) => {
+    const k = { ArrowLeft: -16, ArrowRight: 16 }[e.key];
+    if (k) { setW((state.view.leftW || 248) + k); resize(); savePrefs(); }
+  });
+}
+async function showVersion() {
+  const v = await rpc("version");
+  $("version").replaceChildren(h("span", {}, "City Builder"), h("span", {}, v.version ? `v${v.version}` : ""));
+}
+
+// ------------------------------------------------------------------ map tools: point or draw, tell an AI
+const note = { kind: "", points: [], chats: null };
+function renderTools() {
+  const tool = (id, label, ic, hint) => {
+    const b = h("button", { type: "button", class: "rn-tool", "aria-pressed": state.tool === id ? "true" : "false", title: hint },
+      icon(ic, 16), h("span", {}, label));
+    b.addEventListener("click", () => setTool(id));
+    return b;
+  };
+  const act = (label, ic, fn, hint) => {
+    const b = h("button", { type: "button", class: "rn-tool", title: hint }, icon(ic, 16), h("span", {}, label));
+    b.addEventListener("click", fn);
+    return b;
+  };
+  $("tools").replaceChildren(
+    tool("select", "Select", "pointer", "Click roads and junctions to edit them"),
+    tool("pin", "Pin", "pin", "Click a spot, then tell an AI what to do there"),
+    tool("area", "Area", "pen", "Draw round an area, then tell an AI what to do there"),
+    h("span", { class: "rn-sep" }),
+    act("Frame", "frame", () => frame(), "Show the whole world"),
+    act("Clear", "x", clearNote, "Remove the pin or area"));
+}
+function setTool(id) {
+  state.tool = id;
+  $("view").classList.toggle("is-drawing", id !== "select");
+  renderTools();
+}
+function groundAt(e) {
+  const r = renderer.domElement.getBoundingClientRect();
+  ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), camera);
+  const hit = ray.intersectObjects(groups.terrain.children, false)[0];
+  if (hit) return hit.point;
+  const out = new THREE.Vector3();
+  return ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), out) ? out : null;
+}
+const toUE = (v) => [Math.round(-v.z * 100), Math.round(v.x * 100), Math.round(v.y * 100 / (state.view.zx || 1))];
+function addAreaPoint(e) {
+  const v = groundAt(e);
+  if (v) { note.kind = "drawing"; note.points.push(toUE(v)); drawMarks(); }
+}
+function finishArea() {
+  if (note.points.length < 3) { clearNote(); return; }
+  note.kind = "area";
+  drawMarks();
+  openNote();
+}
+function placePin(e) {
+  const v = groundAt(e);
+  if (!v) return;
+  note.kind = "pin";
+  note.points = [toUE(v)];
+  drawMarks();
+  openNote();
+}
+function drawMarks() {
+  clear(marks);
+  const c = col("accent");
+  if (note.kind === "pin" && note.points[0]) {
+    const [x, y, z] = note.points[0];
+    const s = Math.max(6, orbit.dist / 60);
+    const pin = new THREE.Mesh(new THREE.ConeGeometry(s * 0.35, s, 16), new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: 0.3 }));
+    pin.rotation.x = Math.PI;
+    pin.position.copy(toV(x, y, z)).add(new THREE.Vector3(0, s / 2, 0));
+    marks.add(pin);
+  } else if (note.points.length > 1) {
+    const pts = note.points.map(([x, y, z]) => toV(x, y, z + 150));
+    const geo = new THREE.BufferGeometry().setFromPoints(pts);
+    const mat = new THREE.LineBasicMaterial({ color: c, depthTest: false });
+    marks.add(note.kind === "area" ? new THREE.LineLoop(geo, mat) : new THREE.Line(geo, mat));
+  }
+  needsDraw = true;
+}
+function clearNote() {
+  note.kind = ""; note.points = [];
+  drawMarks();
+  $("note").hidden = true;
+}
+async function openNote() {
+  if (!state.net) { clearNote(); return showError("Open a world first."); }
+  const box = $("note");
+  const where = note.kind === "pin"
+    ? `A spot at x ${note.points[0][0]}, y ${note.points[0][1]}`
+    : `An area of about ${Math.round(Math.abs(note.points.reduce((s, p, i) => {
+        const q = note.points[(i + 1) % note.points.length]; return s + p[0] * q[1] - q[0] * p[1]; }, 0)) / 2 / 1e4).toLocaleString()} m²`;
+  const text = h("textarea", { placeholder: note.kind === "pin" ? "What should go here? A school, a park, a bus stop…"
+    : "What should happen in this area? More houses, a shopping street, a dense forest…", "aria-label": "Note for the AI" });
+  if (!note.chats) {
+    const got = await rpc("chats");
+    note.chats = got.ok === false ? [] : got.chats || [];
+  }
+  const opts = [{ value: "new", label: "New chat" }, ...note.chats.map((c) => ({ value: c.id, label: c.title }))];
+  let target = note.target && opts.some((o) => o.value === note.target) ? note.target : "new";
+  const pickChat = window.DuckyKit?.dropdown
+    ? window.DuckyKit.dropdown({ label: "Send to", options: opts, value: target, onChange: (v) => { target = v; note.target = v; } }).el
+    : h("span", { class: "dk-muted" }, "Sends to a new chat");
+  const send = button("Send to AI", "send", async () => {
+    if (!text.value.trim()) return text.focus();
+    busy("Sending to the AI…");
+    const out = await rpc("send_note", { net_id: state.net, chat_id: target, text: text.value, kind: note.kind,
+      points: JSON.stringify(note.points.map((p) => [p[0], p[1]])) });
+    busy("");
+    if (out.ok === false) return showError(out.error);
+    showError("");
+    note.target = out.chat;
+    note.chats = null;  // a new chat shows up next time
+    clearNote();
+    alert("Sent", "The AI has the spot, what is there now, and your note. Its changes show up here when it saves layers.");
+  }, "primary");
+  const cancel = button("Cancel", "x", clearNote, "ghost");
+  box.replaceChildren(h("div", { class: "rn-note__where" }, where), text, h("div", { class: "rn-note__row" }, pickChat, cancel, send));
+  box.hidden = false;
+  text.focus();
+}
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("note").hidden) clearNote();
+});
+
 // ------------------------------------------------------------------ start
 (async () => {
   const saved = await call("prefs.get", { id: "ui" }).catch(() => null);
@@ -1537,8 +1796,13 @@ function drawRemoteSel() {
   const last = await call("prefs.get", { id: "last_net" }).catch(() => null);
   if (last?.value) state.net = last.value;
   themeColors();
+  state.tool = "select";
+  renderHeader();
   renderTabs();
   renderToolbar();
+  renderTools();
+  initGrip();
+  showVersion();
   buildPanes();
   openTab(state.tab);
   resize();

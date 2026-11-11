@@ -6,8 +6,49 @@
   <script src="../../_kit/ducky.js"></script>
   <style>
     html, body { height: 100%; margin: 0; }
-    body { overflow: hidden; font-family: var(--font-ui); }
-    .dk-layout { height: 100%; }
+    body { overflow: hidden; font-family: var(--font-ui); display: flex; flex-direction: column; }
+    .dk-layout { flex: 1; min-height: 0; }
+
+    /* ---------- header: the open world and what to do with it */
+    .rn-header { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--header); }
+    .rn-brand { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--fg); margin-right: 8px; white-space: nowrap; }
+    .rn-brand .rn-icon { color: var(--accent); }
+    .rn-world { min-width: 200px; max-width: 320px; }
+    .rn-world .dk-field__label, .rn-world label { display: none; }
+    .rn-header .rn-spacer { flex: 1; }
+    .rn-header .dk-btn { display: inline-flex; align-items: center; gap: 6px; }
+
+    /* ---------- left sidebar: sections, layers, actors, version; resizable */
+    .rn-left { width: var(--left-w, 248px); position: relative; }
+    .rn-grip { position: absolute; top: 0; right: -4px; width: 8px; height: 100%; cursor: col-resize; z-index: 3; }
+    .rn-grip:hover, .rn-grip.is-dragging { background: linear-gradient(to right, transparent 3px, var(--accent) 3px, var(--accent) 5px, transparent 5px); }
+    .rn-version { padding: 8px 12px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; }
+    .rn-layer { display: flex; align-items: center; gap: 8px; cursor: grab; }
+    .rn-layer.is-dragging { opacity: 0.5; }
+    .rn-layer.is-over { box-shadow: inset 0 2px 0 var(--accent); }
+    .rn-layer .rn-dot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+    .rn-layer.is-off { color: var(--muted); }
+
+    /* ---------- bottom tool bar: point, draw, tell an AI */
+    .rn-tools { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 4; display: flex; align-items: center; gap: 2px;
+                padding: 4px; border-radius: 999px; background: var(--bg-panel); border: 1px solid var(--border); box-shadow: var(--shadow-md); }
+    .rn-tool { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; color: var(--fg-dim); font: inherit; font-size: 12px;
+               padding: 6px 12px; border-radius: 999px; cursor: pointer; transition: background-color 140ms ease, color 140ms ease; }
+    .rn-tool:hover { color: var(--fg); background: var(--bg-hover); }
+    .rn-tool[aria-pressed="true"] { color: var(--fg-inverse); background: var(--accent); }
+    .rn-tool:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+    .rn-tools .rn-sep { width: 1px; align-self: stretch; background: var(--border); margin: 4px 4px; }
+    .rn-note { position: absolute; left: 50%; bottom: 68px; transform: translateX(-50%); z-index: 4; width: min(420px, calc(100% - 32px));
+               background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-lg); padding: 12px;
+               display: flex; flex-direction: column; gap: 8px; }
+    .rn-note[hidden] { display: none; }
+    .rn-note textarea { width: 100%; min-height: 72px; resize: vertical; box-sizing: border-box; font: inherit; font-size: 13px;
+                        background: var(--input-bg); color: var(--fg); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px; }
+    .rn-note textarea:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+    .rn-note__row { display: flex; gap: 8px; align-items: center; }
+    .rn-note__row > :first-child { flex: 1; min-width: 0; }
+    .rn-note__where { font-size: 12px; color: var(--fg-dim); }
+    #view.is-drawing canvas { cursor: crosshair; }
     .dk-main.rn-main { position: relative; min-width: 0; padding: 0; overflow: hidden; }
     #view { position: absolute; inset: 0; }
     #view canvas { display: block; width: 100%; height: 100%; outline: none; }
@@ -144,16 +185,28 @@
   </style>
 </head>
 <body data-live-view="networks:world">
+  <header class="rn-header" aria-label="City Builder">
+    <div class="rn-brand" id="brand"></div>
+    <div class="rn-world" id="worldPick"><div class="dk-loading">Loading worlds…</div></div>
+    <div id="headActions" class="dk-row"></div>
+    <div class="rn-spacer"></div>
+    <div id="headPush" class="dk-row"></div>
+  </header>
   <div class="dk-layout">
-    <aside class="dk-sidebar rn-left" aria-label="Worlds and road networks">
-      <div class="dk-sidebar__title">Worlds and road networks</div>
+    <aside class="dk-sidebar rn-left" aria-label="Sections and layers">
       <div class="rn-scroll">
-        <div class="rn-list" id="nets"><div class="dk-loading">Loading networks…</div></div>
+        <div class="rn-section">Sections</div>
+        <div class="rn-list" id="nav" role="tablist" aria-orientation="vertical"></div>
+        <div class="rn-section">Layers</div>
+        <div class="rn-list" id="layerList"><div class="rn-hint">Open a world.</div></div>
         <div class="rn-section">Road actors</div>
-        <div class="rn-list" id="actors"><div class="rn-hint">Pick a network.</div></div>
+        <div class="rn-list" id="actors"><div class="rn-hint">Open a world.</div></div>
         <div class="rn-section">Pull from UEFN</div>
         <div class="rn-pull" id="pullRow"></div>
+        <div id="nets" hidden></div>
       </div>
+      <div class="rn-version" id="version"></div>
+      <div class="rn-grip" id="leftGrip" role="separator" aria-orientation="vertical" aria-label="Resize the sidebar" tabindex="0"></div>
     </aside>
     <main class="dk-main rn-main">
       <div id="view" tabindex="0" aria-label="3D road network view"></div>
@@ -163,9 +216,12 @@
       <div class="rn-legend" id="legend"></div>
       <div class="rn-busy" id="busy"></div>
       <div class="rn-empty-view" id="emptyView"></div>
+      <div class="rn-tools" id="tools" role="toolbar" aria-label="Map tools"></div>
+      <div class="rn-note" id="note" hidden></div>
     </main>
-    <aside class="dk-sidebar dk-sidebar--right rn-right" aria-label="World settings">
-      <div class="dk-tabs rn-tabs" role="tablist" id="tabs"></div>
+    <aside class="dk-sidebar dk-sidebar--right rn-right" aria-label="Section settings">
+      <div class="dk-sidebar__title" id="paneTitle">World</div>
+      <div id="tabs" hidden></div>
       <div id="err"></div>
       <div class="rn-pane" id="pane-world" role="tabpanel"></div>
       <div class="rn-pane" id="pane-terrain" role="tabpanel"></div>

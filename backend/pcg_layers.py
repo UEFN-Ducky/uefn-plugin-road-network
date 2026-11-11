@@ -166,6 +166,11 @@ def clean(layer: dict) -> dict:
     out["random_yaw"] = bool(layer.get("random_yaw", natural))
     out["collision"] = bool(layer.get("collision", out["kind"] != "scatter" or out["density"] < 2))
     out["enabled"] = bool(layer.get("enabled", True))
+    # an optional outline [[x, y], ...] (cm, world): the layer only places inside it (an area drawn in the panel)
+    area = layer.get("area") if isinstance(layer.get("area"), list) else []
+    out["area"] = [[float(p[0]), float(p[1])] for p in area if isinstance(p, (list, tuple)) and len(p) >= 2][:200]
+    if len(out["area"]) < 3:
+        out["area"] = []
     out["role"] = layer.get("role") if layer.get("role") in ROLES else _guess_role(out["name"], out["kind"])
     out["corners"] = max(1, min(4, int(layer.get("corners", 2) or 2)))  # at_junctions: corners used per junction
     # buildings that cars reach get a driveway from their front to the street
@@ -758,6 +763,15 @@ def road_samples(actors: list, step: float = 500.0) -> list:
     return out
 
 
+def inside(poly: list, x: float, y: float) -> bool:
+    """Point in polygon (even-odd ray cast)."""
+    hit = False
+    for (ax, ay), (bx, by) in zip(poly, poly[1:] + poly[:1]):
+        if (ay > y) != (by > y) and x < ax + (y - ay) * (bx - ax) / (by - ay):
+            hit = not hit
+    return hit
+
+
 def _in_where(where: str, cities: list, x: float, y: float) -> bool:
     """Same areas as masks(): rings per city, the industrial wedge cut out of normal and housing."""
     if where == "everywhere" or not cities:
@@ -929,6 +943,8 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                 continue  # too soon after the last one on this side of the street
             if not lot_role and not _in_where(layer["where"], cities, x, y):
                 continue  # (a neighbourhood's own lots are already in the right place)
+            if layer["area"] and not inside(layer["area"], x, y):
+                continue  # outside the area this layer was drawn for
             if keep and any(max(k["x0"] - x, 0, x - k["x1"]) ** 2 + max(k["y0"] - y, 0, y - k["y1"]) ** 2 < 4e6 for k in keep):
                 continue  # 20 m around a keep zone (a cinema, a spawn) stays clear
             if layer["kind"] == "buildings" and layer["height_min_m"] >= 40 and rnd.random() > 0.08 + 0.92 * core_peak(cities, x, y):
@@ -1182,6 +1198,10 @@ def _demo() -> None:
             [{"a": 0, "b": 1, "mesh": "SM_Road"}])
     rw = road_walls([road], lambda x, y: 300.0 if y > 0 else 0.0)
     assert len(rw) == 3 and all(r[1] > 0 and abs(r[6] - 3.3) < 0.01 and r[5] == 10.0 for r in rw), rw
+    # an area-limited layer places only inside its outline
+    boxed = clean({"name": "Box trees", "kind": "scatter", "density": 5, "area": [[0, 0], [5000, 0], [5000, 5000], [0, 5000]]})
+    bp = preview([boxed], [], {"min": [-20000, -20000], "max": [20000, 20000]}, [], lambda x, y: 0.0)["Box trees"]["points"]
+    assert bp and all(0 <= p[0] <= 5000 and 0 <= p[1] <= 5000 for p in bp), len(bp)
     # parcels: houses fill the lots cut from a real grid city's blocks, one per lot, facing their street
     from . import citygen as cg
     town = {"name": "L", "x": 0, "y": 0, "radius": 40000, "seed": 4, "style": "grid"}

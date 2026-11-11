@@ -1557,6 +1557,96 @@ def register(api) -> None:
                            safe(save_city)(net_id, city, name, style, radius_m, buildings))
     api.register_panel_rpc("heightmap", lambda net_id="": safe(heightmap)(net_id))
     api.register_panel_rpc("pipeline", lambda net_id="", run_from="", confirm=False: safe(pipeline_run)(net_id, run_from, confirm))
+
+    # ---------------------------------------------------------------- panel: version, AI notes on the map
+    def plugin_version() -> dict:
+        try:
+            with open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin.json"), encoding="utf-8") as fh:
+                return {"ok": True, "version": json.load(fh).get("version", "")}
+        except (OSError, ValueError):
+            return {"ok": True, "version": ""}
+
+    def list_chats() -> dict:
+        """Recent Ducky chats a note on the map can go to (plus 'new chat' in the panel)."""
+        got = api.call_tool("ducky_list_chats", {"limit": 30}) or {}
+        rows = (got.get("conversations") or got.get("chats") or got.get("items") or []) if isinstance(got, dict) else got
+        rows = sorted((c for c in rows or [] if isinstance(c, dict) and (c.get("id") or c.get("conv_id"))
+                       and c.get("folder_id") != "archive"), key=lambda c: -float(c.get("updated") or 0))
+        return {"ok": True, "chats": [{"id": c.get("id") or c.get("conv_id"),
+                                       "title": (c.get("title") or c.get("name") or "Chat")
+                                       + (f" ({c['ducky']})" if c.get("ducky") else "")} for c in rows][:30]}
+
+    def note_text(nid: str, text: str, kind: str, points: list) -> str:
+        """The message an AI gets for a pin or a drawn area: where it is, what is there, how to act on it."""
+        doc = data.get(f"net.{nid}") or {}
+        towns = list(city_docs(nid).values())
+        cx = sum(p[0] for p in points) / len(points)
+        cy = sum(p[1] for p in points) / len(points)
+        near = min(towns, key=lambda c: (c["x"] - cx) ** 2 + (c["y"] - cy) ** 2) if towns else None
+        lines = [f"City Builder note on world '{doc.get('name') or nid}' (net_id '{nid}'): {text.strip()}"]
+        if near:
+            share = cg.zone_share(near, cx, cy)
+            ring = "downtown" if share <= 0.4 else "normal city" if share <= 0.75 else "housing" if share <= 1 else "outside the city"
+            lines.append(f"Where: {'an area' if kind == 'area' else 'a spot'} in {near['name']} ({ring}), centre x {round(cx)} "
+                         f"y {round(cy)} cm.")
+        if kind == "area":
+            lines.append(f"Area outline (world cm, {len(points)} points): {json.dumps([[round(p[0]), round(p[1])] for p in points])}")
+            got = pcg_preview(nid)
+            have = {}
+            for name, layer in (got.get("layers") or {}).items():
+                n = sum(1 for p in layer.get("points") or [] if pl.inside(points, p[0], p[1]))
+                if n:
+                    have[name] = n
+            lines.append("Already inside: " + (", ".join(f"{k} {v}" for k, v in sorted(have.items(), key=lambda kv: -kv[1])[:12])
+                                               or "nothing yet"))
+        lines.append("How: City Builder tools only (skill road-network). To add things in this area, save a PCG layer "
+                     "with road_network_pcg_layer_save and set its \"area\" to the outline above (the layer then places "
+                     "only inside it); road_network_pcg_layers lists fields and an example; check with "
+                     "road_network_pcg_preview, then Push city (road_network_pcg_build, confirm=true) rebuilds only the "
+                     "tiles that changed. Follow road_network_generate_options().rules.")
+        return "\n".join(lines)
+
+    def send_note(net_id: str = "", chat_id: str = "", text: str = "", kind: str = "pin", points: str = "") -> dict:
+        nid = slug(net_id)
+        if not data.get(f"net.{nid}"):
+            return {"ok": False, "error": "Open a world first."}
+        try:
+            pts = [[float(p[0]), float(p[1])] for p in (json.loads(points) if isinstance(points, str) else points or [])]
+        except (ValueError, TypeError, IndexError):
+            return {"ok": False, "error": "The marked points could not be read."}
+        if not pts or not str(text or "").strip():
+            return {"ok": False, "error": "Mark a spot or an area and write what should happen there."}
+        message = note_text(nid, text, "area" if kind == "area" and len(pts) >= 3 else "pin", pts)
+        conv = chat_id
+        if not conv or conv == "new":
+            made = api.call_tool("ducky_create_chat", {"title": f"City Builder: {str(text).strip()[:40]}"}) or {}
+            conv = made.get("conv_id") or made.get("id") or (made.get("chat") or {}).get("id")
+            if not conv:
+                return {"ok": False, "error": "Couldn't start a chat."}
+        api.call_tool("ducky_send_chat_message", {"conv_id": conv, "wait_for_reply": False, "message": message})
+        return {"ok": True, "chat": conv}
+
+    api.register_panel_rpc("version", lambda: plugin_version())
+    api.register_panel_rpc("chats", lambda: safe(list_chats)())
+    api.register_panel_rpc("send_note", lambda net_id="", chat_id="", text="", kind="pin", points="":
+                           safe(send_note)(net_id, chat_id, text, kind, points))
+
+    @api.tool(intent=GEN_INTENT, listener=False)
+    def road_network_version() -> dict:
+        """City Builder's version (the panel shows it at the foot of its sidebar)."""
+        return plugin_version()
+
+    @api.tool(intent=GEN_INTENT, listener=False)
+    def road_network_chats() -> dict:
+        """The recent Ducky chats a map note (road_network_send_note) can be sent to."""
+        return safe(list_chats)()
+
+    @api.tool(intent=GEN_INTENT, listener=False)
+    def road_network_send_note(net_id: str = "", chat_id: str = "", text: str = "", kind: str = "pin", points: str = "") -> dict:
+        """Send a note about a spot (kind 'pin', one [x, y]) or an area (kind 'area', an outline [[x, y], ...], cm)
+        of a world to a Ducky chat (chat_id, or 'new'), with where it is, what is already there and how to act
+        on it with City Builder (an area-limited PCG layer). The panel's map comment tool calls this."""
+        return safe(send_note)(net_id, chat_id, text, kind, points)
     api.register_panel_rpc("import_all", lambda net_id="", confirm=False, force=False: safe(import_all)(net_id, confirm, force))
 
     PCG_INTENT = r"\b(pcg|procedural|scatter|placement layers?|foliage|trees|rocks|street (trees|lamps))\b"

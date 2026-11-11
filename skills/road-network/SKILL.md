@@ -139,6 +139,16 @@ A plain spline point there smoothed a 90 degree turn into a wide arc that looped
 meshes are crossings, not discs: each arm out to its mouth with curved kerb returns between arms
 (`_junction_geometry`); the panel draws them the same way.
 
+## The panel
+Header: the world dropdown, New world, Push roads, Push city. Left sidebar (drag its edge to resize): sections
+(World, Terrain, Roads, Cities, Layers, Edit roads, Push to UEFN), the layers (click one to open it, drag to
+change the order they are placed in), road actors, Pull from UEFN, and the version at the foot. Bottom of the
+map: Select, Pin (click a spot) and Area (draw round an area), then a note box with "Send to" (a recent chat
+or a new one): `road_network_send_note` sends the AI the spot / outline, the city and district, what is already
+placed inside, and how to act (save a PCG layer with `"area": [[x, y], ...]` - a layer with an area places only
+inside it - then preview and Push city). Colours in the preview are mixes of Appearance variables
+(`mix:a:b:t`), never literals.
+
 ## Neighbourhoods and the private access network (`backend/neighbourhoods.py`)
 Outside the core the grid has ~200 m super-blocks (`superblocks`). Each block >= 120 m becomes a neighbourhood,
 picked from the city seed and weighted by its ring (`TYPES`): subdivisions `grid` (two through streets), `loop`
