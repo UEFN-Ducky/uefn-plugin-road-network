@@ -233,6 +233,16 @@ Facility buildings are always modular, so they are hollow with floors and a stai
 halls get one storey of machines). A raised plinth gets entrance steps. Planned sites are never thinned by a
 layer's spacing; that spacing only applies to scattered lots.
 
+**Up close, modular buildings carry roof gear and facade details by style:**
+- **Roof gear:** AC units, exhaust fans, vent stacks, antennas, satellite dishes, solar arrays, skylights, ducts,
+  hatches, and a water tank on apartments. One weighted pick per 4.5 m roof cell, never under a higher block.
+- **Roof access:** every block with a stair core gets a roof-access hut over it.
+- **Facade details:** window AC units on apartments, houses and shops; split AC units and vents; downpipes on
+  every corner (not glass towers); a lamp each side of every door; cameras on jails and industrial buildings;
+  a steel fire escape up one side of apartment blocks of 3+ storeys.
+- **They never change the building:** the details use their own random stream, so a building keeps the same
+  walls with or without them. Every piece fits its cell or storey; nothing stands through a roof or ceiling.
+
 ## Waterfront & marine development (`backend/waterfront.py`, options `waterfront`, `canals`)
 - **ShorelineAnalyzer (`analyze`):** the water line S(t) comes from the terrain at the water level (marching
   squares), resampled every 20 m. Each sample carries:

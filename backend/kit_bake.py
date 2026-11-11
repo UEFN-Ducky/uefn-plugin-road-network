@@ -117,7 +117,7 @@ KIT = {
     "SM_Kit_Silo": ("Kit/Facility", -305, -305, 0, 305, 305, 2050),
     "SM_Kit_ClarifierTank": ("Kit/Facility", -1000, -1000, 0, 1040, 1000, 440),
     "SM_Kit_Conveyor": ("Kit/Facility", 0, -70, 0, 1200, 70, 720),
-    "SM_Kit_FactoryMachine": ("Kit/Facility", -250, -150, 0, 250, 150, 390),
+    "SM_Kit_FactoryMachine": ("Kit/Facility", -250, -150, 0, 250, 150, 330),
     "SM_Kit_TelecomMast": ("Kit/Facility", -160, -160, 0, 160, 160, 4030),
     "SM_Kit_SecurityFence_4m": ("Kit/Facility", -5, -25, 0, 405, 25, 360),
     "SM_Kit_WatchTower": ("Kit/Facility", -200, -200, 0, 205, 205, 1130),
@@ -465,7 +465,9 @@ def _interior(groups: dict, root: str, parts: list, furniture: str, x, y, z, yaw
             [round(x + fx * u - fy * v), round(y + fy * u + fx * v), round(z + h), round((yaw + turn) % 360, 1), *s])
 
     floors, below, car = 0, 0.0, False
-    storey = storey or STOREY_CM  # parts may also be bounds (x0, y0, z0, x1, y1, z1): a modular building's blocks
+    storey = storey or STOREY_CM
+    if furniture in KIT and KIT[furniture][6] > storey - 40:
+        furniture = ""  # taller than the room it stands in: it would stand through the floor above  # parts may also be bounds (x0, y0, z0, x1, y1, z1): a modular building's blocks
     for part in parts:
         x0, y0, z0, x1, y1, z1 = KIT[part][1:] if isinstance(part, str) else part
         part = part if isinstance(part, str) else ""
@@ -512,7 +514,7 @@ def _interior(groups: dict, root: str, parts: list, furniture: str, x, y, z, yaw
                 if not car:
                     put("SM_Kit_ElevatorCar", cu, cv + 115 * cs[1], h + 15, 0, [cs[0], 1.0, 1.0])
                     car = True
-            for _, u, v in spots:  # facing the nearest window
+            for _, u, v in spots if furniture else []:  # facing the nearest window
                 if rnd:
                     turn = math.degrees(math.atan2(v, u))
                 elif abs(u) / ru >= abs(v) / rv:
@@ -743,6 +745,10 @@ def _demo() -> None:
     assert all(kb_ in KIT for kb_ in ("SM_Kit_CoolingTower", "SM_Kit_WatchTower", "SM_Kit_EntranceSteps"))
     for spec in FACILITIES.values():  # every extra is a kit piece and every style exists
         assert all(e[0] in KIT for e in spec.get("extras", [])) and (not spec.get("style") or spec["style"] in grammar.STYLES)
+    # nothing inside stands through the ceiling: every furniture piece fits under the next storey's slab
+    gfac = bake({"F": {"kind": "buildings", "role": "factory", "build": "modular", "points": [[0, 0, 0, 0, 1, 12, 0, 40, 30, 0, []]]}}, "/R")[0]
+    roof_z = max(r[2] for r in gfac[bk("SM_BK_Floor")])
+    assert all(r[2] + KIT["SM_Kit_FactoryMachine"][6] <= roof_z for r in gfac[path("SM_Kit_FactoryMachine", "/R")]), "machine through the roof"
     # a warehouse layer set to modular is an industrial shed now, not a stack of containers
     gw2 = bake({"W": {"kind": "buildings", "role": "warehouse", "build": "modular", "points": [lot]}}, "/R")[0]
     assert bk("SM_BK_Ind_Wall_RollerDoor") in gw2 and not any("SM_V4_Container" in k for k in gw2)

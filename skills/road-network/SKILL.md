@@ -64,3 +64,5 @@ situation and what to do. Keep it to what you couldn't have known.
   its type was lost on the way to the bake: check the lot still carries it, don't add a mesh by hand.
 - Check a new building type the way the person can see it: assemble it in Blender from the plugin's own bake
   (a cutaway with the roof off) before calling it done. That's how the stairs poking through roofs were found.
+- A piece taller than a storey, or wider than a roof cell, shows up as junk on the roof (machines through
+  ceilings, solar arrays overlapping). Keep new interior and roof pieces inside those sizes.

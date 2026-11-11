@@ -81,9 +81,11 @@ STYLE_BY_ROLE = {"skyscraper": "tower", "office": "tower", "apartment": "apartme
 
 def modules() -> list:
     """Every BuildingKit mesh the grammar can place (for the piece manifest)."""
-    names = set(SHARED.values())
+    names = set(SHARED.values()) | {BULKHEAD} | set(DETAILS)
     for s in STYLES.values():
         names |= set(s["walls"].values()) | {s["corner"]} | ({s["awning"]} if "awning" in s else set())
+    for gear in ROOF.values():
+        names |= {n for n in gear if n}
     return sorted(names)
 
 
@@ -171,28 +173,72 @@ def massing(form: str, d: float, w: float, h: float) -> list:
     return [(0, 0, d, w, 0, h)]
 
 
+# What goes on a building up close. Roof gear: one weighted pick per roof cell ('' = an empty cell), never under
+# a higher block, the cell over the stair core kept for the roof-access hut. Facade details: storey-local pieces
+# centred on a wall module (window AC, split AC, vents), on a corner (downpipes) or beside a door (lights, cameras).
+ROOF = {
+    "tower": {"SM_BK_Roof_ACUnit_Large": 3, "SM_BK_Roof_ExhaustFan": 2, "SM_BK_Roof_VentStack": 1, "SM_BK_Roof_Antenna": 1, "": 3},
+    "apartment": {"SM_BK_Roof_ACUnit_Small": 3, "SM_BK_Roof_SatelliteDish": 2, "SM_BK_Roof_VentStack": 2,
+                  "SM_BK_Roof_WaterTank": 1, "": 3},
+    "house": {"SM_BK_Roof_SatelliteDish": 1, "SM_BK_Roof_SolarArray": 1, "SM_BK_Roof_VentStack": 1, "": 3},
+    "shop": {"SM_BK_Roof_ACUnit_Large": 2, "SM_BK_Roof_ACUnit_Small": 2, "SM_BK_Roof_VentStack": 1, "": 2},
+    "modern": {"SM_BK_Roof_ACUnit_Small": 2, "SM_BK_Roof_SolarArray": 2, "SM_BK_Roof_Skylight": 1, "": 3},
+    "school": {"SM_BK_Roof_ACUnit_Large": 2, "SM_BK_Roof_SolarArray": 2, "SM_BK_Roof_Skylight": 2, "": 2},
+    "civic": {"SM_BK_Roof_ACUnit_Large": 2, "SM_BK_Roof_Skylight": 1, "SM_BK_Roof_Hatch": 1, "": 4},
+    "mansion": {"SM_BK_Roof_SatelliteDish": 1, "SM_BK_Roof_VentStack": 1, "": 4},
+    "industrial": {"SM_BK_Roof_ExhaustFan": 3, "SM_BK_Roof_Skylight": 3, "SM_BK_Roof_Duct": 2, "SM_BK_Roof_SolarArray": 1, "": 1},
+    "jail": {"SM_BK_Roof_ACUnit_Large": 2, "SM_BK_Roof_ExhaustFan": 2, "SM_BK_Roof_Hatch": 1, "": 3},
+}
+ROOF_CELL_CM = 450.0  # one piece of roof gear per 4.5 m cell, kept 2.5 m in from the parapet
+HUT_CLEAR_CM = 400.0  # cells this close to the hut's centre (on both axes) would stand inside it
+BULKHEAD = "SM_BK_Roof_StairBulkhead"  # the roof-access hut over the stair core (blocks of 2+ storeys with a core)
+CORE_BLOCK_CM = 1100.0  # the interiors fit a stair core only in a block at least this wide (kit_bake.CORE_MIN_CM)
+FACADE = {  # style -> (window AC chance on upper windows, split AC chance on ground side walls, vent chance,
+            #           downpipes on corners, a fire escape up one side, cameras at doors and corners)
+    "apartment": (0.22, 0.0, 0.05, True, True, False), "house": (0.18, 0.0, 0.0, True, False, False),
+    "shop": (0.12, 0.0, 0.15, True, False, False), "modern": (0.0, 0.15, 0.05, True, False, False),
+    "school": (0.0, 0.12, 0.05, True, False, False), "civic": (0.0, 0.08, 0.0, True, False, False),
+    "mansion": (0.0, 0.0, 0.0, True, False, False), "industrial": (0.0, 0.0, 0.25, True, False, True),
+    "jail": (0.0, 0.0, 0.1, False, False, True), "tower": (0.0, 0.0, 0.0, False, False, False),
+}
+DETAILS = ("SM_BK_Facade_WindowAC", "SM_BK_Facade_SplitAC", "SM_BK_Facade_Downpipe", "SM_BK_Facade_WallLight",
+           "SM_BK_Facade_FireEscape", "SM_BK_Facade_Vent", "SM_BK_Facade_Camera")
+WINDOWS = ("Window", "Double", "Arch", "Glass", "Slit")
+DOORS = ("Door", "Entrance", "Gate", "Lobby", "Roller")
+
+
 def build(form: str, role: str, d: float, w: float, h: float, seed: int, path, style_name: str = "") -> tuple:
     """(rows {mesh path: [[u, v, z, yaw, sx, sy, sz]]} in the lot frame, blocks for the interiors).
-    path(name) -> the mesh's content path. Storeys snap to whole BuildingKit storeys (at least one)."""
-    style = STYLES[style_name or STYLE_BY_ROLE.get(role, "tower")]
+    path(name) -> the mesh's content path. Storeys snap to whole BuildingKit storeys (at least one). Roof gear
+    and facade details come from their own random stream, so they never change which walls a building gets."""
+    sname = style_name or STYLE_BY_ROLE.get(role, "tower")
+    style = STYLES[sname]
     rnd = random.Random(seed)
+    det = random.Random(seed ^ 0x5EED)
+    wac, sac, vent, pipes, escape, cams = FACADE.get(sname, FACADE["tower"])
     rows: dict = {}
     blocks = []
-    front = max(cx + bd / 2 for cx, _, bd, _, _, _ in massing(form, d, w, h))
+    mass = massing(form, d, w, h)
+    front = max(cx + bd / 2 for cx, _, bd, _, _, _ in mass)
 
     def put(name, u, v, z, yaw, sx=1.0, sz=1.0):
         rows.setdefault(path(name), []).append([round(u), round(v), round(z), round(yaw % 360, 1), round(sx, 3), 1.0, round(sz, 3)])
 
-    for cx, cy, bd, bw, z0, z1 in massing(form, d, w, h):
+    snapped = []
+    for cx, cy, bd, bw, z0, z1 in mass:
         z0 = round(z0 / STOREY_CM) * STOREY_CM
         storeys = max(1, round((z1 - z0) / STOREY_CM))
-        top = z0 + storeys * STOREY_CM
-        x0, x1, y0, y1 = cx - bd / 2, cx + bd / 2, cy - bw / 2, cy + bw / 2
+        snapped.append((cx - bd / 2, cy - bw / 2, z0, cx + bd / 2, cy + bw / 2, z0 + storeys * STOREY_CM))
+    for (cx, cy, bd, bw, _, _), (x0, y0, z0, x1, y1, top) in zip(mass, snapped):
+        storeys = round((top - z0) / STOREY_CM)
         poly = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]  # counter-clockwise: the inside is on each edge's left
         if OUTWARD > 0:
             poly.reverse()
         blocks.append((x0, y0, z0, x1, y1, top))
-        for (pu, pv), (qu, qv) in zip(poly, poly[1:] + poly[:1]):
+        edges = list(zip(poly, poly[1:] + poly[:1]))
+        sides = [e for e, ((pu, _), (qu, _)) in enumerate(edges) if not (abs(pu - front) < 1 and abs(qu - front) < 1)]
+        escape_edge = det.choice(sides) if escape and storeys >= 3 and sides else -1
+        for e, ((pu, pv), (qu, qv)) in enumerate(edges):
             L = math.hypot(qu - pu, qv - pv)
             yaw = math.degrees(math.atan2(qv - pv, qu - pu))
             ux, uy = (qu - pu) / L, (qv - pv) / L
@@ -208,11 +254,48 @@ def build(form: str, role: str, d: float, w: float, h: float, seed: int, path, s
                     put(style["walls"][sym], u, v, z, yaw, size / MODULE_CM)
                     if kind == "front_ground" and "awning" in style and sym in ("Storefront", "Entrance"):
                         put(style["awning"], u, v, z, yaw, size / MODULE_CM)
+                    mu, mv = u + ux * size / 2, v + uy * size / 2  # the module's middle on the wall face
+                    if e == escape_edge and k >= 1 and i == len(syms) // 2:
+                        put("SM_BK_Facade_FireEscape", mu, mv, z, yaw)
+                    elif kind == "upper" and sym in WINDOWS and det.random() < wac:
+                        put("SM_BK_Facade_WindowAC", mu, mv, z, yaw)
+                    elif kind == "ground" and sym not in DOORS and det.random() < sac:
+                        put("SM_BK_Facade_SplitAC", mu, mv, z, yaw)
+                    elif sym not in DOORS and det.random() < vent:
+                        put("SM_BK_Facade_Vent", mu, mv, z, yaw)
+                    if z == 0 and sym in DOORS and sym != "Lobby":  # a lamp each side of a door
+                        for s in (-0.42, 0.42):
+                            put("SM_BK_Facade_WallLight", mu + ux * size * s, mv + uy * size * s, z, yaw)
+                        if cams:
+                            put("SM_BK_Facade_Camera", mu + ux * size * 0.3, mv + uy * size * 0.3, z, yaw)
                 put(style["corner"], pu, pv, z, yaw)
+                if pipes:
+                    put("SM_BK_Facade_Downpipe", pu, pv, z, yaw)
+            if cams and z0 == 0:
+                put("SM_BK_Facade_Camera", pu + ux * 60, pv + uy * 60, 0, yaw)
             for i in range(n):  # parapet along the roof edge
                 put(SHARED["parapet"], pu + ux * L / n * i, pv + uy * L / n * i, top, yaw, L / n / MODULE_CM)
         put(SHARED["roof"], x0, y0, top, 0, bd / MODULE_CM)
         rows[path(SHARED["roof"])][-1][5] = round(bw / MODULE_CM, 3)  # roof slab: depth x width
+        # the roof: an access hut over the stair core, gear in the free cells, nothing under a higher block
+        hut = storeys >= 2 and min(bd, bw) >= CORE_BLOCK_CM
+        if hut:
+            put(BULKHEAD, cx, cy, top, 0)
+        gear = ROOF.get(sname, {})
+        names, weights = list(gear), list(gear.values())
+        ncx, ncy = max(1, int((bd - 500) // ROOF_CELL_CM)), max(1, int((bw - 500) // ROOF_CELL_CM))
+        for a in range(ncx):
+            for b_ in range(ncy):
+                gu = x0 + (bd - (ncx - 1) * ROOF_CELL_CM) / 2 + a * ROOF_CELL_CM
+                gv = y0 + (bw - (ncy - 1) * ROOF_CELL_CM) / 2 + b_ * ROOF_CELL_CM
+                if not names or (hut and abs(gu - cx) < HUT_CLEAR_CM and abs(gv - cy) < HUT_CLEAR_CM):
+                    continue
+                if any(o[2] >= top - 1 and o[0] - 100 < gu < o[3] + 100 and o[1] - 100 < gv < o[4] + 100
+                       for o in snapped if o[5] > top):
+                    continue  # under the tower that stands on this podium
+                pick = det.choices(names, weights)[0]
+                if pick:
+                    put(pick, gu, gv, top, det.choice((0, 90, 180, 270)))
     return rows, blocks
 
 
@@ -241,7 +324,25 @@ def _demo() -> None:
     assert len(blocks) == 2 and blocks[1][2] == blocks[0][5] and blocks[1][5] <= 11000 + STOREY_CM, blocks
     assert len(rows["SM_BK_Tower_Wall_RevolvingDoor"]) == 1, "one front door at street level"
     assert all(m in modules() for m in rows), "the manifest lists every placed module"
-    print("grammar ok", sum(len(v) for v in rows.values()), "modules in a 110 m podium tower")
+    # on the podium roof no gear stands inside the tower's footprint, and the tower gets its roof-access hut
+    tx0, ty0, tz0, tx1, ty1, _ = blocks[1]
+    for name in ROOF["tower"]:
+        for r in rows.get(name, []):
+            assert not (r[2] == blocks[0][5] and tx0 - 100 < r[0] < tx1 + 100 and ty0 - 100 < r[1] < ty1 + 100), r
+    assert len(rows[BULKHEAD]) == 2 and "SM_BK_Facade_Downpipe" not in rows, "glass towers: huts, no downpipes"
+    tower_top = [r for n in ROOF["tower"] if n for r in rows.get(n, []) if r[2] == blocks[1][5]]
+    assert len(tower_top) >= 3, ("a 19 m tower roof carries gear round its hut, not just the hut", len(tower_top))
+    # an apartment block up close: a fire escape up one side, window AC units, downpipes, lights at the door
+    rows, blocks = build("box", "apartment", 1800, 2600, 1600, 11, p)
+    storeys = round(blocks[0][5] / STOREY_CM)
+    assert len(rows["SM_BK_Facade_FireEscape"]) == storeys - 1, rows.get("SM_BK_Facade_FireEscape")
+    assert rows.get("SM_BK_Facade_WindowAC") and len(rows["SM_BK_Facade_Downpipe"]) == 4 * storeys
+    assert len(rows["SM_BK_Facade_WallLight"]) == 2 * len(rows["SM_BK_House_Wall_Door"])
+    gear = sum(len(rows.get(n, [])) for n in ROOF["apartment"] if n)
+    assert gear >= 3 and len(rows[BULKHEAD]) == 1, gear
+    # details never change the walls: same seed, same wall picks as without them
+    assert build("box", "apartment", 1800, 2600, 1600, 11, p)[0] == rows, "deterministic"
+    print("grammar ok", sum(len(v) for v in rows.values()), "pieces in a 6-storey apartment block, details included")
 
 
 if __name__ == "__main__":
