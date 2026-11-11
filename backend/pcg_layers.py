@@ -653,6 +653,34 @@ def junctions(actors: list) -> list:
     return out
 
 
+def site_layers(cities: list, ground) -> dict:
+    """The neighbourhoods' own pieces as built-in layers (kind 'site', rows [x, y, z, yaw, sx, sy, sz] already
+    scaled for `mesh`, `box_m` its size at scale 1 for the preview): complex parking lots, painted stalls,
+    cul-de-sac turnarounds and parking garages (lots a complex reserved with role 'parking_garage')."""
+    lots, stalls, pads, garages = [], [], [], []
+    for c in cities:
+        priv = c.get("private") or {}
+        for x, y, yaw, sx, sy in priv.get("parking") or []:
+            lots.append([x, y, round(ground(x, y) or 0), yaw, sx, sy, 1.0])
+        for x, y, yaw, *_ in priv.get("stalls") or []:
+            stalls.append([x, y, round((ground(x, y) or 0) + 9), yaw, 1.0, 1.0, 1.0])
+        for x, y, r in priv.get("pads") or []:
+            pads.append([x, y, round(ground(x, y) or 0), 0.0, round(r / 1000, 3), round(r / 1000, 3), 1.0])
+        for row in c.get("lots") or []:
+            if len(row) > 8 and row[7] == "parking_garage":
+                garages.append([row[0], row[1], round(ground(row[0], row[1]) or 0), row[2],
+                                round(row[4] / 1684, 3), round(row[3] / 2064, 3), round(1200 / 2466, 3)])
+    out = {}
+    for name, mesh, rows, box in (("Complex parking", "SM_Kit_ParkingLot", lots, [1, 1, 0.08]),
+                                  ("Parking stalls", "SM_Kit_ParkingStall", stalls, [5.5, 2.6, 0.02]),
+                                  ("Turnarounds", "SM_Kit_Turnaround", pads, [20, 20, 0.1]),
+                                  ("Parking garages", "SM_City_CT_MidRise", garages, [16.8, 20.6, 24.7])):
+        if rows:
+            out[name] = {"kind": "site", "role": "site", "mesh": mesh, "box_m": box, "count": len(rows),
+                         "shown": len(rows), "points": rows, "meshes": [], "row": "x, y, z, yaw, sx, sy, sz"}
+    return out
+
+
 WALL_CUT_CM, WALL_FILL_CM = 120.0, 200.0  # road cut / fill deeper than this gets a stone retaining wall
 
 
@@ -843,8 +871,10 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
             # everyday buildings fill the lots cut from the city's blocks (parcels): each faces its street square
             # on, its front yard is the layer's setback, and it is sized to its lot, never over a road
             for c in cities:
-                for lx, ly, lyaw, lw, ld, frx, fry in c.get("lots") or []:
-                    cands.append((lx, ly, lyaw, "lot", lw, ld, frx, fry))
+                for lot_row in c.get("lots") or []:
+                    lx, ly, lyaw, lw, ld, frx, fry = lot_row[:7]
+                    role, foot = (lot_row[7], lot_row[8]) if len(lot_row) > 8 else ("", False)
+                    cands.append((lx, ly, lyaw, "lot", lw, ld, frx, fry, role, foot))
             rnd.shuffle(cands)  # which layer gets which free lot is mixed, not swept from one corner
             thin = 1.0
         else:
@@ -877,22 +907,28 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
         for cand in cands:
             x, y, yaw = cand[:3]
             along = len(cand) == 5
-            lot = len(cand) == 8
+            lot = len(cand) == 10
+            lot_role = cand[8] if lot else ""
             if lot:
                 if (cand[6], cand[7]) in taken:
                     continue  # an earlier layer built on this lot
+                if lot_role and lot_role != layer["role"]:
+                    continue  # a neighbourhood decided this lot: houses in a subdivision, apartments in a complex
                 lw, ld = cand[4] / 100, cand[5] / 100
-                bw = round(min(layer["width_m"] * (1 + layer["size_jitter"] * 0.5), lw * 0.85), 1)
-                bd = round(min(layer["depth_m"] * (1 + layer["size_jitter"] * 0.3), ld - layer["setback_m"] - 2), 1)
-                if bw < layer["width_m"] * 0.6 or bd < layer["depth_m"] * 0.5:
-                    continue  # the lot is too small for this kind of building
-                f = math.radians(yaw)  # centre: the front lot line, back by the setback and half the building
-                back = (layer["setback_m"] + bd / 2) * 100
-                x, y = cand[6] - math.cos(f) * back, cand[7] - math.sin(f) * back
+                if cand[9]:  # a building footprint the complex planned: exactly that size and spot
+                    bw, bd = round(lw * 0.96, 1), round(ld * 0.96, 1)
+                else:
+                    bw = round(min(layer["width_m"] * (1 + layer["size_jitter"] * 0.5), lw * 0.85), 1)
+                    bd = round(min(layer["depth_m"] * (1 + layer["size_jitter"] * 0.3), ld - layer["setback_m"] - 2), 1)
+                    if bw < layer["width_m"] * 0.6 or bd < layer["depth_m"] * 0.5:
+                        continue  # the lot is too small for this kind of building
+                    f = math.radians(yaw)  # centre: the front lot line, back by the setback and half the building
+                    back = (layer["setback_m"] + bd / 2) * 100
+                    x, y = cand[6] - math.cos(f) * back, cand[7] - math.sin(f) * back
             if along and cand[3] - last_at[cand[4]] < spacing:
                 continue  # too soon after the last one on this side of the street
-            if not _in_where(layer["where"], cities, x, y):
-                continue
+            if not lot_role and not _in_where(layer["where"], cities, x, y):
+                continue  # (a neighbourhood's own lots are already in the right place)
             if keep and any(max(k["x0"] - x, 0, x - k["x1"]) ** 2 + max(k["y0"] - y, 0, y - k["y1"]) ** 2 < 4e6 for k in keep):
                 continue  # 20 m around a keep zone (a cinema, a spawn) stays clear
             if layer["kind"] == "buildings" and layer["height_min_m"] >= 40 and rnd.random() > 0.08 + 0.92 * core_peak(cities, x, y):
@@ -942,7 +978,7 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                 row += [found, paths, walls]
             pts.append(row)
         kept[layer["name"]] = own
-        if any(len(c) == 8 for c in cands[:1]):
+        if any(len(c) == 10 for c in cands[:1]):
             lot_layers.add(layer["name"])
         count = int(len(pts) * thin) if layer["kind"] in SCATTERED else len(pts)
         shown_cap = (foliage_limit or limit) if layer["kind"] == "foliage" else limit
@@ -959,7 +995,7 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
 
 BIG_SITE_M = 25.0  # wider than a lot (~17 m frontage, fits up to ~1.5x): offices, towers, civic, mansions take
 # road frontage; apartments, shops, gas stations and houses fill the lots cut from the blocks
-WALK_M, DRIVE_M = 1.6, 3.5  # path widths
+WALK_M, DRIVE_M, DRIVE2_M = 1.6, 3.5, 5.5  # walkway, single and double driveway widths
 WALL_MIN_CM = 50.0  # a cut deeper than this along a lot edge gets a retaining wall
 # lots whose front is a full-width sidewalk apron (plaza) to the kerb rather than a garden walkway
 FRONTAGE_ROLES = ("shop", "mall", "office", "skyscraper", "apartment", "hospital", "school", "police",
@@ -990,17 +1026,29 @@ def _lot_ground(layer: dict, sample_z, x: float, y: float, yaw: float, w_m: floa
         bx, by = ax + fx * reach, ay + fy * reach
         bz = sample_z(bx, by)
         bz = pad if bz is None else bz
-        pts = [(ax, ay, pad)]
-        if width == DRIVE_M and abs(bz - pad) > STEEP * reach:  # an S across the slope: longer, gentler
-            swing = min(hw * 0.8, reach)
-            pts.append((ax + fx * reach * 0.5 + sx * swing, ay + fy * reach * 0.5 + sy * swing, (pad + bz) / 2))
-        pts.append((bx, by, bz))
+        if width < 3.0:  # a walkway: straight from the door to the sidewalk
+            pts = [(ax, ay, pad), (bx, by, bz)]
+        else:
+            # a driveway: a cubic Bezier B(t) = (1-t)^3 P0 + 3(1-t)^2 t P1 + 3(1-t) t^2 P2 + t^3 P3 from the garage
+            # (P0) to the kerb (P3); P1 / P2 leave the garage and meet the street square on, and on a slope steeper
+            # than STEEP both swing across it so the drive winds down instead of plunging
+            swing = min(hw * 0.8, reach) if abs(bz - pad) > STEEP * reach else 0.0
+            p0, p3 = (ax, ay), (bx, by)
+            p1 = (ax + fx * reach * 0.45 + sx * swing, ay + fy * reach * 0.45 + sy * swing)
+            p2 = (bx - fx * reach * 0.45 + sx * swing, by - fy * reach * 0.45 + sy * swing)
+            pts = []
+            for t in (0.0, 1 / 3, 2 / 3, 1.0):
+                a, b, c, d = (1 - t) ** 3, 3 * (1 - t) ** 2 * t, 3 * (1 - t) * t * t, t ** 3
+                pts.append((a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0], a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1],
+                            pad + (bz - pad) * t))
         paths.append([width, [round(v) for p in pts for v in p]])
 
     if layer["walkway"]:
         path(round(w_m * 0.9, 1) if layer["role"] in FRONTAGE_ROLES else WALK_M, 0.0)
     if layer["driveway"]:
-        path(DRIVE_M, -hw * 0.6)
+        # single (3.5 m) or double (5.5 m) by the lot: wide houses and a third of the rest get a double garage
+        double = w_m >= 13 or (abs(int(x) * 7919 + int(y) * 104729) % 3 == 0)
+        path(DRIVE2_M if double and layer["role"] in ("house", "mansion") else DRIVE_M, -hw * 0.55)
     walls = []
     for (ea, eb), (la, lb), along in ((((1, 0), (0, 1)), (hd, hw), w_m), (((-1, 0), (0, 1)), (hd, hw), w_m),
                                        (((0, 1), (1, 0)), (hw, hd), d_m), (((0, -1), (1, 0)), (hw, hd), d_m)):
@@ -1102,8 +1150,9 @@ def _demo() -> None:
     assert clash == 0, f"{clash} buildings overlap"
     # flat ground: no foundation; houses get a walkway and a driveway, shops just a walkway
     h = pv["Houses"]["points"][0]
-    assert h[9] == 0.0 and sorted(p[0] for p in h[10]) == [WALK_M, DRIVE_M], h
-    assert all(len(p[1]) == 6 for p in h[10]) and len(pv["Shops"]["points"][0][10]) == 1
+    assert h[9] == 0.0 and sorted(p[0] for p in h[10]) in ([WALK_M, DRIVE_M], [WALK_M, DRIVE2_M]), h
+    # on flat ground: the walkway is straight (2 points), the driveway a 4-point Bezier
+    assert sorted(len(p[1]) for p in h[10]) == [6, 12] and len(pv["Shops"]["points"][0][10]) == 1
     assert pv["Parks"]["shown"] == 0 or pv["Parks"]["points"][0][10] == []
     # a hillside rising 30 % away from the street: a level pad at the mean, a foundation where it falls away,
     # the walkway goes straight down and the driveway winds across the slope
@@ -1116,7 +1165,10 @@ def _demo() -> None:
     shop = clean({"name": "S", "kind": "buildings", "role": "shop"})
     assert _lot_ground(shop, lambda x, y: 0.0, 0, 0, 0.0, 20, 15)[2][0][0] == 18.0, "a shop fronts the street full width"
     walk, drive = paths
-    assert len(walk[1]) == 6 and len(drive[1]) == 9 and drive[1][2] == round(pad) and drive[1][-1] < pad - 100, paths
+    assert len(walk[1]) == 6 and len(drive[1]) == 12 and drive[1][2] == round(pad) and drive[1][-1] < pad - 100, paths
+    assert drive[0] in (DRIVE_M, DRIVE2_M), drive[0]
+    # steep: the Bezier's middle points swing across the slope (sideways off the straight line to the kerb)
+    assert abs(drive[1][4] - drive[1][1]) > 100, "the driveway winds across the slope"
     from . import citygen as cg
     ter = {"min": [-2000, -2000], "max": [2000, 2000], "grid": 40,
            "heights": [[-0.3 * (-2000 + 4000 * (i + 0.5) / 40) for i in range(40)] for _ in range(40)]}
@@ -1141,7 +1193,8 @@ def _demo() -> None:
     hv = preview([houses], [town], {"min": [-50000, -50000], "max": [50000, 50000]}, [], lambda x, y: 0.0)["Houses"]
     assert hv["count"] > 150, hv["count"]
     by_front = {}
-    for lx, ly, lyaw, lw, ld, frx, fry in town["lots"]:
+    for lot_row in town["lots"]:
+        lx, ly, lyaw, lw, ld, frx, fry = lot_row[:7]
         by_front[(round(lx), round(ly))] = (lyaw, frx, fry)
     for row in hv["points"]:
         f = math.radians(row[3])  # the house's front faces +X: one setback + half its depth behind a lot's front

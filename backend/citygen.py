@@ -34,6 +34,9 @@ ROAD_TYPES = {
     "SW": ("SM_Path_Sidewalk_10m", 190.0, 0, True, "sidewalk (1.8 m clear path + frontage + furniture strip)"),
     "WK": ("SM_Path_Walkway_10m", 80.0, 0, True, "walkway from a door to the sidewalk"),
     "DW": ("SM_Path_Driveway_10m", 175.0, 0, False, "driveway from a garage to the street"),
+    # the private access network (the '<City> Access' actor): subdivision / complex streets and double drives
+    "PR": ("SM_Path_PrivateStreet_10m", 400.0, 2, False, "private street (subdivision, apartment complex)"),
+    "DD": ("SM_Path_DrivewayDouble_10m", 275.0, 0, False, "double driveway (two-car garage)"),
 }
 NO_SIDEWALK = ("6L", "1W", "2L")  # city roads whose mesh has no sidewalk: the sidewalk generator adds them
 # (dirt roads stay bare); with these every city street has a pavement from kerb to lot line, never grass
@@ -50,11 +53,14 @@ CHOICES = {
     "interchange": (("direct", "diamond", "trumpet", "cloverleaf", "stack"), "direct"),
     "one_way_core": (("no", "yes"), "no"),  # core side streets as alternating one-way lanes
     "overpasses": (("yes", "no"), "yes"),  # highways bridge over the streets they cross
+    # outside the core every other local street line is left out: ~200 m super-blocks that subdivisions and
+    # apartment complexes fill with their own private streets (neighbourhoods.py)
+    "superblocks": (("yes", "no"), "yes"),
 }
 # steepest grade per road (rise / run): arterials and highways 4 %, collectors 5-6 %, local streets 8 %,
 # dirt 10 % (CityEngine-style targets for a game, not legal limits). Steeper ground is cut and filled.
 GRADE = {"6L": 0.04, "4L": 0.05, "2S": 0.06, "2L": 0.08, "1W": 0.08, "DT": 0.10,
-         "SW": 0.08, "WK": 0.08, "DW": 0.15}  # walkways at ramp grade (8.3 %), driveways up to 15 %
+         "SW": 0.08, "WK": 0.08, "DW": 0.15, "PR": 0.10, "DD": 0.15}  # walkways at ramp grade (8.3 %), driveways up to 15 %
 BRIDGE_LIFT_CM = 750.0  # clearance a highway rises to over a street it crosses (a real freeway overpass: 7.5 m)
 
 # How City Builder designs a world. Code follows these; an AI building with the plugin follows them too
@@ -411,6 +417,14 @@ def city_graph(city: dict, opts: dict | None = None) -> tuple:
             else:
                 kind = o["suburb_roads"] if share > normal else o["neighbourhood_roads"]
             edges.append([(ix, iy), nb, kind])
+    if o["superblocks"] == "yes":
+        def drop(e):
+            a, b, _ = e
+            line = a[0] if b[0] == a[0] else a[1]
+            axis = (a[0] == 0 == b[0]) or (a[1] == 0 == b[1])
+            return (max(ring[a], ring[b]) > down and line % 2 != 0 and line % o["collector_every"] != 0
+                    and not axis)
+        edges = [e for e in edges if not drop(e)]
     if style != "grid" and o["prune"]:
         # neighbourhoods drop some side streets (never a main one, never a dead end); suburbs drop more and
         # may leave cul-de-sacs, like real subdivisions
@@ -473,40 +487,83 @@ def sidewalks(nodes: dict, edges: list) -> tuple:
     return out_n, out_e
 
 
-def paths_graph(rows: list) -> tuple:
-    """FrontageConnections: every walkway / driveway of the previewed lots ([.., paths [[width_m, flat xyz]]])
-    as a spline edge (WK / DW). Wide frontage aprons (plazas) stay slabs, not splines."""
+APRON_M = 8.0  # wider than this a lot's front path is a plaza slab, not a spline
+
+
+def path_kind(width: float) -> str:
+    return "DD" if width >= 5.0 else "DW" if width >= 3.0 else "WK"
+
+
+def paths_graph(rows: list, kinds: tuple = ("WK", "DW", "DD")) -> tuple:
+    """FrontageConnections: the previewed lots' walkways / driveways ([.., paths [[width_m, flat xyz]]]) as
+    spline edges of these kinds (WK walkway, DW single, DD double driveway). Plaza aprons stay slabs."""
     nodes, edges = {}, []
     for k, row in enumerate(rows):
         for j, (width, flat) in enumerate(row[10] if len(row) > 10 else []):
-            if width > 4.0 or len(flat) < 6:
+            if width > APRON_M or len(flat) < 6 or path_kind(width) not in kinds:
                 continue
             pts = [flat[i:i + 2] for i in range(0, len(flat) - 2, 3)]
             a, b = ("p", k, j, 0), ("p", k, j, 1)
             nodes[a], nodes[b] = list(pts[0]), list(pts[-1])
-            edges.append([a, b, "DW" if width >= 3.0 else "WK", [list(p) for p in pts[1:-1]]])
+            edges.append([a, b, path_kind(width), [list(p) for p in pts[1:-1]]])
     return nodes, edges
 
 
 def paths_actor(city: dict, opts: dict | None, rows: list, ground, folder: str) -> dict:
-    """The city's '<City> Paths' spline actor: its missing sidewalks plus every walkway and driveway."""
+    """PedestrianNetwork: the city's '<City> Paths' spline actor: its missing sidewalks and every walkway."""
     cn, ce = city_graph(city, opts)
     sn, se = sidewalks(cn, ce)
-    pn, pe = paths_graph(rows)
+    pn, pe = paths_graph(rows, ("WK",))
     return build_actor({**sn, **pn}, se + pe, ground, folder)
+
+
+def access_actor(city: dict, rows: list, ground, folder: str) -> dict:
+    """Private access network: the city's '<City> Access' spline actor: every subdivision / complex street
+    (the city doc's private streets) and every driveway (single DW, double DD), graded like roads."""
+    nodes, edges = paths_graph(rows, ("DW", "DD"))
+    for k, s in enumerate((city.get("private") or {}).get("streets") or []):
+        if len(s) < 2:
+            continue
+        a, b = ("pr", k, 0), ("pr", k, 1)
+        nodes[a], nodes[b] = list(s[0]), list(s[-1])
+        edges.append([a, b, "PR", [list(p) for p in s[1:-1]]])
+    return build_actor(nodes, edges, ground, folder)
 
 
 LOT_W_CM, LOT_D_CM = 1600.0, 3500.0  # a lot: 16 m frontage, up to 35 m deep (two back to back in a block)
 
 
-def city_lots(city: dict, opts: dict | None = None) -> list:
-    """The city's lots, cut from the blocks its streets enclose (parcels.lots): [[x, y, yaw, width_cm,
-    depth_cm, front x, front y]]. Buildings fill these, so every one fronts a street square on."""
+def city_layout(city: dict, opts: dict | None = None) -> dict:
+    """BlockGenerator + neighbourhoods: every block of the city's street grid becomes either plain street-fronting
+    lots (parcels) or one neighbourhood (neighbourhoods.TYPES: subdivisions with private streets, apartment
+    complexes with parking), picked per block from the city's seed and weighted by its district ring.
+    Lots: [[x, y, yaw, width_cm, depth_cm, front x, front y, role ('' = any layer), footprint]]."""
+    from . import neighbourhoods as nb
     from . import parcels
+    o = options(opts)
     nodes, edges = city_graph(city, opts)
     rnd = random.Random(f"lots:{city.get('seed', 1)}")
-    return [[x, y, yaw, w, d, fx, fy] for x, y, yaw, w, d, _poly, fx, fy in
-            parcels.lots(nodes, edges, HALF, LOT_W_CM, LOT_D_CM, rnd)]
+    out = {"lots": [], "streets": [], "parking": [], "stalls": [], "pads": [], "hoods": {}}
+    down, normal = o["downtown"], max(o["normal"], o["downtown"])
+    for area in parcels.block_areas(nodes, edges, HALF):
+        cx, cy = sum(p[0] for p in area) / len(area), sum(p[1] for p in area) / len(area)
+        share = zone_share(city, cx, cy)
+        ring = "core" if share <= down else "normal" if share <= normal else "housing"
+        _, _, _, _, L, W = parcels._obb(area)
+        kind = nb.pick(ring, rnd) if ring != "core" and min(L, W) >= nb.MIN_SIDE else "parcels"
+        out["hoods"][kind] = out["hoods"].get(kind, 0) + 1
+        if kind == "parcels":
+            out["lots"] += [[x, y, yaw, w, d, fx, fy, "", False]
+                            for x, y, yaw, w, d, _poly, fx, fy in parcels.lots_in(area, LOT_W_CM, LOT_D_CM, rnd)]
+            continue
+        g = nb.generate(area, kind, rnd)
+        for key in ("lots", "streets", "parking", "stalls", "pads"):
+            out[key] += g[key]
+    return out
+
+
+def city_lots(city: dict, opts: dict | None = None) -> list:
+    return city_layout(city, opts)["lots"]
 
 
 def gate(nodes: dict, city: dict, toward: tuple):
@@ -857,6 +914,16 @@ def _demo() -> None:
     city = actors[f"{cities[0]['name']} Roads"]
     assert st.pending_nodes(city["points"], city["segments"]), "junctions wait for generated pieces"
     assert len(actors["Highways"]["segments"]) >= 2
+    # super-blocks: outside the core, blocks are about twice as wide (room for subdivisions / complexes)
+    from . import parcels
+    sb = {"x": 0, "y": 0, "radius": 80000, "seed": 5, "style": "grid"}
+    sn, se = city_graph(sb)
+    areas = {"core": [], "out": []}
+    for face in parcels.blocks(sn, se):
+        poly = [sn[n] for n in face]
+        cx, cy = sum(p[0] for p in poly) / len(poly), sum(p[1] for p in poly) / len(poly)
+        areas["core" if zone_share(sb, cx, cy) < 0.3 else "out"].append(abs(parcels._area(poly)))
+    assert max(areas["core"]) < 1.5e8 < max(areas["out"]), {k: max(v) for k, v in areas.items()}
     # planned grid: every street between neighbouring intersections is one block long within the 8 % jitter
     # (both ends move at most 8 % each), and collectors run every 4th line
     for style in ("mixed", "organic"):
@@ -884,7 +951,11 @@ def _demo() -> None:
                                             [18.0, [600, 0, 0, 1600, 0, 0]]], []]]
     pa = paths_actor({"x": 0, "y": 0, "radius": 1, "seed": 1}, None, rows, lambda x, y: 0.0, "/Game/X/WorldGen/Roads")
     meshes = {s["mesh"] for s in pa["segments"]}
-    assert "SM_Path_Walkway_10m" in meshes and "SM_Path_Driveway_10m" in meshes, meshes
+    assert meshes == {"SM_Path_Walkway_10m"}, meshes  # pedestrians only; the driveway is private access
+    ac = access_actor({"private": {"streets": [[[0, 0], [5000, 0], [5000, 5000]]]}}, rows, lambda x, y: 0.0,
+                      "/Game/X/WorldGen/Roads")
+    am = {s["mesh"] for s in ac["segments"]}
+    assert {"SM_Path_PrivateStreet_10m", "SM_Path_Driveway_10m"} <= am, am
     # a street turning 90 degrees gets an elbow piece (square corner), a gentle bend stays a spline point
     el = build_actor({0: [0, 0], 1: [10000, 0], 2: [10000, 10000], 3: [20000, 10500]},
                      [[0, 1, "2L"], [1, 2, "2L"], [2, 3, "2L"]], lambda x, y: 0.0, "/Game/X")

@@ -603,6 +603,16 @@ _STREET_KIT = {
                              "Roads"),
     "SM_Path_Walkway_10m": (["Pavers"], [("slab", 0, (500, 0, -10), (0, 0, 0), (1000, 160, 10, 10))], "Roads"),
     "SM_Path_Driveway_10m": (["Asphalt"], [("slab", 0, (500, 0, -12), (0, 0, 0), (1000, 350, 12, 10))], "Roads"),
+    "SM_Path_DrivewayDouble_10m": (["Asphalt"], [("slab", 0, (500, 0, -12), (0, 0, 0), (1000, 550, 12, 10))], "Roads"),
+    # a subdivision / apartment complex street: 8 m asphalt with a 15 cm kerb strip each side
+    "SM_Path_PrivateStreet_10m": (["Asphalt", "Plinth"], [("slab", 0, (500, 0, -15), (0, 0, 0), (1000, 800, 15, 10)),
+                                                         ("slab", 1, (500, 405, -15), (0, 0, 0), (1000, 10, 17, 10)),
+                                                         ("slab", 1, (500, -405, -15), (0, 0, 0), (1000, 10, 17, 10))],
+                                  "Roads"),
+    # parking: a painted stall (two white lines 5.5 m long, 2.6 m apart) and a cul-de-sac turnaround (r 10 m)
+    "SM_Kit_ParkingStall": (["Panel"], [("box", 0, (0, -125, 0), (0, 0, 0), (550, 10, 2)),
+                                        ("box", 0, (0, 125, 0), (0, 0, 0), (550, 10, 2))]),
+    "SM_Kit_Turnaround": (["Asphalt"], [("cyl", 0, (0, 0, -10), (0, 0, 0), (1000, 10, 24))]),
     # stone retaining wall along a cut / filled road: 1 m long, 50 cm thick, 1 m tall, a capping course on top
     "SM_Kit_StoneWall": (["StoneWall", "Plinth"], [("box", 0, (0, 0, 0), (0, 0, 0), (100, 50, 95)),
                                                   ("box", 1, (0, 0, 95), (0, 0, 0), (100, 56, 5))]),

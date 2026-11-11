@@ -139,6 +139,18 @@ A plain spline point there smoothed a 90 degree turn into a wide arc that looped
 meshes are crossings, not discs: each arm out to its mouth with curved kerb returns between arms
 (`_junction_geometry`); the panel draws them the same way.
 
+## Neighbourhoods and the private access network (`backend/neighbourhoods.py`)
+Outside the core the grid has ~200 m super-blocks (`superblocks`). Each block >= 120 m becomes a neighbourhood,
+picked from the city seed and weighted by its ring (`TYPES`): subdivisions `grid` (two through streets), `loop`
+(U street, two entrances), `cul_de_sac` (stem + 10 m turnaround), `organic` (curved loop) - lots both sides of
+their private streets, facing them, role 'house'; apartment complexes `garden` (ring road, parking along it, two
+rows of buildings round a courtyard), `suburban` (buildings round a central lot), `urban` (two big blocks + a
+parking garage) - footprints with role 'apartment' placed at their exact size; or `parcels` (plain street lots).
+Parking: lot -> 17.5 m modules (5.5 stalls + 6.5 aisle + 5.5 stalls) -> 2.6 m stalls. Three networks:
+public roads ('<City> Roads'), private access ('<City> Access': PR private streets, DW / DD driveways as cubic
+Beziers garage -> kerb, double for wide houses), pedestrians ('<City> Paths': sidewalks, walkways). Built-in
+site layers (preview + Push city): Complex parking, Parking stalls, Turnarounds, Parking garages.
+
 ## How a city is generated (the math, in order)
 Roads define the city, blocks are what roads enclose, lots are cut from blocks, buildings fit lots.
 1. **Planned grid** (`citygen.city_graph`): one orientation per city; intersections on a block grid (`block_m`

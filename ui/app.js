@@ -56,7 +56,9 @@ const FAMILY = [
   [/Bridge/, 925, "red", "Bridge"],
   [/Path_Sidewalk/, 190, "fg", "Sidewalk"],
   [/Path_Walkway/, 80, "fg-dim", "Walkway"],
+  [/Path_DrivewayDouble/, 275, "fg-dim", "Double driveway"],
   [/Path_Driveway/, 175, "fg-dim", "Driveway"],
+  [/Path_PrivateStreet/, 400, "fg-dim", "Private street"],
 ];
 function family(mesh) {
   for (const f of FAMILY) if (f[0].test(mesh)) return f;
@@ -101,6 +103,7 @@ function roadMaterial(mesh) {
   if (/Path_Sidewalk/.test(mesh)) return [MAT.sidewalk, "Sidewalk"];
   if (/Path_Walkway/.test(mesh)) return [MAT.pavers, "Walkway"];
   if (/Path_Driveway/.test(mesh)) return [MAT.drive, "Driveway"];
+  if (/Path_PrivateStreet/.test(mesh)) return [MAT.asphalt, "Private street"];
   if (/Bridge|Elev_/.test(mesh)) return [MAT.deck, "Bridge / deck"];
   return [MAT.asphalt, "Road"];
 }
@@ -558,7 +561,7 @@ function drawLotGround(layer) {
       found.push(dummy.matrix.clone());
     }
     for (const [width, flat] of paths || []) {
-      if (width <= 4) continue;  // walkways / driveways are drawn as the city's Paths spline actor
+      if (width <= 8) continue;  // walkways (Paths actor) and driveways (Access actor) are drawn as splines
       for (let i = 3; i + 2 < flat.length; i += 3) {
         const a = toV(flat[i - 3], flat[i - 2], flat[i - 1] + 15), b = toV(flat[i], flat[i + 1], flat[i + 2] + 15);
         dummy.position.copy(a).add(b).multiplyScalar(0.5);
@@ -584,6 +587,24 @@ function drawPcg(legend) {
     const pts = layer.points || [];
     if (!pts.length) return;
     const colour = ROLE_COLOR[layer.role] || PCG_COLORS[k % PCG_COLORS.length];
+    if (layer.kind === "site") {  // a neighbourhood's pieces, pre-scaled: [x, y, z, yaw, sx, sy, sz] x box_m
+      const [bx, by, bz] = layer.box_m || [1, 1, 1];
+      const tint = layer.mesh === "SM_Kit_ParkingStall" ? "#e8e6df" : layer.mesh === "SM_City_CT_MidRise" ? "#8f9196" : MAT.drive;
+      const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: col(tint), roughness: 0.9 }), pts.length);
+      const zx = state.view.zx || 1;
+      pts.forEach(([x, y, z, yaw, sx, sy, sz], i) => {
+        dummy.position.copy(toV(x, y, z + 20));
+        dummy.position.y += bz * sz * zx / 2;
+        dummy.rotation.set(0, -yaw * Math.PI / 180, 0);
+        dummy.scale.set(by * sy, Math.max(0.05, bz * sz) * zx, bx * sx);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+      });
+      mesh.receiveShadow = true;
+      groups.pcg.add(mesh);
+      legend[`${name} · ${layer.count.toLocaleString()}`] = tint;
+      return;
+    }
     if (layer.kind === "walls") {  // stone retaining walls along cut / filled roads: [x, y, z, yaw, 1, length m, height m]
       const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: col("fg-dim").multiplyScalar(0.8), roughness: 1 }), pts.length);
       const zx = state.view.zx || 1;

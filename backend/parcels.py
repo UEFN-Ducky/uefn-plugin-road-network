@@ -47,7 +47,31 @@ def _area(poly: list) -> float:
 
 
 def inset(poly: list, by: list) -> list:
-    """Each edge i moved inward by by[i] cm (counter-clockwise polygon); corners where the moved edges meet."""
+    """Each edge i moved inward by by[i] cm (counter-clockwise polygon); corners where the moved edges meet.
+    Vertices where the outline runs (nearly) straight on are dropped first: two near-parallel edges meet
+    absurdly far away once moved, and blew a block up to the size of the map."""
+    keep = []
+    for i, v in enumerate(poly):
+        a, c = poly[i - 1], poly[(i + 1) % len(poly)]
+        d1, d2 = (v[0] - a[0], v[1] - a[1]), (c[0] - v[0], c[1] - v[1])
+        l1, l2 = math.hypot(*d1) or 1.0, math.hypot(*d2) or 1.0
+        cross = (d1[0] * d2[1] - d1[1] * d2[0]) / (l1 * l2)
+        dot = (d1[0] * d2[0] + d1[1] * d2[1]) / (l1 * l2)
+        if abs(cross) > 0.14 or dot < 0:  # turns more than ~8 degrees: a real corner
+            keep.append(i)
+    if len(keep) < 3:
+        return []
+    merged = []
+    for n, k in enumerate(keep):  # a merged edge runs from corner k over the dropped vertices to the next corner
+        nxt, j, inset_by = keep[(n + 1) % len(keep)], k, by[k]
+        while j != nxt:
+            inset_by = max(inset_by, by[j])
+            j = (j + 1) % len(poly)
+        merged.append(inset_by)
+    by = merged
+    size = max(max(p[0] for p in poly) - min(p[0] for p in poly), max(p[1] for p in poly) - min(p[1] for p in poly))
+    cx0, cy0 = sum(p[0] for p in poly) / len(poly), sum(p[1] for p in poly) / len(poly)
+    poly = [poly[k] for k in keep]
     lines = []
     for i, (p, q) in enumerate(zip(poly, poly[1:] + poly[:1])):
         dx, dy = q[0] - p[0], q[1] - p[1]
@@ -62,6 +86,8 @@ def inset(poly: list, by: list) -> list:
             continue
         t = ((p2[0] - p1[0]) * d2[1] - (p2[1] - p1[1]) * d2[0]) / den
         out.append((p1[0] + d1[0] * t, p1[1] + d1[1] * t))
+    if any(math.hypot(p[0] - cx0, p[1] - cy0) > size for p in out):
+        return []  # a corner ran away (very sharp or concave outline): leave this block empty, never the map
     return out if _area(out) > 0 else []
 
 
@@ -116,9 +142,8 @@ def split(poly: list, lot_w: float, lot_d: float, rnd, out: list | None = None) 
     return out
 
 
-def lots(nodes: dict, edges: list, half: dict, lot_w_cm: float, lot_d_cm: float, rnd) -> list:
-    """[[x, y, yaw, width_cm, depth_cm, [polygon], front x, front y]] - every lot fronting a street (centre,
-    +X toward the street, frontage, depth, outline, middle of its front lot line). half: road kind -> half width."""
+def block_areas(nodes: dict, edges: list, half: dict) -> list:
+    """Every block's buildable area: its polygon inset by each street's half width + the sidewalk zone."""
     kind = {}
     for a, b, k, *_ in edges:
         kind[(a, b)] = kind[(b, a)] = k
@@ -127,30 +152,45 @@ def lots(nodes: dict, edges: list, half: dict, lot_w_cm: float, lot_d_cm: float,
         poly = [tuple(nodes[n][:2]) for n in face]
         by = [half.get(kind.get((face[i], face[(i + 1) % len(face)])), 500.0) + SIDEWALK_CM for i in range(len(face))]
         area = inset(poly, by)
-        if not area:
-            continue
-        edges_out = list(zip(area, area[1:] + area[:1]))
-        for piece in split(area, lot_w_cm, lot_d_cm, rnd):
-            # its frontage: a stretch of the piece lying on the block's edge (the street side); a corner lot
-            # touches two streets and fronts the one that leaves it deepest (its short side, like real corners)
-            fronts = []
-            for p, q in zip(piece, piece[1:] + piece[:1]):
-                for a, b in edges_out:
-                    ex, ey = b[0] - a[0], b[1] - a[1]
-                    L = math.hypot(ex, ey) or 1.0
-                    off = lambda v: abs((v[0] - a[0]) * ey - (v[1] - a[1]) * ex) / L
-                    if off(p) < 5 and off(q) < 5 and math.dist(p, q) >= lot_w_cm * 0.4:
-                        f = math.dist(p, q)
-                        ox, oy = (q[1] - p[1]) / f, -(q[0] - p[0]) / f  # outward for a counter-clockwise block
-                        fronts.append((max((v[0] - p[0]) * -ox + (v[1] - p[1]) * -oy for v in piece), f, p, q, ox, oy))
-            if not fronts:
-                continue  # an inner piece with no street: a back garden, not a lot
-            depth, best, p, q, ox, oy = max(fronts, key=lambda c: c[0])
-            if depth < lot_d_cm * 0.3:
-                continue  # a sliver left by an off-centre cut: open space, not a lot
-            mx, my = (p[0] + q[0]) / 2, (p[1] + q[1]) / 2
-            out.append([round(mx - ox * depth / 2), round(my - oy * depth / 2), round(math.degrees(math.atan2(oy, ox)), 1),
-                        round(best), round(depth), [[round(v[0]), round(v[1])] for v in piece], round(mx), round(my)])
+        if area:
+            out.append(area)
+    return out
+
+
+def lots_in(area: list, lot_w_cm: float, lot_d_cm: float, rnd) -> list:
+    """The street-fronting lots cut from one block area (see lots())."""
+    out = []
+    edges_out = list(zip(area, area[1:] + area[:1]))
+    for piece in split(area, lot_w_cm, lot_d_cm, rnd):
+        # its frontage: a stretch of the piece lying on the block's edge (the street side); a corner lot
+        # touches two streets and fronts the one that leaves it deepest (its short side, like real corners)
+        fronts = []
+        for p, q in zip(piece, piece[1:] + piece[:1]):
+            for a, b in edges_out:
+                ex, ey = b[0] - a[0], b[1] - a[1]
+                L = math.hypot(ex, ey) or 1.0
+                off = lambda v: abs((v[0] - a[0]) * ey - (v[1] - a[1]) * ex) / L
+                if off(p) < 5 and off(q) < 5 and math.dist(p, q) >= lot_w_cm * 0.4:
+                    f = math.dist(p, q)
+                    ox, oy = (q[1] - p[1]) / f, -(q[0] - p[0]) / f  # outward for a counter-clockwise block
+                    fronts.append((max((v[0] - p[0]) * -ox + (v[1] - p[1]) * -oy for v in piece), f, p, q, ox, oy))
+        if not fronts:
+            continue  # an inner piece with no street: a back garden, not a lot
+        depth, best, p, q, ox, oy = max(fronts, key=lambda c: c[0])
+        if depth < lot_d_cm * 0.3:
+            continue  # a sliver left by an off-centre cut: open space, not a lot
+        mx, my = (p[0] + q[0]) / 2, (p[1] + q[1]) / 2
+        out.append([round(mx - ox * depth / 2), round(my - oy * depth / 2), round(math.degrees(math.atan2(oy, ox)), 1),
+                    round(best), round(depth), [[round(v[0]), round(v[1])] for v in piece], round(mx), round(my)])
+    return out
+
+
+def lots(nodes: dict, edges: list, half: dict, lot_w_cm: float, lot_d_cm: float, rnd) -> list:
+    """[[x, y, yaw, width_cm, depth_cm, [polygon], front x, front y]] - every lot fronting a street (centre,
+    +X toward the street, frontage, depth, outline, middle of its front lot line). half: road kind -> half width."""
+    out = []
+    for area in block_areas(nodes, edges, half):
+        out += lots_in(area, lot_w_cm, lot_d_cm, rnd)
     return out
 
 

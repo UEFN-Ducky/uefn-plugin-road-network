@@ -98,6 +98,8 @@ KIT = {
     "SM_Kit_SofaSet": ("Kit/Street", -55, -100, 0, 120, 100, 85),
     "SM_Kit_ShopShelf": ("Kit/Street", -30, -100, 0, 30, 100, 180),
     "SM_Kit_RetainingWall": ("Kit/Street", -50, -15, 0, 50, 15, 100),
+    "SM_Kit_ParkingStall": ("Kit/Street", -275, -130, 0, 275, 130, 2),
+    "SM_Kit_Turnaround": ("Kit/Street", -1000, -1000, -10, 1000, 1000, 0),
     "SM_Kit_StoneWall": ("Kit/Street", -50, -25, 0, 50, 25, 100),
     "SM_Kit_SidewalkCorner": ("Kit/Street", -200, -200, -15, 200, 200, 0),
     "SM_Kit_Bush": ("Kit/Street", -83, -95, 0, 110, 85, 130),
@@ -188,7 +190,11 @@ def bake(previewed: dict, root: str) -> tuple:
     for name, layer in previewed.items():
         role = layer.get("role")
         pts = layer.get("points") or []
-        if layer.get("kind") == "walls":  # stone retaining walls along cut / filled roads: length x height
+        if layer.get("kind") == "site" and layer.get("mesh") in KIT:  # a neighbourhood's own pieces, pre-scaled
+            for p in pts:
+                groups.setdefault(path(layer["mesh"], root), []).append(list(p[:7]))
+            baked[name] = len(pts)
+        elif layer.get("kind") == "walls":  # stone retaining walls along cut / filled roads: length x height
             for p in pts:
                 groups.setdefault(path("SM_Kit_StoneWall", root), []).append([p[0], p[1], p[2], p[3], p[5], 1.0, p[6]])
             baked[name] = len(pts)
@@ -400,8 +406,8 @@ def _ground_pieces(groups: dict, root: str, p: list, x, y, z, yaw, w, d) -> None
         groups.setdefault(path("SM_Kit_RetainingWall", root), []).append(
             [wx, wy, z, wyaw, round(length, 2), 1.0, round(height + 0.2, 2)])
     for width, flat in (p[10] if len(p) > 10 else []):
-        if width <= 4.0:
-            continue  # walkways and driveways are splines in the city's Paths actor (citygen.paths_actor)
+        if width <= 8.0:
+            continue  # walkways (Paths actor) and driveways (Access actor) are splines, not slabs
         for i in range(3, len(flat) - 2, 3):  # a frontage apron (plaza) is a slab
             ax, ay, az, bx, by, bz = flat[i - 3], flat[i - 2], flat[i - 1], flat[i], flat[i + 1], flat[i + 2]
             run = math.hypot(bx - ax, by - ay)
@@ -459,6 +465,8 @@ def _demo() -> None:
     assert set(go) == {"/Game/Garden/SM_Tulips.SM_Tulips", "/Game/Garden/SM_Roses.SM_Roses"} and bo == {"Flower beds": 400} and not mo, go.keys()
     assert 2.0 < len(go["/Game/Garden/SM_Tulips.SM_Tulips"]) / len(go["/Game/Garden/SM_Roses.SM_Roses"]) < 4.5, "weights hold"
     assert own_meshes(mine) == sorted(go)
+    gs = bake({"Parking stalls": {"kind": "site", "mesh": "SM_Kit_ParkingStall", "points": [[1, 2, 3, 90.0, 1.0, 1.0, 1.0]]}}, "/R")[0]
+    assert gs[path("SM_Kit_ParkingStall", "/R")] == [[1, 2, 3, 90.0, 1.0, 1.0, 1.0]], gs
     gw = bake({"Road walls": {"kind": "walls", "points": [[0, 0, 100, 90.0, 1, 10.0, 2.5]]}}, "/R")[0]
     assert gw[path("SM_Kit_StoneWall", "/R")][0] == [0, 0, 100, 90.0, 10.0, 1.0, 2.5], gw
     # a Blender building with its manifest size fits its lot: 24 m deep lot / 12 m model = x2 (clamped to 2)

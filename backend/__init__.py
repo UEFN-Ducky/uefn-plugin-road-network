@@ -616,6 +616,10 @@ def register(api) -> None:
         os.replace(path + ".tmp", path)
         return {"path": path, **settings}
 
+    def _layout_doc(layout: dict) -> dict:
+        return {"lots": layout["lots"], "hoods": layout["hoods"],
+                "private": {k: layout[k] for k in ("streets", "parking", "stalls", "pads")}}
+
     def city_docs(nid: str) -> dict:
         return {k.rsplit(".", 1)[1]: v for k, v in data.items(f"net.{nid}.city.").items() if k.count(".") == 3}
 
@@ -689,8 +693,8 @@ def register(api) -> None:
             api.search.upsert(f"net.{nid}.city.{cslug}", t["name"], f"City {t['name']} in world {name}: {t['style']} roads")
             data.put(f"net.{nid}.city.{cslug}", {**t, "name": t["name"], "roads": f"{t['name']} Roads",
                                                  "districts": cg.districts(t, opts),
-                                                 # lots cut from its blocks: everyday buildings fill these
-                                                 "lots": cg.city_lots(t, opts),
+                                                 # BlockGenerator + neighbourhoods: lots, private streets, parking
+                                                 **_layout_doc(cg.city_layout(t, opts)),
                                                  "buildings": prev.get("buildings") or {"downtown": [], "normal": [], "housing": []}})
         doc = data.get(f"net.{nid}")
         doc["generated"] = {"seed": int(seed), "size_km": size / 100000, "relief_m": float(relief_m),
@@ -922,7 +926,7 @@ def register(api) -> None:
         actors = []
         for aslug, head in actor_docs(nid).items():
             label = str(head.get("label") or "")
-            if " before kit" in label or label.endswith(" Paths"):
+            if " before kit" in label or label.endswith((" Paths", " Access")):
                 continue  # a saved backup, or the sidewalks / walkways / driveways: not streets PCG lines up on
             _, pts, segs = load_actor(nid, aslug)
             actors.append((pts, segs))
@@ -982,10 +986,11 @@ def register(api) -> None:
             placed["Road walls"] = {"kind": "walls", "role": "road_wall", "count": len(walls), "shown": len(walls),
                                     "points": walls, "meshes": [],
                                     "row": "x, y, base z, yaw, 1, length_m, height_m"}
+            placed.update(pl.site_layers(cities, ground))  # complexes' parking, stalls, turnarounds, garages
             _PREVIEW_CACHE.update(key=key, out=placed)
         out = _PREVIEW_CACHE["out"]
-        if layer_id == "road-walls":
-            out = {"Road walls": out["Road walls"]}
+        if layer_id == "road-walls":  # the built-in layers the plan never lists: walls and neighbourhood sites
+            out = {k: v for k, v in out.items() if v.get("kind") in ("walls", "site")}
         elif layer_id:
             name = (docs.get(slug(layer_id)) or {}).get("name")
             out = {name: out[name]} if name in out else {}
@@ -1045,11 +1050,10 @@ def register(api) -> None:
                 rows_by[t["name"]].append(r)
         out = {}
         for t in towns:
-            actor = cg.paths_actor(t, opts, rows_by[t["name"]], ground, folder)
-            if not actor["segments"]:
-                continue
-            label = f"{t['name']} Paths"
-            out[label] = store_actor(nid, label, actor, doc.get("name") or nid)["stats"]
+            for label, actor in ((f"{t['name']} Paths", cg.paths_actor(t, opts, rows_by[t["name"]], ground, folder)),
+                                 (f"{t['name']} Access", cg.access_actor(t, rows_by[t["name"]], ground, folder))):
+                if actor["segments"]:
+                    out[label] = store_actor(nid, label, actor, doc.get("name") or nid)["stats"]
         doc = data.get(f"net.{nid}") or {}
         doc["actors"] = sorted(set(doc.get("actors") or []) | set(out))
         data.put(f"net.{nid}", doc)
