@@ -341,23 +341,24 @@ PAD_BLEND_CM = 400.0  # a lot's pad blends back into the hillside over this dist
 PAD_CELL_CM = 4000.0
 
 
-def graded(ter: dict, pads: list):
+def graded(ter: dict, pads: list, blend: float = PAD_BLEND_CM):
     """The terrain with every lot cut and filled to its level pad (pcg_layers.pads): z = f(x, y)."""
     cells: dict = {}
     for p in pads:
-        r = max(p[4], p[5]) + PAD_BLEND_CM
+        r = max(p[4], p[5]) + blend
         for i in range(int((p[0] - r) // PAD_CELL_CM), int((p[0] + r) // PAD_CELL_CM) + 1):
             for j in range(int((p[1] - r) // PAD_CELL_CM), int((p[1] + r) // PAD_CELL_CM) + 1):
                 cells.setdefault((i, j), []).append(p)
 
     def at(x, y):
         z = st.sample_grid(ter, x, y) or 0.0
+        best, bz = blend, z  # neighbouring pads never blend into each other: the one this spot is deepest in wins
         for cx, cy, c, s, hw, hd, pz in cells.get((int(x // PAD_CELL_CM), int(y // PAD_CELL_CM)), ()):
             dx, dy = x - cx, y - cy
             e = max(abs(dx * c + dy * s) - hd, abs(-dx * s + dy * c) - hw)  # outside the pad, in cm
-            if e < PAD_BLEND_CM:
-                z += (pz - z) * (1 - _smoothstep(0, PAD_BLEND_CM, e))
-        return z
+            if e < best:
+                best, bz = e, pz
+        return z + (bz - z) * (1 - _smoothstep(0, blend, best)) if best < blend else z
     return at
 
 
@@ -411,19 +412,119 @@ def grade_to_roads(ter: dict, actors: dict) -> dict:
     return {**ter, "heights": rows}
 
 
-def heightmap_png(ter: dict, res: int = 1009, pads: list | None = None) -> tuple:
+HEIGHTMAP_RES = 1009  # 16 components x 63 quads + 1
+
+
+def heightmap_px(ter: dict, res: int = HEIGHTMAP_RES) -> float:
+    """One heightmap pixel in cm: the finest step the imported landscape has."""
+    return max(ter["max"][0] - ter["min"][0], ter["max"][1] - ter["min"][1]) / (res - 1)
+
+
+def pad_margin(ter: dict, res: int = HEIGHTMAP_RES) -> float:
+    """How much wider (cm, both sides together) a lot's pad is cut than the building: a pixel a side, so every
+    landscape quad under the building has all four corners exactly at pad height after import."""
+    return max(400.0, 2 * heightmap_px(ter, res) + 100)
+
+
+def _pixel(ter: dict, res: int, pads: list | None):
+    """(i, j) -> the heightmap's 16-bit sample there (32768 = 0, 128 per metre), lots levelled in."""
+    lo, hi = ter["min"], ter["max"]
+    ground = graded(ter, pads or [], max(PAD_BLEND_CM, 1.5 * heightmap_px(ter, res)))
+    return lambda i, j: max(0, min(65535, int(round(32768 + ground(lo[0] + (hi[0] - lo[0]) * i / (res - 1),
+                                                                   lo[1] + (hi[1] - lo[1]) * j / (res - 1)) * 128 / 100))))
+
+
+def heightmap_rows(ter: dict, res: int = HEIGHTMAP_RES, pads: list | None = None) -> list:
+    """The landscape UEFN gets: res x res 16-bit samples, lots levelled in."""
+    px = _pixel(ter, res, pads)
+    return [[px(i, j) for i in range(res)] for j in range(res)]
+
+
+def imported_ground(ter: dict, res: int = HEIGHTMAP_RES, pads: list | None = None):
+    """z(x, y) of the imported landscape exactly as UEFN builds it: bilinear between the heightmap's samples
+    (computed only where asked, so checking every building costs a few thousand samples, not a million)."""
+    (x0, y0), (x1, y1) = ter["min"], ter["max"]
+    px, memo = _pixel(ter, res, pads), {}
+
+    def v(i, j):
+        if (i, j) not in memo:
+            memo[(i, j)] = px(i, j)
+        return memo[(i, j)]
+
+    def at(x, y):
+        fx = max(0.0, min(res - 1.0, (x - x0) / (x1 - x0) * (res - 1)))
+        fy = max(0.0, min(res - 1.0, (y - y0) / (y1 - y0) * (res - 1)))
+        i, j = min(res - 2, int(fx)), min(res - 2, int(fy))
+        tx, ty = fx - i, fy - j
+        a, b, c, d = v(i, j), v(i + 1, j), v(i, j + 1), v(i + 1, j + 1)
+        return ((a + (b - a) * tx) * (1 - ty) + (c + (d - c) * tx) * ty - 32768) * 100 / 128
+    return at
+
+
+FIT_TOL_CM = 25.0  # what a slab or foundation hides; more than this buried or in the air is a misfit
+
+
+def ground_fit(ground, buildings: list, keep: int = 50) -> dict:
+    """Every building checked against the imported landscape: buried (ground above its floor) or floating (a gap
+    under it its foundation doesn't fill). buildings: [(label, x, y, yaw, width_m, depth_m, floor z, foundation_m)].
+    Each misfit gets the foundation it needs (`need_m`): the build uses it, so nothing floats."""
+    bad = []
+    hash_: dict = {}
+    for k, (_l, x, y, _yaw, w_m, d_m, *_r) in enumerate(buildings):
+        hash_.setdefault((int(x // 5000), int(y // 5000)), []).append(k)
+
+    def inside_other(k, px, py):
+        for i in (-1, 0, 1):
+            for j in (-1, 0, 1):
+                for o in hash_.get((int(px // 5000) + i, int(py // 5000) + j), ()):
+                    _l, ox, oy, oyaw, ow, od, *_r = buildings[o]
+                    if o == k:
+                        continue
+                    c, s = math.cos(math.radians(oyaw)), math.sin(math.radians(oyaw))
+                    dx, dy = px - ox, py - oy
+                    if abs(dx * c + dy * s) < od * 50 and abs(-dx * s + dy * c) < ow * 50:
+                        return True
+        return False
+
+    for k, (label, x, y, yaw, w_m, d_m, z, found) in enumerate(buildings):
+        c, s = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+        pts = [(x + c * a * d_m * 50 - s * b * w_m * 50, y + s * a * d_m * 50 + c * b * w_m * 50)
+               for a in (-1, 0, 1) for b in (-1, 0, 1)]
+        zs = [ground(px, py) for px, py in pts]
+        buried, gap = max(zs) - z, z - found * 100 - min(zs)
+        if buried > FIT_TOL_CM or gap > FIT_TOL_CM:
+            bad.append({"label": label, "x": round(x), "y": round(y), "buried_cm": round(max(0.0, buried)),
+                        "floating_cm": round(max(0.0, gap)), "need_m": round((z - min(zs)) / 100 + 0.05, 1),
+                        "overlaps": any(inside_other(k, px, py) for px, py in pts), "i": k,
+                        "top": max(zs), "low": min(zs)})
+    return {"checked": len(buildings), "buried": sum(1 for b in bad if b["buried_cm"]),
+            "floating": sum(1 for b in bad if b["floating_cm"]), "overlapping": sum(1 for b in bad if b["overlaps"]),
+            "ok": not bad, "misfits": bad[:keep]}
+
+
+def settle(ground, buildings: list) -> tuple:
+    """Every building that the imported landscape would bury or leave floating sits on the highest ground under
+    it, its foundation reaching the lowest (how a builder sets a slab where neighbours' pads meet closer than a
+    landscape quad). Returns ({index: (floor z, foundation_m)}, fit before, fit after)."""
+    before = ground_fit(ground, buildings, keep=len(buildings))
+    moves = {m["i"]: (round(m["top"] + 1), round((m["top"] + 1 - m["low"]) / 100 + 0.05, 1)) for m in before["misfits"]}
+    after_rows = [(*b[:6], *moves[k]) if k in moves else b for k, b in enumerate(buildings)]
+    after = ground_fit(ground, after_rows)
+    for f in (before, after):
+        for m in f["misfits"]:
+            m.pop("top", None), m.pop("low", None), m.pop("i", None)
+    before["misfits"] = before["misfits"][:20]
+    return moves, before, after
+
+
+def heightmap_png(ter: dict, res: int = HEIGHTMAP_RES, pads: list | None = None, rows: list | None = None) -> tuple:
     """16-bit greyscale PNG of the terrain for Landscape > Import, plus the import settings
     (Z scale 100: 1 unit = 100/128 cm, so +-256 m fits). pads: lots levelled into it."""
     lo, hi = ter["min"], ter["max"]
-    ground = graded(ter, pads or [])
+    rows = rows or heightmap_rows(ter, res, pads)
+    res = len(rows)
     raw = bytearray()
-    for py in range(res):
-        y = lo[1] + (hi[1] - lo[1]) * py / (res - 1)
-        vals = []
-        for px in range(res):
-            x = lo[0] + (hi[0] - lo[0]) * px / (res - 1)
-            z = ground(x, y)
-            vals.append(max(0, min(65535, int(round(32768 + z * 128 / 100)))))
+    for vals in rows:
         raw += b"\x00" + struct.pack(f">{res}H", *vals)
 
     def chunk(kind: bytes, body: bytes) -> bytes:
@@ -1660,6 +1761,32 @@ def _demo() -> None:
     # rule: one city alone gets no highway and so no interchange
     solo = generate(cities[:1], lambda x, y: 0.0, "/Game/X/WorldGen/Roads", seed=3, opts={"interchange": "cloverleaf"})
     assert "Highways" not in solo, "no stand-alone highway or cloverleaf"
+    # 1:1 ground: buildings on a 20 % hillside checked against the landscape UEFN imports (heightmap samples,
+    # bilinear): with their pads cut in nothing is buried or floating; without pads they would be
+    hill = {"min": [-200000, -200000], "max": [200000, 200000], "grid": 64,
+            "heights": [[0.2 * (-200000 + 400000 * (i + 0.5) / 64) for i in range(64)] for _ in range(64)]}
+    rnd = random.Random(5)
+    homes = []
+    for k in range(25):
+        x, y, yaw, w, d = rnd.uniform(-90000, 90000), rnd.uniform(-90000, 90000), rnd.uniform(0, 360), 12.0, 10.0
+        c, s = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+        zs = [0.2 * (x + c * a * d * 50 - s * b * w * 50) for a in (-1, 1) for b in (-1, 1)]
+        pad = sum(zs) / 4
+        homes.append((f"h{k}", x, y, yaw, w, d, pad, round((pad - min(zs)) / 100 + 0.05, 1)))
+    mg = pad_margin(hill)
+    hp = [(x, y, math.cos(math.radians(yaw)), math.sin(math.radians(yaw)), w * 50 + mg / 2, d * 50 + mg / 2, z)
+          for _l, x, y, yaw, w, d, z, _f in homes]
+    fit = ground_fit(imported_ground(hill, pads=hp), homes)
+    assert fit["ok"] and fit["checked"] == 25, fit
+    assert ground_fit(imported_ground(hill), homes)["buried"] > 0, "without pads the hill buries them"
+    # a row of neighbours up the hill, 6 m apart (their pads overlap): each keeps its own level, none buried
+    row = [(f"r{k}", 2000.0 * k, 0.0, 0.0, 10.0, 14.0, 0.2 * 2000 * k, 2.0) for k in range(6)]
+    rp = [(x, y, 1.0, 0.0, w * 50 + mg / 2, d * 50 + mg / 2, z) for _l, x, y, _yaw, w, d, z, _f in row]
+    rf = ground_fit(imported_ground(hill, pads=rp), row)
+    assert rf["buried"] == 0, rf
+    # neighbours too close for the landscape to step between (no pads at all here): settled, nothing misfits
+    moves, before, after = settle(imported_ground(hill), homes)
+    assert before["buried"] and moves and after["ok"], (before["buried"], after)
     # rule: a bridge on a slope sits over the highest ground near it, never inside the hill
     slope = lambda x, y: x * 0.2  # 20 % grade along x
     br = build_actor({0: [0, 0], 1: [20000, 0]}, [[0, 1, "4L", [[10000, 0, BRIDGE_LIFT_CM, "BR"]]]], slope, "/Game/X")

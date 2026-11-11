@@ -364,6 +364,15 @@ city tiles to build or remove. The next build in UEFN changes only those.
   have. `Distance between cities` (`city_gap_m`) is the open country between two cities' edges; cities closer
   than that are pushed apart (`citygen.spread`). Under **Selected city**, pick a city and set its radius
   (150 m – 5 km) or road style. That calls `road_network_city_save`, then regenerates.
+- **Ground fit (1:1 with the imported landscape)**: a generated terrain is cut and filled to its roads
+  (`citygen.grade_to_roads`). Every lot pad is cut into the heightmap a pixel wider than its building
+  (`pad_margin`); where pads meet, the one a spot is deepest in wins.
+  - `ground_fit` checks every building against the landscape exactly as UEFN builds it from the heightmap
+    (`imported_ground`: the 16-bit samples, bilinear).
+  - `settle` puts anything that would be buried or floating on the highest ground under it, with a foundation
+    down to the lowest.
+  - `road_network_pcg_preview(summary=true)`, the heightmap and the build brief report it as `ground_fit`:
+    0 buried and 0 floating means it imports 1:1.
 - **Water** (`citygen.over_water`, the terrain's water line `sea`): every road edge is sampled for water.
   - Highways and freeways always cross on a bridge: BRR ramp on land, then a BR / ED deck 7.5 m up, then a ramp.
   - `citygen.cross_water` runs first: a street whose junctions fall in the water becomes one edge from bank to

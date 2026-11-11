@@ -646,7 +646,9 @@ def register(api) -> None:
     def write_heightmap(nid: str, ter: dict) -> dict:
         # every previewed lot is cut into its level pad: only ever this new landscape, never the level's terrain
         got = pcg_preview(nid)
-        png, settings = cg.heightmap_png(ter, pads=pl.pads(got.get("layers") or {}))
+        fit = _PREVIEW_CACHE.get("fit") or {}
+        pads = fit.get("pads") if fit.get("pads") is not None else pl.pads(got.get("layers") or {}, cg.pad_margin(ter))
+        png, settings = cg.heightmap_png(ter, pads=pads)
         path = heightmap_path(nid)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path + ".tmp", "wb") as fh:
@@ -974,7 +976,7 @@ def register(api) -> None:
         if not ter.get("heights"):
             return {"ok": False, "error": "This world has no stored terrain. Generate it again."}
         hm = write_heightmap(nid, ter)  # always from the stored terrain, so every PC gets the same file
-        return {"ok": True, "id": nid, **hm,
+        return {"ok": True, "id": nid, **hm, "ground_fit": fit_summary(),
                 "how": f"Landscape mode > Manage > New > Import from File: pick the PNG, resolution {hm['resolution']}, "
                        f"Location (the centre) {hm['location']}, Scale {hm['scale']}, components {hm['components']}. "
                        f"It makes a new landscape; your current one is not touched. "
@@ -1171,6 +1173,26 @@ def register(api) -> None:
     FOREST_LIMIT = 200000  # foliage points per layer kept and baked: very dense forests; tiled PCG builds them 400 m at a time
 
     @one_run_at_a_time
+    def fit_summary():
+        fit = _PREVIEW_CACHE.get("fit")
+        return {k: v for k, v in fit.items() if k != "pads"} if fit else None
+
+    def fit_buildings(placed: dict, terrain: dict) -> dict:
+        """Every building against the landscape the heightmap will import (pads cut in, sampled exactly as UEFN
+        does): a building that would float gets the deeper foundation it needs, here, so the build uses it."""
+        pads = pl.pads(placed, cg.pad_margin(terrain))  # frozen: the heightmap is cut from exactly these
+        ground = cg.imported_ground(terrain, pads=pads)
+        rows = [(name, r) for name, v in placed.items() if v.get("kind") == "buildings" for r in v["points"] if len(r) > 9]
+        moves, before, after = cg.settle(ground, [(name, r[0], r[1], r[3], r[7], r[8], r[2], r[9]) for name, r in rows])
+        for k, (z, found) in moves.items():
+            r = rows[k][1]
+            for p in r[10] if len(r) > 10 and isinstance(r[10], list) else []:  # paths leave from the new floor
+                if len(p) > 1 and len(p[1]) > 2:
+                    p[1][2] = z
+            r[2], r[9] = z, found
+        return {**after, "settled": len(moves), "before": {k: before[k] for k in ("buried", "floating", "overlapping")},
+                "pads": pads}
+
     def pcg_preview(net_id: str = "", layer_id: str = "", summary: bool = False) -> dict:
         """Every enabled layer placed offline with the graph's rules; one layer per call when layer_id is
         given (keeps each reply small). Points: [x, y, z, yaw, scale(, height m for buildings)]."""
@@ -1203,7 +1225,9 @@ def register(api) -> None:
             placed.update(waterfront.layers(cities, (data.get(f"net.{nid}.water") or {}).get("towers")))
             # airports: aircraft, jet bridges, hangars, tower, lights, aprons, fuel farm
             placed.update(airport.layers([r for c in cities for r in (c.get("private") or {}).get("airport") or []]))
-            _PREVIEW_CACHE.update(key=key, out=placed)
+            gen = (data.get(f"net.{nid}") or {}).get("generated") or {}
+            fit = fit_buildings(placed, terrain) if gen and not gen.get("ground_from") and terrain.get("heights") else None
+            _PREVIEW_CACHE.update(key=key, out=placed, fit=fit)
         out = _PREVIEW_CACHE["out"]
         if layer_id == "road-walls":  # the built-in layers the plan never lists: walls and neighbourhood sites
             out = {k: v for k, v in out.items() if v.get("kind") in ("walls", "site")}
@@ -1211,7 +1235,8 @@ def register(api) -> None:
             name = (docs.get(slug(layer_id)) or {}).get("name")
             out = {name: out[name]} if name in out else {}
         if summary:  # counts only: a quick check for an agent, no point lists
-            return {"ok": True, "id": nid, "counts": {k: v["count"] for k, v in out.items()}}
+            return {"ok": True, "id": nid, "counts": {k: v["count"] for k, v in out.items()},
+                    "ground_fit": fit_summary()}
         return {"ok": True, "id": nid, "layers": out}
 
     def kit_root() -> str:
@@ -2130,6 +2155,8 @@ def register(api) -> None:
                 "environment": env, "uefn_check": uefn, "pending": {k: sync.get(k) for k in ("summary", "roads_changed",
                                                                                                 "roads_never_pushed", "tiles")},
                 # compact: counts per source, the most-used 40 meshes, and with check=true every missing one
+                # every building against the landscape the heightmap imports: buried / floating counts (none = 1:1)
+                "ground_fit": {k: v for k, v in (fit_summary() or {}).items() if k != "misfits"} or None,
                 "needs_by_source": {s: sum(1 for n in needs if n["source"] == s) for s in {n["source"] for n in needs}},
                 "needs_top": [{k: n[k] for k in ("mesh", "uses", "for", "source")}
                               for n in sorted(needs, key=lambda n: -n["uses"])[:40]],
