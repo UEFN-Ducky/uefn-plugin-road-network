@@ -641,11 +641,16 @@ class _Hash:
     def near(self, x, y, r):
         k = int(math.ceil((r + 2000.0) / self.cell))
         cx, cy = int(x // self.cell), int(y // self.cell)
-        for i in range(cx - k, cx + k + 1):
-            for j in range(cy - k, cy + k + 1):
-                for px, py, pr, item in self.cells.get((i, j), ()):
-                    if math.hypot(px - x, py - y) < r + pr:
-                        yield item
+        if (2 * k + 1) ** 2 > len(self.cells):
+            # A wide look (one-of-a-kind spacing, 100 m+) walks the filled cells: every empty one in a 2 km
+            # square is 10 000+ lookups per spot, and the city preview never finished (Nov 11 2026).
+            keys = [c for c in self.cells if abs(c[0] - cx) <= k and abs(c[1] - cy) <= k]
+        else:
+            keys = ((i, j) for i in range(cx - k, cx + k + 1) for j in range(cy - k, cy + k + 1))
+        for key in keys:
+            for px, py, pr, item in self.cells.get(key, ()):
+                if math.hypot(px - x, py - y) < r + pr:
+                    yield item
 
 
 def junctions(actors: list) -> list:
