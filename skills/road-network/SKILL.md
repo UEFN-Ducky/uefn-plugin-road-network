@@ -53,6 +53,10 @@ stretched to fit a lot never smear), old colour as Tint, Used with Instanced Sta
 put a new mesh on PCG/ISM without a material that has that usage flag. Junctions: with our own road kit
 `road_network_build_pieces(rebuild=true)` regenerates every SM_JK_ piece flat at deck height in the roads'
 `M_Asphalt` with planar UVs (the Fortnite Road1 crown + MI_Apollo_Roads material is only for the Fortnite kit).
+Interchanges are tangent: each loop's centre is its radius plus the road's half width from the highway and the
+cross road, it starts on the highway's edge at the deck's height there and ends on the cross road's edge; slip ramps
+end on both road edges. The cross road is a city street (in '<City> Roads'), joined at both ends to the city's
+nearest streets, so it never dead-ends in a field.
 Saving in UEFN: never save assets one by one in a loop. Each save runs revision control's checkout prompt and
 every failed checkout opens a modal dialog with its own swap chain (~14 s each); 50 saves took UEFN past 70 GB.
 The listener saves everything it made in one `save_packages` batch.

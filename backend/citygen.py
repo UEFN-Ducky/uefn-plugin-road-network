@@ -576,42 +576,55 @@ def overpass_via(line: list, streets: list, kind: str) -> tuple:
 
 def interchange(kind: str, end: list, toward: list, tag: tuple, hw: str) -> tuple:
     """Real geometry for where a highway meets a city, made of our ramp and bridge pieces:
-    (highway profile [[distance from end, lift cm]], nodes, edges) for the Highways actor.
-    cloverleaf: the highway bridges over a cross road, 4 loop ramps + 4 slip ramps;
-    trumpet: a T, 1 loop + 1 slip ramp; diamond: bridge + 4 straight slip ramps."""
+    (highway profile [[distance from end, lift cm]], ramp nodes, ramp edges, cross road [x0, x1]).
+    The highway bridges over a cross road 180 m out from its end; the cross road belongs to the city's
+    own streets (generate joins both its ends to them). Every ramp touches the road edges it links:
+    loops are tangent to the highway and the cross road (centre = radius + that road's half width),
+    start at the highway's height there and come down to the cross road.
+    cloverleaf: 4 loops + 4 slip ramps; trumpet: 1 loop + 1 slip ramp; diamond: 4 straight slip ramps."""
     ux, uy = toward[0] - end[0], toward[1] - end[1]
     ul = math.hypot(ux, uy) or 1.0
     ux, uy = ux / ul, uy / ul
     nx, ny = -uy, ux
-    D, R = 18000.0, 5500.0  # cross road 180 m out from the city end; loop radius 55 m
-    o = R + 2500.0
+    D, R, deck = 18000.0, 5500.0, 6000.0  # crossing 180 m out; loop radius 55 m; deck +-60 m around it
     lift = BRIDGE_LIFT_CM
+    h_hw, h_x, h_ramp = HALF[hw], HALF["4L"], HALF["ER"]
+    oa, ob = R + h_x, R + h_hw  # loop centre: off the cross road (along the highway), off the highway
     cx, cy = end[0] + ux * D, end[1] + uy * D
     P = lambda a, b, up=0.0: [cx + ux * a + nx * b, cy + uy * a + ny * b] + ([up] if up else [])
-    profile = [[6000, 0.0], [D - 6000, lift], [D + 6000, lift], [D + 12000, 0.0]]
+
+    def deck_lift(a):  # the highway's height a cm from the crossing: deck, then a 60 m ramp down
+        return lift * max(0.0, min(1.0, 1 - (abs(a) - deck) / deck))
+
+    profile = [[D - 2 * deck, 0.0], [D - deck, lift], [D + deck, lift], [D + 2 * deck, 0.0]]
     nodes, edges = {}, []
     sides = (1,) if kind == "trumpet" else (-1, 1)
-    nodes[tag + ("x0",)] = P(0, -30000 if kind != "trumpet" else 0)
-    nodes[tag + ("x1",)] = P(0, 30000)
-    edges.append([tag + ("x0",), tag + ("x1",), "4L"])  # the cross road, under the bridge
+    reach = ob + R + 6000.0  # the cross road runs past the loops and slip ramps on each side
+    cross = [P(0, -reach if kind != "trumpet" else -h_hw - 2000), P(0, reach)]
     quads = [(i, j) for i in (-1, 1) for j in sides]
     loops = quads if kind == "cloverleaf" else ([(1, 1)] if kind == "trumpet" else [])
     slips = quads if kind in ("cloverleaf", "diamond") else ([(-1, 1)] if kind == "trumpet" else [])
-    for i, j in loops:  # 270 deg loop ramp: from beside the bridge down to the cross road
-        qx, qy = i * o, j * o  # loop centre in (along highway, along cross road)
-        a0 = math.atan2(-j, 0.0)  # start on the side facing the highway
+    for i, j in loops:  # 270 deg loop: tangent to the highway edge, down to the cross road edge
+        qa, qb = i * oa, j * ob
+        a0 = math.atan2(-j, 0.0)  # the point facing the highway
         sweep = 1.5 * math.pi * (1 if i * j > 0 else -1)
-        arc = [P(qx + R * math.cos(a0 + sweep * k / 12), qy + R * math.sin(a0 + sweep * k / 12), lift * 0.6 * (1 - k / 12))
-               for k in range(13)]
+        top = deck_lift(qa)
+        arc = []
+        for k in range(13):
+            t = a0 + sweep * k / 12
+            arc.append(P(qa + R * math.cos(t), qb + R * math.sin(t), top * (1 - k / 12)))
         a, b = tag + ("l", i, j, 0), tag + ("l", i, j, 1)
-        nodes[a], nodes[b] = arc[0], arc[-1][:2]
+        nodes[a], nodes[b] = arc[0] if len(arc[0]) > 2 else arc[0] + [0.0], arc[-1][:2]
         edges.append([a, b, "ER", [p + ["ER"] if len(p) > 2 else p + [0.0, "ER"] for p in arc[1:-1]]])
-    for i, j in slips:  # slip ramp: highway side to cross-road side, bowed outward
-        h, x = P(i * o * 2, j * 2850), P(i * 2600, j * o * 2)
-        mid = P(i * o * 1.55, j * o * 1.55)
+    for i, j in slips:  # slip ramp: from the highway edge beyond the deck to the cross road edge, bowed out
+        far = 2 * deck + R
+        h = P(i * far, j * (h_hw + h_ramp))
+        x = P(i * (h_x + h_ramp), j * (ob + R))
+        mid = P(i * (far + h_x) * 0.55, j * (h_hw + ob + R) * 0.6)
         a, b = tag + ("s", i, j, 0), tag + ("s", i, j, 1)
         nodes[a], nodes[b] = h, x
         edges.append([a, b, "2L", [mid + [0.0, "2L"]]])
+    return profile, nodes, edges, cross
     return profile, nodes, edges
 
 
@@ -672,9 +685,19 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
             line = [ends[0]] + [v[:2] for v in via] + [ends[1]]
             heads = []
             for k, (end, nxt) in enumerate(((ends[0], line[1]), (ends[1], line[-2]))):
-                profile, inodes, iedges = interchange(o["interchange"], end, nxt, ("ic", a, b, k), o["highway"])
+                profile, inodes, iedges, cross = interchange(o["interchange"], end, nxt, ("ic", a, b, k), o["highway"])
                 hw_nodes.update(inodes)
                 hw_edges.extend(iedges)
+                # the cross road is a city street: both ends join the city's nearest streets
+                cnodes, cedges = graphs[(a, b)[k]]
+                city_nodes = [n for n in cnodes if isinstance(n[0], int)]  # not `streets`: that one is the overpass list
+                ends_x = [("ic", a, b, k, "x0"), ("ic", a, b, k, "x1")]
+                cnodes[ends_x[0]], cnodes[ends_x[1]] = cross
+                cedges.append([ends_x[0], ends_x[1], "4L"])
+                for e in ends_x:
+                    if city_nodes:
+                        near = min(city_nodes, key=lambda n: math.dist(cnodes[n][:2], cnodes[e][:2]))
+                        cedges.append([e, near, o["neighbourhood_roads"]])
                 ux, uy = nxt[0] - end[0], nxt[1] - end[1]
                 ul = math.hypot(ux, uy) or 1.0
                 heads.append([[end[0] + ux / ul * d, end[1] + uy / ul * d, up, None] for d, up in profile])
@@ -741,15 +764,33 @@ def _demo() -> None:
     # real interchanges, built from our pieces: a bridge over a cross road and loop / slip ramps at each end
     made = {}
     for kind in ("cloverleaf", "trumpet", "diamond"):
-        hw = generate(far, lambda x, y: 0.0, "/Game/X/Roads", seed=3, opts={"interchange": kind})["Highways"]
+        world = generate(far, lambda x, y: 0.0, "/Game/X/Roads", seed=3, opts={"interchange": kind, "highway": "6L"})
+        hw = world["Highways"]
         meshes = [s["mesh"] for s in hw["segments"]]
         made[kind] = hw
         assert meshes.count("SM_Road_Bridge_Straight20m") >= 2, (kind, "a bridge at each end")
-        assert meshes.count("SM_Road_FourLane_Straight10m") >= 2, (kind, "a cross road at each end")
         loops = meshes.count("SM_Elev_Ramp20m")
         assert loops == {"cloverleaf": 2 * 4 * 12, "trumpet": 2 * 12, "diamond": 0}[kind], (kind, loops)
         top = max(p["z"] for p in hw["points"])
         assert abs(top - BRIDGE_LIFT_CM) < 1, (kind, top)
+        # the cross road is a city street now, joined to the city: no Highways stub going nowhere
+        assert "SM_Road_FourLane_Straight10m" not in meshes, kind
+        for c in far:
+            city = world[f"{c['name']} Roads"]
+            assert any(s["mesh"] == "SM_Road_FourLane_Straight10m" for s in city["segments"]), (kind, c["name"])
+    # several highways in one world (each one's interchange adds city streets before the next is routed)
+    three = far + [{"name": "R", "x": 0, "y": 250000, "radius": 30000, "style": "mixed", "seed": 5}]
+    multi = generate(three, lambda x, y: 0.0, "/Game/X/Roads", seed=3, opts={"interchange": "cloverleaf", "highway": "6L"})
+    assert all(not any(st.problems(a["points"], a["segments"]).values()) for a in multi.values())
+    # every ramp touches its roads: a loop starts on the highway's edge, ends on the cross road's edge
+    _, inodes, _, cross = interchange("cloverleaf", [0, 0], [100000, 0], ("t",), "6L")
+    for (_, i, j, end), p in ((k[1:], v) for k, v in inodes.items() if k[1] == "l"):
+        ax, by = p[0] - 18000, p[1]  # highway along +x, crossing at x = 180 m, cross road along y
+        if end == 0:
+            assert abs(abs(by) - HALF["6L"]) < 1 and p[2] > 0, ("loop starts on the highway edge, up on it", p)
+        else:
+            assert abs(abs(ax) - HALF["4L"]) < 1, ("loop ends on the cross road edge", p)
+    assert abs(cross[0][0] - 18000) < 1 and abs(cross[1][0] - 18000) < 1, cross
     trumpet = made["trumpet"]
     for a in (stack, br, *made.values()):
         bad = st.problems(a["points"], a["segments"])
