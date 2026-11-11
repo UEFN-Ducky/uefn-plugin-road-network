@@ -178,7 +178,44 @@
                 font-size: 11px; color: var(--fg); background: var(--bg-panel); border: 1px solid var(--border); border-radius: 999px;
                 padding: 2px 8px; box-shadow: var(--shadow-sm); }
     .rn-label .rn-icon { color: var(--accent); }
-    .rn-busy { position: absolute; left: 50%; top: 56px; transform: translateX(-50%); z-index: 3; pointer-events: none; }
+    .rn-busy { position: absolute; left: 50%; top: 56px; transform: translateX(-50%); z-index: 5; pointer-events: none; }
+    /* ---------- loading card: what is happening, and how far along */
+    .rn-load { width: min(360px, calc(100vw - 48px)); background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius);
+               box-shadow: var(--shadow-lg); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; animation: rn-pop 180ms ease; }
+    .rn-load__title { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; font-weight: 600; color: var(--fg); }
+    .rn-load__pct { font-weight: 400; color: var(--fg-dim); font-variant-numeric: tabular-nums; font-size: 12px; }
+    .rn-load__step { font-size: 12px; color: var(--fg-dim); min-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .rn-load__bar { position: relative; height: 4px; border-radius: 999px; background: var(--input-bg); overflow: hidden; }
+    .rn-load__fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: var(--accent); transition: width 350ms ease; }
+    .rn-load__fill.is-indet { width: 35%; animation: rn-indet 1.1s ease-in-out infinite; }
+    @keyframes rn-indet { from { left: -35%; } to { left: 100%; } }
+    @keyframes rn-pop { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+    @media (prefers-reduced-motion: reduce) { .rn-load, .rn-load__fill.is-indet { animation: none; } }
+    /* ---------- left: the world's cities (outliner) */
+    .rn-section-row { display: flex; align-items: center; justify-content: space-between; margin: 16px 4px 8px; }
+    .rn-section-row .rn-section { margin: 0; }
+    .rn-mini { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); background: var(--bg-panel); color: var(--fg-dim);
+               border-radius: 999px; padding: 2px 8px; font: inherit; font-size: 11px; cursor: pointer; }
+    .rn-mini:hover { color: var(--fg); background: var(--bg-hover); }
+    .rn-mini:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+    .rn-city { border-radius: var(--radius-sm); }
+    .rn-city__row { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: transparent; color: var(--fg); font: inherit;
+                    font-size: 13px; padding: 6px 8px; border-radius: var(--radius-sm); cursor: pointer; text-align: left; }
+    .rn-city__row:hover { background: var(--bg-hover); }
+    .rn-city__row:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; }
+    .rn-city.is-open > .rn-city__row { background: var(--bg-hover); box-shadow: inset 2px 0 0 var(--accent); }
+    .rn-city__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rn-city__pop { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .rn-city__del { opacity: 0; border: 0; background: transparent; color: var(--muted); padding: 2px; border-radius: 4px; cursor: pointer; display: inline-flex; }
+    .rn-city:hover .rn-city__del, .rn-city__del:focus-visible { opacity: 1; }
+    .rn-city__del:hover { color: var(--red); }
+    .rn-city__kids { display: flex; flex-direction: column; gap: 1px; padding: 2px 0 6px 26px; }
+    .rn-city__kid { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-dim); padding: 3px 6px; border-radius: 4px; }
+    .rn-city__kid b { font-weight: 400; color: var(--fg); margin-left: auto; font-variant-numeric: tabular-nums; }
+    .rn-banner { position: absolute; left: 50%; top: 56px; transform: translateX(-50%); z-index: 4; display: flex; align-items: center; gap: 8px;
+                 background: var(--bg-panel); border: 1px solid var(--accent); border-radius: 999px; padding: 6px 8px 6px 14px; font-size: 12px;
+                 color: var(--fg); box-shadow: var(--shadow-md); }
+    .rn-banner[hidden] { display: none; }
     .rn-empty-view { position: absolute; inset: 0; display: grid; place-items: center; z-index: 1; pointer-events: none; }
     #err:empty { display: none; }
     #err { padding: 0 12px; }
@@ -197,12 +234,21 @@
       <div class="rn-scroll">
         <div class="rn-section">Sections</div>
         <div class="rn-list" id="nav" role="tablist" aria-orientation="vertical"></div>
-        <div class="rn-section">Layers</div>
-        <div class="rn-list" id="layerList"><div class="rn-hint">Open a world.</div></div>
-        <div class="rn-section">Road actors</div>
-        <div class="rn-list" id="actors"><div class="rn-hint">Open a world.</div></div>
-        <div class="rn-section">Pull from UEFN</div>
-        <div class="rn-pull" id="pullRow"></div>
+        <!-- what the left side shows follows the section: the world's cities, the layer order, or the road actors -->
+        <div id="leftCities" class="rn-left-block">
+          <div class="rn-section-row"><span class="rn-section">Cities</span><span id="cityAdd"></span></div>
+          <div class="rn-list rn-cities" id="cityList"><div class="rn-hint">Open a world.</div></div>
+        </div>
+        <div id="leftLayers" class="rn-left-block" hidden>
+          <div class="rn-section">Layer order</div>
+          <div class="rn-list" id="layerList"><div class="rn-hint">Open a world.</div></div>
+        </div>
+        <div id="leftActors" class="rn-left-block" hidden>
+          <div class="rn-section">Road actors</div>
+          <div class="rn-list" id="actors"><div class="rn-hint">Open a world.</div></div>
+          <div class="rn-section">Pull from UEFN</div>
+          <div class="rn-pull" id="pullRow"></div>
+        </div>
         <div id="nets" hidden></div>
       </div>
       <div class="rn-version" id="version"></div>
@@ -214,6 +260,7 @@
       <div class="rn-toolbar" id="toolbar"></div>
       <div class="rn-hud" id="hud"></div>
       <div class="rn-busy" id="busy"></div>
+      <div class="rn-banner" id="banner" hidden></div>
       <div class="rn-empty-view" id="emptyView"></div>
       <div class="rn-tools" id="tools" role="toolbar" aria-label="Map tools"></div>
       <div class="rn-note" id="note" hidden></div>

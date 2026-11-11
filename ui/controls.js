@@ -40,6 +40,8 @@ const PATHS = {
   grip: "M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01",
   chat: "M4 5h16v11H9l-5 4Z",
   push: "M12 20V9M7.5 13.5 12 9l4.5 4.5M5 4h14",
+  trash: "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6",
+  move: "M12 3v18M3 12h18M12 3 9.5 5.5M12 3l2.5 2.5M12 21l-2.5-2.5M12 21l2.5-2.5M3 12l2.5-2.5M3 12l2.5 2.5M21 12l-2.5-2.5M21 12l-2.5 2.5",
 };
 
 export function icon(name, size = 16) {

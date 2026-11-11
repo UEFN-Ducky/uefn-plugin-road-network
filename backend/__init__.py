@@ -741,6 +741,11 @@ def register(api) -> None:
                                     opts["city_gap_m"] * 100)
         if not towns:
             return {"ok": False, "error": "No room for that many cities: make the map bigger or ask for fewer."}
+        steps = 4 + len(towns)
+
+        def progress(step: int, text: str) -> None:  # the panel's loading card follows these
+            push({"what": "progress", "id": nid, "step": step, "of": steps, "text": text})
+        progress(0, "Reading the ground" if base else "Shaping the terrain")
         ter = base or cg.terrain(int(seed), size, max(0.0, float(relief_m)) * 100, towns, center=(center_x, center_y),
                                  opts=opts, keep=keep)
         sea_level = ter.get("sea")
@@ -749,12 +754,14 @@ def register(api) -> None:
                        else (lambda x, y: st.sample_grid(ter, x, y) or 0.0))
         wet = cg.wet_from(ter)  # roads know the water: main roads and highways bridge it, side streets stop
         bridges: list = []
+        progress(1, "Reading the shorelines, siting shipyards and airports")
         water = waterfront.analyze(ter)  # ShorelineAnalyzer: waterbodies and shorelines for the planner
         cg.plan_shipyards(towns, water, opts)  # shipyards are districts: planned before the streets
         # airports too: site (flat, dry, into the wind, outside the cities), then the streets keep clear of them
         airports = cg.plan_airports(towns, lambda x, y: st.sample_grid(ter, x, y), wet, keep,
                                     (tuple(ter["min"]), tuple(ter["max"])), opts) if ter.get("heights") else []
         airport_builds: dict = {}
+        progress(2, "Laying roads, freeways, bridges and runways")
         actors = cg.generate(towns, road_ground, folder, int(seed), opts, keep, wet, bridges, airports, airport_builds)
         before = data.get(f"net.{nid}")
         saved = save_network(nid, name, "", "live")
@@ -784,9 +791,10 @@ def register(api) -> None:
                     "links": got["links"], "noise_zone": got["noise_zone"], "report": got["report"]}
                    for a, (label, got) in zip(airports, airport_builds.items())]
         data.put(f"net.{nid}.airports", {"name": f"{name} / airports", "items": summary})
-        for t in towns:
+        for k, t in enumerate(towns):
             cslug = slug(t["name"])
             prev = old.get(cslug) or {}
+            progress(3 + k, f"Planning {t['name']}: lots, services, waterfront")
             api.search.upsert(f"net.{nid}.city.{cslug}", t["name"], f"City {t['name']} in world {name}: {t['style']} roads")
             layout = cg.city_layout(t, opts, wet, lambda x, y: st.sample_grid(ter, x, y),
                                     ((prev.get("plan") or {}).get("facilities")), water)
@@ -815,6 +823,7 @@ def register(api) -> None:
         api.search.upsert(f"net.{nid}", name, f"Generated world {name}: cities " + ", ".join(t["name"] for t in towns))
         if not layer_docs(nid):  # a new world comes with every layer a city needs: generate -> push, nothing else
             pcg_preset(nid, "full_city")
+        progress(steps - 1, "Sidewalks, walkways and driveways")
         paths = sidewalks_stage(nid)  # SidewalkGenerator: sidewalks, walkways, driveways as spline actors
         stats_out.update((paths.get("actors") or {}) if paths.get("ok") else {})
         record("road_network_generate", "network", nid, before,
@@ -830,6 +839,79 @@ def register(api) -> None:
                 "note": "Preview it in the Road Network panel. For the generated terrain, make the heightmap "
                         "(road_network_heightmap) and import it first, then Import into UEFN." if not base else
                         "Roads follow this network's ground. Import into UEFN when it looks right."}
+
+    def add_city(net_id: str = "", name: str = "", x: float | None = None, y: float | None = None,
+                 radius_m: float = 0.0, style: str = "") -> dict:
+        """Add a city to a generated world (generate again to build it): at x, y (cm) or, without them, a free
+        spot on the map; radius_m (default: the world's city size); style mixed / grid / organic."""
+        nid = slug(net_id)
+        doc = data.get(f"net.{nid}") if nid else None
+        if not doc or not doc.get("generated"):
+            return {"ok": False, "error": f"{net_id!r} is not a generated world."}
+        gen = doc["generated"]
+        o = cg.options(gen.get("options"))
+        have = city_docs(nid)
+        taken = {d["name"] for d in have.values()}
+        name = str(name or "").strip() or next((n for n in cg.NAMES if n not in taken), f"City {len(have) + 1}")
+        if slug(name) in have:
+            return {"ok": False, "error": f"There is already a city called {name!r}."}
+        if style and style not in cg.STYLES:
+            return {"ok": False, "error": f"style is one of {', '.join(cg.STYLES)}."}
+        ter = (data.get(f"net.{nid}.scan") or {}).get("terrain") or {}
+        lo, hi = ter.get("min"), ter.get("max")
+        radius = float(radius_m) * 100 if radius_m else 60000.0 * o["city_size"]
+        wet = cg.wet_from(ter)
+
+        def watery(cx, cy, r):  # share of the city's disc under water (a centre and three rings of samples)
+            if not wet:
+                return 0.0
+            pts = [(cx, cy)] + [(cx + math.cos(a * math.pi / 6) * r * f, cy + math.sin(a * math.pi / 6) * r * f)
+                                for f in (0.33, 0.66, 0.95) for a in range(12)]
+            return sum(1 for p in pts if wet(*p)) / len(pts)
+        if x is None or y is None or str(x) == "" or str(y) == "":
+            if not lo or not hi:
+                return {"ok": False, "error": "Give x and y: this world has no stored terrain to find room on."}
+            free = None
+            for s in range(40):  # a free spot: clear of every city (with the world's spacing) and the keep zones
+                for c in cg.place_cities(int(gen.get("seed", 7)) + 101 + s, 1, (tuple(lo), tuple(hi)),
+                                         gen.get("keep"), o["city_size"], o["city_gap_m"] * 100):
+                    if all(math.hypot(c["x"] - d["x"], c["y"] - d["y"]) > c["radius"] + d["radius"] + o["city_gap_m"] * 100
+                           for d in have.values()) and watery(c["x"], c["y"], c["radius"]) <= 0.25:
+                        free = c
+                        break
+                if free:
+                    break
+            if not free:
+                return {"ok": False, "error": "No free room for another city: make the cities smaller or move one."}
+            x, y, radius = free["x"], free["y"], float(radius_m) * 100 if radius_m else free["radius"]
+        elif watery(float(x), float(y), radius) > 0.5:
+            return {"ok": False, "error": "That spot is mostly water: a city needs dry land. Pick a spot on land, or "
+                                          "Find a free spot."}
+        city = {"name": name, "x": round(float(x)), "y": round(float(y)), "radius": round(radius),
+                "style": style or cg.STYLES[len(have) % len(cg.STYLES)], "seed": int(gen.get("seed", 7)) * 31 + len(have) + 7}
+        put_city(nid, slug(name), {**city, "roads": f"{name} Roads", "districts": cg.districts(city, o),
+                                   "buildings": {"downtown": [], "normal": [], "housing": []}})
+        api.search.upsert(f"net.{nid}.city.{slug(name)}", name, f"City {name} in world {doc.get('name')}")
+        push({"what": "city", "id": nid})
+        return {"ok": True, "id": slug(name), "item": city,
+                "note": "Generate again (cities empty) to build it and join it to the others by highway."}
+
+    def delete_city(net_id: str = "", city: str = "", confirm: bool = False) -> dict:
+        """Remove a city from a generated world (generate again to rebuild the rest without it)."""
+        nid, cslug = slug(net_id), slug(city)
+        head = f"net.{nid}.city.{cslug}"
+        before = data.get(head) if nid and cslug else None
+        if not before:
+            return {"ok": False, "error": f"No city {city!r} in {net_id!r}. List them with road_network_cities."}
+        if len(city_docs(nid)) <= 1:
+            return {"ok": False, "error": "A world keeps at least one city."}
+        if not confirm:
+            return {"ok": False, "error": f"This removes {before.get('name')} and everything on it. Call again with "
+                                          f"confirm=true."}
+        for k in [head] + list(data.keys(f"{head}.private.")):
+            data.delete(k)
+        push({"what": "city", "id": nid})
+        return {"ok": True, "id": cslug, "note": "Generate again (cities empty) to rebuild the world without it."}
 
     def list_cities(net_id: str = "") -> dict:
         nid = slug(net_id)
@@ -1767,6 +1849,20 @@ def register(api) -> None:
         return safe(run)()
 
     @api.tool(intent=GEN_INTENT, listener=False)
+    def road_network_city_add(net_id: str = "", name: str = "", x: float | None = None, y: float | None = None,
+                              radius_m: float = 0.0, style: str = "") -> dict:
+        """Add a city to a generated world: at x, y (cm, UE world) or, without them, on a free spot of the map;
+        radius_m (default: the world's city size); style mixed / grid / organic. Then generate again (cities
+        empty): it gets its own roads, services and waterfront, and highways join it to the other cities."""
+        return safe(add_city)(net_id, name, x, y, radius_m, style)
+
+    @api.tool(intent=GEN_INTENT, listener=False)
+    def road_network_city_delete(net_id: str = "", city: str = "", confirm: bool = False) -> dict:
+        """Remove a city (and everything on it) from a generated world; confirm=true. Then generate again: the
+        other cities' highways re-join without it. A world keeps at least one city."""
+        return safe(delete_city)(net_id, city, confirm)
+
+    @api.tool(intent=GEN_INTENT, listener=False)
     def road_network_airports(net_id: str = "") -> dict:
         """The airports of a generated world (airport.py): per airport its type (general_aviation / regional /
         international / military), city, runway heading (into the wind_deg option), grading, every facility it
@@ -1837,6 +1933,9 @@ def register(api) -> None:
     api.register_panel_rpc("city_save", lambda net_id="", city="", name="", style="", radius_m=0.0, buildings="",
                            x=None, y=None: safe(save_city)(net_id, city, name, style, radius_m, buildings, x, y))
     api.register_panel_rpc("heightmap", lambda net_id="": safe(heightmap)(net_id))
+    api.register_panel_rpc("city_add", lambda net_id="", name="", x=None, y=None, radius_m=0.0, style="":
+                           safe(add_city)(net_id, name, x, y, radius_m, style))
+    api.register_panel_rpc("city_delete", lambda net_id="", city="", confirm=False: safe(delete_city)(net_id, city, confirm))
     api.register_panel_rpc("pipeline", lambda net_id="", run_from="", confirm=False: safe(pipeline_run)(net_id, run_from, confirm))
 
     # ---------------------------------------------------------------- panel: version, AI notes on the map

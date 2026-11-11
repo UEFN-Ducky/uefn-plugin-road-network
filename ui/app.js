@@ -26,7 +26,33 @@ const alert = (title, message) => call("ui.alert", { title, message }).catch(() 
 function showError(msg) {
   $("err").innerHTML = msg ? `<div class="dk-error"><div class="dk-error__title">Problem</div>${esc(msg)}</div>` : "";
 }
-function busy(msg) { $("busy").innerHTML = msg ? `<div class="dk-loading">${esc(msg)}</div>` : ""; }
+// the loading card: a title, what is happening now, and a bar (filled when the step count is known)
+const loading = { title: "", text: "", step: 0, of: 0 };
+function busy(msg, opts = {}) {
+  const host = $("busy");
+  if (!msg) { loading.title = ""; host.replaceChildren(); return; }
+  Object.assign(loading, { title: msg, text: opts.text || "", step: opts.step || 0, of: opts.of || 0 });
+  drawLoading();
+}
+function drawLoading() {
+  const host = $("busy");
+  if (!loading.title) return;
+  const pct = loading.of ? Math.round((loading.step / loading.of) * 100) : 0;
+  let card = host.querySelector(".rn-load");
+  if (!card) {
+    card = h("div", { class: "rn-load", role: "status", "aria-live": "polite" },
+      h("div", { class: "rn-load__title" }, h("span", { class: "rn-load__name" }), h("span", { class: "rn-load__pct" })),
+      h("div", { class: "rn-load__step" }),
+      h("div", { class: "rn-load__bar" }, h("div", { class: "rn-load__fill" })));
+    host.replaceChildren(card);
+  }
+  card.querySelector(".rn-load__name").textContent = loading.title;
+  card.querySelector(".rn-load__pct").textContent = loading.of ? `${pct} %` : "";
+  card.querySelector(".rn-load__step").textContent = loading.text;
+  const fill = card.querySelector(".rn-load__fill");
+  fill.classList.toggle("is-indet", !loading.of);
+  fill.style.width = loading.of ? `${Math.max(4, pct)}%` : "";
+}
 
 // ------------------------------------------------------------------ state
 const GEN_DEFAULTS = {
@@ -224,7 +250,7 @@ renderer.domElement.addEventListener("pointerup", (e) => {
   if (drag?.drawing) { drag = null; finishArea(); return; }
   if (drag?.city) { const d = drag; drag = null; dropCity(d); return; }
   if (drag && !drag.moved && drag.button === 0) {
-    if (state.tool === "pin") placePin(e); else pick(e);
+    if (state.tool === "pin") placePin(e); else if (state.tool === "addcity") addCityAt(e); else pick(e);
   }
   drag = null;
 });
@@ -487,7 +513,54 @@ function buildScene() {
   if (liveReady) { drawPeers(); drawRemoteSel(); }
   if (!state.framed && !box.isEmpty()) { frame(box); state.framed = true; }
   state.box = box;
+  drawCityMark();
+  if (state.fadeNext) { state.fadeNext = false; fadeIn([groups.roads, groups.pieces, groups.pcg]); }
   needsDraw = true;
+}
+// changes come in smoothly: the new roads and buildings fade in and the city rises out of the ground
+function fadeIn(list, ms = 700) {
+  const mats = new Set();
+  list.forEach((g) => g.traverse((o) => { const m = o.material; (Array.isArray(m) ? m : m ? [m] : []).forEach((x) => mats.add(x)); }));
+  const items = [...mats].map((m) => ({ m, t: m.transparent, o: m.opacity ?? 1 }));
+  items.forEach(({ m }) => { m.transparent = true; m.opacity = 0; m.needsUpdate = true; });
+  const start = performance.now();
+  const step = (now) => {
+    const k = Math.min(1, (now - start) / ms), e = 1 - Math.pow(1 - k, 3);
+    items.forEach(({ m, o }) => { m.opacity = o * e; });
+    groups.pcg.scale.y = 0.25 + 0.75 * e;
+    needsDraw = true;
+    if (k < 1) requestAnimationFrame(step);
+    else items.forEach(({ m, t, o }) => { m.transparent = t; m.opacity = o; m.needsUpdate = true; });
+  };
+  requestAnimationFrame(step);
+}
+// the camera glides to a place instead of jumping
+function flyTo(target, dist, ms = 650) {
+  const from = orbit.target.clone(), d0 = orbit.dist, start = performance.now();
+  const step = (now) => {
+    const k = Math.min(1, (now - start) / ms), e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+    orbit.target.lerpVectors(from, target, e);
+    orbit.dist = d0 + (dist - d0) * e;
+    placeCamera();
+    if (k < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+// the selected city's ring on the map
+const cityMark = new THREE.Group();
+scene.add(cityMark);
+function drawCityMark() {
+  clear(cityMark);
+  const c = state.cities.find((x) => x.id === state.cityPick);
+  if (!c || !state.geo) return;
+  const t = state.geo.terrain || {};
+  const pts = [];
+  for (let k = 0; k <= 96; k++) {
+    const a = (k / 96) * Math.PI * 2, x = c.x + Math.cos(a) * c.radius, y = c.y + Math.sin(a) * c.radius;
+    pts.push(toV(x, y, (sampleZ(t, x, y) ?? 0) + 400));
+  }
+  cityMark.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+    new THREE.LineBasicMaterial({ color: col("accent"), depthTest: false, transparent: true, opacity: 0.9 })));
 }
 // citygen.outline(): a city's edge in a direction as a factor of its radius (keep the two in step)
 function cityOutline(c, angleDeg) {
@@ -689,7 +762,8 @@ async function loadPcgPreview() {
   const out = {};
   const todo = state.layers.filter((x) => x.enabled);
   for (const [i, l] of todo.entries()) {  // one layer per reply keeps each one small; the first call computes them all
-    busy(i ? `Previewing PCG layers ${i + 1}/${todo.length}…` : "Placing every PCG layer…");
+    busy("Placing the city", { text: i ? `${l.name} (${i + 1} of ${todo.length})` : "Placing every building, prop and tree…",
+      step: i, of: todo.length + 1 });
     const r = await rpc("pcg_preview", { net_id: net, layer_id: l.id });
     if (r.ok === false) { busy(""); return showError(r.error); }
     Object.assign(out, r.layers || {});
@@ -700,6 +774,7 @@ async function loadPcgPreview() {
   if (net !== state.net) return;
   state.pcg = out;
   renderPcgCounts();
+  state.fadeNext = true;  // the new city rises into place instead of popping in
   buildScene();
 }
 function renderPcgCounts() {
@@ -828,6 +903,10 @@ function openTab(id) {
   }
   $("paneTitle").textContent = (TABS.find((t) => t[0] === id) || [])[1] || "";
   $("foot").hidden = !GEN_TABS.has(id);
+  // the left side follows the section: the layer order in Layers, the road actors in Edit roads, else the cities
+  $("leftLayers").hidden = id !== "pcg";
+  $("leftActors").hidden = id !== "edit";
+  $("leftCities").hidden = id === "pcg" || id === "edit";
   document.body.dataset.liveView = `${state.net || "networks"}:${id}`;
   savePrefs();
 }
@@ -1228,13 +1307,27 @@ function renderCitiesPane() {
     h("div", { class: "rn-hint" }, "Each city keeps its own roads actor, style and building sets. Changing one rebuilds the world with the same seed."));
 }
 async function saveCity(c, change) {
-  busy(`Rebuilding ${c.name}…`);
-  let out = await rpc("city_save", { net_id: state.net, city: c.id, ...change });
-  if (out.ok !== false) out = await rpc("generate", { name: currentNet()?.name || state.net, seed: state.gen.seed, cities: "",
-    size_km: state.gen.size_km, relief_m: state.gen.relief_m, options: JSON.stringify(optionsOf(state.gen)) });
+  busy(`Rebuilding ${c.name}`, { text: "Saving the change…" });
+  const out = await rpc("city_save", { net_id: state.net, city: c.id, ...change });
+  if (out.ok === false) { busy(""); return showError(out.error); }
+  await regenerate(`Rebuilding ${c.name}`);
+}
+// generate the open world again with the cities it has (moved, added, removed, resized), on the ground it uses:
+// never new terrain for a world that sits on scanned ground
+async function regenerate(title) {
+  const n = currentNet();
+  if (!n) return;
+  const gen = n.generated || {};
+  state.generating = true;
+  busy(title, { text: "Starting…", step: 0, of: 1 });
+  const out = await rpc("generate", { name: n.name || state.net, seed: gen.seed ?? state.gen.seed, cities: "",
+    size_km: gen.size_km ?? state.gen.size_km, relief_m: gen.relief_m ?? state.gen.relief_m,
+    ground_from: gen.ground_from || "", options: JSON.stringify(optionsOf(state.gen)) });
+  state.generating = false;
   busy("");
   if (out.ok === false) return showError(out.error);
   showError("");
+  await loadNets(false);
   await loadGeometry(true);
 }
 
@@ -1482,13 +1575,19 @@ async function openNet(id) {
 }
 async function loadGeometry(keep) {
   if (!state.net) return;
-  busy("Loading roads…");
+  busy("Loading the world", { text: "Roads, cities and their plans…" });
   const [geo, st, cities] = await Promise.all([loadAllGeometry(state.net), rpc("stats", { net_id: state.net }), rpc("cities", { net_id: state.net })]);
   busy("");
   if (geo.ok === false) return showError(geo.error);
   state.geo = geo;
   state.cities = cities.ok === false ? [] : cities.items || [];
+  if (state.cities.length) {  // the Cities count follows the world's cities (added or removed ones included)
+    state.gen.cities = state.cities.length;
+    ctl.cities?.set?.(state.cities.length);
+  }
+  state.fadeNext = true;
   renderActors(geo);
+  renderCityList();
   renderStats(st);
   renderCitiesPane();
   loadLayers();
@@ -1551,11 +1650,16 @@ async function generate() {
     return showError("Open a network pulled from UEFN (or a world that sits on one) first: its ground is what the cities sit on.");
   }
   const prev = state.nets.find((n) => n.name.toLowerCase() === name.toLowerCase())?.generated;
-  // same world with the same city layout: keep its cities (their styles and sizes) instead of placing new ones
-  const keep = prev && prev.cities === g.cities && prev.seed === g.seed && prev.size_km === g.size_km;
-  busy("Generating terrain, cities and roads…");
+  // the same world: keep its cities (moved, added, removed ones and their styles) unless the Cities count or the
+  // seed changed; a different count places that many new cities
+  const same = prev && prev.seed === g.seed && prev.size_km === g.size_km;
+  const have = cur && cur.name.toLowerCase() === name.toLowerCase() ? state.cities.length : prev?.cities;
+  const keep = same && have === g.cities;
+  state.generating = true;
+  busy(`Generating ${name}`, { text: "Starting…", step: 0, of: 1 });
   const out = await rpc("generate", { name, seed: g.seed, cities: keep ? "" : String(g.cities), size_km: g.size_km, relief_m: g.relief_m,
     ground_from: groundFrom, options: JSON.stringify(optionsOf(g)) });
+  state.generating = false;
   busy("");
   if (out.ok === false) return showError(out.error);
   showError("");
@@ -1593,7 +1697,13 @@ window.addEventListener("message", (ev) => {
     else { state.net = ""; state.geo = null; state.cities = []; state.layers = []; state.pcg = {}; loadNets(); buildScene(); }
   }
   if (e.type === "road_network_changed" && (!e.id || e.id === state.net)) {
-    if (e.what === "pcg") loadLayers(); else loadGeometry(true);
+    if (e.what === "progress") {  // generate's stages: the loading card follows them
+      if (loading.title) busy(loading.title, { text: e.text, step: (e.step || 0) + 1, of: (e.of || 1) + 1 });
+    } else if (e.what === "city") {
+      // a city was added or removed: the regenerate that follows reloads everything
+    } else if (state.generating) {
+      // our own generate: reloaded when it returns
+    } else if (e.what === "pcg") loadLayers(); else loadGeometry(true);
   }
   if (e.type === "live.memberState") onMemberState(e.from, e.state);
   if (e.type === "live.shared" && e.key === "selection") onSharedSelection(e.value, e.by);
@@ -1835,7 +1945,7 @@ function renderTools() {
     tool("select", "Select", "pointer", "Click roads and junctions to edit them"),
     tool("pin", "Pin", "pin", "Click a spot, then tell an AI what to do there"),
     tool("area", "Area", "pen", "Draw round an area, then tell an AI what to do there"),
-    tool("move", "Move city", "grip", "Drag a city to a new place: its roads, freeways, airport, waterfront and buildings are rebuilt there"),
+    tool("move", "Move city", "move", "Drag a city to a new place: its roads, freeways, airport, waterfront and buildings are rebuilt there"),
     h("span", { class: "rn-sep" }),
     act("Frame", "frame", () => frame(), "Show the whole world"),
     act("Clear", "x", clearNote, "Remove the pin or area"));
@@ -1844,6 +1954,97 @@ function setTool(id) {
   state.tool = id;
   $("view").classList.toggle("is-drawing", id !== "select");
   renderTools();
+  const banner = $("banner");
+  if (id === "addcity") {  // placing a new city: click the map, or let City Builder find room
+    banner.replaceChildren(h("span", {}, "Click the map where the new city goes"),
+      h("button", { type: "button", class: "rn-mini", onclick: () => addCityAt(null) }, "Find a free spot"),
+      h("button", { type: "button", class: "rn-mini", onclick: () => setTool("select"), "aria-label": "Cancel" }, icon("x", 12)));
+    banner.hidden = false;
+  } else if (id === "move") {
+    banner.replaceChildren(h("span", {}, "Press inside a city and drag it"),
+      h("button", { type: "button", class: "rn-mini", onclick: () => setTool("select"), "aria-label": "Done" }, icon("x", 12)));
+    banner.hidden = false;
+  } else banner.hidden = true;
+}
+window.addEventListener("keydown", (e) => { if (e.key === "Escape" && state.tool !== "select") setTool("select"); });
+
+// ------------------------------------------------------------------ left: the world's cities (outliner)
+const fmtK = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n || 0));
+function renderCityList() {
+  const host = $("cityList");
+  const add = $("cityAdd");
+  const gen = !!currentNet()?.generated;
+  add.replaceChildren(...(gen ? [h("button", { type: "button", class: "rn-mini", title: "Add a city: click where it goes on the map",
+    onclick: () => setTool("addcity") }, icon("plus", 12), h("span", {}, "Add"))] : []));
+  if (!state.net) return host.replaceChildren(h("div", { class: "rn-hint" }, "Open a world."));
+  if (!state.cities.length) return host.replaceChildren(h("div", { class: "rn-hint" }, gen ? "No cities yet: add one." : "A world pulled from UEFN has no cities."));
+  host.replaceChildren(...state.cities.map((c) => {
+    const open = c.id === state.cityPick;
+    const pop = c.plan?.population?.total;
+    const row = h("button", { type: "button", class: "rn-city__row", "aria-expanded": open ? "true" : "false",
+      title: `${c.name}: click to select and show it` }, icon("city", 16), h("span", { class: "rn-city__name" }, c.name),
+      h("span", { class: "rn-city__pop" }, pop ? `${fmtK(pop)} people` : `${Math.round(c.radius / 100)} m`));
+    row.addEventListener("click", () => selectCity(open ? "" : c.id));
+    const del = h("button", { type: "button", class: "rn-city__del", title: `Delete ${c.name}`, "aria-label": `Delete ${c.name}` }, icon("trash", 14));
+    del.addEventListener("click", (e) => { e.stopPropagation(); deleteCity(c); });
+    row.append(del);
+    const item = h("div", { class: `rn-city${open ? " is-open" : ""}`, "data-live-id": `city:${c.id}` }, row);
+    if (open) item.append(h("div", { class: "rn-city__kids" }, ...cityContents(c)));
+    return item;
+  }));
+}
+// what is under a city, at a glance
+function cityContents(c) {
+  const kid = (ic, label, val) => h("div", { class: "rn-city__kid" }, icon(ic, 13), h("span", {}, label), h("b", {}, String(val)));
+  const p = c.plan || {}, counts = p.counts || {}, w = c.waterfront || {}, a = c.airport;
+  const sum = (keys) => keys.reduce((n, k) => n + (counts[k] || 0), 0);
+  const out = [kid("grid", "Lots", fmtK((c.lots || []).length))];
+  if (p.population) out.push(kid("city", "Homes", fmtK(p.population.households)));
+  if ((c.freeways?.interchanges || []).length) out.push(kid("road", "Freeway interchanges", c.freeways.interchanges.length));
+  if (p.counts) {
+    out.push(kid("layers", "Schools", sum(["daycare", "elementary_school", "middle_school", "high_school", "college"])));
+    out.push(kid("pin", "Emergency", sum(["fire_station", "police_hq", "police_precinct", "ambulance", "hospital"])));
+    out.push(kid("mixed", "Shops and centres", sum(["convenience", "neighbourhood_center", "community_center_retail", "regional_mall", "gas_station"])));
+    out.push(kid("terrain", "Parks", sum(["neighbourhood_park", "community_park", "sports_complex"])));
+  }
+  if (a) out.push(kid("route", ({ general_aviation: "Airfield", regional: "Regional airport", international: "International airport",
+    military: "Airbase" })[a.type] || "Airport", `${a.report?.stands ?? 0} stands`));
+  if ((w.segments || []).length) out.push(kid("water", "Waterfront", `${(w.developments || []).length} sites`));
+  (w.shipyards || []).forEach((y) => out.push(kid("wrench", `${y.type[0].toUpperCase() + y.type.slice(1)} shipyard`, y.docks ? `${y.docks} docks` : "")));
+  return out;
+}
+function selectCity(id) {
+  state.cityPick = id;
+  renderCityList();
+  renderWorldCity?.();
+  drawCityMark();
+  needsDraw = true;
+  const c = state.cities.find((x) => x.id === id);
+  if (!c) return;
+  const t = state.geo?.terrain || {};
+  flyTo(toV(c.x, c.y, sampleZ(t, c.x, c.y) ?? 0), Math.max(800, (c.radius / 100) * 2.6));
+  if (state.tab === "cities") document.querySelector(`#pane-cities [data-live-id="city:${id}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+async function addCityAt(e) {
+  const v = e ? groundAt(e) : null;
+  const at = v ? toUE(v) : null;
+  setTool("select");
+  busy("Adding a city", { text: at ? "Saving it where you clicked…" : "Finding a free spot…" });
+  const out = await rpc("city_add", { net_id: state.net, ...(at ? { x: at[0], y: at[1] } : {}) });
+  if (out.ok === false) { busy(""); return showError(out.error); }
+  state.cityPick = out.id;
+  await regenerate(`Building ${out.item.name}`);
+  selectCity(out.id);
+}
+async function deleteCity(c) {
+  const ok = await call("ui.confirm", { title: `Delete ${c.name}`, danger: true, confirm: "Delete",
+    message: `${c.name} and everything on it (roads, buildings, services, airport, waterfront) go; the other cities are rebuilt and their highways re-join without it. Nothing in UEFN changes until you build.` }).catch(() => null);
+  if (!ok?.confirmed) return;
+  busy(`Deleting ${c.name}`, { text: "Removing it…" });
+  const out = await rpc("city_delete", { net_id: state.net, city: c.id, confirm: true });
+  if (out.ok === false) { busy(""); return showError(out.error); }
+  if (state.cityPick === c.id) state.cityPick = "";
+  await regenerate("Rebuilding the world");
 }
 function groundAt(e) {
   const r = renderer.domElement.getBoundingClientRect();
