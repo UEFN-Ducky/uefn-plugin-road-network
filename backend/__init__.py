@@ -1439,7 +1439,24 @@ def register(api) -> None:
         if not root:
             return {"ok": False, "error": "Couldn't find the project's WorldGen folder (import the roads first)."}
         street = street_kit_build(root) if street_kit else None
-        out = listener("road_network_kit_materials", {"root": root}, timeout=900)
+        # 10 meshes per call: each call is one editor frame UEFN frees after, and the memory guard
+        # (uefn_memory.metered) refuses the next slice if one grew it by GBs. One call for the whole kit
+        # took UEFN past 100 GB and crashed it.
+        folders = ["City", "Kit", "Kit/Street", "Kit/Facility", "BuildingKit"]
+        out = {"ok": True, "instances": 0, "created": 0, "meshes": 0, "overrides": {}}
+        offset = 0
+        while offset is not None:
+            r = listener("road_network_kit_materials",
+                         {"root": root, "folders": folders, "offset": offset, "limit": 10}, timeout=300)
+            if not r.get("ok"):
+                return {**r, "street_kit": street}
+            out["overrides"].update(r.get("overrides") or {})
+            out["created"] += r.get("created") or 0
+            out["master"] = r.get("master")
+            nxt = r.get("next")
+            offset = None if nxt is None or nxt <= offset else nxt  # no progress: stop rather than loop
+        out["meshes"] = len(out["overrides"])
+        out["instances"] = len({m for v in out["overrides"].values() for m in v if m})
         return {**out, "street_kit": street}
 
     def street_kit_build(root: str, rebuild: bool = False) -> dict:

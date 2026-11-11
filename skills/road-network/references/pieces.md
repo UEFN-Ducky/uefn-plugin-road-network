@@ -176,7 +176,9 @@ the top part's roof is left out):
 - Per kit mesh: `Create Points` nodes (world space, cull off, at most 1500 points each, transform = x, y, z, pitch,
   yaw, scale) -> one `Static Mesh Spawner` with `{"meshSelector": {"meshes": [path], "templateDescriptor":
   {"descriptor": {"overrideMaterials": [MI per slot]}}}}`.
-- Runs `road_network_kit_materials` first (street kit + materials), saved in **one batch**.
+- Runs `road_network_kit_materials` first (street kit + materials): 10 meshes per editor call over WorldGen/City,
+  Kit, Kit/Street, Kit/Facility and BuildingKit, meshes picked from the asset registry (never by loading every asset
+  in a folder: 256 leftover materials there compiled shaders until UEFN passed 100 GB and crashed).
 
 ## 9. Adding a new piece (checklist)
 

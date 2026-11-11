@@ -918,8 +918,39 @@ def road_network_save_assets(paths: list | None = None) -> dict:
     return {"ok": True, "saved": len([a for a in assets if a is not None])}
 
 
+def _self_gb() -> float:
+    """UEFN's own private memory in GB (Windows), 0 when it can't be read."""
+    import ctypes
+    from ctypes import wintypes
+
+    class _C(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)] + [
+            (n, ctypes.c_size_t) for n in ("PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage",
+                                           "QuotaPagedPoolUsage", "QuotaPeakNonPagedPoolUsage",
+                                           "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage",
+                                           "PrivateUsage")]
+    try:
+        c = _C()
+        c.cb = ctypes.sizeof(c)
+        k32 = ctypes.WinDLL("kernel32")
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        ctypes.WinDLL("psapi").GetProcessMemoryInfo(k32.GetCurrentProcess(), ctypes.byref(c), c.cb)
+        return c.PrivateUsage / 2 ** 30
+    except (OSError, AttributeError):
+        return 0.0
+
+
+def _kit_meshes(folder: str) -> list:
+    """Static mesh paths in one folder, read from the asset registry: nothing is loaded. Loading every asset to
+    check its type pulled in 256 leftover materials (each compiling shaders) and took UEFN past 100 GB."""
+    reg = unreal.AssetRegistryHelpers.get_asset_registry()
+    return sorted(f"{a.package_name}.{a.asset_name}" for a in reg.get_assets_by_path(folder, recursive=False)
+                  if str(a.asset_class_path.asset_name) == "StaticMesh")
+
+
 @register("road_network_kit_materials")
-def road_network_kit_materials(root: str = "", folders: list | None = None) -> dict:
+def road_network_kit_materials(root: str = "", folders: list | None = None, offset: int = 0, limit: int = 0,
+                               max_grow_gb: float = 4.0) -> dict:
     """Textured, instance-safe materials for every mesh in the kit folders (WorldGen/City, WorldGen/Kit):
     one MI of M_City_WorldPBR per old flat-colour material (its colour kept as Tint), and per mesh the MI for
     each slot, returned as `overrides` {mesh path: [MI path per slot]} for PCG's material overrides.
@@ -937,46 +968,60 @@ def road_network_kit_materials(root: str = "", folders: list | None = None) -> d
     master = _world_pbr_master(mat_folder, root)
     glass = _glass_master(mat_folder)
     made, created, overrides = {}, [], {}
-    for sub in folders or ["City", "Kit"]:
-        for path in eal.list_assets(f"{root}/WorldGen/{sub}", recursive=False):
-            mesh = eal.load_asset(path)
-            if not isinstance(mesh, unreal.StaticMesh):
+    # ponytail: one flat slice over every folder's meshes; the backend walks it `limit` meshes per call so each
+    # call is its own editor frame and the memory guard sees it. max_grow_gb stops a slice early from inside.
+    paths = [p for sub in folders or ["City", "Kit"] for p in _kit_meshes(f"{root}/WorldGen/{sub}")]
+    total, start_gb = len(paths), _self_gb()
+    end = total if limit <= 0 else min(total, offset + limit)
+    i = offset
+    for i, path in enumerate(paths[offset:end], offset):
+        if start_gb and _self_gb() - start_gb > max_grow_gb:
+            break  # handed back as `next`: the rest waits for the next call, after this frame frees its memory
+        mesh = eal.load_asset(path)
+        if not isinstance(mesh, unreal.StaticMesh):
+            continue
+        per_slot = []
+        for slot in mesh.static_materials:
+            old = slot.material_interface
+            if old is None:
+                per_slot.append("")
                 continue
-            per_slot = []
-            for slot in mesh.static_materials:
-                old = slot.material_interface
-                if old is None:
-                    per_slot.append("")
-                    continue
-                if old.get_path_name().startswith(mat_folder):  # an earlier run already gave it one
-                    per_slot.append(old.get_path_name())
-                    continue
-                key = old.get_name()
-                if key not in made:
-                    mi_path = f"{mat_folder}/MI_City_{key.removeprefix('M_')}"
-                    fresh = not eal.does_asset_exist(mi_path)
-                    mi = tools.create_asset(mi_path.rsplit("/", 1)[1], mat_folder, unreal.MaterialInstanceConstant,
-                                            unreal.MaterialInstanceConstantFactoryNew()) if fresh else eal.load_asset(mi_path)
-                    if "glass" in key.lower() and mi.get_editor_property("parent") != glass:
-                        mel.set_material_instance_parent(mi, glass)  # see-through windows
-                        mel.set_material_instance_vector_parameter_value(mi, "Tint", _old_tint(old))
-                        mel.update_material_instance(mi)
-                        created.append(mi)
-                    elif fresh:
-                        mel.set_material_instance_parent(mi, master)
-                        tex, tile, rough, metal, glow = _look(key)
-                        for ch, pname in (("B", "Base"), ("R", "Rough")):
-                            t = eal.load_asset(_PBR_SET.format(root=root, set=tex, ch=ch))
-                            if t:
-                                mel.set_material_instance_texture_parameter_value(mi, pname, t)
-                        mel.set_material_instance_vector_parameter_value(mi, "Tint", _old_tint(old))
-                        for pname, v in (("TileCm", tile), ("RoughMul", rough), ("Metallic", metal), ("Emissive", glow)):
-                            mel.set_material_instance_scalar_parameter_value(mi, pname, float(v))
-                        mel.update_material_instance(mi)
-                        created.append(mi)
-                    made[key] = mi
-                per_slot.append(made[key].get_path_name())
-            overrides[mesh.get_path_name()] = per_slot
+            if old.get_path_name().startswith(mat_folder):  # an earlier run already gave it one
+                per_slot.append(old.get_path_name())
+                continue
+            key = old.get_name()
+            if key not in made:
+                mi_path = f"{mat_folder}/MI_City_{key.removeprefix('M_')}"
+                fresh = not eal.does_asset_exist(mi_path)
+                mi = tools.create_asset(mi_path.rsplit("/", 1)[1], mat_folder, unreal.MaterialInstanceConstant,
+                                        unreal.MaterialInstanceConstantFactoryNew()) if fresh else eal.load_asset(mi_path)
+                if "glass" in key.lower() and mi.get_editor_property("parent") != glass:
+                    mel.set_material_instance_parent(mi, glass)  # see-through windows
+                    mel.set_material_instance_vector_parameter_value(mi, "Tint", _old_tint(old))
+                    mel.update_material_instance(mi)
+                    created.append(mi)
+                elif fresh:
+                    mel.set_material_instance_parent(mi, master)
+                    tex, tile, rough, metal, glow = _look(key)
+                    for ch, pname in (("B", "Base"), ("R", "Rough")):
+                        t = eal.load_asset(_PBR_SET.format(root=root, set=tex, ch=ch))
+                        if t:
+                            mel.set_material_instance_texture_parameter_value(mi, pname, t)
+                    mel.set_material_instance_vector_parameter_value(mi, "Tint", _old_tint(old))
+                    for pname, v in (("TileCm", tile), ("RoughMul", rough), ("Metallic", metal), ("Emissive", glow)):
+                        mel.set_material_instance_scalar_parameter_value(mi, pname, float(v))
+                    mel.update_material_instance(mi)
+                    created.append(mi)
+                made[key] = mi
+            per_slot.append(made[key].get_path_name())
+        overrides[mesh.get_path_name()] = per_slot
+    else:
+        i = end
     _save_batch(created)
+    try:  # free this slice's loaded meshes before the next call
+        unreal.SystemLibrary.collect_garbage()
+    except AttributeError:
+        pass
     return {"ok": True, "master": master.get_path_name(), "instances": len(made), "created": len(created),
-            "meshes": len(overrides), "overrides": overrides}
+            "meshes": len(overrides), "overrides": overrides, "total": total,
+            "next": i if i < total else None, "grew_gb": round(_self_gb() - start_gb, 1) if start_gb else None}

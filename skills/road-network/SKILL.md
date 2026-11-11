@@ -89,5 +89,9 @@ situation and what to do. Keep it to what you couldn't have known.
   its type was lost on the way to the bake: check the lot still carries it, don't add a mesh by hand.
 - Check a new building type the way the person can see it: assemble it in Blender from the plugin's own bake
   (a cutaway with the roof off) before calling it done. That's how the stairs poking through roofs were found.
+- Big editor jobs go in slices of ~10 per call and pick assets from the asset registry, never `load_asset` on a
+  whole folder: kit_materials loading WorldGen/Kit's 256 leftover materials took UEFN past 100 GB and crashed it.
+- FBX from BuildingKit.blend: rotate −90° about Z, forward X / up Z, FBX_SCALE_NONE, and save the imported
+  materials at once (a crash before the save leaves every slot empty).
 - A piece taller than a storey, or wider than a roof cell, shows up as junk on the roof (machines through
   ceilings, solar arrays overlapping). Keep new interior and roof pieces inside those sizes.
