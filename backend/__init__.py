@@ -687,6 +687,7 @@ def register(api) -> None:
         stats_out = {label: store_actor(nid, label, a, name)["stats"] for label, a in actors.items()}
         # terrain is a big blob (a 160 grid is ~200 KB): one doc, never edited by hand, so it never conflicts
         data.put(f"net.{nid}.scan", {"name": f"{name} / terrain", "props": [], "terrain": ter})
+        freeways = {t["name"]: cg.freeway_report(t, opts) for t in towns}
         for t in towns:
             cslug = slug(t["name"])
             prev = old.get(cslug) or {}
@@ -695,6 +696,7 @@ def register(api) -> None:
                                                  "districts": cg.districts(t, opts),
                                                  # BlockGenerator + neighbourhoods: lots, private streets, parking
                                                  **_layout_doc(cg.city_layout(t, opts)),
+                                                 "freeways": freeways[t["name"]],
                                                  "buildings": prev.get("buildings") or {"downtown": [], "normal": [], "housing": []}})
         doc = data.get(f"net.{nid}")
         doc["generated"] = {"seed": int(seed), "size_km": size / 100000, "relief_m": float(relief_m),
@@ -715,6 +717,10 @@ def register(api) -> None:
         return {"ok": True, "id": nid, "cities": [{"name": t["name"], "style": t["style"], "x": round(t["x"]),
                                                     "y": round(t["y"]), "radius_m": round(t["radius"] / 100)} for t in towns],
                 "actors": stats_out,
+                "freeways": {n: {"interchanges": [i["kind"] for i in r["interchanges"]],
+                                 "validator_ok": r["validation"]["ok"],
+                                 **({} if r["validation"]["ok"] else {"validation": r["validation"]})}
+                             for n, r in freeways.items()},
                 "note": "Preview it in the Road Network panel. For the generated terrain, make the heightmap "
                         "(road_network_heightmap) and import it first, then Import into UEFN." if not base else
                         "Roads follow this network's ground. Import into UEFN when it looks right."}

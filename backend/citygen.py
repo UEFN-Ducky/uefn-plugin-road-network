@@ -56,6 +56,9 @@ CHOICES = {
     # outside the core every other local street line is left out: ~200 m super-blocks that subdivisions and
     # apartment complexes fill with their own private streets (neighbourhoods.py)
     "superblocks": (("yes", "no"), "yes"),
+    # urban freeways through each big city, planned before its blocks (freeways.py): viaducts over the grid,
+    # service interchanges on the main roads, a stack where two freeways cross
+    "freeways": (("yes", "no"), "yes"),
 }
 # steepest grade per road (rise / run): arterials and highways 4 %, collectors 5-6 %, local streets 8 %,
 # dirt 10 % (CityEngine-style targets for a game, not legal limits). Steeper ground is cut and filled.
@@ -79,6 +82,15 @@ RULES = [
     "houses and businesses, a driveway.",
     "Forests grow in dense patches with meadows between, in a belt around each city; parks are dense groves.",
     "PCG is tiled (400 m) and incremental: a change rebuilds only the tiles it touches.",
+    "Urban freeways are planned before a city's blocks (from 600 m radius one north-south, from 2 km a second "
+    "east-west one and a directional stack): mid-block on the city's grid, a viaduct 7.5 m (one level) over the "
+    "streets, which keep running under it; the upper freeway at a stack is level 2, its flyovers levels 3-4.",
+    "Service interchanges only on main roads (collectors, the axes), 800 m+ apart and clear of the stack: a tight "
+    "diamond downtown, a partial cloverleaf in the normal city, a diamond with frontage roads in the suburbs.",
+    "Ramps are Bezier curves checked for curvature: loops >= 45 m radius, ramps >= 150 m, directional >= 120 m; "
+    "ramps <= 6 % grade, freeways <= 4 %; any two roads crossing need 7 m between them (5.5 m clearance + deck).",
+    "A street that a low ramp or an at-grade freeway would cut is removed; no building lot inside a freeway's right "
+    "of way (15 m past its edge). The validator (road_network_generate's freeways report) must come back clean.",
     "One editor call does little (one mesh build, a few junctions, one tile): UEFN frees windows only per frame.",
 ]
 STYLES = ("mixed", "grid", "organic")
@@ -461,7 +473,43 @@ def city_graph(city: dict, opts: dict | None = None) -> tuple:
             todo.extend(adj.get(n, []))
         edges = [e for e in edges if e[0] in seen]
         nodes = {n: p for n, p in nodes.items() if n in seen}
+    fw = freeway_plan(city, o)
+    if fw.lines:  # a street a low ramp or an at-grade freeway would cut gives way (streets pass under viaducts)
+        edges = [e for e in edges if not fw.street_blocked(nodes[e[0]], nodes[e[1]], HALF.get(e[2], 500.0))]
+        used = {n for e in edges for n in e[:2]}
+        nodes = {n: p for n, p in nodes.items() if n in used}
     return nodes, edges
+
+
+_FW_CACHE: dict = {}
+
+
+def freeway_plan(city: dict, opts: dict | None = None):
+    """The city's freeway layer (freeways.plan), cached: city_graph, city_layout and generate all ask for it."""
+    from . import freeways
+    o = options(opts)
+    key = repr((city.get("name"), city["x"], city["y"], city["radius"], city.get("seed"),
+                [o[k] for k in ("freeways", "block_m", "downtown", "normal", "collector_every", "core_roads",
+                                "neighbourhood_roads")]))
+    if key not in _FW_CACHE:
+        if len(_FW_CACHE) > 32:
+            _FW_CACHE.clear()
+        _FW_CACHE[key] = freeways.plan(city, o)
+    return _FW_CACHE[key]
+
+
+def freeway_report(city: dict, opts: dict | None = None) -> dict:
+    """RoadNetworkValidator over the city's freeways, ramps, frontage roads and its streets."""
+    from . import freeways
+    fw = freeway_plan(city, opts)
+    if not fw.lines:
+        return {"interchanges": [], "validation": {"ok": True, "checked": 0}}
+    nodes, edges = city_graph(city, opts)
+    streets = [{"name": f"street {a}-{b}", "cls": "street", "kind": k, "half": HALF.get(k, 500.0),
+                "points": [(*nodes[a][:2], 0.0), (*nodes[b][:2], 0.0)]} for a, b, k, *_ in edges]
+    lines = fw.lines + streets
+    rep = freeways.validate(lines, [(ln["points"], ln["half"]) for ln in lines])
+    return {"interchanges": fw.interchanges, "validation": rep}
 
 
 def sidewalks(nodes: dict, edges: list) -> tuple:
@@ -578,6 +626,7 @@ def city_layout(city: dict, opts: dict | None = None) -> dict:
     o = options(opts)
     nodes, edges = city_graph(city, opts)
     rnd = random.Random(f"lots:{city.get('seed', 1)}")
+    fw = freeway_plan(city, o)
     out = {"lots": [], "streets": [], "parking": [], "stalls": [], "pads": [], "hoods": {}}
     down, normal = o["downtown"], max(o["normal"], o["downtown"])
     for area in parcels.block_areas(nodes, edges, HALF):
@@ -586,6 +635,8 @@ def city_layout(city: dict, opts: dict | None = None) -> dict:
         ring = "core" if share <= down else "normal" if share <= normal else "housing"
         _, _, _, _, L, W = parcels._obb(area)
         kind = nb.pick(ring, rnd) if ring != "core" and min(L, W) >= nb.MIN_SIDE else "parcels"
+        if fw.lines and fw.blocked(cx, cy, 0.5 * max(L, W)):
+            kind = "parcels"  # a block the freeway cuts gets plain lots, the ones clear of it kept
         out["hoods"][kind] = out["hoods"].get(kind, 0) + 1
         if kind == "parcels":
             out["lots"] += [[x, y, yaw, w, d, fx, fy, "", False]
@@ -594,6 +645,10 @@ def city_layout(city: dict, opts: dict | None = None) -> dict:
         g = nb.generate(area, kind, rnd)
         for key in ("lots", "streets", "parking", "stalls", "pads"):
             out[key] += g[key]
+    if fw.lines:  # right of way: nothing built under or beside a freeway or ramp
+        out["lots"] = [r for r in out["lots"] if not fw.blocked(r[0], r[1], 0.5 * max(r[3], r[4]))]
+        for key in ("parking", "stalls", "pads"):
+            out[key] = [r for r in out[key] if not fw.blocked(r[0], r[1])]
     return out
 
 
@@ -927,6 +982,10 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
         gone = {n for n, p in nodes.items() if in_keep(keep, p[0], p[1], 2000)}
         edges[:] = [e for e in edges if e[0] not in gone and e[1] not in gone]
     out = {f"{c['name']} Roads": build_actor(n, e, ground, folder) for c, (n, e) in zip(cities, graphs)}
+    for c in cities:  # the urban freeway layer: its own actor, so a change to it never re-pastes the streets
+        fw = freeway_plan(c, o)
+        if fw.edges:
+            out[f"{c['name']} Freeways"] = build_actor(fw.nodes, fw.edges, ground, folder)
     if hw_edges:
         out["Highways"] = build_actor(hw_nodes, hw_edges, ground, folder, pieces)
     return out
@@ -1104,7 +1163,32 @@ def _demo() -> None:
               {"name": "E", "x": 150000, "y": 0, "radius": 30000, "style": "grid", "seed": 2}]
     hw = generate(across, lambda x, y: 0.0, "/Game/X/Roads", seed=3, opts={"interchange": "direct"}, keep=keep)["Highways"]
     assert not any(in_keep(keep, p["x"], p["y"], 2000) for p in hw["points"]), "the highway goes round the cinema"
-    print("citygen ok", {k: len(v["segments"]) for k, v in actors.items()})
+    # freeways: a big city gets two urban freeways, a stack and service interchanges, planned before its blocks;
+    # the validator is clean, no lot sits in the right of way, streets still run under the viaducts
+    mid = {"name": "Mid", "x": 0, "y": 0, "radius": 120000, "seed": 7, "style": "mixed"}
+    mk = [i["kind"] for i in freeway_plan(mid).interchanges]
+    assert mk and "stack" not in mk and freeway_report(mid)["validation"]["ok"], mk
+    big = {"name": "Metro", "x": 0, "y": 0, "radius": 220000, "seed": 7, "style": "mixed"}
+    fw = freeway_plan(big)
+    kinds = [i["kind"] for i in fw.interchanges]
+    assert "stack" in kinds and {"diamond", "parclo"} & set(kinds), kinds
+    rep = freeway_report(big)
+    assert rep["validation"]["ok"], {k: v for k, v in rep["validation"].items() if v}
+    lay = city_layout(big)
+    assert lay["lots"] and not any(fw.blocked(r[0], r[1], 0.5 * max(r[3], r[4])) for r in lay["lots"])
+    gn, ge = city_graph(big)
+    under = sum(1 for a, b, _ in ge if fw.street_blocked(gn[a], gn[b], 0) is False and
+                any(_seg_cross(gn[a], gn[b], ln["points"][k][:2], ln["points"][k + 1][:2]) is not None
+                    for ln in fw.lines if ln["cls"] == "freeway" for k in range(len(ln["points"]) - 1)))
+    assert under > 10, under
+    world = generate([big], lambda x, y: 0.0, "/Game/X/Roads", seed=3)
+    fa = world["Metro Freeways"]
+    assert {"SM_Elev_Deck20m", "SM_Elev_Ramp20m"} <= {s["mesh"] for s in fa["segments"]}
+    assert max(p["z"] for p in fa["points"]) >= 4 * 750 - 1, "flyovers on level 4"
+    small = {"name": "Town", "x": 0, "y": 0, "radius": 40000, "seed": 7}
+    assert not freeway_plan(small).lines and "Town Freeways" not in generate([small], lambda x, y: 0.0, "/G", seed=1)
+    assert not freeway_plan(big, {"freeways": "no"}).lines
+    print("citygen ok", {k: len(v["segments"]) for k, v in actors.items()}, "metro interchanges", kinds)
 
 
 if __name__ == "__main__":

@@ -26,8 +26,10 @@ STAGES = [
      "consumes": ["terrain"], "produces": "per city: district rings, grid orientation, lot density",
      "code": "citygen.place_cities, districts, orientation"},
     {"id": "roads", "name": "RoadGenerator", "parts": ["RoadGraph", "Intersections", "RoadProfiles"],
-     "consumes": ["terrain", "planner"], "produces": "'<City> Roads' + 'Highways' spline actors (graded)",
-     "code": "citygen.city_graph (planned grid, hierarchy), generate (highways, interchanges), GRADE + drape"},
+     "consumes": ["terrain", "planner"],
+     "produces": "'<City> Freeways' (planned first) + '<City> Roads' + 'Highways' spline actors (graded)",
+     "code": "freeways.plan (HighwayNetworkPlanner, interchanges, ramps, frontage roads, validate), "
+             "citygen.city_graph (planned grid, hierarchy), generate (highways, interchanges), GRADE + drape"},
     {"id": "road_meshes", "name": "RoadMeshGenerator", "parts": ["Asphalt", "Curbs", "Intersections"],
      "consumes": ["roads", "sidewalks"], "produces": "junction meshes SM_JK_*, roads and paths pasted into UEFN",
      "editor": True,

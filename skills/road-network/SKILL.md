@@ -165,6 +165,28 @@ public roads ('<City> Roads'), private access ('<City> Access': PR private stree
 Beziers garage -> kerb, double for wide houses), pedestrians ('<City> Paths': sidewalks, walkways). Built-in
 site layers (preview + Push city): Complex parking, Parking stalls, Turnarounds, Parking garages.
 
+## Freeways and interchanges (`backend/freeways.py`, option `freeways`)
+Three layers on one road graph: regional (`Highways`, city to city), urban freeways (`<City> Freeways`, planned
+BEFORE the blocks) and local streets (`<City> Roads`). Per city, `freeways.plan`:
+- **Mainlines:** from 600 m radius a north-south freeway on the city grid, mid-block at the edge of downtown
+  (never on a street); from 2 km radius an east-west one too, and a **directional stack** where they cross.
+- **Levels from clearance, not offsets:** `LEVEL_CM` 7.5 m (5.5 m vehicles + deck). Streets level 0, freeway
+  viaduct level 1 over the whole city (streets keep running under it, ED deck mesh), back to grade outside it at 4 %.
+  At a stack the north-south freeway is level 2 and the left-turn flyovers are levels 3 and 4.
+- **Service interchanges:** only on main roads (collectors, axes), at least 800 m apart and clear of the stack.
+  Downtown gets a tight diamond (ramps between the freeway and the next parallel street), the normal city a
+  partial cloverleaf (`parclo`: 2 loops + 2 diamond ramps), the suburbs a diamond whose ramps meet frontage roads
+  (FR, on the parallel street). `interchange()` also builds a full `cloverleaf` (4 loops + 4 outer connectors) and
+  a `trumpet`.
+- **Ramps (RampGenerator):** cubic Beziers leaving tangent to the freeway edge. Curvature
+  κ(t) = |x'y'' − y'x''| / (x'² + y'²)^1.5 and a 3-point radius check: loops ≥ 45 m, ramps ≥ 150 m, directional
+  ≥ 120 m. Height runs smoothly between the two roads; flyovers hold their level within 500 m of the stack.
+- **Right of way:** a street that a low ramp (< 7 m lift) or an at-grade freeway would cut is removed, and no lot,
+  stall or pad lies within 15 m of a freeway or ramp edge (`Plan.blocked`).
+- **RoadNetworkValidator** (`freeways.validate`, run by `road_network_generate` → `freeways` per city): plan
+  crossings with less than 7 m between them, radius and grade per class, and ramp ends that touch no road. It must
+  come back clean. Never hand-place a ramp; change the plan and regenerate.
+
 ## How a city is generated (the math, in order)
 Roads define the city, blocks are what roads enclose, lots are cut from blocks, buildings fit lots.
 1. **Planned grid** (`citygen.city_graph`): one orientation per city; intersections on a block grid (`block_m`
