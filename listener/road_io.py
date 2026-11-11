@@ -665,6 +665,32 @@ def road_network_street_kit(root: str = "", rebuild: bool = False, plan: bool = 
             "paths": [a.get_path_name().split(".")[0] for a in assets]}
 
 
+@register("road_network_ism_ready")
+def road_network_ism_ready(meshes: list | None = None) -> dict:
+    """Make the materials of these meshes usable on instanced meshes (PCG spawns instances; a material without
+    the usage draws the grey checker). Only the base Material gets the flag (a shader recompile); the meshes
+    are never touched. Materials outside the project (Fortnite /Game) can't be changed and are listed."""
+    fixed, locked, missing = [], [], []
+    for path in meshes or []:
+        mesh = unreal.load_asset(path.split(".")[0])
+        if not isinstance(mesh, unreal.StaticMesh):
+            missing.append(path)
+            continue
+        for slot in mesh.static_materials:
+            mat = slot.material_interface
+            base = mat.get_base_material() if mat else None
+            if base is None or base in fixed or base.get_editor_property("used_with_instanced_static_meshes"):
+                continue
+            if base.get_path_name().startswith("/Game/"):
+                locked.append(base.get_path_name())
+                continue
+            base.set_editor_property("used_with_instanced_static_meshes", True)
+            unreal.MaterialEditingLibrary.recompile_material(base)
+            fixed.append(base)
+    _save_batch(fixed)
+    return {"ok": True, "fixed": [m.get_name() for m in fixed], "locked": sorted(set(locked)), "missing": missing}
+
+
 @register("road_network_save_assets")
 def road_network_save_assets(paths: list | None = None) -> dict:
     """Save these assets in ONE save_packages batch (its own editor frame, one progress window)."""

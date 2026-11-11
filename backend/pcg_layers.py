@@ -873,7 +873,7 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
         if len(pts) > shown_cap:
             pts = rnd.sample(pts, shown_cap)
         out[layer["name"]] = {"kind": layer["kind"], "role": layer["role"], "count": count, "shown": len(pts), "points": pts,
-                              "radius_cm": round(r_base),
+                              "radius_cm": round(r_base), "meshes": layer["meshes"],
                               **({"size_m": [layer["width_m"], layer["depth_m"]], "setback_m": layer["setback_m"],
                                   "forms": FORM_NAMES, "driveway": layer["driveway"], "walkway": layer["walkway"],
                                   "row": "x, y, pad z, yaw, scale, height_m, form, width_m, depth_m, foundation_m, "

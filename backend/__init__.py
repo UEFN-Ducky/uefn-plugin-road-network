@@ -821,7 +821,12 @@ def register(api) -> None:
             return {"ok": False, "error": f"No road network {net_id!r}."}
         items = sorted(({"id": k, **pl.clean(v)} for k, v in layer_docs(nid).items()), key=lambda l: (l["order"], l["name"]))
         return {"ok": True, "id": nid, "items": items, "count": len(items),
-                "kinds": list(pl.KINDS), "where": list(pl.WHERE),
+                "kinds": list(pl.KINDS), "where": list(pl.WHERE), "roles": list(pl.ROLES),
+                "fields": {k: {"default": d, "min": lo, "max": hi} for k, (d, lo, hi) in pl.NUMBERS.items()},
+                "example": {"name": "Flower beds", "kind": "scatter", "where": "housing", "density": 0.5,
+                            "cover": 0.4, "meshes": [{"path": "/<your folder>/SM_Tulips", "weight": 3},
+                                                     {"path": "/<your folder>/SM_Roses", "weight": 1}],
+                            "scale_min": 0.8, "scale_max": 1.3, "sink_cm": 5, "avoid": ["Houses"], "order": 20},
                 "note": "" if items else "No layers yet: road_network_pcg_preset adds a starter set."}
 
     def pcg_layer_save(net_id: str = "", layer: str = "", layer_id: str = "") -> dict:
@@ -1059,6 +1064,16 @@ def register(api) -> None:
         mats = kit_materials(nid) if build else None  # instance-safe textured materials first, or the grey checker
         if mats is not None and not mats.get("ok"):
             return {"ok": False, "error": f"Kit materials: {mats.get('error')}"}
+        # the person's own layers: their meshes' materials need the instanced-mesh usage too (10 meshes per call)
+        own = kit_bake.own_meshes(got.get("layers") or {}) if build else []
+        own_report = {"fixed": [], "locked": [], "missing": []}
+        for k in range(0, len(own), 10):
+            r = listener("road_network_ism_ready", {"meshes": own[k:k + 10]}, timeout=300)
+            for key in own_report:
+                own_report[key] += r.get(key) or []
+        if own_report["missing"]:
+            return {"ok": False, "error": f"These layer meshes aren't in the project: {own_report['missing'][:10]}. "
+                                          f"Fix the layer's meshes (Content Browser path) and push again."}
         legacy_removed = legacy_pcg_cleanup(nid, root, name, tag) if not state["tiles"] else []
 
         def drop(key: str) -> None:
@@ -1136,6 +1151,8 @@ def register(api) -> None:
         return {"ok": True, "id": nid, "built_tiles": done, "removed_tiles": remove, "unchanged_tiles": len(same),
                 "legacy_removed": legacy_removed, "nodes": nodes, "meshes": len(groups), "built": baked,
                 "no_kit_piece": missing, "messages": messages[:20], "memory": uefn_memory.report(5)["worst"],
+                "own_meshes": {"count": len(own), "materials_fixed": own_report["fixed"],
+                               "materials_locked": own_report["locked"]},
                 "note": "One volume per 400 m tile, Generate On Demand (the level never rebuilds them on load). Edit "
                         "the plan and build again: only changed tiles rebuild. Foliage layers stay for painting; "
                         "layers in no_kit_piece have no mesh in the kit yet."}
@@ -1395,16 +1412,22 @@ def register(api) -> None:
 
     @api.tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_layers(net_id: str = "") -> dict:
-        """A world's PCG placement layers (trees, rocks, grass, street trees, lamps, houses...): what each
-        places, where (outside cities, a district ring, everywhere), how dense, and what it keeps clear of."""
+        """A world's PCG placement layers (trees, bushes, rocks, street pieces, buildings, and any the person or an
+        AI added): what each places, where, how dense, what it keeps clear of. Also `fields` (every setting with
+        its default / min / max), `kinds`, `where`, `roles` and an `example` custom layer: everything needed to
+        write a new layer with road_network_pcg_layer_save, no plugin code involved."""
         return safe(pcg_layers)(net_id)
 
     @api.tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_layer_save(net_id: str = "", layer: str = "", layer_id: str = "") -> dict:
-        """Create or change one PCG layer. layer: JSON {name, kind (scatter | along_roads | buildings), where
-        (outside | cities | downtown | normal | housing | everywhere), meshes [{path, weight}], density (per 100 m2),
-        spacing_m, setback_m, scale_min, scale_max, sink_cm, footprint (bounds scale for pruning), road_clear_m,
-        avoid_roads, avoid [layer names placed earlier], self_prune, upright, random_yaw, collision, seed, order, enabled}."""
+        """Create or change one PCG layer (the person's own or an AI's: layers are data, never plugin code).
+        layer: JSON {name, kind (scatter | foliage | along_roads | at_junctions | buildings), where (outside |
+        cities | downtown | normal | housing | industrial | everywhere), meshes [{path, weight}] (Content Browser
+        paths: a layer WITH meshes places exactly those, weighted; without, the kit piece for its role), density
+        (per 100 m2), cover (forest share), reach (city radii), spacing_m, setback_m, scale_min, scale_max,
+        sink_cm, footprint, road_clear_m, avoid_roads, avoid [earlier layer names], self_prune, upright,
+        random_yaw, collision, seed, order, enabled}. Ranges: road_network_pcg_layers `fields`. Preview with
+        road_network_pcg_preview, then Push city (road_network_pcg_build) builds only the changed tiles."""
         return safe(pcg_layer_save)(net_id, layer, layer_id)
 
     @api.tool(intent=PCG_INTENT, listener=False)

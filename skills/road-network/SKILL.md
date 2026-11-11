@@ -173,6 +173,21 @@ as team docs (chunks of 1000).
 
 ## PCG placement layers
 
+### Your own layers (person or AI, no plugin code)
+Layers are data (`net.<nid>.pcg.<layer>` docs), so anyone extends the city without touching the plugin:
+1. `road_network_pcg_layers(net_id)` -> current layers plus `fields` (every setting, default/min/max), `kinds`,
+   `where`, `roles` and an `example` layer.
+2. `road_network_pcg_layer_save(net_id, layer='{...}')` with `meshes: [{path, weight}]` (Content Browser paths,
+   `/Mount/Folder/SM_Name` is enough). A layer WITH meshes places exactly those (weighted, stable per spot);
+   without meshes it uses the kit piece for its `role`. Panel: Placement layers > Add layer, then Meshes > Add.
+3. `road_network_pcg_preview(net_id, layer_id)` to check the count and spots in the 3D view.
+4. Push city (`road_network_pcg_build(net_id, confirm=true)`): only tiles the new layer touches are rebuilt.
+   Before the build, `road_network_ism_ready` gives the layer meshes' base materials the instanced-mesh
+   usage (project materials only; Fortnite `/Game` materials are listed as `materials_locked`).
+Example: Flower beds in the suburbs: `{"name": "Flower beds", "kind": "scatter", "where": "housing",
+"density": 0.5, "cover": 0.4, "meshes": [{"path": "/MyIsland/Garden/SM_Tulips", "weight": 3}],
+"avoid": ["Houses"], "order": 20}`.
+
 - `road_network_pcg_preset(net_id, preset="full_city")` adds starter layers (meshes empty): nature (Trees, Rocks,
   Bushes and grass), every building type (Skyscrapers and Office blocks downtown; Hospitals and schools, Apartments
   and Shops in the normal ring; Factories and Warehouses in each city's industrial wedge; Gas stations; Houses in

@@ -184,7 +184,10 @@ def bake(previewed: dict, root: str) -> tuple:
     for name, layer in previewed.items():
         role = layer.get("role")
         pts = layer.get("points") or []
-        if layer.get("kind") == "buildings" and role == "park":
+        if layer.get("meshes"):  # the person's / an AI's own layer: exactly its meshes, never a guessed kit role
+            _own(groups, layer["meshes"], pts)
+            baked[name] = len(pts)
+        elif layer.get("kind") == "buildings" and role == "park":
             trees = 0
             for p in pts:
                 trees += _grove(groups, root, p)
@@ -316,6 +319,35 @@ def _interior(groups: dict, root: str, parts: list, furniture: str, x, y, z, yaw
                 put(furniture, cu + u, cv + v, h + 15, round(turn, 1), [1.0, 1.0, 1.0])
 
 
+def object_path(path: str) -> str:
+    """'/Game/Props/SM_Bench' -> '/Game/Props/SM_Bench.SM_Bench' (Static Mesh Spawner wants the object path)."""
+    path = str(path).strip().strip("'").split("'")[-1] if "'" in str(path) else str(path).strip()
+    tail = path.rsplit("/", 1)[-1]
+    return path if "." in tail else f"{path}.{tail}"
+
+
+def _own(groups: dict, meshes: list, pts: list) -> None:
+    """Points of a layer with its own meshes: a weighted pick per point (stable for its position), the point's
+    yaw and scale as the preview placed it (random yaw, scale range, sink: the layer's settings)."""
+    paths = [object_path(m["path"] if isinstance(m, dict) else m) for m in meshes]
+    weights = [float(m.get("weight", 1)) if isinstance(m, dict) else 1.0 for m in meshes]
+    total = sum(weights) or 1.0
+    for p in pts:
+        roll = (abs(int(p[0]) * 73856093 ^ int(p[1]) * 19349663) % 10000) / 10000 * total
+        k = 0
+        while k < len(paths) - 1 and roll >= weights[k]:
+            roll -= weights[k]
+            k += 1
+        s = p[4] if len(p) > 4 else 1.0
+        groups.setdefault(paths[k], []).append([p[0], p[1], p[2], p[3], s, s, s])
+
+
+def own_meshes(previewed: dict) -> list:
+    """Every mesh the person's own layers use (their materials need the instanced-mesh usage for PCG)."""
+    return sorted({object_path(m["path"] if isinstance(m, dict) else m)
+                   for layer in previewed.values() for m in layer.get("meshes") or []})
+
+
 def _grove(groups: dict, root: str, p: list) -> int:
     """A park lot filled with trees on a jittered grid (deterministic per lot), plus a path across it."""
     x, y, z, yaw = p[0], p[1], p[2], p[3]
@@ -390,6 +422,13 @@ def _demo() -> None:
     gb, bb, mb = bake({"Bushes": {"kind": "foliage", "role": "bush", "points": [[1, 1, 0, 0, 1.2]]},
                        "Rocks": {"kind": "foliage", "role": "rock", "points": [[2, 2, 0, 0, 0.9]]}}, "/R")
     assert path("SM_Kit_Bush", "/R") in gb and path("SM_Kit_Rock", "/R") in gb and not mb, "bushes and rocks are PCG layers too"
+    # a layer of the person's own meshes: exactly those meshes, by weight, whatever its guessed role
+    mine = {"Flower beds": {"kind": "scatter", "role": "street_lamp", "points": [[i * 997, i * 613, 0, 10, 1.1] for i in range(400)],
+                            "meshes": [{"path": "/Game/Garden/SM_Tulips", "weight": 3}, {"path": "/Game/Garden/SM_Roses.SM_Roses", "weight": 1}]}}
+    go, bo, mo = bake(mine, "/R")
+    assert set(go) == {"/Game/Garden/SM_Tulips.SM_Tulips", "/Game/Garden/SM_Roses.SM_Roses"} and bo == {"Flower beds": 400} and not mo, go.keys()
+    assert 2.0 < len(go["/Game/Garden/SM_Tulips.SM_Tulips"]) / len(go["/Game/Garden/SM_Roses.SM_Roses"]) < 4.5, "weights hold"
+    assert own_meshes(mine) == sorted(go)
     park = {"Parks": {"kind": "buildings", "role": "park", "points": [[0, 0, 0, 0, 1, 0, 0, 40, 40, 0, []]]}}
     g3, b3, _ = bake(park, "/R")
     trees = sum(len(v) for k, v in g3.items() if "SM_V4_Tree" in k)
