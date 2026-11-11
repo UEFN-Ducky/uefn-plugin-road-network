@@ -107,6 +107,25 @@ at its corners' mean height (cut and fill) and `foundation_m` (plinth depth wher
 rows add `foundation_m, paths`. The generated heightmap (road_network_heightmap) has the pads cut in; an
 existing terrain is never edited, so there the foundations and paths do the work.
 
+## The pipeline (separate systems, `backend/pipeline.py`, tool `road_network_pipeline`)
+```text
+CityGenerator
+  TerrainAnalyzer      Heightmap, SlopeMap, ObstacleMap          terrain scan, slope shares, keep zones, water
+  UrbanPlanner         Districts, RoadOrientation, Density       rings, grid angle, lots per city
+  RoadGenerator        RoadGraph, Intersections, RoadProfiles    '<City> Roads' / 'Highways' (graded)
+  BlockGenerator       BuildingParcels                           lots from blocks
+  FoundationGenerator  BuildingPads, CutAndFill, RetainingWalls  pads, plinths, walls
+  BuildingGenerator    Footprints, Buildings, Entrances          PCG layers -> kit meshes -> 400 m tiles
+  SidewalkGenerator    PedestrianPaths, Corners, FrontageConn.   '<City> Paths' spline actor
+  RoadMeshGenerator    Asphalt, Curbs, Intersections             junction meshes + paste (UEFN, Push roads)
+```
+`road_network_pipeline(net_id)` shows every stage's state; `run_from=<stage>, confirm=true` re-runs that stage and
+everything downstream only (`buildings` keeps the roads, `sidewalks` rebuilds only the paths actor).
+Sidewalks, walkways and driveways are SPLINES (road types `SW` 3.8 m, `WK` 1.6 m, `DW` 3.5 m; meshes
+`SM_Path_*_10m` in WorldGen/Roads, built by the street kit): live like roads, graded (8 %, 8 %, 15 %), so they bend
+and cut / fill the ground. Every city street whose mesh has no sidewalk (`6L`, `1W`) gets one both sides. Only
+the wide frontage aprons (plazas) stay PCG slabs. PCG never lines street furniture up on the Paths actor.
+
 ## How a city is generated (the math, in order)
 Roads define the city, blocks are what roads enclose, lots are cut from blocks, buildings fit lots.
 1. **Planned grid** (`citygen.city_graph`): one orientation per city; intersections on a block grid (`block_m`

@@ -24,6 +24,7 @@ from . import citygen as cg
 from . import kit_bake
 from . import pcg_layers as pl
 from . import pieces
+from . import pipeline
 from . import splines_text as st
 from . import uefn_input
 from . import uefn_memory
@@ -702,6 +703,8 @@ def register(api) -> None:
         api.search.upsert(f"net.{nid}", name, f"Generated world {name}: cities " + ", ".join(t["name"] for t in towns))
         if not layer_docs(nid):  # a new world comes with every layer a city needs: generate -> push, nothing else
             pcg_preset(nid, "full_city")
+        paths = sidewalks_stage(nid)  # SidewalkGenerator: sidewalks, walkways, driveways as spline actors
+        stats_out.update((paths.get("actors") or {}) if paths.get("ok") else {})
         record("road_network_generate", "network", nid, before,
                [] if before else [{"command": "road_network_delete", "params": {"net_id": nid}}])
         push({"what": "network", "id": nid})
@@ -918,8 +921,9 @@ def register(api) -> None:
     def world_actors(nid: str) -> list:
         actors = []
         for aslug, head in actor_docs(nid).items():
-            if " before kit" in str(head.get("label") or ""):
-                continue  # a saved backup, not a road in the level
+            label = str(head.get("label") or "")
+            if " before kit" in label or label.endswith(" Paths"):
+                continue  # a saved backup, or the sidewalks / walkways / driveways: not streets PCG lines up on
             _, pts, segs = load_actor(nid, aslug)
             actors.append((pts, segs))
         return actors
@@ -1010,6 +1014,103 @@ def register(api) -> None:
         return {"ok": not errors, "made": [p.rsplit("/", 1)[-1] for p in made], "errors": errors}
 
     BAKE_CHUNK = 1500  # points per Create Points node: keeps each node's settings a sensible size
+
+    # ---------------------------------------------------------------- the pipeline (backend/pipeline.py)
+    def sidewalks_stage(nid: str) -> dict:
+        """SidewalkGenerator: each city's '<City> Paths' spline actor (missing sidewalks + every walkway and
+        driveway of the previewed lots), stored like a road actor so Push roads pastes it when it changed."""
+        doc = data.get(f"net.{nid}") or {}
+        opts = (doc.get("generated") or {}).get("options")
+        ter = (data.get(f"net.{nid}.scan") or {}).get("terrain") or {}
+        ground = (lambda x, y: st.sample_grid(ter, x, y) or 0.0) if ter.get("heights") else (lambda x, y: 0.0)
+        folder = road_folder()
+        towns = list(city_docs(nid).values())
+        if not towns or "/WorldGen/Roads" not in folder:
+            return {"ok": False, "error": "No generated cities or road folder yet."}
+        got = pcg_preview(nid)
+        rows_by: dict = {t["name"]: [] for t in towns}
+        for layer in (got.get("layers") or {}).values():
+            if layer.get("kind") != "buildings":
+                continue
+            for r in layer.get("points") or []:
+                t = min(towns, key=lambda c: (c["x"] - r[0]) ** 2 + (c["y"] - r[1]) ** 2)
+                rows_by[t["name"]].append(r)
+        out = {}
+        for t in towns:
+            actor = cg.paths_actor(t, opts, rows_by[t["name"]], ground, folder)
+            if not actor["segments"]:
+                continue
+            label = f"{t['name']} Paths"
+            out[label] = store_actor(nid, label, actor, doc.get("name") or nid)["stats"]
+        doc = data.get(f"net.{nid}") or {}
+        doc["actors"] = sorted(set(doc.get("actors") or []) | set(out))
+        data.put(f"net.{nid}", doc)
+        push({"what": "network", "id": nid})
+        return {"ok": True, "actors": out}
+
+    def pipeline_run(net_id: str = "", run_from: str = "", confirm: bool = False) -> dict:
+        """Status of every stage, or (run_from) re-run that stage and everything downstream, offline."""
+        nid = slug(net_id)
+        doc = data.get(f"net.{nid}") if nid else None
+        if not doc:
+            return {"ok": False, "error": f"No road network {net_id!r}."}
+        towns = list(city_docs(nid).values())
+        ter = (data.get(f"net.{nid}.scan") or {}).get("terrain") or {}
+        gen = doc.get("generated") or {}
+        ran, notes = [], []
+        todo = pipeline.after(run_from) if run_from else []
+        if run_from and not todo:
+            return {"ok": False, "error": f"Unknown stage {run_from!r}: one of {pipeline.ORDER}."}
+        if todo and not confirm:
+            return {"ok": False, "error": f"This re-runs {', '.join(todo)} for {doc.get('name')}. Call again with "
+                                          f"confirm=true.", "stages": todo}
+        for stage in todo:
+            if stage in ("terrain", "planner", "roads", "blocks"):
+                if "roads" in ran:
+                    continue
+                if not gen:
+                    return {"ok": False, "error": "Only generated worlds can re-run their roads."}
+                r = generate(doc.get("name") or nid, gen.get("seed", 7), "", gen.get("size_km", 6), gen.get("relief_m", 60),
+                             gen.get("ground_from") or nid, "", *(gen.get("center") or [0, 0]), "")
+                if not r.get("ok"):
+                    return r
+                ran += ["terrain", "planner", "roads", "blocks"]
+            elif stage in ("foundations", "buildings"):
+                _PREVIEW_CACHE.clear()
+                ran.append(stage)
+            elif stage == "sidewalks":
+                r = sidewalks_stage(nid)
+                ran.append(stage)
+                if not r.get("ok"):
+                    notes.append(r.get("error"))
+            elif stage == "road_meshes":
+                notes.append("RoadMeshGenerator runs in UEFN: Push roads (only changed actors are pasted).")
+        towns = list(city_docs(nid).values())
+        doc = data.get(f"net.{nid}") or doc  # the stages may have changed it (new actors, new cities)
+        got = pcg_preview(nid, summary=True) if towns else {}
+        counts = got.get("counts") or {}
+        stages = []
+        for s in pipeline.STAGES:
+            info: dict = {}
+            if s["id"] == "terrain":
+                info = {"grid": ter.get("grid"), "slope": pipeline.slope_map(ter), "keep_zones": len(gen.get("keep") or []),
+                        "water_level_cm": ter.get("sea")}
+            elif s["id"] == "planner":
+                info = {"cities": [{"name": t["name"], "style": t.get("style"), "radius_m": round(t["radius"] / 100),
+                                    "orientation_deg": round(cg.orientation(t), 1),
+                                    "districts": {k: v.get("radius") for k, v in (t.get("districts") or {}).items()}}
+                                   for t in towns]}
+            elif s["id"] == "roads":
+                info = {"actors": [a for a in doc.get("actors") or [] if not a.endswith(" Paths")]}
+            elif s["id"] == "sidewalks":
+                info = {"actors": [a for a in doc.get("actors") or [] if a.endswith(" Paths")]}
+            elif s["id"] == "blocks":
+                info = {"lots": {t["name"]: len(t.get("lots") or []) for t in towns}}
+            elif s["id"] in ("foundations", "buildings"):
+                info = {"placed": sum(v for k, v in counts.items()), "layers": len(counts)}
+            stages.append({**s, "ran": s["id"] in ran, "status": info})
+        return {"ok": True, "id": nid, "ran": ran, "notes": notes, "stages": stages,
+                "tree": "CityGenerator\n" + "\n".join(f"  {s['name']}: {', '.join(s['parts'])}" for s in pipeline.STAGES)}
 
     def legacy_pcg_cleanup(nid: str, root: str, name: str, tag: str) -> list:
         """Before the first tiled build: the whole-world (1.11) and whole-city (1.15) volumes and graphs of this
@@ -1380,6 +1481,17 @@ def register(api) -> None:
                 "highway": list(cg.HIGHWAYS), "styles": list(cg.STYLES), "rules": cg.RULES}
 
     @api.tool(intent=GEN_INTENT, listener=False)
+    def road_network_pipeline(net_id: str = "", run_from: str = "", confirm: bool = False) -> dict:
+        """The city as separate systems, each consuming the one before (backend/pipeline.py): TerrainAnalyzer
+        (heightmap, slope map, obstacles) -> UrbanPlanner (districts, orientation, density) -> RoadGenerator
+        (graph, intersections, graded profiles) -> BlockGenerator (lots) -> FoundationGenerator (pads, cut/fill,
+        retaining walls) -> BuildingGenerator (footprints, buildings, entrances) -> SidewalkGenerator (sidewalks,
+        walkways, driveways as splines) -> RoadMeshGenerator (junction meshes + paste, in UEFN: Push roads).
+        Without run_from: each stage's status. run_from=<stage id> (+confirm) re-runs it and everything
+        downstream, never what came before (e.g. 'buildings' keeps the roads, 'sidewalks' only the paths)."""
+        return safe(pipeline_run)(net_id, run_from, confirm)
+
+    @api.tool(intent=GEN_INTENT, listener=False)
     def road_network_piece_manifest(check: bool = False) -> dict:
         """Every mesh a City Builder city is made of, with the spec to model it in Blender: name, folder, size
         in cm, pivot / facing / material-slot conventions, what places it (building role, layer, interior,
@@ -1432,6 +1544,7 @@ def register(api) -> None:
     api.register_panel_rpc("city_save", lambda net_id="", city="", name="", style="", radius_m=0.0, buildings="":
                            safe(save_city)(net_id, city, name, style, radius_m, buildings))
     api.register_panel_rpc("heightmap", lambda net_id="": safe(heightmap)(net_id))
+    api.register_panel_rpc("pipeline", lambda net_id="", run_from="", confirm=False: safe(pipeline_run)(net_id, run_from, confirm))
     api.register_panel_rpc("import_all", lambda net_id="", confirm=False, force=False: safe(import_all)(net_id, confirm, force))
 
     PCG_INTENT = r"\b(pcg|procedural|scatter|placement layers?|foliage|trees|rocks|street (trees|lamps))\b"

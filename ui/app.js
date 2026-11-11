@@ -54,6 +54,9 @@ const FAMILY = [
   [/Elev_Deck/, 1650, "purple", "Elevated deck"],
   [/Elev_Ramp/, 650, "yellow", "Flyover ramp"],
   [/Bridge/, 925, "red", "Bridge"],
+  [/Path_Sidewalk/, 190, "fg", "Sidewalk"],
+  [/Path_Walkway/, 80, "fg-dim", "Walkway"],
+  [/Path_Driveway/, 175, "fg-dim", "Driveway"],
 ];
 function family(mesh) {
   for (const f of FAMILY) if (f[0].test(mesh)) return f;
@@ -478,7 +481,15 @@ function drawLotGround(layer) {
   const dummy = new THREE.Object3D();
   const found = [], walks = [];
   for (const p of layer.points || []) {
-    const [x, y, z, yaw, , , , w, d, depth, paths] = p;
+    const [x, y, z, yaw, , , , w, d, depth, paths, walls] = p;
+    for (const [wx, wy, wyaw, len, hgt] of walls || []) {  // retaining walls on uphill cuts
+      dummy.position.copy(toV(wx, wy, z));
+      dummy.position.y += hgt * zx / 2;
+      dummy.rotation.set(0, -wyaw * Math.PI / 180, 0);
+      dummy.scale.set(len, hgt * zx, 0.3);
+      dummy.updateMatrix();
+      found.push(dummy.matrix.clone());
+    }
     if (depth > 0.3) {
       dummy.position.copy(toV(x, y, z - depth * 50));
       dummy.rotation.set(0, -yaw * Math.PI / 180, 0);
@@ -487,6 +498,7 @@ function drawLotGround(layer) {
       found.push(dummy.matrix.clone());
     }
     for (const [width, flat] of paths || []) {
+      if (width <= 4) continue;  // walkways / driveways are drawn as the city's Paths spline actor
       for (let i = 3; i + 2 < flat.length; i += 3) {
         const a = toV(flat[i - 3], flat[i - 2], flat[i - 1] + 15), b = toV(flat[i], flat[i + 1], flat[i + 2] + 15);
         dummy.position.copy(a).add(b).multiplyScalar(0.5);

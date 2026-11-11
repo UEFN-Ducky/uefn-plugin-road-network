@@ -581,6 +581,13 @@ _STREET_KIT = {
     "SM_Kit_SofaSet": (["Fabric", "Wood"], [("box", 0, (0, 0, 0), (0, 0, 0), (90, 200, 42)),
                                             ("box", 0, (-40, 0, 42), (0, 0, 0), (20, 200, 43)),
                                             ("box", 1, (90, 0, 0), (0, 0, 0), (60, 100, 38))]),
+    # spline meshes for the '<City> Paths' actor (third item: folder under WorldGen): 10 m along +X in 10
+    # sections so they bend, walking surface at z 0, widths = the spline widths (SW 3.8, WK 1.6, DW 3.5 m)
+    "SM_Path_Sidewalk_10m": (["Pavers", "Plinth"], [("slab", 0, (500, 0, -15), (0, 0, 0), (1000, 380, 15, 10)),
+                                                    ("slab", 1, (500, -185, -15), (0, 0, 0), (1000, 10, 17, 10))],
+                             "Roads"),
+    "SM_Path_Walkway_10m": (["Pavers"], [("slab", 0, (500, 0, -10), (0, 0, 0), (1000, 160, 10, 10))], "Roads"),
+    "SM_Path_Driveway_10m": (["Asphalt"], [("slab", 0, (500, 0, -12), (0, 0, 0), (1000, 350, 12, 10))], "Roads"),
     # retaining wall for an uphill lot edge: 1 m long, 30 cm thick, 1 m tall, scaled to the edge and the cut
     "SM_Kit_RetainingWall": (["Plinth"], [("box", 0, (0, 0, 0), (0, 0, 0), (100, 30, 100))]),
     # nature for the Bushes / Rocks PCG layers: low-poly lumps (instanced by the hundred thousand)
@@ -612,8 +619,9 @@ def road_network_street_kit(root: str = "", rebuild: bool = False, plan: bool = 
             eal.make_directory(f)
     # only the pieces that aren't there yet (rebuild=true remakes all): remaking and saving all of them
     # on every PCG build kept UEFN busy for minutes
+    where = {n: (f"{root}/WorldGen/{v[2]}" if len(v) > 2 else folder) for n, v in _STREET_KIT.items()}
     todo = {n: v for n, v in _STREET_KIT.items()
-            if (only is None or n in only) and (rebuild or not eal.does_asset_exist(f"{folder}/{n}"))}
+            if (only is None or n in only) and (rebuild or not eal.does_asset_exist(f"{where[n]}/{n}"))}
     if plan:
         return {"ok": True, "todo": list(todo)}
     if not todo:
@@ -625,7 +633,7 @@ def road_network_street_kit(root: str = "", rebuild: bool = False, plan: bool = 
     gp = unreal.GeometryScript_Primitives
     base = unreal.GeometryScriptPrimitiveOriginMode.BASE
     made, errors = [], []
-    for name, (mats, parts) in todo.items():
+    for name, (mats, parts, *_f) in todo.items():
         try:
             dm = unreal.DynamicMesh()
             unreal.GeometryScript_Materials.enable_material_i_ds(dm)
@@ -636,12 +644,15 @@ def road_network_street_kit(root: str = "", rebuild: bool = False, plan: bool = 
                                      unreal.Vector(1, 1, 1))
                 if kind == "box":
                     gp.append_box(dm, o, t, dimension_x=dims[0], dimension_y=dims[1], dimension_z=dims[2], origin=base)
+                elif kind == "slab":  # a box cut into sections along X, so a spline mesh bends smoothly
+                    gp.append_box(dm, o, t, dimension_x=dims[0], dimension_y=dims[1], dimension_z=dims[2],
+                                  steps_x=int(dims[3]), origin=base)
                 elif kind == "sph":  # radius, latitude steps, longitude steps (few: a low-poly lump)
                     gp.append_sphere_lat_long(dm, o, t, radius=dims[0], steps_phi=int(dims[1]), steps_theta=int(dims[2]),
                                               origin=base)
                 else:
                     gp.append_cylinder(dm, o, t, radius=dims[0], height=dims[1], radial_steps=int(dims[2]), origin=base)
-            path = f"{folder}/{name}"
+            path = f"{where[name]}/{name}"
             sm = eal.load_asset(path) if eal.does_asset_exist(path) else None
             if sm is None:
                 res = unreal.GeometryScript_NewAssetUtils.create_new_static_mesh_asset_from_mesh(

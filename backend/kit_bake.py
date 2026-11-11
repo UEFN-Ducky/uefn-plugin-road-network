@@ -393,7 +393,9 @@ def _ground_pieces(groups: dict, root: str, p: list, x, y, z, yaw, w, d) -> None
         groups.setdefault(path("SM_Kit_RetainingWall", root), []).append(
             [wx, wy, z, wyaw, round(length, 2), 1.0, round(height + 0.2, 2)])
     for width, flat in (p[10] if len(p) > 10 else []):
-        for i in range(3, len(flat) - 2, 3):
+        if width <= 4.0:
+            continue  # walkways and driveways are splines in the city's Paths actor (citygen.paths_actor)
+        for i in range(3, len(flat) - 2, 3):  # a frontage apron (plaza) is a slab
             ax, ay, az, bx, by, bz = flat[i - 3], flat[i - 2], flat[i - 1], flat[i], flat[i + 1], flat[i + 2]
             run = math.hypot(bx - ax, by - ay)
             if run < 50:
@@ -422,8 +424,11 @@ def _demo() -> None:
     g2, _, _ = bake(hill, "/R")
     plinth = g2[path("SM_Kit_Plinth", "/R")][0]
     assert plinth[4:7] == [12.0, 12.0, 2.1], plinth
-    slab = g2[path("SM_Kit_PathSlab", "/R")][0]
-    assert slab[4] == 5.0 and slab[5] == 1.6 and slab[7] < -15, slab
+    assert path("SM_Kit_PathSlab", "/R") not in g2, "a walkway is a spline now, not a slab"
+    plaza = {"Shops": {"kind": "buildings", "role": "shop",
+                       "points": [[0, 0, 500, 0, 1, 7, 0, 12, 12, 0, [[10.8, [600, 0, 500, 1100, 0, 350]]]]]}}
+    slab = bake(plaza, "/R")[0][path("SM_Kit_PathSlab", "/R")][0]
+    assert slab[4] == 5.0 and slab[5] == 10.8 and slab[7] < -15, slab
     walled = {"Houses": {"kind": "buildings", "role": "house",
                          "points": [[0, 0, 500, 0, 1, 7, 0, 12, 12, 0, [], [[-600, 0, 90.0, 12, 1.8]]]]}}
     wall = bake(walled, "/R")[0][path("SM_Kit_RetainingWall", "/R")][0]

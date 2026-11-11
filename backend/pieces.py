@@ -71,7 +71,8 @@ def manifest(root: str = "/<project>") -> dict:
         length = 2000 if "20m" in mesh else 4000 if "40m" in mesh else 1000
         pieces.append({"name": mesh.rsplit("/", 1)[-1], "folder": "WorldGen/Roads" + ("/Elevated" if "/" in mesh else ""),
                        "size_cm": [length, round(half * 2), 30], "used_by": [f"road {code}: {what}"],
-                       "made_by": "Blender road kit",
+                       "made_by": "City Builder (street kit; a Blender model with this name replaces it)"
+                                  if code in ("SW", "WK", "DW") else "Blender road kit",
                        "spec": f"{lanes} lanes{', kerb + sidewalk both sides' if walk else ''}; deck top at z 0, "
                                f"centre line on X, slot Asphalt (+ Curb, Sidewalk); bends as a spline mesh, so "
                                f"enough length loops (every 100 cm)"})

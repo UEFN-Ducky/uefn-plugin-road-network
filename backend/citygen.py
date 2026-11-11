@@ -29,7 +29,13 @@ ROAD_TYPES = {
     "BRR": ("SM_Road_Bridge_Ramp40m", 925.0, 2, False, "bridge ramp"),
     "ED": ("Elevated/SM_Elev_Deck20m", 1650.0, 4, False, "elevated deck"),
     "ER": ("Elevated/SM_Elev_Ramp20m", 650.0, 1, False, "elevated ramp"),
+    # pedestrian and access splines (the '<City> Paths' actor): live like roads, so they bend, keep a grade
+    # and cut / fill the ground. City Builder builds these three meshes itself (street kit).
+    "SW": ("SM_Path_Sidewalk_10m", 190.0, 0, True, "sidewalk (1.8 m clear path + frontage + furniture strip)"),
+    "WK": ("SM_Path_Walkway_10m", 80.0, 0, True, "walkway from a door to the sidewalk"),
+    "DW": ("SM_Path_Driveway_10m", 175.0, 0, False, "driveway from a garage to the street"),
 }
+NO_SIDEWALK = ("6L", "1W")  # city roads whose mesh has no sidewalk: the sidewalk generator adds them
 ROAD_MESH = {k: v[0] for k, v in ROAD_TYPES.items()}
 HALF = {k: v[1] for k, v in ROAD_TYPES.items()}
 LOOP_PIECE = "SM_Road_Loop_Big"  # trumpet loop (point piece)
@@ -46,7 +52,8 @@ CHOICES = {
 }
 # steepest grade per road (rise / run): arterials and highways 4 %, collectors 5-6 %, local streets 8 %,
 # dirt 10 % (CityEngine-style targets for a game, not legal limits). Steeper ground is cut and filled.
-GRADE = {"6L": 0.04, "4L": 0.05, "2S": 0.06, "2L": 0.08, "1W": 0.08, "DT": 0.10}
+GRADE = {"6L": 0.04, "4L": 0.05, "2S": 0.06, "2L": 0.08, "1W": 0.08, "DT": 0.10,
+         "SW": 0.08, "WK": 0.08, "DW": 0.15}  # walkways at ramp grade (8.3 %), driveways up to 15 %
 BRIDGE_LIFT_CM = 750.0  # clearance a highway rises to over a street it crosses (a real freeway overpass: 7.5 m)
 
 # How City Builder designs a world. Code follows these; an AI building with the plugin follows them too
@@ -350,6 +357,11 @@ def zone_share(city: dict, x: float, y: float) -> float:
     return math.hypot(dx, dy) / (city["radius"] * outline(city, math.degrees(math.atan2(dy, dx))))
 
 
+def orientation(city: dict) -> float:
+    """RoadOrientation: the city's grid angle in degrees (the first draw of city_graph's seeded random)."""
+    return math.degrees(random.Random(city.get("seed", 1)).uniform(0, math.pi / 2))
+
+
 def city_graph(city: dict, opts: dict | None = None) -> tuple:
     """Street network of one city: nodes {key: [x, y]}, edges [(a, b, kind)]. Real cities mix patterns
     (urban-design transect): a strict grid of short blocks in the core, a looser grid in the
@@ -434,6 +446,52 @@ def city_graph(city: dict, opts: dict | None = None) -> tuple:
         edges = [e for e in edges if e[0] in seen]
         nodes = {n: p for n, p in nodes.items() if n in seen}
     return nodes, edges
+
+
+def sidewalks(nodes: dict, edges: list) -> tuple:
+    """SidewalkGenerator, pedestrian corridors: a sidewalk spline on both sides of every city street whose
+    mesh has none (NO_SIDEWALK), offset by the road's half width + half the sidewalk, stopping at the
+    junction mouths. Returns (nodes, edges) to merge into a Paths actor."""
+    out_n, out_e = {}, []
+    for a, b, kind, *_ in edges:
+        if kind not in NO_SIDEWALK or a not in nodes or b not in nodes:
+            continue
+        (ax, ay), (bx, by) = nodes[a][:2], nodes[b][:2]
+        L = math.hypot(bx - ax, by - ay)
+        if L < 2 * MOUTH_CM + 500:
+            continue
+        ux, uy = (bx - ax) / L, (by - ay) / L
+        off = HALF[kind] + HALF["SW"]
+        for side in (1, -1):
+            nx, ny = -uy * off * side, ux * off * side
+            k0, k1 = ("sw", a, b, side, 0), ("sw", a, b, side, 1)
+            out_n[k0] = [ax + ux * MOUTH_CM + nx, ay + uy * MOUTH_CM + ny]
+            out_n[k1] = [bx - ux * MOUTH_CM + nx, by - uy * MOUTH_CM + ny]
+            out_e.append([k0, k1, "SW"])
+    return out_n, out_e
+
+
+def paths_graph(rows: list) -> tuple:
+    """FrontageConnections: every walkway / driveway of the previewed lots ([.., paths [[width_m, flat xyz]]])
+    as a spline edge (WK / DW). Wide frontage aprons (plazas) stay slabs, not splines."""
+    nodes, edges = {}, []
+    for k, row in enumerate(rows):
+        for j, (width, flat) in enumerate(row[10] if len(row) > 10 else []):
+            if width > 4.0 or len(flat) < 6:
+                continue
+            pts = [flat[i:i + 2] for i in range(0, len(flat) - 2, 3)]
+            a, b = ("p", k, j, 0), ("p", k, j, 1)
+            nodes[a], nodes[b] = list(pts[0]), list(pts[-1])
+            edges.append([a, b, "DW" if width >= 3.0 else "WK", [list(p) for p in pts[1:-1]]])
+    return nodes, edges
+
+
+def paths_actor(city: dict, opts: dict | None, rows: list, ground, folder: str) -> dict:
+    """The city's '<City> Paths' spline actor: its missing sidewalks plus every walkway and driveway."""
+    cn, ce = city_graph(city, opts)
+    sn, se = sidewalks(cn, ce)
+    pn, pe = paths_graph(rows)
+    return build_actor({**sn, **pn}, se + pe, ground, folder)
 
 
 LOT_W_CM, LOT_D_CM = 1600.0, 3500.0  # a lot: 16 m frontage, up to 35 m deep (two back to back in a block)
@@ -807,6 +865,14 @@ def _demo() -> None:
         run = math.hypot(a["x"] - b["x"], a["y"] - b["y"])
         if a["raise"] and b["raise"] and run > 0:
             assert abs(a["z"] - b["z"]) <= GRADE["2L"] * run + 2, (abs(a["z"] - b["z"]) / run)
+    # SidewalkGenerator: a 6-lane boulevard gets a sidewalk spline on both sides; lot paths become splines
+    sn, se = sidewalks({0: [0, 0], 1: [10000, 0]}, [[0, 1, "6L"]])
+    assert len(se) == 2 and all(abs(abs(p[1]) - (HALF["6L"] + HALF["SW"])) < 1 for p in sn.values())
+    rows = [[0, 0, 0, 0, 1, 7, 0, 12, 12, 0, [[1.6, [600, 0, 0, 1600, 0, 0]], [3.5, [600, -400, 0, 1000, -600, 0, 1600, -400, 0]],
+                                            [18.0, [600, 0, 0, 1600, 0, 0]]], []]]
+    pa = paths_actor({"x": 0, "y": 0, "radius": 1, "seed": 1}, None, rows, lambda x, y: 0.0, "/Game/X/WorldGen/Roads")
+    meshes = {s["mesh"] for s in pa["segments"]}
+    assert "SM_Path_Walkway_10m" in meshes and "SM_Path_Driveway_10m" in meshes, meshes
     # rule: one city alone gets no highway and so no interchange
     solo = generate(cities[:1], lambda x, y: 0.0, "/Game/X/WorldGen/Roads", seed=3, opts={"interchange": "cloverleaf"})
     assert "Highways" not in solo, "no stand-alone highway or cloverleaf"
