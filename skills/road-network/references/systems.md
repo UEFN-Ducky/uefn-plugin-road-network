@@ -320,6 +320,40 @@ Supporting pieces: substation, yard fire station and fuel tanks.
 - **Results:** `road_network_waterfront` returns each city's `shipyards` (type, docks, site size,
   production-flow distances, validator).
 
+## Airports (`backend/airport.py`, options `airports`, `military_base`, `wind_deg`)
+Airports are planned at world level **before the streets** (`citygen.plan_airports`).
+
+| Type | City size | What it gets |
+|---|---|---|
+| general_aviation | 2k+ people | 900 m runway (RS), FBO, T-hangars, light aircraft, fuel |
+| regional | 20k+ | 1.8 km runway (RW), linear terminal with 8 gates, cargo, maintenance, tower |
+| international | 120k+ (one per world) | 2 parallel 3 km runways, pier terminal with 24 gates, cargo district, hotel, train station |
+| military | `military_base: yes` | shelters, hangars, command, perimeter fence |
+
+- **AirportSitePlanner:** samples candidate sites on a ring outside the city, with runways turned to wind_deg
+  ±15°. Each site is scored on grading (deviation from level) and must be dry, inside the map, clear of keep
+  zones and outside every city. The terminal side faces the city.
+- **Airside (`<City> Airport` actor):** RW / RS runways split at every connector, a TW parallel taxiway, 90° end
+  connectors, 30° rapid exits and holding positions, forming one connected graph with junction pieces where the
+  edges meet. The actor is laid at one level so the landscape spline grades the airfield.
+- **Stands first, then the terminal:** linear (gates along one face), pier (concourses into the apron, gates on
+  both sides), FBO. Aircraft sit on every stand, with jet bridges and ground support vehicles.
+- **Support:** cargo district (apron, freight terminal, cold storage and customs, truck yard, ULDs), maintenance
+  hangars, engine shop, GSE depot, fire and rescue station at midfield on the taxiway, control tower, radar,
+  operations centre, catering, fuel farm, substation, windsock, edge and approach lights, thresholds.
+- **Landside (`<City> Airport Roads`):** departures on a deck above (ED), arrivals at grade, a loop, parking
+  garages, a surface lot, rental cars, a hotel, and an access road to the nearest city street. Cargo trucks have
+  their own road and never use the passenger curb.
+- **Land use:** no city street inside the airport. In the noise zone (an ellipse round the runways) homes are
+  dropped and plain parcels become warehouses.
+- **Validator:** one connected taxiway graph, each runway reached by at least 2 connectors, every stand on the
+  apron next to the taxiway, nothing tall in a runway's object-free area or approach, no water under a runway,
+  cargo kept off the curb, and the landside connected to the city.
+- **`road_network_airports(net_id)`** returns each airport's type, heading, grading, facilities, links, noise zone
+  and validator result. The panel's city card shows the same.
+
+Sizes are game approximations of FAA AC 150/5300-13B and 150/5360-13A, not certified designs.
+
 ## Generate again, any time
 Regenerating is never blocked. A world on scanned ground keeps using that ground. The header badge
 (`road_network_sync`) says whether UEFN is behind this world: road actors changed or never pushed, and

@@ -31,6 +31,7 @@ from . import splines_text as st
 from . import uefn_input
 from . import uefn_memory
 from . import waterfront
+from . import airport
 
 CHUNK = 1000
 
@@ -656,7 +657,8 @@ def register(api) -> None:
     def _layout_doc(layout: dict) -> dict:
         return {"lots": layout["lots"], "hoods": layout["hoods"], "plan": layout.get("plan"),
                 "waterfront": layout.get("waterfront"),
-                "private": {k: layout.get(k) or [] for k in ("streets", "parking", "stalls", "pads", "grounds", "water")}}
+                "private": {k: layout.get(k) or [] for k in ("streets", "parking", "stalls", "pads", "grounds", "water",
+                                                             "airport")}}
 
     CHUNK_ROWS = 6000  # a city's private pieces (parking, stalls, grounds, waterfront) go in docs of this many rows
 
@@ -749,7 +751,11 @@ def register(api) -> None:
         bridges: list = []
         water = waterfront.analyze(ter)  # ShorelineAnalyzer: waterbodies and shorelines for the planner
         cg.plan_shipyards(towns, water, opts)  # shipyards are districts: planned before the streets
-        actors = cg.generate(towns, road_ground, folder, int(seed), opts, keep, wet, bridges)
+        # airports too: site (flat, dry, into the wind, outside the cities), then the streets keep clear of them
+        airports = cg.plan_airports(towns, lambda x, y: st.sample_grid(ter, x, y), wet, keep,
+                                    (tuple(ter["min"]), tuple(ter["max"])), opts) if ter.get("heights") else []
+        airport_builds: dict = {}
+        actors = cg.generate(towns, road_ground, folder, int(seed), opts, keep, wet, bridges, airports, airport_builds)
         before = data.get(f"net.{nid}")
         saved = save_network(nid, name, "", "live")
         if not saved.get("ok"):
@@ -773,16 +779,29 @@ def register(api) -> None:
                                        "towers": waterfront.towers(bridges, lambda x, y: st.sample_grid(ter, x, y),
                                                                    water["sea"])})
         freeways = {t["name"]: cg.freeway_report(t, opts) for t in towns}
+        summary = [{"label": label, "city": a["city"], "type": a["type"], "heading": a["heading"],
+                    "center": a["center"], "grading_m": a.get("grading_m"), "facilities": got["facilities"],
+                    "links": got["links"], "noise_zone": got["noise_zone"], "report": got["report"]}
+                   for a, (label, got) in zip(airports, airport_builds.items())]
+        data.put(f"net.{nid}.airports", {"name": f"{name} / airports", "items": summary})
         for t in towns:
             cslug = slug(t["name"])
             prev = old.get(cslug) or {}
             api.search.upsert(f"net.{nid}.city.{cslug}", t["name"], f"City {t['name']} in world {name}: {t['style']} roads")
+            layout = cg.city_layout(t, opts, wet, lambda x, y: st.sample_grid(ter, x, y),
+                                    ((prev.get("plan") or {}).get("facilities")), water)
+            layout["airport"] = []
+            for a, got in zip(airports, airport_builds.values()):  # the city's airport: its buildings and pieces
+                if a["city"] == t["name"]:
+                    layout["lots"] += got["lots"]
+                    layout["parking"] += got["parking"]
+                    layout["stalls"] += got["stalls"]
+                    layout["airport"] += got["rows"]
             put_city(nid, cslug, {**t, "name": t["name"], "roads": f"{t['name']} Roads",
                                                  "districts": cg.districts(t, opts),
                                                  # BlockGenerator + neighbourhoods: lots, private streets, parking
-                                                 **_layout_doc(cg.city_layout(
-                                                     t, opts, wet, lambda x, y: st.sample_grid(ter, x, y),
-                                                     ((prev.get("plan") or {}).get("facilities")), water)),
+                                                 **_layout_doc(layout),
+                                                 "airport": next((s for s in summary if s["city"] == t["name"]), None),
                                                  "freeways": freeways[t["name"]],
                                                  "buildings": prev.get("buildings") or {"downtown": [], "normal": [], "housing": []}})
         doc = data.get(f"net.{nid}")
@@ -1086,6 +1105,8 @@ def register(api) -> None:
             placed.update(pl.site_layers(cities, ground))  # complexes' parking, stalls, turnarounds, garages
             # waterfront structures (piers, marinas, quays, beaches, ports, stilt / floating homes) + bridge pylons
             placed.update(waterfront.layers(cities, (data.get(f"net.{nid}.water") or {}).get("towers")))
+            # airports: aircraft, jet bridges, hangars, tower, lights, aprons, fuel farm
+            placed.update(airport.layers([r for c in cities for r in (c.get("private") or {}).get("airport") or []]))
             _PREVIEW_CACHE.update(key=key, out=placed)
         out = _PREVIEW_CACHE["out"]
         if layer_id == "road-walls":  # the built-in layers the plan never lists: walls and neighbourhood sites
@@ -1740,6 +1761,24 @@ def register(api) -> None:
             if not facilities:
                 p.pop("facilities", None)
             return {"ok": True, "city": doc["name"], **p}
+        return safe(run)()
+
+    @api.tool(intent=GEN_INTENT, listener=False)
+    def road_network_airports(net_id: str = "") -> dict:
+        """The airports of a generated world (airport.py): per airport its type (general_aviation / regional /
+        international / military), city, runway heading (into the wind_deg option), grading, every facility it
+        got (terminal, piers, cargo, hangars, fire station, tower, fuel farm, parking, hotel, ...), its access and
+        cargo roads to the city, its noise zone, and the validator (connected taxiways, reachable stands, clear
+        runways and approaches, separate cargo trucks, no water under a runway). Change airports by option
+        (airports, military_base, wind_deg) and generate again; never by hand."""
+        def run():
+            nid = slug(net_id)
+            if not nid or not data.get(f"net.{nid}"):
+                return {"ok": False, "error": f"No road network {net_id!r}."}
+            doc = data.get(f"net.{nid}.airports") or {}
+            return {"ok": True, "id": nid, "airports": doc.get("items") or [],
+                    "note": "" if doc.get("items") else "No airport: the cities are too small, the land around them "
+                                                          "too steep or wet, or airports is set to none."}
         return safe(run)()
 
     @api.tool(intent=GEN_INTENT, listener=False)

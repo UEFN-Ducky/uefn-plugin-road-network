@@ -168,6 +168,20 @@ KIT = {
     "SM_Kit_OffshoreJacket": ("Kit/Street", -1000, -1000, 0, 1000, 1000, 6000),
     "SM_Kit_ScrapPile": ("Kit/Street", -800, -800, 0, 800, 800, 500),
     "SM_Kit_Gatehouse": ("Kit/Street", -400, -300, 0, 400, 300, 400),
+    # airports (airport.py)
+    "SM_Air_Airliner": ("Kit/Street", -2000, -1800, 0, 2000, 1800, 1200),
+    "SM_Air_SmallPlane": ("Kit/Street", -450, -550, 0, 450, 550, 300),
+    "SM_Air_JetBridge": ("Kit/Street", -1500, -200, 0, 1500, 200, 600),
+    "SM_Air_Hangar": ("Kit/Street", -3000, -2500, 0, 3000, 2500, 2200),
+    "SM_Air_Shelter": ("Kit/Street", -1500, -2000, 0, 1500, 2000, 1200),
+    "SM_Air_ControlTower": ("Kit/Street", -600, -600, 0, 600, 600, 4500),
+    "SM_Air_Radar": ("Kit/Street", -400, -400, 0, 400, 400, 1400),
+    "SM_Air_Windsock": ("Kit/Street", -50, -200, 0, 50, 200, 600),
+    "SM_Air_EdgeLight": ("Kit/Street", -20, -20, 0, 20, 20, 50),
+    "SM_Air_ApproachBar": ("Kit/Street", -50, -1500, 0, 50, 1500, 200),
+    "SM_Air_Threshold": ("Kit/Street", -1500, -2250, 0, 1500, 2250, 5),
+    "SM_Air_HoldSign": ("Kit/Street", -20, -150, 0, 20, 150, 150),
+    "SM_Air_GSE": ("Kit/Street", -300, -150, 0, 300, 150, 250),
 }
 
 

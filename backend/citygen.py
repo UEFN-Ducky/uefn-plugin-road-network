@@ -36,6 +36,11 @@ ROAD_TYPES = {
     # a shipyard's graving dry dock (the '<City> Docks' actor): floor + 12 m walls, laid at the dock floor so the
     # landscape spline digs the basin into the shore (shipyard.py)
     "DK": ("SM_Water_DryDock_10m", 2000.0, 0, False, "graving dry dock: 40 m basin, 12 m deep, walls and walkways"),
+    # airfields (the '<City> Airport' actor, airport.py): graded flat by the landscape spline, junction pieces
+    # where taxiways meet runways
+    "RW": ("SM_Air_Runway_20m", 2250.0, 0, False, "runway: 45 m with shoulders, centre line, edge stripes"),
+    "RS": ("SM_Air_RunwaySmall_20m", 900.0, 0, False, "small runway (general aviation): 18 m"),
+    "TW": ("SM_Air_Taxiway_10m", 1150.0, 0, False, "taxiway: 23 m with shoulders, yellow centre line"),
     # pedestrian and access splines (the '<City> Paths' actor): live like roads, so they bend, keep a grade
     # and cut / fill the ground. City Builder builds these three meshes itself (street kit).
     "SW": ("SM_Path_Sidewalk_10m", 190.0, 0, True, "sidewalk (1.8 m clear path + frontage + furniture strip)"),
@@ -76,12 +81,17 @@ CHOICES = {
     # shipyard.py: commercial / naval / offshore / repair / yacht yards, fishing industry and ship recycling on
     # suitable deep industrial shore, as dedicated districts with dry docks, halls and cranes
     "shipyards": (("auto", "none"), "auto"),
+    # airport.py: an airport per city by population (general aviation / regional / international), planned before
+    # its streets; a military airbase on request
+    "airports": (("auto", "none"), "auto"),
+    "military_base": (("no", "yes"), "no"),
 }
 # steepest grade per road (rise / run): arterials and highways 4 %, collectors 5-6 %, local streets 8 %,
 # dirt 10 % (CityEngine-style targets for a game, not legal limits). Steeper ground is cut and filled.
 GRADE = {"6L": 0.04, "4L": 0.05, "2S": 0.06, "2L": 0.08, "1W": 0.08, "DT": 0.10,
          "SW": 0.08, "WK": 0.08, "DW": 0.15, "PR": 0.10, "DD": 0.15, "FR": 0.08,
-         "CN": 0.01, "DK": 0.01}  # canals and dry docks: nearly level (locks are not modelled)
+         "CN": 0.01, "DK": 0.01,  # canals and dry docks: nearly level (locks are not modelled)
+         "RW": 0.01, "RS": 0.015, "TW": 0.015}  # runways and taxiways: FAA-like longitudinal grades
 CANAL_DEPTH_CM = 300.0  # walkways at ramp grade (8.3 %), driveways up to 15 %
 BRIDGE_LIFT_CM = 750.0  # clearance a highway rises to over a street it crosses (a real freeway overpass: 7.5 m)
 
@@ -127,6 +137,10 @@ RULES = [
     "the water, the stretch and the city size; the campus runs inland -> water as steel storage, fabrication, "
     "assembly, docks / slipways, outfitting quay; administration at the back; open hardstand stays open; no city "
     "street or lot inside; dry docks are DK splines that dig their basin; the launch basin stays clear.",
+    "Airports are planned before the streets (airport.py): type from the city's size, the site flat, dry and "
+    "outside every city, runways turned into the prevailing wind; stands before the terminal; one connected "
+    "taxiway graph; nothing tall near a runway or in its approach; no homes in the noise zone (industry instead); "
+    "cargo trucks on their own road, never on the passenger curb.",
     "Bridges are typed by the water they span: canal arches (3 m clearance), beam (7.5 m), navigable girder "
     "(15 m), cable-stayed (30 m) and suspension (45 m) with pylons; ramps keep the road's grade.",
     "One editor call does little (one mesh build, a few junctions, one tile): UEFN frees windows only per frame.",
@@ -163,6 +177,7 @@ OPTIONS = {
     "downtown": (0.4, 0.1, 0.8),       # downtown ring, share of the radius
     "normal": (0.75, 0.2, 0.95),       # normal-city ring; housing beyond it
     "highway_curve": (0.08, 0.0, 0.3), # how far a highway bows out, share of its length
+    "wind_deg": (240.0, 0.0, 360.0),   # prevailing wind (degrees, map yaw): runways are turned into it
 }
 HIGHWAYS = CHOICES["highway"][0]
 
@@ -503,6 +518,18 @@ def zoning(city: dict, opts: dict | None = None) -> tuple:
     return ring_of, industrial
 
 
+def plan_airports(cities: list, ground, wet, keep: list | None, bounds: tuple, opts: dict | None = None) -> list:
+    """AirportSitePlanner for the world, before the streets: sets city['airports'] (every airport: streets and
+    homes keep clear of all of them) and returns the airports."""
+    from . import airport
+    o = options(opts)
+    pops = {c["name"]: round(math.pi * (c["radius"] / 100000) ** 2 * 4800) for c in cities}
+    aps = airport.plan_world(cities, ground, wet, keep, bounds, o, pops)
+    for c in cities:
+        c["airports"] = aps
+    return aps
+
+
 def plan_shipyards(cities: list, water: dict, opts: dict | None = None) -> None:
     """ShipyardPlanner for every city, before its streets: sets city['shipyards'] (campuses + their docks)."""
     from . import shipyard
@@ -641,9 +668,11 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
         used = {n for e in edges for n in e[:2]}
         nodes = {n: p for n, p in nodes.items() if n in used}
     yards = city.get("shipyards") or []
-    if yards:  # a shipyard is a dedicated district with its own roads: no city street runs through it
-        from . import shipyard
-        drop = {n for n, p in nodes.items() if any(shipyard.inside(y, p[0], p[1], -2000) for y in yards)}
+    fields = city.get("airports") or []
+    if yards or fields:  # shipyards and airports are dedicated districts with their own roads
+        from . import airport, shipyard
+        drop = {n for n, p in nodes.items() if any(shipyard.inside(y, p[0], p[1], -2000) for y in yards)
+                or any(airport.inside(a, p[0], p[1], 3000) for a in fields)}
         edges = [e for e in edges if e[0] not in drop and e[1] not in drop]
         used = {n for e in edges for n in e[:2]}
         nodes = {n: p for n, p in nodes.items() if n in used}
@@ -981,6 +1010,17 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
         for key in ("lots", "parking", "stalls", "pads"):
             out[key] = [r for r in out[key] if not wet(r[0], r[1])]
         out["streets"] = [s for s in out["streets"] if not any(wet(p[0], p[1]) for p in s)]
+    if city.get("airports"):  # FAA land-use compatibility: no homes in an airport's noise zone, industry instead
+        from . import airport
+        noisy = lambda x, y: any(airport.in_noise(a, x, y) or airport.inside(a, x, y, 2000) for a in city["airports"])
+        kept = []
+        for r in out["lots"]:
+            if not noisy(r[0], r[1]):
+                kept.append(r)
+            elif not (len(r) > 7 and r[7] in ("house", "apartment", "mansion")) and not (len(r) > 8 and r[8] is True):
+                kept.append(r[:7] + ["warehouse", False])  # a plain parcel: logistics and light industry
+        out["lots"] = kept
+        out["streets"] = [s for s in out["streets"] if not any(noisy(p[0], p[1]) for p in s)]
     out["grounds"], out["plan"], out["water"], out["waterfront"] = [], None, [], None
     ring_of, industrial = zoning(city, o)
     if o["waterfront"] == "yes" and water and water.get("sea") is not None and ground:
@@ -1246,7 +1286,8 @@ def interchange(kind: str, end: list, toward: list, tag: tuple, hw: str) -> tupl
 
 
 def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None = None, keep: list | None = None,
-             wet=None, bridges: list | None = None) -> dict:
+             wet=None, bridges: list | None = None, airports: list | None = None,
+             airport_builds: dict | None = None) -> dict:
     """{label: {points, segments}}: one '<City> Roads' actor per city and one 'Highways' actor.
     A highway ends 40 m outside its city's gate street, where the city's own stub road ends; there it
     meets the city through the chosen interchange (direct, a trumpet loop, a cloverleaf piece, or a
@@ -1335,6 +1376,21 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
     if wet or any(canal_lines(c, o) for c in cities):  # cross roads added after city_graph bridge or stop too
         graphs = [over_water(n, e, water_of(c, o, wet), bridges=bridges) for c, (n, e) in zip(cities, graphs)]
     out = {f"{c['name']} Roads": build_actor(n, e, ground, folder) for c, (n, e) in zip(cities, graphs)}
+    for ap in airports or []:  # airports: the airside graph (runways + taxiways) and the landside roads
+        from . import airport
+        city_nodes = next((n for c, (n, _e) in zip(cities, graphs) if c["name"] == ap["city"]), {})
+        city_nodes = {k: v for k, v in city_nodes.items() if isinstance(k, tuple) and len(k) == 2}
+        got = airport.build(ap, ground, city_nodes, wet)
+        an, ae = got["airside"]
+        level = ap.get("level_cm")
+        flat = (lambda x, y, z=level: z) if level is not None else ground  # an airfield is graded level
+        label = f"{ap['city']} Airport" if ap["type"] != "military" else f"{ap['city']} Airbase"
+        out[label] = build_actor(an, ae, flat, folder)
+        rn, re_ = got["landside"]
+        if re_:
+            out[f"{label} Roads"] = build_actor(rn, re_, ground, folder)
+        if airport_builds is not None:
+            airport_builds[label] = got
     for c in cities:  # graving docks: laid at the dock floor so the spline digs the basin
         if c.get("shipyards"):
             from . import shipyard
@@ -1623,6 +1679,22 @@ def _demo() -> None:
     walks = paths_actor(venice, co, [], lambda x, y: 0.0, "/Game/X/Roads")
     assert len(walks["segments"]) > len(paths_actor(venice, {**co, "canals": "none"}, [], lambda x, y: 0.0,
                                                     "/Game/X/Roads")["segments"]), "canal-side walkways"
+    # airports: planned before the streets, built as actors; no city street inside, no homes in the noise zone
+    ac = {"name": "Aero", "x": 0, "y": 0, "radius": 120000, "seed": 4, "style": "grid"}  # ~22k people: regional
+    aps = plan_airports([ac], lambda x, y: 0.0, None, [], ((-600000, -600000), (600000, 600000)), {})
+    assert aps and aps[0]["type"] == "regional", aps
+    builds: dict = {}
+    aw = generate([ac], lambda x, y: 0.0, "/Game/X/Roads", seed=1, opts={"freeways": "no"}, airports=aps,
+                  airport_builds=builds)
+    assert "Aero Airport" in aw and "Aero Airport Roads" in aw, sorted(aw)
+    am = {s["mesh"] for s in aw["Aero Airport"]["segments"]}
+    assert {"SM_Air_Runway_20m", "SM_Air_Taxiway_10m"} <= am, am
+    assert builds["Aero Airport"]["report"]["ok"], builds["Aero Airport"]["report"]
+    from . import airport as _ap
+    gn, ge = city_graph(ac)
+    assert not any(_ap.inside(aps[0], *gn[n][:2]) for n in gn), "no city street on the airfield"
+    lay = city_layout(ac, {"planner": "no"})
+    assert not any(r[7] in ("house", "apartment") and _ap.in_noise(aps[0], r[0], r[1]) for r in lay["lots"])
     print("citygen ok", {k: len(v["segments"]) for k, v in actors.items()}, "metro interchanges", kinds)
 
 

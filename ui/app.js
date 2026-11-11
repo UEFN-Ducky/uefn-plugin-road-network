@@ -35,10 +35,11 @@ const GEN_DEFAULTS = {
   block_m: 100, wobble: 0.28, prune: 0.22, downtown: 0.4, normal: 0.75, highway: "4L", highway_curve: 0.08,
   core_roads: "4L", neighbourhood_roads: "2S", suburb_roads: "2L", one_way_core: "no", interchange: "direct", overpasses: "yes",
   city_size: 1, city_gap_m: 300, freeways: "yes", waterfront: "yes", canals: "none", shipyards: "auto",
+  airports: "auto", military_base: "no", wind_deg: 240,
 };
 const OPTION_KEYS = ["hill_km", "roughness", "detail", "ridges", "peaks", "flatten_m", "sea_m", "water_depth_m", "terrace_m", "block_m", "wobble",
   "prune", "downtown", "normal", "highway", "highway_curve", "core_roads", "neighbourhood_roads", "suburb_roads", "one_way_core",
-  "interchange", "overpasses", "city_size", "city_gap_m", "freeways", "waterfront", "canals", "shipyards"];
+  "interchange", "overpasses", "city_size", "city_gap_m", "freeways", "waterfront", "canals", "shipyards", "airports", "military_base", "wind_deg"];
 const VIEW_DEFAULTS = { zx: 1, pcg: true, terrain: true, water: true, districts: true, points: false, look: "natural", sunAz: 135, sunEl: 38, shadows: true };
 const state = {
   nets: [], net: "", actor: "", geo: null, sel: null, cities: [], tab: "world", framed: false, live: false,
@@ -57,6 +58,8 @@ const FAMILY = [
   [/Bridge/, 925, "red", "Bridge"],
   [/Water_Canal/, 1200, "blue", "Canal"],
   [/Water_DryDock/, 2000, "red", "Dry dock"],
+  [/Air_Runway/, 2250, "fg", "Runway"],
+  [/Air_Taxiway/, 1150, "yellow", "Taxiway"],
   [/Path_Sidewalk/, 190, "fg", "Sidewalk"],
   [/Path_Walkway/, 80, "fg-dim", "Walkway"],
   [/Path_DrivewayDouble/, 275, "fg-dim", "Double driveway"],
@@ -895,6 +898,9 @@ function buildPanes() {
     seg("waterfront", "Waterfront (quays, marinas, beaches, ports)", [["yes", "Develop", "wave"], ["no", "Leave natural", "terrain"]]),
     seg("canals", "Canals", [["none", "None", "route"], ["canal_city", "Canal city", "wave"]]),
     seg("shipyards", "Shipyards on deep industrial shore", [["auto", "Plan them", "wrench"], ["none", "None", "route"]]),
+    seg("airports", "Airports (by city size)", [["auto", "Plan them", "route"], ["none", "None", "terrain"]]),
+    seg("military_base", "Military airbase", [["no", "No", "route"], ["yes", "Yes", "layers"]]),
+    sl("wind_deg", "Prevailing wind", 0, 360, 5, (v) => `${Math.round(v)}°`, "Runways are turned into the wind"),
     h("div", { class: "rn-hint" }, "Diamond, trumpet and cloverleaf are built from our ramp, bridge and road pieces: the highway " +
       "bridges over a cross road with slip ramps (diamond), one loop (trumpet) or four loops (cloverleaf). Stack rises onto the " +
       "elevated deck. You see every ramp in the 3D view."));
@@ -1117,6 +1123,23 @@ function syncControls() {
 // ------------------------------------------------------------------ cities pane
 const STYLE_OPTS = [["mixed", "Mixed", "mixed"], ["grid", "Grid", "grid"], ["organic", "Organic", "wave"]];
 // the urban planner's result for one city (urban.py): population, what it needs, what it got, coverage by road
+// the city's airport (airport.py): type, runway heading, what it got, its checks
+function cityAirport(a) {
+  if (!a) return h("span");
+  const label = { general_aviation: "General aviation airfield", regional: "Regional airport", international: "International airport",
+    cargo: "Cargo airport", military: "Military airbase" }[a.type] || a.type;
+  const r = a.report || {};
+  return h("div", { style: "margin-top: 10px" },
+    h("div", { class: "rn-field__label" }, label),
+    h("div", { class: "rn-kv" },
+      h("span", {}, "Runways"), h("span", {}, `${r.runways || 0} · heading ${Math.round(a.heading)}°`),
+      h("span", {}, "Aircraft stands"), h("span", {}, String(r.stands || 0)),
+      h("span", {}, "Ground levelled"), h("span", {}, `${a.grading_m ?? 0} m average`)),
+    h("div", { class: "dk-row", style: "margin-top: 8px; flex-wrap: wrap" },
+      ...(a.facilities || []).slice(0, 14).map((x) => h("span", { class: "rn-tag" }, x.what.split(" (")[0]))),
+    r.ok === false ? h("div", { class: "rn-hint", style: "margin-top: 6px; color: var(--amber)" },
+      "Check: " + (r.problems || []).slice(0, 3).join("; ")) : h("span"));
+}
 // the waterfront planner's result for one city (waterfront.py): shoreline by use, developments, validator
 function cityWater(w) {
   if (!w || !(w.segments || []).length) return h("span");
@@ -1196,7 +1219,7 @@ function renderCitiesPane() {
         h("span", {}, "Normal city"), h("span", {}, `${Math.round((d.normal?.radius || 0) / 100)} m`),
         h("span", {}, "Housing"), h("span", {}, `${Math.round((d.housing?.radius || 0) / 100)} m`),
         ...sets.flatMap(([k, n]) => [h("span", {}, `${k[0].toUpperCase() + k.slice(1)} buildings`), h("span", {}, n ? `${n} meshes` : "Not set")])),
-      cityPlan(c.plan), cityWater(c.waterfront));
+      cityPlan(c.plan), cityWater(c.waterfront), cityAirport(c.airport));
   });
   pane.replaceChildren(section(`Cities · ${state.cities.length}`, ...cards),
     h("div", { class: "rn-hint" }, "Each city keeps its own roads actor, style and building sets. Changing one rebuilds the world with the same seed."));
