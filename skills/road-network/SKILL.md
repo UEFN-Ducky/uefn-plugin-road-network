@@ -107,6 +107,17 @@ at its corners' mean height (cut and fill) and `foundation_m` (plinth depth wher
 rows add `foundation_m, paths`. The generated heightmap (road_network_heightmap) has the pads cut in; an
 existing terrain is never edited, so there the foundations and paths do the work.
 
+## Design rules (the concept comes from the plugin, not from the AI)
+`road_network_generate_options().rules` is the list City Builder's code follows; an AI building with the plugin
+follows the same list and never invents its own layout. In short: highways only join two cities; interchanges only
+where such a highway meets a city (180 m from its gate, highway > 900 m), never alone, their cross road joined to
+the city's streets; freeways bridge 7.5 m over streets they cross; bridges / ramps / decks sit over the highest
+ground within 15 m and never shape the terrain; keep zones are never built on; lots are levelled with plinths,
+walkways and driveways; forests are dense patches in a belt round each city; PCG is tiled and incremental; one
+editor call does little.
+Fully automatic for anyone who installs it: Generate (World tab) makes the cities, roads, terrain AND every
+starter PCG layer (`full_city` preset, added when the world has none); Push roads, then Push city. No AI step.
+
 ## Roads
 A city's roads live in UEFN as landscape spline actors (City Roads, Elevated Freeways,
 Stack Interchange, ...). Python cannot read spline control points, so each actor travels

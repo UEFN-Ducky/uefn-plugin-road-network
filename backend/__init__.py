@@ -697,6 +697,8 @@ def register(api) -> None:
         doc["updated"] = time.time()
         data.put(f"net.{nid}", doc)
         api.search.upsert(f"net.{nid}", name, f"Generated world {name}: cities " + ", ".join(t["name"] for t in towns))
+        if not layer_docs(nid):  # a new world comes with every layer a city needs: generate -> push, nothing else
+            pcg_preset(nid, "full_city")
         record("road_network_generate", "network", nid, before,
                [] if before else [{"command": "road_network_delete", "params": {"net_id": nid}}])
         push({"what": "network", "id": nid})
@@ -1368,9 +1370,11 @@ def register(api) -> None:
 
     @api.tool(intent=GEN_INTENT, listener=False)
     def road_network_generate_options() -> dict:
-        """Every generate option with its default and range (what the Terrain and Roads tabs show)."""
+        """Every generate option with its default and range (what the Terrain and Roads tabs show), and the
+        design `rules` City Builder follows (where interchanges go, bridge heights, keep zones, lots, forests):
+        an AI building a world with this plugin follows these rules, never its own."""
         return {"ok": True, "options": {k: {"default": d, "min": lo, "max": hi} for k, (d, lo, hi) in cg.OPTIONS.items()},
-                "highway": list(cg.HIGHWAYS), "styles": list(cg.STYLES)}
+                "highway": list(cg.HIGHWAYS), "styles": list(cg.STYLES), "rules": cg.RULES}
 
     @api.tool(intent=GEN_INTENT, listener=False)
     def road_network_cities(net_id: str = "") -> dict:

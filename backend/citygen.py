@@ -44,7 +44,26 @@ CHOICES = {
     "one_way_core": (("no", "yes"), "no"),  # core side streets as alternating one-way lanes
     "overpasses": (("yes", "no"), "yes"),  # highways bridge over the streets they cross
 }
-BRIDGE_LIFT_CM = 750.0  # clearance a highway rises to over a street it crosses
+BRIDGE_LIFT_CM = 750.0  # clearance a highway rises to over a street it crosses (a real freeway overpass: 7.5 m)
+
+# How City Builder designs a world. Code follows these; an AI building with the plugin follows them too
+# (road_network_generate_options returns them), so the concept comes from the plugin, never from a chat.
+RULES = [
+    "Highways only join two cities (shortest tree over the cities); one city on its own gets no highway.",
+    "An interchange (cloverleaf / trumpet / diamond / stack) is only built where a highway that links two cities "
+    "meets one of them, 180 m out from the city's gate, and only when the highway is longer than 900 m. Never "
+    "stand-alone: its cross road is a city street joined at both ends to the city's nearest streets.",
+    "A highway bridges over every street it crosses: ramp up 40 m, deck 7.5 m above the street, ramp down 40 m.",
+    "Bridges, decks and ramps never shape the ground; their height is taken over the highest ground within 15 m, "
+    "so nothing sits inside a hill. Ground-level roads shape the terrain (live splines).",
+    "Interchange loops are tangent to the highway and the cross road and come down from deck height to the cross road.",
+    "Keep zones (the cinema, spawn islands) are never built on: flat at their height, streets stop short, highways go round.",
+    "Every building lot is levelled (pad) with a plinth where the hill falls away, a walkway to the kerb and, for "
+    "houses and businesses, a driveway.",
+    "Forests grow in dense patches with meadows between, in a belt around each city; parks are dense groves.",
+    "PCG is tiled (400 m) and incremental: a change rebuilds only the tiles it touches.",
+    "One editor call does little (one mesh build, a few junctions, one tile): UEFN frees windows only per frame.",
+]
 STYLES = ("mixed", "grid", "organic")
 JUNCTION = "SM_Junc_Gen"  # waits for Build pieces (st.pending_nodes picks it up)
 MOUTH_CM = 1500.0
@@ -461,6 +480,10 @@ def build_actor(nodes: dict, edges: list, ground, folder: str, pieces: dict | No
     [x, y] or [x, y, lift_cm, kind of the segment that starts there] for bridges and ramps.
     pieces: {node: mesh path} puts a piece (trumpet loop, cloverleaf) on an end point."""
     pieces = pieces or {}
+
+    def high(x, y):  # a bridge / ramp point sits over the HIGHEST ground near it, never in a hill between samples
+        return max(ground(x + dx, y + dy) for dx, dy in ((0, 0), (1500, 0), (-1500, 0), (0, 1500), (0, -1500)))
+
     adj: dict = {}
     for e in edges:
         adj.setdefault(e[0], []).append(e)
@@ -495,8 +518,8 @@ def build_actor(nodes: dict, edges: list, ground, folder: str, pieces: dict | No
             steps = [first_step(e, n) for e in arms]
             yaw = angle(steps[0], steps[1]) if len(steps) == 2 else angle((x, y), steps[0])
             up = float(nodes[n][2]) if len(nodes[n]) > 2 else 0.0  # a ramp end up on a bridge
-            p = _point(next(ids), x, y, ground(x, y) + up, yaw, max(HALF[e[2]] for e in arms), piece=pieces.get(n, ""),
-                       lifted=up > 0)
+            p = _point(next(ids), x, y, (high(x, y) if up > 0 else ground(x, y)) + up, yaw, max(HALF[e[2]] for e in arms),
+                       piece=pieces.get(n, ""), lifted=up > 0)
             pts.append(p)
             for e in arms:
                 ends[(id(e), n)] = p["i"]
@@ -509,7 +532,8 @@ def build_actor(nodes: dict, edges: list, ground, folder: str, pieces: dict | No
         for k, v in enumerate(via, start=1):
             x, y = v[0], v[1]
             up = float(v[2]) if len(v) > 2 else 0.0
-            p = _point(next(ids), x, y, ground(x, y) + up, angle(line[k - 1], line[k + 1]), HALF[e[2]], lifted=up > 0)
+            p = _point(next(ids), x, y, (high(x, y) if up > 0 else ground(x, y)) + up, angle(line[k - 1], line[k + 1]),
+                       HALF[e[2]], lifted=up > 0)
             pts.append(p)
             chain.append(p["i"])
             lift[p["i"]] = up
@@ -737,6 +761,14 @@ def _demo() -> None:
     city = actors[f"{cities[0]['name']} Roads"]
     assert st.pending_nodes(city["points"], city["segments"]), "junctions wait for generated pieces"
     assert len(actors["Highways"]["segments"]) >= 2
+    # rule: one city alone gets no highway and so no interchange
+    solo = generate(cities[:1], lambda x, y: 0.0, "/Game/X/WorldGen/Roads", seed=3, opts={"interchange": "cloverleaf"})
+    assert "Highways" not in solo, "no stand-alone highway or cloverleaf"
+    # rule: a bridge on a slope sits over the highest ground near it, never inside the hill
+    slope = lambda x, y: x * 0.2  # 20 % grade along x
+    br = build_actor({0: [0, 0], 1: [20000, 0]}, [[0, 1, "4L", [[10000, 0, BRIDGE_LIFT_CM, "BR"]]]], slope, "/Game/X")
+    deck = max(p["z"] for p in br["points"] if not p["raise"])
+    assert deck >= slope(10000 + 1500, 0) + BRIDGE_LIFT_CM - 1, deck
     # options: clamped, lakes flatten the lowlands, smaller blocks mean more streets, 2-lane highways
     o = options({"block_m": 9999, "sea_m": -5, "highway": "8L", "detail": 3.4, "interchange": "stack"})
     assert o["block_m"] == 250 and o["highway"] == "4L" and o["detail"] == 3 and o["interchange"] == "stack"
