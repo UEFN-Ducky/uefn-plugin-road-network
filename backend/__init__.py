@@ -766,26 +766,50 @@ def register(api) -> None:
                        f"It makes a new landscape; your current one is not touched. "
                        f"Every building lot is already levelled into it (cut and fill), so buildings sit flat on hills."}
 
-    def import_all(net_id: str = "", confirm: bool = False) -> dict:
-        """One click: build the junction pieces of every road actor, then paste each into UEFN."""
+    def import_all(net_id: str = "", confirm: bool = False, force: bool = False) -> dict:
+        """Push roads: build the junction pieces and paste every road actor that changed since its last push
+        (or is missing from the level). Unchanged actors are left alone. force=true pushes them all."""
         nid = slug(net_id)
         doc = data.get(f"net.{nid}") if nid else None
         if not doc:
             return {"ok": False, "error": f"No road network {net_id!r}."}
-        labels = [actor_docs(nid)[a]["label"] for a in actor_docs(nid)]
+        todo, same = [], []
+        for aslug in actor_docs(nid):
+            head, pts, segs = load_actor(nid, aslug)
+            digest = hashlib.sha1(st.serialize(pts, segs).encode()).hexdigest()
+            if not force and head.get("pushed") == digest:
+                same.append(head["label"])
+            else:
+                todo.append((aslug, head["label"], digest))
+        if same:  # pushed before: still in the level? (someone may have deleted it there)
+            try:
+                present = {r["label"] for r in listener("road_network_actors").get("actors", [])}
+                for label in [s for s in same if s not in present]:
+                    same.remove(label)
+                    aslug = slug(label)
+                    todo.append((aslug, label, hashlib.sha1(st.serialize(*load_actor(nid, aslug)[1:]).encode()).hexdigest()))
+            except (ConnectionError, RuntimeError, TimeoutError):
+                pass
+        if not todo:
+            return {"ok": True, "id": nid, "done": {}, "unchanged": same, "note": "Every road actor is up to date."}
         if not confirm:
-            return {"ok": False, "error": f"This pastes {len(labels)} road actors into the open UEFN level "
-                                          f"({', '.join(labels)}). Call again with confirm=true."}
+            return {"ok": False, "error": f"This pastes {len(todo)} changed road actors into the open UEFN level "
+                                          f"({', '.join(t[1] for t in todo)}); {len(same)} unchanged are left alone. "
+                                          f"Call again with confirm=true.", "unchanged": same}
         done = {}
-        for label in labels:
+        for aslug, label, digest in todo:
             pieces = build_pieces(nid, label)
             if not pieces.get("ok"):
                 return {"ok": False, "error": f"{label}: {pieces.get('error')}", "done": done}
             out = reimport(nid, label, True)
             if not out.get("ok"):
                 return {"ok": False, "error": f"{label}: {out.get('error')}", "done": done}
+            head = data.get(f"net.{nid}.actor.{aslug}") or {}
+            # the hash of what is in the level now (build_pieces may have placed junction meshes)
+            _, pts, segs = load_actor(nid, aslug)
+            data.put(f"net.{nid}.actor.{aslug}", {**head, "pushed": hashlib.sha1(st.serialize(pts, segs).encode()).hexdigest()})
             done[label] = {"junction_pieces": pieces.get("built", 0), "pieces": out.get("pieces")}
-        return {"ok": True, "id": nid, "done": done}
+        return {"ok": True, "id": nid, "done": done, "unchanged": same}
 
     # ---------------------------------------------------------------- PCG placement layers
     def layer_docs(nid: str) -> dict:
@@ -915,7 +939,7 @@ def register(api) -> None:
         return out
 
     _PREVIEW_CACHE: dict = {}
-    FOREST_LIMIT = 40000  # foliage points per layer kept (and baked): dense forests near the cities, still buildable
+    FOREST_LIMIT = 200000  # foliage points per layer kept and baked: very dense forests; tiled PCG builds them 400 m at a time
 
     def pcg_preview(net_id: str = "", layer_id: str = "", summary: bool = False) -> dict:
         """Every enabled layer placed offline with the graph's rules; one layer per call when layer_id is
@@ -1015,6 +1039,14 @@ def register(api) -> None:
         tag = re.sub(r"[^A-Za-z0-9]", "", name)
         new = kit_bake.tiles(groups)
         state = data.get(f"net.{nid}.pcg") or {"name": f"{name} / PCG tiles", "tiles": {}}
+        if state["tiles"]:  # pull: a tile whose volume was deleted in the level is built again
+            try:
+                present = {str(a.get("label") or "") for a in epic("EditorToolset.LevelToolset", "FindActors", {
+                    "filter": {"name": f"City Builder {name}"}}).get("returnValue", [])}
+                for key in [k for k in state["tiles"] if f"City Builder {name} {k}" not in present]:
+                    state["tiles"][key] = {**state["tiles"][key], "hash": "gone from the level", "volume": ""}
+            except (ConnectionError, RuntimeError, TimeoutError, ValueError):
+                pass  # UEFN not reachable: diff against what was pushed last
         build, remove, same = kit_bake.tile_diff(new, state["tiles"], force)
         if not confirm:
             return {"ok": False, "error": f"{name}: {len(build)} PCG tiles to (re)build, {len(remove)} to remove, "
@@ -1048,6 +1080,8 @@ def register(api) -> None:
                 drop(key)
                 tile = new[key]
                 graph_path = f"{root}/WorldGen/CityPCG/PCG_{tag}_T{key.replace('-', 'm')}"
+                if epic("EditorToolset.AssetToolset", "Exists", {"path": graph_path}).get("returnValue"):
+                    epic("EditorToolset.AssetToolset", "Delete", {"path": graph_path})
                 graph = epic("PCGToolset.PCGToolset", "CreateGraph", {"name": graph_path.rsplit("/", 1)[1],
                                                                       "path": graph_path.rsplit("/", 1)[0]})["returnValue"]
                 for k, (mesh, rows) in enumerate(sorted(tile["meshes"].items())):
@@ -1341,10 +1375,11 @@ def register(api) -> None:
         return safe(heightmap)(net_id)
 
     @api.tool(intent=GEN_INTENT, listener=True)
-    def road_network_import_all(net_id: str = "", confirm: bool = False) -> dict:
-        """One click into UEFN: build every road actor's junction pieces, then paste each actor as live
-        splines (reimport). Ask the person first and keep their hands off UEFN while it runs."""
-        return safe(import_all)(net_id, confirm)
+    def road_network_import_all(net_id: str = "", confirm: bool = False, force: bool = False) -> dict:
+        """Push roads into UEFN: build junction pieces, then paste every road actor that CHANGED since its last
+        push (or is missing from the level) as live splines; unchanged actors are left alone. force=true pushes
+        all. Ask the person first and keep their hands off UEFN while it runs."""
+        return safe(import_all)(net_id, confirm, force)
 
     api.register_panel_rpc("generate", lambda name="", seed=7, cities="", size_km=6.0, relief_m=60.0, ground_from="",
                            folder="", center_x=0.0, center_y=0.0, options="": safe(generate)(
@@ -1354,7 +1389,7 @@ def register(api) -> None:
     api.register_panel_rpc("city_save", lambda net_id="", city="", name="", style="", radius_m=0.0, buildings="":
                            safe(save_city)(net_id, city, name, style, radius_m, buildings))
     api.register_panel_rpc("heightmap", lambda net_id="": safe(heightmap)(net_id))
-    api.register_panel_rpc("import_all", lambda net_id="", confirm=False: safe(import_all)(net_id, confirm))
+    api.register_panel_rpc("import_all", lambda net_id="", confirm=False, force=False: safe(import_all)(net_id, confirm, force))
 
     PCG_INTENT = r"\b(pcg|procedural|scatter|placement layers?|foliage|trees|rocks|street (trees|lamps))\b"
 
@@ -1431,7 +1466,7 @@ def register(api) -> None:
     api.register_panel_rpc("pcg_assets", lambda net_id="", asset_set="": safe(pcg_assets)(net_id, asset_set))
     api.register_panel_rpc("pcg_preview", lambda net_id="", layer_id="": safe(pcg_preview)(net_id, layer_id))
     api.register_panel_rpc("pcg_place", lambda net_id="", confirm=False: safe(pcg_place)(net_id, confirm))
-    api.register_panel_rpc("pcg_build", lambda net_id="", confirm=False: safe(pcg_build)(net_id, confirm))
+    api.register_panel_rpc("pcg_build", lambda net_id="", confirm=False, force=False: safe(pcg_build)(net_id, confirm, force))
 
     @api.register_pipeline_node("road-network.pcg_plan")
     def node_pcg_plan(ctx: dict) -> dict:

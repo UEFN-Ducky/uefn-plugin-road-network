@@ -79,6 +79,12 @@ The listener saves everything it made in one `save_packages` batch.
 Street kit: the kit had no traffic lights, signs, billboards, power poles, parking lots, path slabs or plinths;
 `road_network_kit_materials` first builds them (GeometryScript, WorldGen/Kit/Street, in the same PBR master), so
 every layer gets a piece and lots on hills get a plinth plus walkway / driveway slabs.
+Push / pull, only what changed (panel buttons, no AI needed): **Push roads** (`import_all`) pastes only road
+actors whose text changed since their last push (hash in the actor doc `pushed`) or that are missing from the
+level; **Push city** (`pcg_build`) rebuilds only changed 400 m tiles. Pull: a road actor or a tile volume deleted
+in the level is noticed on the next push and put back; hand-edited road splines come in with Ctrl+C in the
+Splines tool -> `road_network_import_text` (Python can't read spline points). PCG instances are not edited by
+hand in the level: change the plan in the panel and push.
 PCG is tiled and incremental: `road_network_pcg_build(net_id, confirm=true)` cuts the baked city into 400 m tiles
 (`kit_bake.tiles`, a sha1 per tile), one graph `WorldGen/CityPCG/PCG_<World>_T<tx>_<ty>` (Create Points ->
 Static Mesh Spawner per kit mesh) + volume `City Builder <World> <tx>_<ty>` each, Generate On Demand. The tile

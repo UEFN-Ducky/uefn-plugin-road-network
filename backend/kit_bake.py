@@ -151,7 +151,7 @@ CORE_MIN_CM = 280  # a well narrower than this gets no core (solid slabs, one st
 MAX_FLOORS = 40  # ponytail: caps instances on the tallest towers; floors above it stay empty
 SETS_PER_FLOOR = 8  # furniture sets per storey, the ones nearest the windows (what you see through glass)
 FLAT = {"parking": "SM_Kit_ParkingLot"}  # lots that are ground, not buildings: stretched to the lot, never up
-PARK_TREE_M = 6.0  # a park is a grove: a tree about every 6 m (jittered, 85 % filled), a path slab through it
+PARK_TREE_M = 4.0  # a park is a dense grove: a tree about every 4 m (jittered, 85 % filled), a path slab through it
 SCALE_RANGE = (0.5, 2.0)  # a kit mesh is stretched at most this much to fit its lot
 
 
@@ -386,7 +386,7 @@ def _demo() -> None:
     park = {"Parks": {"kind": "buildings", "role": "park", "points": [[0, 0, 0, 0, 1, 0, 0, 40, 40, 0, []]]}}
     g3, b3, _ = bake(park, "/R")
     trees = sum(len(v) for k, v in g3.items() if "SM_V4_Tree" in k)
-    assert 25 <= trees <= 40 and b3 == {"Parks": 1}, ("a 40 m park is a grove", trees)
+    assert 55 <= trees <= 90 and b3 == {"Parks": 1}, ("a 40 m park is a dense grove", trees)
     # interiors: a 110 m tower has many lit floors, a stair core every storey, one car, desks inside its outline
     gt, _, _ = bake({"T": {"kind": "buildings", "role": "skyscraper", "points": [[0, 0, 500, 90, 1, 110, 0, 32, 32, 0, []]]}}, "/R")
     plates = [r for k in ("SM_Kit_FloorRound", "SM_Kit_FloorPlate", "SM_Kit_FloorSolid") for r in gt.get(path(k, "/R"), [])]

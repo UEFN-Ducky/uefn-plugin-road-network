@@ -812,12 +812,12 @@ function renderPcgPane() {
     if (out.ok === false) return showError(out.error);
     state.assetSet = out.asset_set;
   } }).el;
-  const place = button("Place in UEFN with AI", "upload", onPcgPlace, "primary",
-    "Starts a chat that builds one PCG graph with every layer in the open UEFN level");
+  const place = button("Push city to UEFN", "upload", onPcgPlace, "primary",
+    "Builds the city as PCG in the open UEFN level, 400 m tile by tile: only the tiles you changed are rebuilt");
   place.style.width = "100%";
   pane.replaceChildren(
     section("What it's built from", pieces, h("div", { class: "rn-hint", style: "margin-top: 6px" },
-      "The AI that builds it picks real pieces for every layer from this set (layers with meshes of their own keep them).")),
+      "Every layer is built from the project's own kit (layers with meshes of their own keep them).")),
     section("Placement layers", head, h("div", { class: "rn-hint", style: "margin: 8px 0" },
       "Layers place in order: each one keeps clear of the roads and the layers you tick under Keep clear of.")),
     ...(cards.length ? cards : [h("div", { class: "dk-empty" }, h("div", { class: "dk-empty__title" }, "No layers yet"), "Add the starter layers or a new one.")]),
@@ -931,17 +931,19 @@ async function loadLayers() {
 }
 async function onPcgPlace() {
   if (!state.net) return;
-  const ask = await rpc("pcg_place", { net_id: state.net });
-  if (ask.ok === false && !/confirm=true/.test(ask.error || "")) return showError(ask.error);
-  const ok = await call("ui.confirm", { title: "Place PCG layers in UEFN", confirm: "Start",
-    message: (ask.error || "").replace(" Call again with confirm=true.", "") + " An AI chat builds the graph in the open UEFN level; it picks meshes for layers that have none." }).catch(() => null);
+  const ask = await rpc("pcg_build", { net_id: state.net });
+  if (ask.ok !== false) return alert("Up to date", ask.note || "Nothing changed since the last push.");
+  if (!/confirm=true/.test(ask.error || "")) return showError(ask.error);
+  if (!ask.build?.length && !ask.remove?.length) return alert("Up to date", "Nothing changed since the last push: every tile is left as it is.");
+  const ok = await call("ui.confirm", { title: "Push city to UEFN", confirm: "Push",
+    message: (ask.error || "").replace(" Call again with confirm=true.", "") + " Only those tiles change in the open UEFN level. Don't touch UEFN until it finishes." }).catch(() => null);
   if (!ok?.confirmed) return;
-  busy("Starting the PCG build chat…");
-  const out = await rpc("pcg_place", { net_id: state.net, confirm: true });
+  busy(`Pushing ${ask.build.length} changed tiles to UEFN…`);
+  const out = await rpc("pcg_build", { net_id: state.net, confirm: true });
   busy("");
-  if (out.ok === false) return showError(out.error);
+  if (out.ok === false) return showError(out.error + (out.note ? ` ${out.note}` : ""));
   showError("");
-  alert("PCG build started", `A chat is building ${out.layers.length} layers (${out.nodes} nodes). Follow it in the chat list.`);
+  alert("Pushed", `${out.built_tiles.length} tiles rebuilt, ${out.removed_tiles.length} removed, ${out.unchanged_tiles} left as they were.`);
 }
 
 function syncControls() {
@@ -1127,14 +1129,16 @@ async function onHeightmap() {
 async function onImportAll() {
   if (!state.net) return;
   const ask = await rpc("import_all", { net_id: state.net });
-  const ok = await call("ui.confirm", { title: "Import into UEFN", danger: true, confirm: "Import", message: `${ask.error} Don't touch UEFN until it finishes.` }).catch(() => null);
+  if (ask.ok !== false) return alert("Up to date", "Every road actor in UEFN already matches the plan.");
+  const ok = await call("ui.confirm", { title: "Push roads to UEFN", danger: true, confirm: "Push", message: `${ask.error} Don't touch UEFN until it finishes.` }).catch(() => null);
   if (!ok?.confirmed) return;
-  busy("Building junction pieces and pasting roads into UEFN…");
+  busy("Building junction pieces and pasting the changed roads into UEFN…");
   const out = await rpc("import_all", { net_id: state.net, confirm: true });
   busy("");
   if (out.ok === false) return showError(out.error);
   showError("");
-  alert("Imported", Object.entries(out.done).map(([k, v]) => `${k}: ${v.pieces} pieces`).join("\n"));
+  alert("Pushed", Object.entries(out.done).map(([k, v]) => `${k}: ${v.pieces} pieces`).join("\n")
+    + (out.unchanged?.length ? `\nUnchanged (left alone): ${out.unchanged.join(", ")}` : ""));
 }
 async function onReimport() {
   if (!needActor()) return;

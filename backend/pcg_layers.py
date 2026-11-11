@@ -248,16 +248,16 @@ CITY_STREET = [
     _prop("Power poles", "along_roads", "outside", 51, "power_pole", spacing=45, setback=4, footprint=0.4),
 ]
 
-# Nature: Foliage Types painted in UEFN's Foliage mode. No grass (the landscape material does that).
-# Forests: dense patches (cover = share of open land that is forest) with meadows between, a tree every ~5 m
-# inside a patch; within 3 city radii so the instance count stays buildable (wider = density x area).
+# Nature: no grass (the landscape material does that). Forests: VERY dense patches (cover = share of open land
+# that is forest) with meadows between, a tree every ~3.5 m inside a patch (8 per 100 m2), in a ring out to
+# 1.8 city radii: a tight belt keeps it dense under FOREST_LIMIT instead of thin over a huge area.
 NATURE = [
-    {"name": "Trees", "kind": "foliage", "where": "outside", "role": "tree", "density": 4.0, "cover": 0.55,
-     "reach": 3.0, "scale_min": 0.8, "scale_max": 1.5, "sink_cm": 15, "footprint": 0.35, "order": 1},
+    {"name": "Trees", "kind": "foliage", "where": "outside", "role": "tree", "density": 8.0, "cover": 0.55,
+     "reach": 1.8, "scale_min": 0.8, "scale_max": 1.5, "sink_cm": 15, "footprint": 0.35, "order": 1},
     {"name": "Rocks", "kind": "foliage", "where": "outside", "role": "rock", "density": 0.1, "cover": 0.55,
-     "reach": 3.0, "scale_min": 0.7, "scale_max": 2.0, "sink_cm": 40, "footprint": 0.8, "avoid": ["Trees"], "order": 2},
-    {"name": "Bushes", "kind": "foliage", "where": "outside", "role": "bush", "density": 2.0, "cover": 0.6,
-     "reach": 3.0, "scale_min": 0.8, "scale_max": 1.4, "sink_cm": 5, "footprint": 0.4, "collision": False,
+     "reach": 1.8, "scale_min": 0.7, "scale_max": 2.0, "sink_cm": 40, "footprint": 0.8, "avoid": ["Trees"], "order": 2},
+    {"name": "Bushes", "kind": "foliage", "where": "outside", "role": "bush", "density": 4.0, "cover": 0.6,
+     "reach": 1.8, "scale_min": 0.8, "scale_max": 1.4, "sink_cm": 5, "footprint": 0.4, "collision": False,
      "avoid": ["Trees", "Rocks"], "order": 3},
 ]
 PATCH_CM = 60000.0  # forest patch scale: patches a few hundred metres across
