@@ -376,7 +376,7 @@ def grade_to_roads(ter: dict, actors: dict) -> dict:
     grid, (x0, y0), (x1, y1) = ter["grid"], ter["min"], ter["max"]
     cw, ch = (x1 - x0) / grid, (y1 - y0) / grid
     sea = ter.get("sea")
-    best: dict = {}  # (j, i) -> (weight, road z)
+    best: dict = {}  # (j, i) -> (weight, -distance, road z): the strongest, then the nearest road sample wins
     for label, a in actors.items():
         if label.endswith(("Docks", "Canals")):
             continue
@@ -387,24 +387,30 @@ def grade_to_roads(ter: dict, actors: dict) -> dict:
             if not pa or not pb or mesh in STRUCTURES:
                 continue
             half = HALF.get(next((k for k, m in ROAD_MESH.items() if m.split("/")[-1] == mesh), ""), 800.0)
-            half = max(half, 0.75 * max(cw, ch))  # the cells the road crosses sit exactly at road height
+            # every grid cell around the road sits exactly at road height, so the ground between them (bilinear)
+            # never rises over the road; it blends back to the hills beyond that
+            half = max(half, 1.5 * max(cw, ch))
             reach = half + ROAD_BLEND_CM
-            L = math.hypot(pb["x"] - pa["x"], pb["y"] - pa["y"])
-            n = max(1, int(L / (min(cw, ch) / 2)))
-            for k in range(n + 1):
-                t = k / n
-                x, y, z = (pa[c] + (pb[c] - pa[c]) * t for c in ("x", "y", "z"))
-                g = st.sample_grid(ter, x, y)
-                if g is None or abs(z - g) > 2000:
-                    continue
-                for j in range(max(0, int((y - reach - y0) / ch)), min(grid, int((y + reach - y0) / ch) + 1)):
-                    for i in range(max(0, int((x - reach - x0) / cw)), min(grid, int((x + reach - x0) / cw) + 1)):
-                        d = math.hypot(x0 + (i + 0.5) * cw - x, y0 + (j + 0.5) * ch - y)
-                        w = 1 - _smoothstep(half, reach, d)
-                        if w > best.get((j, i), (0.0, 0.0))[0]:
-                            best[(j, i)] = (w, z)
+            ga, gb = st.sample_grid(ter, pa["x"], pa["y"]), st.sample_grid(ter, pb["x"], pb["y"])
+            if ga is None or gb is None or min(abs(pa["z"] - ga), abs(pb["z"] - gb)) > 2000:
+                continue  # a structure high off the ground stands free
+            ux, uy = pb["x"] - pa["x"], pb["y"] - pa["y"]
+            L2 = ux * ux + uy * uy or 1.0
+            for j in range(max(0, int((min(pa["y"], pb["y"]) - reach - y0) / ch)),
+                           min(grid, int((max(pa["y"], pb["y"]) + reach - y0) / ch) + 1)):
+                cy = y0 + (j + 0.5) * ch
+                for i in range(max(0, int((min(pa["x"], pb["x"]) - reach - x0) / cw)),
+                               min(grid, int((max(pa["x"], pb["x"]) + reach - x0) / cw) + 1)):
+                    cx = x0 + (i + 0.5) * cw
+                    # the road's own height at its nearest point to this cell (a linear field, so the ground
+                    # interpolated between cells follows the road exactly)
+                    t = max(0.0, min(1.0, ((cx - pa["x"]) * ux + (cy - pa["y"]) * uy) / L2))
+                    d = math.hypot(cx - pa["x"] - ux * t, cy - pa["y"] - uy * t)
+                    w = 1 - _smoothstep(half, reach, d)
+                    if w > 0 and (w, -d) > best.get((j, i), (0.0, -1e18, 0.0))[:2]:
+                        best[(j, i)] = (w, -d, pa["z"] + (pb["z"] - pa["z"]) * t)
     rows = [list(r) for r in ter["heights"]]
-    for (j, i), (w, z) in best.items():
+    for (j, i), (w, _d, z) in best.items():
         h = rows[j][i]
         if sea is not None and h < sea:
             continue  # the water stays water
@@ -1696,6 +1702,20 @@ def _demo() -> None:
            if abs(p["z"] - st.sample_grid(ter, p["x"], p["y"])) < 2000]
     before = [abs(p["z"] - st.sample_grid(ter, p["x"], p["y"])) for c in cities for p in actors[f"{c['name']} Roads"]["points"]]
     assert sorted(off)[int(len(off) * 0.95)] < 150, ("graded ground meets the streets", max(off), max(before))
+    # the ground never covers a street between its points either (at a world's own grid, ~37 m a cell)
+    fine = terrain(3, 400000, 6000, cities, grid=108)
+    fa = generate(cities[:1], lambda x, y: st.sample_grid(fine, x, y) or 0.0, "/Game/X/WorldGen/Roads", seed=3)
+    fg = grade_to_roads(fine, fa)
+    over = []
+    a = fa[f"{cities[0]['name']} Roads"]
+    by = {p["i"]: p for p in a["points"]}
+    for s in a["segments"]:
+        p, q = by[s["a"]], by[s["b"]]
+        for t in (0.25, 0.5, 0.75):
+            x, y, z = (p[k] + (q[k] - p[k]) * t for k in ("x", "y", "z"))
+            over.append(st.sample_grid(fg, x, y) - z)
+    over.sort()
+    assert over[int(len(over) * 0.95)] < 40, ("ground over the road", over[int(len(over) * 0.95)], over[-1])
     for label, a in actors.items():
         bad = st.problems(a["points"], a["segments"])
         assert not any(bad.values()), (label, {k: len(v) for k, v in bad.items()})
