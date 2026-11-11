@@ -34,10 +34,11 @@ const GEN_DEFAULTS = {
   hill_km: 2, roughness: 0.5, detail: 5, ridges: 0, peaks: 0, flatten_m: 300, sea_m: -1000, water_depth_m: 12, terrace_m: 0,
   block_m: 100, wobble: 0.28, prune: 0.22, downtown: 0.4, normal: 0.75, highway: "4L", highway_curve: 0.08,
   core_roads: "4L", neighbourhood_roads: "2S", suburb_roads: "2L", one_way_core: "no", interchange: "direct", overpasses: "yes",
+  city_size: 1, city_gap_m: 300, freeways: "yes",
 };
 const OPTION_KEYS = ["hill_km", "roughness", "detail", "ridges", "peaks", "flatten_m", "sea_m", "water_depth_m", "terrace_m", "block_m", "wobble",
   "prune", "downtown", "normal", "highway", "highway_curve", "core_roads", "neighbourhood_roads", "suburb_roads", "one_way_core",
-  "interchange", "overpasses"];
+  "interchange", "overpasses", "city_size", "city_gap_m", "freeways"];
 const VIEW_DEFAULTS = { zx: 1, pcg: true, terrain: true, water: true, districts: true, points: false, look: "natural", sunAz: 135, sunEl: 38, shadows: true };
 const state = {
   nets: [], net: "", actor: "", geo: null, sel: null, cities: [], tab: "world", framed: false, live: false,
@@ -846,7 +847,11 @@ function buildPanes() {
     ["new", "New terrain", "Hills made around the cities, with a heightmap to import", "terrain"],
     ["net", "Selected network's ground", "Cities sit on the open network's scanned terrain", "layers"]] });
   $("pane-world").replaceChildren(
-    section("World", ctl.name.el, sl("cities", "Cities", 1, 12, 1, (v) => String(v)), sl("size_km", "Map size", 1, 20, 0.5, (v) => `${v} km`), ctl.seed.el),
+    section("World", ctl.name.el, sl("cities", "Cities", 1, 12, 1, (v) => String(v)), sl("size_km", "Map size", 1, 20, 0.5, (v) => `${v} km`),
+      sl("city_size", "City size", 0.3, 4, 0.05, (v) => `×${(+v).toFixed(2)}`, "Every city bigger or smaller (regenerating scales the cities you have)"),
+      sl("city_gap_m", "Distance between cities", 0, 6000, 50, m, "Open country between two cities' edges, at least: cities closer than this are pushed apart"),
+      ctl.seed.el),
+    section("Selected city", h("div", { id: "worldCity" })),
     section("Where it goes", ctl.ground.el),
     section("This world", h("div", { id: "worldSummary" })));
   // ---- Terrain
@@ -884,6 +889,7 @@ function buildPanes() {
     seg("interchange", "Where a highway meets a city", [["direct", "Direct", "route"], ["diamond", "Diamond", "grid"],
       ["trumpet", "Trumpet", "refresh"], ["cloverleaf", "Clover", "mixed"], ["stack", "Stack", "layers"]]),
     seg("overpasses", "Where a highway crosses a street", [["yes", "Bridge over", "top"], ["no", "Cross at grade", "route"]]),
+    seg("freeways", "Urban freeways through big cities", [["yes", "Freeways", "layers"], ["no", "None", "route"]]),
     h("div", { class: "rn-hint" }, "Diamond, trumpet and cloverleaf are built from our ramp, bridge and road pieces: the highway " +
       "bridges over a cross road with slip ramps (diamond), one loop (trumpet) or four loops (cloverleaf). Stack rises onto the " +
       "elevated deck. You see every ramp in the 3D view."));
@@ -1100,7 +1106,23 @@ function syncControls() {
 
 // ------------------------------------------------------------------ cities pane
 const STYLE_OPTS = [["mixed", "Mixed", "mixed"], ["grid", "Grid", "grid"], ["organic", "Organic", "wave"]];
+// the World section's city picker: pick a city, then size it (the same save as the Cities section)
+function renderWorldCity() {
+  const box = $("worldCity");
+  if (!box) return;
+  if (!state.cities.length) return box.replaceChildren(h("div", { class: "rn-hint" }, "Generate a world, then pick a city here to resize it."));
+  const c = state.cities.find((x) => x.id === state.cityPick) || state.cities[0];
+  state.cityPick = c.id;
+  const picks = h("div", { class: "dk-row", style: "margin-bottom: 10px" }, ...state.cities.map((x) => chip({ label: x.name, iconName: "city",
+    value: x.id === c.id, onChange: () => { state.cityPick = x.id; renderWorldCity(); } }).el));
+  box.replaceChildren(picks,
+    slider({ label: `${c.name} radius`, min: 150, max: 5000, step: 10, value: Math.round(c.radius / 100), fmt: m,
+      hint: "Rebuilds this city at its new size; its neighbours move away if they would overlap",
+      onChange: (v) => saveCity(c, { radius_m: v }) }).el,
+    segmented({ label: "Road style", value: c.style, options: STYLE_OPTS, onChange: (v) => saveCity(c, { style: v }) }).el);
+}
 function renderCitiesPane() {
+  renderWorldCity();
   const pane = $("pane-cities");
   if (!state.cities.length) {
     pane.replaceChildren(h("div", { class: "dk-empty" }, h("div", { class: "dk-empty__title" }, "No cities yet"), "Generate a world to get cities with their own roads and districts."));
@@ -1108,7 +1130,7 @@ function renderCitiesPane() {
   }
   const cards = state.cities.map((c) => {
     const style = segmented({ label: "Road style", value: c.style, options: STYLE_OPTS, onChange: (v) => saveCity(c, { style: v }) });
-    const radius = slider({ label: "Radius", min: 150, max: 2000, step: 10, value: Math.round(c.radius / 100), fmt: m,
+    const radius = slider({ label: "Radius", min: 150, max: 5000, step: 10, value: Math.round(c.radius / 100), fmt: m,
       onChange: (v) => saveCity(c, { radius_m: v }) });
     const d = c.districts || {};
     const b = c.buildings || {};

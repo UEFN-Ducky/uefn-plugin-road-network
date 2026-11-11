@@ -92,6 +92,11 @@ RULES = [
     "ramps <= 6 % grade, freeways <= 4 %; any two roads crossing need 7 m between them (5.5 m clearance + deck).",
     "A street that a low ramp or an at-grade freeway would cut is removed; no building lot inside a freeway's right "
     "of way (15 m past its edge). The validator (road_network_generate's freeways report) must come back clean.",
+    "Roads know the water: a highway or freeway crosses it on a bridge (deck 7.5 m up, ramps on land), main roads "
+    "(2S / 4L / 6L) bridge up to 400 m, any paved street bridges a creek up to 60 m; a side street that would run "
+    "into a lake stops at the shore. No street node, lot, parking or private street is ever in the water.",
+    "City size (city_size) scales every city; the distance between cities (city_gap_m) is open country between "
+    "their edges, and cities closer than that are pushed apart. One city is resized with road_network_city_save.",
     "One editor call does little (one mesh build, a few junctions, one tile): UEFN frees windows only per frame.",
 ]
 STYLES = ("mixed", "grid", "organic")
@@ -113,6 +118,9 @@ OPTIONS = {
     "ridges": (0.0, 0.0, 1.0),         # 0 rolling hills .. 1 sharp mountain ridges
     "peaks": (0.0, 0.0, 1.0),          # 0 even hills .. 1 wide low valleys with tall sharp peaks
     "water_depth_m": (12.0, 0.0, 80.0),  # how deep lake beds drop below the water line
+    # cities
+    "city_size": (1.0, 0.3, 4.0),     # every city's radius x this (new cities; regenerating scales the old ones)
+    "city_gap_m": (300.0, 0.0, 6000.0),  # open country between two cities' edges, at least
     # roads
     "block_m": (100.0, 50.0, 250.0),   # city block, centre line to centre line
     # planned grid (Parish & Mueller hierarchy; real cities ~80 % planned): an intersection moves at most 8 %
@@ -329,13 +337,17 @@ def heightmap_png(ter: dict, res: int = 1009, pads: list | None = None) -> tuple
 
 
 # ------------------------------------------------------------------ cities
-def place_cities(seed: int, count: int, bounds: tuple, keep: list | None = None) -> list:
+def place_cities(seed: int, count: int, bounds: tuple, keep: list | None = None, size: float = 1.0,
+                 gap_cm: float | None = None) -> list:
     """count cities inside bounds ((x0, y0), (x1, y1)), never overlapping each other or a keep zone;
-    their size follows the map (8-14 % of its width, so a 6 km map gets 500-850 m cities)."""
+    their size follows the map (8-14 % of its width, so a 6 km map gets 500-850 m cities) x `size`, and at least
+    gap_cm of open country lies between two cities' edges (default: half their radii)."""
     rnd = random.Random(seed * 31 + 7)
     (x0, y0), (x1, y1) = bounds
     span = min(x1 - x0, y1 - y0)
-    min_r, max_r = span * 0.08, span * 0.14
+    min_r, max_r = span * 0.08 * size, span * 0.14 * size
+    max_r = min(max_r, span / 2.6)  # still fits on the map
+    min_r = min(min_r, max_r)
     out = []
     for _ in range(count * 60):
         if len(out) >= count:
@@ -344,10 +356,33 @@ def place_cities(seed: int, count: int, bounds: tuple, keep: list | None = None)
         x, y = rnd.uniform(x0 + r * 1.2, x1 - r * 1.2), rnd.uniform(y0 + r * 1.2, y1 - r * 1.2)
         if in_keep(keep, x, y, r * 1.5):
             continue
-        if all(math.hypot(x - c["x"], y - c["y"]) > (r + c["radius"]) * 1.5 for c in out):
+        gap = lambda c: gap_cm if gap_cm is not None else (r + c["radius"]) * 0.5
+        if all(math.hypot(x - c["x"], y - c["y"]) > r + c["radius"] + gap(c) for c in out):
             out.append({"name": NAMES[len(out) % len(NAMES)], "x": round(x), "y": round(y), "radius": round(r),
                         "style": STYLES[len(out) % len(STYLES)], "seed": rnd.randrange(1 << 30)})
     return out
+
+
+def spread(towns: list, gap_cm: float, keep: list | None = None) -> list:
+    """Existing cities pushed apart (each pair moves equally along the line between them) until at least gap_cm
+    of open country lies between every two edges; cities already far enough apart stay where they are."""
+    towns = [dict(t) for t in towns]
+    for _ in range(60):
+        moved = False
+        for i in range(len(towns)):
+            for j in range(i + 1, len(towns)):
+                a, b = towns[i], towns[j]
+                dx, dy = b["x"] - a["x"], b["y"] - a["y"]
+                d = math.hypot(dx, dy) or 1.0
+                short = a["radius"] + b["radius"] + gap_cm - d
+                if short > 1:
+                    ux, uy = dx / d, dy / d
+                    a["x"], a["y"] = round(a["x"] - ux * short / 2), round(a["y"] - uy * short / 2)
+                    b["x"], b["y"] = round(b["x"] + ux * short / 2), round(b["y"] + uy * short / 2)
+                    moved = True
+        if not moved:
+            break
+    return towns
 
 
 def districts(city: dict, opts: dict | None = None) -> dict:
@@ -383,7 +418,7 @@ def orientation(city: dict) -> float:
     return math.degrees(random.Random(city.get("seed", 1)).uniform(0, math.pi / 2))
 
 
-def city_graph(city: dict, opts: dict | None = None) -> tuple:
+def city_graph(city: dict, opts: dict | None = None, wet=None) -> tuple:
     """Street network of one city: nodes {key: [x, y]}, edges [(a, b, kind)]. Real cities mix patterns
     (urban-design transect): a strict grid of short blocks in the core, a looser grid in the
     neighbourhoods, curving streets with cul-de-sacs in the suburbs, all inside an irregular outline.
@@ -479,7 +514,115 @@ def city_graph(city: dict, opts: dict | None = None) -> tuple:
         edges = [e for e in edges if not fw.street_blocked(nodes[e[0]], nodes[e[1]], HALF.get(e[2], 500.0))]
         used = {n for e in edges for n in e[:2]}
         nodes = {n: p for n, p in nodes.items() if n in used}
+    if wet:  # main roads bridge water, side streets stop at the shore
+        nodes, edges = over_water(nodes, edges, wet)
     return nodes, edges
+
+
+WATER_SPAN = {"6L": 300000.0, "4L": 40000.0, "2S": 40000.0, "ED": 300000.0, "ER": 300000.0,
+              "BR": 300000.0, "BRR": 300000.0}  # longest water a road of this kind bridges; others stop at the shore
+SHORT_SPAN = 6000.0  # any street (not dirt) bridges a creek this narrow
+
+
+def wet_from(ter: dict):
+    """(x, y) -> True where the terrain is under its water line; None when the terrain has no water."""
+    sea = (ter or {}).get("sea")
+    if sea is None or not (ter or {}).get("heights"):
+        return None
+    return lambda x, y: (st.sample_grid(ter, x, y) if st.sample_grid(ter, x, y) is not None else sea + 1) < sea
+
+
+def over_water(nodes: dict, edges: list, wet, span: dict | None = None) -> tuple:
+    """Roads know where the water is. An edge that runs over water becomes a bridge (ramp up 40 m, deck
+    BRIDGE_LIFT_CM over the water, ramp down) when its kind may span that far (WATER_SPAN; any paved street
+    over a creek <= SHORT_SPAN) and it is not already high enough there; otherwise it is removed (a side street
+    stops at the shore). An end in the water is cut back to the shore (new node ('shore', a, b, 0|1)).
+    span: {kind: cm} overrides (highways pass a long one)."""
+    if not wet:
+        return nodes, edges
+    span = {**WATER_SPAN, **(span or {})}
+    out, extra = [], {}
+    for e in edges:
+        a, b, kind = e[0], e[1], e[2]
+        via = list(e[3]) if len(e) > 3 and e[3] else []
+        line = [list(nodes[a][:2]) + [float(nodes[a][2]) if len(nodes[a]) > 2 else 0.0]] + \
+               [[v[0], v[1], float(v[2]) if len(v) > 2 else 0.0] for v in via] + \
+               [list(nodes[b][:2]) + [float(nodes[b][2]) if len(nodes[b]) > 2 else 0.0]]
+        cum, samples = 0.0, []  # (distance along, x, y, lift)
+        for p, q in zip(line, line[1:]):
+            L = math.dist(p[:2], q[:2])
+            n = max(1, int(L // 1000))
+            for k in range(n):
+                t = k / n
+                samples.append((cum + L * t, p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t, p[2] + (q[2] - p[2]) * t))
+            cum += L
+        samples.append((cum, *line[-1]))
+        runs, cur = [], None
+        for s, x, y, up in samples:
+            if up < BRIDGE_LIFT_CM - 1 and wet(x, y):
+                cur = [s, s] if cur is None else [cur[0], s]
+            elif cur:
+                runs.append(cur)
+                cur = None
+        if cur:
+            runs.append(cur)
+        if not runs:
+            out.append(e)
+            continue
+        def at(s):
+            for (s0, *p), (s1, *q) in zip(samples, samples[1:]):
+                if s0 <= s <= s1:
+                    t = (s - s0) / ((s1 - s0) or 1)
+                    return [p[i] + (q[i] - p[i]) * t for i in range(3)]
+            return list(samples[-1][1:])
+
+        vcum = _cum_of(line)[1:-1]
+        # an end in the water: the road is cut back to the shore (a freeway running out into a lake ends there)
+        s_a, s_b, na, nb, first = 0.0, cum, a, b, kind
+        if runs[0][0] <= 0:
+            s_a = runs.pop(0)[1] + 1000
+            na = ("shore", a, b, 0)
+            first = next((v[3] for s, v in reversed(list(zip(vcum, via))) if s <= s_a and len(v) > 3 and v[3]), kind)
+        if runs and runs[-1][1] >= cum:
+            s_b = runs.pop()[0] - 1000
+            nb = ("shore", a, b, 1)
+        if s_b - s_a < 3000 or (s_a > 0 and s_b < cum and s_a >= s_b):
+            continue  # nothing left on land
+        limit = max(span.get(kind, 0.0), SHORT_SPAN if kind not in ("DT", "1W") else 0.0)
+        if runs and max(r1 - r0 for r0, r1 in runs) > limit:
+            continue  # too wide for this road: a side street stops at the shore (its neighbours still reach it)
+        for key, s in ((na, s_a), (nb, s_b)):
+            if key not in (a, b):
+                p = at(s)
+                extra[key] = [round(p[0]), round(p[1])] + ([round(p[2])] if p[2] > 0 else [])
+        elevated = kind in ("ED", "ER", "6L")
+        deck, ramp = ("ED", "ER") if elevated else ("BR", "BRR")
+        spans = []
+        for r0, r1 in runs:  # merge runs closer than two ramps: one longer bridge
+            if spans and r0 - spans[-1][1] < 15000:
+                spans[-1][1] = r1
+            else:
+                spans.append([r0, r1])
+        spans = [[max(s_a, r0 - 3000), min(s_b, r1 + 3000)] for r0, r1 in spans]  # deck reaches past the shore
+        keep = [(s, v) for s, v in zip(vcum, via) if not any(r0 - 5000 < s < r1 + 5000 for r0, r1 in spans)]
+        for r0, r1 in spans:
+            pa, pb = at(max(s_a, r0 - 4000)), at(min(s_b, r1 + 4000))
+            keep += [(r0 - 4000, [pa[0], pa[1], pa[2], ramp]),
+                     (r0, at(r0)[:2] + [max(BRIDGE_LIFT_CM, at(r0)[2]), deck]),
+                     (r1, at(r1)[:2] + [max(BRIDGE_LIFT_CM, at(r1)[2]), ramp]),
+                     (r1 + 4000, [pb[0], pb[1], pb[2], kind])]
+        keep.sort(key=lambda r: r[0])
+        out.append([na, nb, first, [[round(v[0]), round(v[1])] + list(v[2:]) for s, v in keep if s_a < s < s_b]])
+    nodes = {**nodes, **extra}
+    used = {n for e in out for n in e[:2]}
+    return {n: p for n, p in nodes.items() if n in used}, out
+
+
+def _cum_of(line):
+    cum = [0.0]
+    for p, q in zip(line, line[1:]):
+        cum.append(cum[-1] + math.dist(p[:2], q[:2]))
+    return cum
 
 
 _FW_CACHE: dict = {}
@@ -558,9 +701,10 @@ def paths_graph(rows: list, kinds: tuple = ("WK", "DW", "DD")) -> tuple:
     return nodes, edges
 
 
-def paths_actor(city: dict, opts: dict | None, rows: list, ground, folder: str) -> dict:
+def paths_actor(city: dict, opts: dict | None, rows: list, ground, folder: str, wet=None) -> dict:
     """PedestrianNetwork: the city's '<City> Paths' spline actor: its missing sidewalks and every walkway."""
-    cn, ce = city_graph(city, opts)
+    cn, ce = city_graph(city, opts, wet)
+    ce = [e for e in ce if len(e) < 4 or not e[3]]  # no sidewalk spline along a bridge
     sn, se = sidewalks(cn, ce)
     pn, pe = paths_graph(rows, ("WK",))
     return build_actor({**sn, **pn}, se + pe, ground, folder)
@@ -617,7 +761,7 @@ def access_actor(city: dict, rows: list, ground, folder: str) -> dict:
 LOT_W_CM, LOT_D_CM = 1600.0, 3500.0  # a lot: 16 m frontage, up to 35 m deep (two back to back in a block)
 
 
-def city_layout(city: dict, opts: dict | None = None) -> dict:
+def city_layout(city: dict, opts: dict | None = None, wet=None) -> dict:
     """BlockGenerator + neighbourhoods: every block of the city's street grid becomes either plain street-fronting
     lots (parcels) or one neighbourhood (neighbourhoods.TYPES: subdivisions with private streets, apartment
     complexes with parking), picked per block from the city's seed and weighted by its district ring.
@@ -625,7 +769,7 @@ def city_layout(city: dict, opts: dict | None = None) -> dict:
     from . import neighbourhoods as nb
     from . import parcels
     o = options(opts)
-    nodes, edges = city_graph(city, opts)
+    nodes, edges = city_graph(city, opts, wet)
     rnd = random.Random(f"lots:{city.get('seed', 1)}")
     fw = freeway_plan(city, o)
     out = {"lots": [], "streets": [], "parking": [], "stalls": [], "pads": [], "hoods": {}}
@@ -650,6 +794,10 @@ def city_layout(city: dict, opts: dict | None = None) -> dict:
         out["lots"] = [r for r in out["lots"] if not fw.blocked(r[0], r[1], 0.5 * max(r[3], r[4]))]
         for key in ("parking", "stalls", "pads"):
             out[key] = [r for r in out[key] if not fw.blocked(r[0], r[1])]
+    if wet:  # nothing is built in the water
+        for key in ("lots", "parking", "stalls", "pads"):
+            out[key] = [r for r in out[key] if not wet(r[0], r[1])]
+        out["streets"] = [s for s in out["streets"] if not any(wet(p[0], p[1]) for p in s)]
     return out
 
 
@@ -896,13 +1044,14 @@ def interchange(kind: str, end: list, toward: list, tag: tuple, hw: str) -> tupl
     return profile, nodes, edges
 
 
-def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None = None, keep: list | None = None) -> dict:
+def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None = None, keep: list | None = None,
+             wet=None) -> dict:
     """{label: {points, segments}}: one '<City> Roads' actor per city and one 'Highways' actor.
     A highway ends 40 m outside its city's gate street, where the city's own stub road ends; there it
     meets the city through the chosen interchange (direct, a trumpet loop, a cloverleaf piece, or a
     stack: an elevated deck on ramps), and it bridges over every street it crosses on the way."""
     o = options(opts)
-    graphs = [city_graph(c, o) for c in cities]
+    graphs = [city_graph(c, o, wet) for c in cities]
     rnd = random.Random(seed)
     hw_nodes, hw_edges, pieces = {}, [], {}
     streets = [(n[a][:2], n[b][:2]) for n, e in graphs for a, b, *_ in e]
@@ -982,11 +1131,17 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
     for nodes, edges in graphs:  # a city street never runs into a keep zone
         gone = {n for n, p in nodes.items() if in_keep(keep, p[0], p[1], 2000)}
         edges[:] = [e for e in edges if e[0] not in gone and e[1] not in gone]
+    if wet:  # the interchanges' cross roads were added after city_graph: they bridge or stop too
+        graphs = [over_water(n, e, wet) for n, e in graphs]
     out = {f"{c['name']} Roads": build_actor(n, e, ground, folder) for c, (n, e) in zip(cities, graphs)}
     for c in cities:  # the urban freeway layer: its own actor, so a change to it never re-pastes the streets
         fw = freeway_plan(c, o)
-        if fw.edges:
-            out[f"{c['name']} Freeways"] = build_actor(fw.nodes, fw.edges, ground, folder)
+        fn, fe = over_water(fw.nodes, fw.edges, wet) if wet else (fw.nodes, fw.edges)
+        if fe:
+            out[f"{c['name']} Freeways"] = build_actor(fn, fe, ground, folder)
+    if wet and hw_edges:  # a highway crosses any water on a bridge (a long one if it has to)
+        long = {k: 1e9 for k in (*HIGHWAYS, "2L", "ER", "ED", "BR", "BRR")}
+        hw_nodes, hw_edges = over_water(hw_nodes, hw_edges, wet, long)
     if hw_edges:
         out["Highways"] = build_actor(hw_nodes, hw_edges, ground, folder, pieces)
     return out
@@ -1190,6 +1345,34 @@ def _demo() -> None:
     small = {"name": "Town", "x": 0, "y": 0, "radius": 40000, "seed": 7}
     assert not freeway_plan(small).lines and "Town Freeways" not in generate([small], lambda x, y: 0.0, "/G", seed=1)
     assert not freeway_plan(big, {"freeways": "no"}).lines
+    # water: a river (x 40..120 m) and a lake (x > 400 m). Main roads bridge the river, side streets stop at the
+    # shore, nothing ends in the lake; a highway crosses the lake on a long bridge
+    wet = lambda x, y: 4000 < x < 13000 or x > 40000
+    wn, we = over_water({0: [-10000, 0], 1: [25000, 0], 2: [-10000, 5000], 3: [25000, 5000], 4: [30000, 0], 5: [50000, 0]},
+                        [[0, 1, "4L"], [2, 3, "2L"], [4, 5, "4L"]], wet)
+    assert [e[2] for e in we] == ["4L", "4L"], we  # the 2L stops at the river
+    cut = we[1]  # the street into the lake ends at the shore
+    assert cut[0] == 4 and cut[1] == ("shore", 4, 5, 1) and not wet(*wn[cut[1]][:2]) and wn[cut[1]][0] > 37000, cut
+    vb = we[0][3]
+    assert [v[3] for v in vb] == ["BRR", "BR", "BRR", "4L"] and max(v[2] for v in vb) == BRIDGE_LIFT_CM, vb
+    assert all(not wet(v[0], v[1]) for v in vb if v[2] == 0), "ramps start on land"
+    hn, he = over_water({"a": [0, 0], "b": [100000, 0]}, [["a", "b", "4L"]], lambda x, y: 20000 < x < 80000, {"4L": 1e9})
+    assert he and max(v[2] for v in he[0][3]) == BRIDGE_LIFT_CM, "a highway crosses 600 m of water on a bridge"
+    assert over_water({0: [0, 0], 1: [10000, 0]}, [[0, 1, "2L"]], lambda x, y: 5000 < x < 5500)[1], "creek bridged"
+    lake = {"name": "Lake", "x": 0, "y": 0, "radius": 60000, "seed": 3, "style": "grid"}
+    shore = lambda x, y: x > 30000
+    ln, le = city_graph(lake, {"freeways": "no"}, shore)
+    assert all(x <= 30000 or len(e) > 3 for e in le for x in (ln[e[0]][0], ln[e[1]][0])), "no street node in the lake"
+    assert not any(shore(r[0], r[1]) for r in city_layout(lake, {"freeways": "no"}, shore)["lots"])
+    # city size and distance between cities
+    small_c = place_cities(5, 3, ((-300000, -300000), (300000, 300000)), size=0.6, gap_cm=50000)
+    big_c = place_cities(5, 3, ((-300000, -300000), (300000, 300000)), size=1.5, gap_cm=50000)
+    assert max(c["radius"] for c in small_c) < min(c["radius"] for c in big_c), "city size scales radii"
+    for cs in (small_c, big_c):
+        assert all(math.hypot(a["x"] - b["x"], a["y"] - b["y"]) >= a["radius"] + b["radius"] + 50000 - 1
+                   for i, a in enumerate(cs) for b in cs[i + 1:])
+    apart = spread([{"x": 0, "y": 0, "radius": 50000}, {"x": 60000, "y": 0, "radius": 50000}], 80000)
+    assert abs(apart[1]["x"] - apart[0]["x"] - 180000) < 2 and apart[0]["x"] == -60000, apart
     print("citygen ok", {k: len(v["segments"]) for k, v in actors.items()}, "metro interchanges", kinds)
 
 

@@ -187,6 +187,17 @@ BEFORE the blocks) and local streets (`<City> Roads`). Per city, `freeways.plan`
   crossings with less than 7 m between them, radius and grade per class, and ramp ends that touch no road. It must
   come back clean. Never hand-place a ramp; change the plan and regenerate.
 
+## City size, spacing and water
+- **World tab:** `City size` (option `city_size`, ×0.3–4) scales every city, and regenerating scales the ones you
+  have. `Distance between cities` (`city_gap_m`) is the open country between two cities' edges; cities closer
+  than that are pushed apart (`citygen.spread`). Under **Selected city**, pick a city and set its radius
+  (150 m – 5 km) or road style. That calls `road_network_city_save`, then regenerates.
+- **Water** (`citygen.over_water`, the terrain's water line `sea`): every road edge is sampled for water.
+  - Highways and freeways always cross on a bridge: BRR ramp on land, then a BR / ED deck 7.5 m up, then a ramp.
+  - Main roads (2S / 4L / 6L) bridge up to 400 m of water, and any paved street bridges a creek up to 60 m.
+  - Anything else, or a road with an end in the water, is removed. Streets stop at the shore.
+  - Lots, parking and private streets are never in the water. There are no sidewalk splines on bridges.
+
 ## How a city is generated (the math, in order)
 Roads define the city, blocks are what roads enclose, lots are cut from blocks, buildings fit lots.
 1. **Planned grid** (`citygen.city_graph`): one orientation per city; intersections on a block grid (`block_m`

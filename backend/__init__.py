@@ -661,8 +661,15 @@ def register(api) -> None:
                       "seed": int(c.get("seed", seed + k))} for k, c in enumerate(given)]
         elif not text and old:  # regenerate the cities already there (their names, styles and buildings stay)
             towns = [{k: v for k, v in c.items() if k in ("name", "x", "y", "radius", "style", "seed")} for c in old.values()]
+            # City size changed since the last run: every city grows / shrinks by the same factor; then they are
+            # pushed apart until the distance between cities holds
+            grow = opts["city_size"] / float((last.get("options") or {}).get("city_size", 1.0) or 1.0)
+            for t in towns:
+                t["radius"] = max(15000.0, t["radius"] * grow)
+            towns = cg.spread(towns, opts["city_gap_m"] * 100, keep)
         else:
-            towns = cg.place_cities(int(seed), max(1, min(12, int(text or 3))), bounds, keep)
+            towns = cg.place_cities(int(seed), max(1, min(12, int(text or 3))), bounds, keep, opts["city_size"],
+                                    opts["city_gap_m"] * 100)
         if not towns:
             return {"ok": False, "error": "No room for that many cities: make the map bigger or ask for fewer."}
         ter = base or cg.terrain(int(seed), size, max(0.0, float(relief_m)) * 100, towns, center=(center_x, center_y),
@@ -671,7 +678,8 @@ def register(api) -> None:
         # roads never dive into a lake: across water they stay 1.5 m above it (a causeway)
         road_ground = ((lambda x, y: max(st.sample_grid(ter, x, y) or 0.0, water + 150)) if water is not None
                        else (lambda x, y: st.sample_grid(ter, x, y) or 0.0))
-        actors = cg.generate(towns, road_ground, folder, int(seed), opts, keep)
+        wet = cg.wet_from(ter)  # roads know the water: main roads and highways bridge it, side streets stop
+        actors = cg.generate(towns, road_ground, folder, int(seed), opts, keep, wet)
         before = data.get(f"net.{nid}")
         saved = save_network(nid, name, "", "live")
         if not saved.get("ok"):
@@ -695,7 +703,7 @@ def register(api) -> None:
             data.put(f"net.{nid}.city.{cslug}", {**t, "name": t["name"], "roads": f"{t['name']} Roads",
                                                  "districts": cg.districts(t, opts),
                                                  # BlockGenerator + neighbourhoods: lots, private streets, parking
-                                                 **_layout_doc(cg.city_layout(t, opts)),
+                                                 **_layout_doc(cg.city_layout(t, opts, wet)),
                                                  "freeways": freeways[t["name"]],
                                                  "buildings": prev.get("buildings") or {"downtown": [], "normal": [], "housing": []}})
         doc = data.get(f"net.{nid}")
@@ -1056,7 +1064,8 @@ def register(api) -> None:
                 rows_by[t["name"]].append(r)
         out = {}
         for t in towns:
-            for label, actor in ((f"{t['name']} Paths", cg.paths_actor(t, opts, rows_by[t["name"]], ground, folder)),
+            for label, actor in ((f"{t['name']} Paths", cg.paths_actor(t, opts, rows_by[t["name"]], ground, folder,
+                                                                        cg.wet_from(ter))),
                                  (f"{t['name']} Access", cg.access_actor(t, rows_by[t["name"]], ground, folder))):
                 if actor["segments"]:
                     out[label] = store_actor(nid, label, actor, doc.get("name") or nid)["stats"]
