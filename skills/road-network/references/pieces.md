@@ -132,6 +132,10 @@ Simple collision comes from the parts. Sizes are mirrored in `KIT` in `backend/k
 - `M_City_WorldPBR` (made once by the listener): triplanar world projection: WorldPosition / `TileCm`, three samples per
   map (YZ, XZ, XY) weighted by |vertex normal|^2 normalised; `Base` x `Tint` -> Base Colour, `Rough` (R) x `RoughMul`
   -> Roughness, `Metallic`, `Tint` x `Emissive` -> Emissive. Usage: **Instanced Static Meshes, Nanite, Spline Meshes**.
+- `M_City_Glass` (window glass, every old material with "Glass" in its name): **Translucent**, lighting mode
+  Surface Per-Pixel, two-sided, ISM usage; `Tint` -> Base Colour, `Opacity` 0.3, `Roughness` 0.05, `Metallic` 0.3.
+  You see the floors through it and sun/sky light reaches inside (translucency casts no shadow-map shadow).
+  Keep Opacity 0.2-0.4: lower looks like an empty frame, higher looks opaque again. Never Masked/Opaque for windows.
 - Textures: the cinema PBR sets `Cinema/PBR/Textures/T_CinemaPBR_<Set>_{B,R}` (Concrete, Stone, Tile, Wood, Oak,
   Frame, Pavers, Rock, Asphalt...). World projection = a building stretched to fit its lot never smears.
 - One `MI_City_<old>` per old flat-colour material (keeps the old colour as Tint); the look comes from the name

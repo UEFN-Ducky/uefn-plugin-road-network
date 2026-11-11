@@ -424,6 +424,35 @@ def _world_pbr_master(folder: str, root: str):
     return m
 
 
+def _glass_master(folder: str):
+    """M_City_Glass: see-through window glass (Tint, Opacity 0.3). Translucent with per-pixel lighting, so
+    sun and sky light pass into the building (translucency casts no shadow-map shadow)."""
+    path = f"{folder}/M_City_Glass"
+    if unreal.EditorAssetLibrary.does_asset_exist(path):
+        return unreal.load_asset(path)
+    mel = unreal.MaterialEditingLibrary
+    m = unreal.AssetToolsHelpers.get_asset_tools().create_asset("M_City_Glass", folder, unreal.Material,
+                                                                  unreal.MaterialFactoryNew())
+    m.set_editor_property("blend_mode", unreal.BlendMode.BLEND_TRANSLUCENT)
+    m.set_editor_property("translucency_lighting_mode", unreal.TranslucencyLightingMode.TLM_SURFACE_PER_PIXEL_LIGHTING)
+    m.set_editor_property("two_sided", True)
+    m.set_editor_property("used_with_instanced_static_meshes", True)
+    tint = mel.create_material_expression(m, unreal.MaterialExpressionVectorParameter, -400, 0)
+    tint.set_editor_property("parameter_name", "Tint")
+    tint.set_editor_property("default_value", unreal.LinearColor(0.35, 0.55, 0.8, 1))
+    mel.connect_material_property(tint, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    for k, (name, v, prop) in enumerate((("Opacity", 0.3, unreal.MaterialProperty.MP_OPACITY),
+                                         ("Roughness", 0.05, unreal.MaterialProperty.MP_ROUGHNESS),
+                                         ("Metallic", 0.3, unreal.MaterialProperty.MP_METALLIC))):
+        p = mel.create_material_expression(m, unreal.MaterialExpressionScalarParameter, -400, 200 + k * 150)
+        p.set_editor_property("parameter_name", name)
+        p.set_editor_property("default_value", v)
+        mel.connect_material_property(p, "", prop)
+    mel.recompile_material(m)
+    _save_batch([m])
+    return m
+
+
 def _old_tint(mat) -> unreal.LinearColor:
     mel = unreal.MaterialEditingLibrary
     try:
@@ -563,6 +592,7 @@ def road_network_kit_materials(root: str = "", folders: list | None = None) -> d
     if not eal.does_directory_exist(mat_folder):
         eal.make_directory(mat_folder)
     master = _world_pbr_master(mat_folder, root)
+    glass = _glass_master(mat_folder)
     made, created, overrides = {}, [], {}
     for sub in folders or ["City", "Kit"]:
         for path in eal.list_assets(f"{root}/WorldGen/{sub}", recursive=False):
@@ -584,7 +614,12 @@ def road_network_kit_materials(root: str = "", folders: list | None = None) -> d
                     fresh = not eal.does_asset_exist(mi_path)
                     mi = tools.create_asset(mi_path.rsplit("/", 1)[1], mat_folder, unreal.MaterialInstanceConstant,
                                             unreal.MaterialInstanceConstantFactoryNew()) if fresh else eal.load_asset(mi_path)
-                    if fresh:
+                    if "glass" in key.lower() and mi.get_editor_property("parent") != glass:
+                        mel.set_material_instance_parent(mi, glass)  # see-through windows
+                        mel.set_material_instance_vector_parameter_value(mi, "Tint", _old_tint(old))
+                        mel.update_material_instance(mi)
+                        created.append(mi)
+                    elif fresh:
                         mel.set_material_instance_parent(mi, master)
                         tex, tile, rough, metal, glow = _look(key)
                         for ch, pname in (("B", "Base"), ("R", "Rough")):
