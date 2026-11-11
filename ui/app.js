@@ -1,5 +1,5 @@
 import * as THREE from "./vendor/three@0.160.0/build/three.module.min.js";
-import { h, icon, iconHTML, slider, segmented, toggle, chip, choices, field, section, button } from "./controls.js";
+import { h, icon, iconHTML, slider, segmented, toggle, chip, choices, field, section, foldedSections, button } from "./controls.js";
 import { syncPlan, parseLiveView } from "./sync.js";
 
 // ------------------------------------------------------------------ bridge
@@ -913,7 +913,8 @@ function openTab(id) {
     b?.setAttribute("tabindex", t === id ? "0" : "-1");
     b?.toggleAttribute("aria-current", t === id);
   }
-  $("paneTitle").textContent = (TABS.find((t) => t[0] === id) || [])[1] || "";
+  const [, label = "", ic = "world"] = TABS.find((t) => t[0] === id) || [];
+  $("paneTitle").replaceChildren(icon(ic, 16), h("span", {}, label));
   $("foot").hidden = !GEN_TABS.has(id);
   // the left side follows the section: the layer order in Layers, the road actors in Edit roads, else the cities
   $("leftLayers").hidden = id !== "pcg";
@@ -946,7 +947,7 @@ function buildPanes() {
     ["new", "New terrain", "Natural hills and water, with a heightmap to import", "terrain"],
     ["net", "Selected network's ground", "Cities sit on the open network's scanned terrain", "layers"]] });
   $("pane-world").replaceChildren(
-    section("World", ctl.name.el, sl("cities", "Cities", 1, 12, 1, (v) => String(v)), sl("size_km", "Map size", 1, 20, 0.5, (v) => `${v} km`),
+    section("Basics", ctl.name.el, sl("cities", "Cities", 1, 12, 1, (v) => String(v)), sl("size_km", "Map size", 1, 20, 0.5, (v) => `${v} km`),
       sl("city_size", "City size", 0.3, 4, 0.05, (v) => `×${(+v).toFixed(2)}`, "Every city bigger or smaller (regenerating scales the cities you have)"),
       sl("city_gap_m", "Distance between cities", 0, 6000, 50, m, "Open country between two cities' edges, at least: cities closer than this are pushed apart"),
       ctl.seed.el),
@@ -990,26 +991,28 @@ function buildPanes() {
     seg("one_way_core", "One-way side streets downtown", [["no", "Two-way", "route"], ["yes", "One-way", "top"]]),
     seg("neighbourhood_roads", "Neighbourhoods", [["2L", "2 lanes", "route"], ["2S", "2 + sidewalk", "route"], ["4L", "4 lanes", "road"]]),
     seg("suburb_roads", "Suburbs", [["1W", "1 lane", "top"], ["DT", "Dirt", "terrain"], ["2L", "2 lanes", "route"], ["2S", "2 + sidewalk", "route"]]));
-  const junctions = section("Highways and interchanges", ctl.highway.el,
+  const junctions = section("Highways", ctl.highway.el,
     seg("interchange", "Where a highway meets a city", [["direct", "Direct", "route"], ["diamond", "Diamond", "grid"],
       ["trumpet", "Trumpet", "refresh"], ["cloverleaf", "Clover", "mixed"], ["stack", "Stack", "layers"]]),
     seg("overpasses", "Where a highway crosses a street", [["yes", "Bridge over", "top"], ["no", "Cross at grade", "route"]]),
     seg("freeways", "Urban freeways through big cities", [["yes", "Freeways", "layers"], ["no", "None", "route"]]),
+    sl("highway_curve", "Highway curve", 0, 0.3, 0.01, pct),
+    h("div", { class: "rn-hint" }, "Diamond, trumpet and cloverleaf are built from our ramp, bridge and road pieces: the highway " +
+      "bridges over a cross road with slip ramps (diamond), one loop (trumpet) or four loops (cloverleaf). Stack rises onto the " +
+      "elevated deck. You see every ramp in the 3D view."));
+  const coast = section("Waterfront and airports",
     seg("waterfront", "Waterfront (quays, marinas, beaches, ports)", [["yes", "Develop", "wave"], ["no", "Leave natural", "terrain"]]),
     seg("canals", "Canals", [["none", "None", "route"], ["canal_city", "Canal city", "wave"]]),
     seg("shipyards", "Shipyards on deep industrial shore", [["auto", "Plan them", "wrench"], ["none", "None", "route"]]),
     seg("airports", "Airports (by city size)", [["auto", "Plan them", "route"], ["none", "None", "terrain"]]),
     seg("military_base", "Military airbase", [["no", "No", "route"], ["yes", "Yes", "layers"]]),
-    sl("wind_deg", "Prevailing wind", 0, 360, 5, (v) => `${Math.round(v)}°`, "Runways are turned into the wind"),
-    h("div", { class: "rn-hint" }, "Diamond, trumpet and cloverleaf are built from our ramp, bridge and road pieces: the highway " +
-      "bridges over a cross road with slip ramps (diamond), one loop (trumpet) or four loops (cloverleaf). Stack rises onto the " +
-      "elevated deck. You see every ramp in the 3D view."));
+    sl("wind_deg", "Prevailing wind", 0, 360, 5, (v) => `${Math.round(v)}°`, "Runways are turned into the wind"));
   $("pane-roads").replaceChildren(
     section("Streets", sl("block_m", "Block size", 50, 250, 5, m), sl("wobble", "Curvy streets", 0, 0.45, 0.01, pct, "How far organic streets drift off the grid"),
       sl("prune", "Side streets removed", 0, 0.5, 0.01, pct)),
     section("Districts", sl("downtown", "Downtown ring", 0.1, 0.8, 0.01, pct, "Four-lane grid inside this share of each city's radius"),
       sl("normal", "Normal city ring", 0.2, 0.95, 0.01, pct, "Streets with pavements up to here; housing beyond")),
-    roadKinds, junctions, sl("highway_curve", "Highway curve", 0, 0.3, 0.01, pct));
+    roadKinds, junctions, coast);
   // ---- Footer
   ctl.live = toggle({ label: "Live preview", iconName: "play", value: state.live, onChange: (v) => { state.live = v; savePrefs(); } });
   $("foot").replaceChildren(ctl.live.el, button("Generate", "refresh", () => generate(), "primary", "Build the terrain, cities and roads (offline, nothing changes in UEFN)"));
@@ -1105,12 +1108,14 @@ function layerCard(l, earlier) {
     };
     now ? run().then(renderPcgPane) : (pcgSaveTimer = setTimeout(run, 350));
   };
-  const enabled = toggle({ label: "On", value: l.enabled, onChange: (v) => save({ enabled: v }, true) });
+  // folded: icon, name, count and the switch only (where it places is inside the card)
+  const enabled = toggle({ label: "", value: l.enabled, onChange: (v) => save({ enabled: v }, true) });
+  enabled.el.setAttribute("aria-label", `${l.name} on`);
+  enabled.el.setAttribute("title", l.enabled ? "On: placed in the preview and the build" : "Off");
   enabled.el.style.width = "auto";
   enabled.el.style.marginBottom = "0";
   const headBtn = h("button", { type: "button", class: "rn-card__head", style: "width: 100%; border: 0; background: none; color: inherit; font: inherit; padding: 0; cursor: pointer; margin: 0", "aria-expanded": open ? "true" : "false" },
     icon(KIND_ICON[l.kind] || "layers", 16), h("span", { class: "rn-card__name", style: "text-align: left" }, l.name),
-    h("span", { class: "rn-tag" }, (WHERE_OPTS.find((w) => w[0] === l.where) || [, l.where])[1]),
     h("span", { class: "rn-tag", "data-pcg-count": l.name, title: "Placed by the preview" }, "—"));
   headBtn.addEventListener("click", () => { state.pcgOpen = open ? "" : l.id; renderPcgPane(); });
   const card = h("div", { class: "rn-card", "data-live-id": `layer:${l.id}`, style: l.enabled ? "" : "opacity: .6" },
@@ -1890,7 +1895,7 @@ function renderLayerList() {
       title: `${i + 1}. ${l.name}: placed after the layers above it; drag to change the order` },
       h("span", { class: "rn-num" }, `${i + 1}`),
       h("span", { class: "rn-dot", style: `background: ${swatch(ROLE_COLOR[l.role] || "fg-dim")}` }),
-      h("span", {}, l.name), h("span", { class: "rn-count", "data-pcg-count": l.name }, ""), icon("grip", 14));
+      h("span", { class: "rn-name" }, l.name), h("span", { class: "rn-count", "data-pcg-count": l.name }, ""), icon("grip", 14));
     row.lastChild.classList.add("rn-grab");
     row.addEventListener("click", () => {
       state.pcgOpen = l.id;
@@ -1921,24 +1926,54 @@ function renderLayerList() {
   renderPcgCounts();
 }
 
-// ------------------------------------------------------------------ sidebar: width grip and version
-function initGrip() {
-  const grip = $("leftGrip"), root = document.documentElement;
-  const setW = (w) => { state.view.leftW = Math.max(180, Math.min(480, Math.round(w))); root.style.setProperty("--left-w", `${state.view.leftW}px`); };
-  if (state.view.leftW) setW(state.view.leftW);
-  grip.addEventListener("pointerdown", (e) => {
-    const start = e.clientX, w0 = grip.parentElement.getBoundingClientRect().width;
-    grip.setPointerCapture(e.pointerId);
-    grip.classList.add("is-dragging");
-    const move = (ev) => { setW(w0 + ev.clientX - start); resize(); };
-    const up = () => { grip.classList.remove("is-dragging"); grip.removeEventListener("pointermove", move); savePrefs(); };
-    grip.addEventListener("pointermove", move);
-    grip.addEventListener("pointerup", up, { once: true });
-  });
-  grip.addEventListener("keydown", (e) => {
-    const k = { ArrowLeft: -16, ArrowRight: 16 }[e.key];
-    if (k) { setW((state.view.leftW || 248) + k); resize(); savePrefs(); }
-  });
+// ------------------------------------------------------------------ side panels: resize handles and version
+// Ducky's sidebar handle on both sides: drag, arrow keys, double-click for the starting width. Widths are kept.
+const SPLITS = [
+  { id: "splitLeft", key: "leftW", cssVar: "--left-w", min: 180, max: 480, start: 236, sign: 1 },
+  { id: "splitRight", key: "rightW", cssVar: "--right-w", min: 260, max: 560, start: 328, sign: -1 },
+];
+function initSplits() {
+  const root = document.documentElement;
+  for (const s of SPLITS) {
+    const handle = $(s.id);
+    const setW = (w) => {
+      state.view[s.key] = Math.max(s.min, Math.min(s.max, Math.round(w)));
+      root.style.setProperty(s.cssVar, `${state.view[s.key]}px`);
+      handle.setAttribute("aria-valuenow", state.view[s.key]);
+      resize();
+    };
+    handle.setAttribute("aria-valuemin", s.min);
+    handle.setAttribute("aria-valuemax", s.max);
+    if (state.view[s.key]) setW(state.view[s.key]);
+    handle.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      const x0 = e.clientX, w0 = state.view[s.key] || s.start;
+      handle.setPointerCapture(e.pointerId);
+      handle.classList.add("is-dragging");
+      document.body.classList.add("is-resizing");
+      const move = (ev) => setW(w0 + (ev.clientX - x0) * s.sign);
+      const up = () => {
+        handle.classList.remove("is-dragging");
+        document.body.classList.remove("is-resizing");
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", up);
+        handle.removeEventListener("pointercancel", up);
+        savePrefs();
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", up);
+      handle.addEventListener("pointercancel", up);
+    });
+    handle.addEventListener("dblclick", () => { setW(s.start); savePrefs(); });
+    handle.addEventListener("keydown", (e) => {
+      const k = { ArrowLeft: -16, ArrowRight: 16 }[e.key];
+      if (!k) return;
+      e.preventDefault();
+      setW((state.view[s.key] || s.start) + k * s.sign);
+      savePrefs();
+    });
+  }
 }
 async function showVersion() {
   const v = await rpc("version");
@@ -2354,9 +2389,11 @@ function loadChats() {  // fetched once in the background (on start), refreshed 
   renderTabs();
   renderToolbar();
   renderTools();
-  initGrip();
+  initSplits();
   showVersion();
   setTimeout(loadChats, 1500);  // the Send to list is ready before anyone draws
+  // the right panel's groups fold; long, rarely changed ones start folded
+  foldedSections(state.view.folded ?? ["Waterfront and airports", "Preview"], (titles) => { state.view.folded = titles; savePrefs(); });
   buildPanes();
   openTab(state.tab);
   resize();

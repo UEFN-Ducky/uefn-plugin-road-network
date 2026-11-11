@@ -18,10 +18,16 @@
     .rn-header .rn-spacer { flex: 1; }
     .rn-header .dk-btn { display: inline-flex; align-items: center; gap: 6px; }
 
-    /* ---------- left sidebar: sections, layers, actors, version; resizable */
-    .rn-left { width: var(--left-w, 248px); position: relative; }
-    .rn-grip { position: absolute; top: 0; right: -4px; width: 8px; height: 100%; cursor: col-resize; z-index: 3; }
-    .rn-grip:hover, .rn-grip.is-dragging { background: linear-gradient(to right, transparent 3px, var(--accent) 3px, var(--accent) 5px, transparent 5px); }
+    /* ---------- resize handles between the panels: Ducky's own sidebar handle (a 1 px line, lit while
+       hovered or dragged, a wider grab area), sitting in the middle of the gap */
+    .rn-split { flex: none; align-self: stretch; width: 1px; margin: 0 -3.5px; position: relative; z-index: 3; cursor: col-resize;
+                touch-action: none; background: var(--border); transition: background-color 0.15s ease; }
+    .rn-split::before { content: ""; position: absolute; top: 0; bottom: 0; left: -4px; right: -4px; }
+    .rn-split:hover, .rn-split.is-dragging { background: var(--accent); }
+    .rn-split:focus-visible { outline: none; background: var(--border-focus); }
+    body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-select: none; }
+
+    /* ---------- left sidebar: sections, layers, actors, version */
     .rn-version { padding: 8px 12px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; }
     .rn-layer { display: flex; align-items: center; gap: 8px; cursor: grab; }
     .rn-layer.is-dragging { opacity: 0.5; }
@@ -73,14 +79,28 @@
     #view canvas { display: block; width: 100%; height: 100%; outline: none; }
 
     /* ---------- side panels */
-    .rn-left { width: 236px; display: flex; flex-direction: column; overflow: hidden; }
+    .rn-left { width: var(--left-w, 236px); display: flex; flex-direction: column; overflow: hidden; }
     .rn-left .rn-scroll { flex: 1; overflow: auto; padding: 0 4px 8px; }
-    .rn-right { width: 328px; display: flex; flex-direction: column; overflow: hidden; padding: 0; }
+    .rn-right { width: var(--right-w, 328px); display: flex; flex-direction: column; overflow: hidden; padding: 0; }
     .rn-section { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--fg-dim); margin: 16px 4px 8px; }
-    .rn-group:first-child .rn-section { margin-top: 4px; }
+    /* accordion groups in the right panel: a title row that folds the group, one line between groups */
+    .rn-group + .rn-group { border-top: 1px solid var(--border); }
+    .rn-group__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: calc(100% + 8px);
+                      margin: 0 -4px; padding: 10px 4px; border: 0; border-radius: var(--radius-sm); background: transparent;
+                      color: var(--fg-dim); font: inherit; cursor: pointer; text-align: left; }
+    .rn-group__head .rn-section { margin: 0; }
+    .rn-group__head:hover, .rn-group__head:hover .rn-section { color: var(--fg); }
+    .rn-group__head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; }
+    .rn-group__head .rn-icon { transform: rotate(90deg); transition: transform 0.15s ease; }
+    .rn-group.is-closed .rn-group__head .rn-icon { transform: none; }
+    .rn-group__body { padding-bottom: 8px; }
+    .rn-group__body[hidden] { display: none; }
+    .rn-pane-head { display: flex; align-items: center; gap: 8px; padding: 12px 12px 4px; font-size: 13px; font-weight: 600; color: var(--fg); }
+    .rn-pane-head .rn-icon { color: var(--accent); }
     .rn-list { display: flex; flex-direction: column; gap: 2px; }
     .rn-list .dk-nav-item { display: flex; align-items: center; gap: 8px; min-width: 0; }
-    .rn-list .dk-nav-item > span:first-of-type { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+    .rn-list .dk-nav-item > span:first-of-type, .rn-list .rn-layer > .rn-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+    .rn-list .rn-layer > span.rn-num:first-of-type { flex: none; }
     .rn-count { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
     .rn-tag { font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--fg-dim); }
     .rn-pull { display: flex; gap: 4px; padding: 0 4px; }
@@ -164,6 +184,8 @@
     .rn-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; margin-bottom: 8px; }
     .rn-card__head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 13px; color: var(--fg); }
     .rn-card__head .rn-card__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+    .rn-card__head .rn-tag { flex: none; white-space: nowrap; }
+    .rn-switch__label:empty { display: none; }
     .rn-kv { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; font-size: 12px; }
     .rn-kv span:nth-child(odd) { color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .rn-kv span:nth-child(even) { font-variant-numeric: tabular-nums; text-align: right; }
@@ -218,7 +240,7 @@
                     font-size: 13px; padding: 6px 8px; border-radius: var(--radius-sm); cursor: pointer; text-align: left; }
     .rn-city__row:hover { background: var(--bg-hover); }
     .rn-city__row:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; }
-    .rn-city.is-open > .rn-city__row { background: var(--bg-hover); box-shadow: inset 2px 0 0 var(--accent); }
+    .rn-city.is-open > .rn-city__row { background: var(--tab-active); }
     .rn-city__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .rn-city__pop { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
     .rn-city__del { opacity: 0; border: 0; background: transparent; color: var(--muted); padding: 2px; border-radius: 4px; cursor: pointer; display: inline-flex; }
@@ -279,8 +301,8 @@
         <div id="nets" hidden></div>
       </div>
       <div class="rn-version" id="version"></div>
-      <div class="rn-grip" id="leftGrip" role="separator" aria-orientation="vertical" aria-label="Resize the sidebar" tabindex="0"></div>
     </aside>
+    <div class="rn-split" id="splitLeft" role="separator" aria-orientation="vertical" aria-label="Resize the left panel" tabindex="0"></div>
     <main class="dk-main rn-main">
       <div id="view" tabindex="0" aria-label="3D road network view"></div>
       <div class="rn-labels" id="labels"></div>
@@ -292,8 +314,9 @@
       <div class="rn-tools" id="tools" role="toolbar" aria-label="Map tools"></div>
       <div class="rn-note" id="note" hidden></div>
     </main>
+    <div class="rn-split" id="splitRight" role="separator" aria-orientation="vertical" aria-label="Resize the right panel" tabindex="0"></div>
     <aside class="dk-sidebar dk-sidebar--right rn-right" aria-label="Section settings">
-      <div class="dk-sidebar__title" id="paneTitle">World</div>
+      <div class="rn-pane-head" id="paneTitle">World</div>
       <div id="tabs" hidden></div>
       <div id="err"></div>
       <div class="rn-pane" id="pane-world" role="tabpanel"></div>

@@ -45,6 +45,7 @@ const PATHS = {
   help: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6V14M12 17h.01",
   citypin: "M12 21s-6-5.5-6-11a6 6 0 0 1 12 0c0 5.5-6 11-6 11ZM9.5 11V8.5l2.5-1.5 2.5 1.5V11M12 11V9.5",
   move: "M12 3v18M3 12h18M12 3 9.5 5.5M12 3l2.5 2.5M12 21l-2.5-2.5M12 21l2.5-2.5M3 12l2.5-2.5M3 12l2.5 2.5M21 12l-2.5-2.5M21 12l-2.5 2.5",
+  chevron: "M9 6l6 6-6 6",
 };
 
 export function icon(name, size = 16) {
@@ -134,13 +135,13 @@ export function slider({ label, min, max, step = 1, value, fmt, onChange, onInpu
 }
 
 // ------------------------------------------------------------------ segmented pills
-// options: [[value, label, iconName?]]
+// options: [[value, label, iconName?]]: the words alone (an icon only where it stands in for them, compact)
 export function segmented({ label, options, value, onChange, compact }) {
   const el = h("div", { class: "rn-seg" + (compact ? " rn-seg--compact" : ""), role: "radiogroup", "aria-label": label });
   let v = value;
   const btns = options.map(([val, text, ic]) => {
     const b = h("button", { type: "button", class: "rn-seg__btn", role: "radio", "data-value": val, title: text },
-      ic ? icon(ic, 14) : null, compact && ic ? null : h("span", {}, text));
+      compact && ic ? icon(ic, 14) : h("span", {}, text));
     b.addEventListener("click", () => set(val, true));
     el.append(b);
     return b;
@@ -245,8 +246,31 @@ export function field({ label, value, placeholder, onChange, button }) {
     get value() { return input.value; }, set: (v) => { input.value = v; } };
 }
 
+// ------------------------------------------------------------------ sections: accordions
+// Each group folds on its title; which ones are folded is kept by title (the panel saves it with its prefs).
+const folded = { titles: new Set(), onChange: null };
+export function foldedSections(titles, onChange) {
+  folded.titles = new Set(titles || []);
+  folded.onChange = onChange;
+}
 export function section(title, ...kids) {
-  return h("section", { class: "rn-group" }, h("div", { class: "rn-section" }, title), ...kids);
+  const body = h("div", { class: "rn-group__body" }, ...kids);
+  const head = h("button", { type: "button", class: "rn-group__head" },
+    h("span", { class: "rn-section" }, title), icon("chevron", 14));
+  const el = h("section", { class: "rn-group" }, head, body);
+  const show = (open) => {
+    el.classList.toggle("is-closed", !open);
+    head.setAttribute("aria-expanded", open ? "true" : "false");
+    body.hidden = !open;
+  };
+  head.addEventListener("click", () => {
+    const open = el.classList.contains("is-closed");
+    show(open);
+    folded.titles[open ? "delete" : "add"](title);
+    folded.onChange?.([...folded.titles]);
+  });
+  show(!folded.titles.has(title));
+  return el;
 }
 
 export function button(label, iconName, onClick, kind = "secondary", title) {
