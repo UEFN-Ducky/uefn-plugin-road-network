@@ -250,6 +250,45 @@ same. To change the services, change population (city size, district rings) or t
 - **`road_network_waterfront(net_id, city)`** returns waterbodies, bridges, shoreline by use, developments and
   the validator result.
 
+## Shipyards and marine industry (`backend/shipyard.py`, option `shipyards`)
+Shipyards are **dedicated industrial districts**, not waterfront lots. `citygen.plan_shipyards` runs before the
+streets: it uses the classified shoreline (`waterfront.segments_for`) and an estimated population. City streets
+inside a campus are removed, and no city lot stays inside one.
+
+| Yard type | Picked when | What it gets |
+|---|---|---|
+| commercial | at least 600 m of deep (6 m+) industrial shore, 40k+ people | 1-3 graving docks, panel line, steel fabrication, paint and blasting, assembly yard, outfitting quay |
+| naval | a second big stretch on the ocean, 80k+ people | the same behind a security fence, with secure berths |
+| offshore | at least 400 m on the ocean, 30k+ people | huge hardstand, fabrication hall, jackets / foundations, quay |
+| repair | at least 250 m of deep water | floating dry dock, repair workshops, paint hall; a graving dock if the stretch is long |
+| yacht | a sheltered marina stretch, 15k+ people | slipways, yacht assembly and finishing halls, boat lift |
+| fishing | at least 150 m | processing plant, cold storage, fish market, docks |
+| recycling | shallow industrial shore | ships beached on slipways, scrap yard |
+
+**Production-flow layout** (u along the shore, v inland), following the EPA shipbuilding layouts and
+UFC 4-213-10:
+1. Administration, gate and parking at the back.
+2. Warehouses and steel storage, with a rail siding.
+3. Fabrication halls.
+4. Assembly yard (open hardstand with tower cranes).
+5. Graving docks, each with a goliath gantry spanning it, crane rails, keel blocks, a hull under construction,
+   a caisson gate and a pump house.
+6. Outfitting quay: quay wall, portal cranes on rails, ships alongside.
+7. Tug station. The launch basin in front of each dock is kept clear.
+
+Supporting pieces: substation, yard fire station and fuel tanks.
+
+- **Docks:** each graving dock is a straight DK spline in `<City> Docks`, laid 12 m down so the landscape spline
+  digs the basin. Each one runs from inland to 30 m past the shore.
+- **Validator:** docks open onto water, launch basins are clear, the flow runs steel → fabrication → assembly →
+  quay, administration is outside the heavy zone, and floating docks stay within the navigation share.
+- **Pieces:** Ships, Goliath gantry cranes, Portal cranes, Tower cranes, Crane rails, Keel blocks, Yard hardstand,
+  Steel storage, Rail sidings, Floating dry docks, Fuel tanks, Security fences, Boat lifts, Offshore jackets,
+  Slipways, Scrap yards, Dock gates, Gatehouses. Halls are footprint lots: factory, warehouse, civic, utility,
+  fire_station.
+- **Results:** `road_network_waterfront` returns each city's `shipyards` (type, docks, site size,
+  production-flow distances, validator).
+
 ## Generate again, any time
 Regenerating is never blocked. A world on scanned ground keeps using that ground. The header badge
 (`road_network_sync`) says whether UEFN is behind this world: road actors changed or never pushed, and

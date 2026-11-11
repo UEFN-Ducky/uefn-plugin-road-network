@@ -33,6 +33,9 @@ ROAD_TYPES = {
     # a canal is a spline too (the '<City> Canals' actor): quay walls, a 3 m channel and its water, laid at the
     # channel bed so the landscape spline lowers the ground into it; cross streets bridge it (canal arches)
     "CN": ("SM_Water_Canal_10m", 1200.0, 0, False, "canal: quay walls, 3 m channel, water 1.5 m below the banks"),
+    # a shipyard's graving dry dock (the '<City> Docks' actor): floor + 12 m walls, laid at the dock floor so the
+    # landscape spline digs the basin into the shore (shipyard.py)
+    "DK": ("SM_Water_DryDock_10m", 2000.0, 0, False, "graving dry dock: 40 m basin, 12 m deep, walls and walkways"),
     # pedestrian and access splines (the '<City> Paths' actor): live like roads, so they bend, keep a grade
     # and cut / fill the ground. City Builder builds these three meshes itself (street kit).
     "SW": ("SM_Path_Sidewalk_10m", 190.0, 0, True, "sidewalk (1.8 m clear path + frontage + furniture strip)"),
@@ -70,12 +73,15 @@ CHOICES = {
     "waterfront": (("yes", "no"), "yes"),
     # a canal city: every third street line in the inner city is a canal with walkways, its cross streets bridge it
     "canals": (("none", "canal_city"), "none"),
+    # shipyard.py: commercial / naval / offshore / repair / yacht yards, fishing industry and ship recycling on
+    # suitable deep industrial shore, as dedicated districts with dry docks, halls and cranes
+    "shipyards": (("auto", "none"), "auto"),
 }
 # steepest grade per road (rise / run): arterials and highways 4 %, collectors 5-6 %, local streets 8 %,
 # dirt 10 % (CityEngine-style targets for a game, not legal limits). Steeper ground is cut and filled.
 GRADE = {"6L": 0.04, "4L": 0.05, "2S": 0.06, "2L": 0.08, "1W": 0.08, "DT": 0.10,
          "SW": 0.08, "WK": 0.08, "DW": 0.15, "PR": 0.10, "DD": 0.15, "FR": 0.08,
-         "CN": 0.01}  # canals: nearly level (locks are not modelled)
+         "CN": 0.01, "DK": 0.01}  # canals and dry docks: nearly level (locks are not modelled)
 CANAL_DEPTH_CM = 300.0  # walkways at ramp grade (8.3 %), driveways up to 15 %
 BRIDGE_LIFT_CM = 750.0  # clearance a highway rises to over a street it crosses (a real freeway overpass: 7.5 m)
 
@@ -117,6 +123,10 @@ RULES = [
     "width, slope, flood) and each 100 m gets one use. Seawalls only on commercial / industrial quays; beaches, "
     "wetlands and natural shores stay natural. Marinas are compact and shared (not a dock per house), on "
     "sheltered deep water, piers never reach past a third of the water's width.",
+    "Shipyards are dedicated industrial districts planned before the streets (shipyard.py): the type comes from "
+    "the water, the stretch and the city size; the campus runs inland -> water as steel storage, fabrication, "
+    "assembly, docks / slipways, outfitting quay; administration at the back; open hardstand stays open; no city "
+    "street or lot inside; dry docks are DK splines that dig their basin; the launch basin stays clear.",
     "Bridges are typed by the water they span: canal arches (3 m clearance), beam (7.5 m), navigable girder "
     "(15 m), cable-stayed (30 m) and suspension (45 m) with pylons; ramps keep the road's grade.",
     "One editor call does little (one mesh build, a few junctions, one tile): UEFN frees windows only per frame.",
@@ -479,6 +489,35 @@ def canal_wet(city: dict, opts: dict | None = None):
     return inside
 
 
+def zoning(city: dict, opts: dict | None = None) -> tuple:
+    """(ring_of(x, y) -> 'core' | 'normal' | 'housing', industrial(x, y) -> bool) for one city."""
+    o = options(opts)
+    down, normal = o["downtown"], max(o["normal"], o["downtown"])
+    ring_of = lambda x, y: (lambda s: "core" if s <= down else "normal" if s <= normal else "housing")(
+        zone_share(city, x, y))
+    ind = districts(city, o)["industrial"]
+
+    def industrial(x, y):
+        a = math.degrees(math.atan2(y - city["y"], x - city["x"]))
+        return abs((a - ind["angle"] + 180) % 360 - 180) <= ind["spread"] / 2 and zone_share(city, x, y) > normal * 0.8
+    return ring_of, industrial
+
+
+def plan_shipyards(cities: list, water: dict, opts: dict | None = None) -> None:
+    """ShipyardPlanner for every city, before its streets: sets city['shipyards'] (campuses + their docks)."""
+    from . import shipyard
+    from . import waterfront
+    o = options(opts)
+    for c in cities:
+        c["shipyards"] = []
+        if o["shipyards"] == "none" or o["waterfront"] != "yes" or not water or water.get("sea") is None:
+            continue
+        ring_of, industrial = zoning(c, o)
+        pop = round(math.pi * (c["radius"] / 100000) ** 2 * 4800)  # ~4,800 people per km2 before the lots exist
+        segs = waterfront.segments_for(c, water, ring_of, industrial, pop)
+        c["shipyards"] = shipyard.sites(c, segs, pop, o)
+
+
 def water_of(city: dict, opts: dict | None, wet):
     """The terrain's water and the city's canals as one (x, y) -> bool (None when there is neither)."""
     cw = canal_wet(city, opts)
@@ -581,6 +620,13 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
     fw = freeway_plan(city, o)
     if fw.lines:  # a street a low ramp or an at-grade freeway would cut gives way (streets pass under viaducts)
         edges = [e for e in edges if not fw.street_blocked(nodes[e[0]], nodes[e[1]], HALF.get(e[2], 500.0))]
+        used = {n for e in edges for n in e[:2]}
+        nodes = {n: p for n, p in nodes.items() if n in used}
+    yards = city.get("shipyards") or []
+    if yards:  # a shipyard is a dedicated district with its own roads: no city street runs through it
+        from . import shipyard
+        drop = {n for n, p in nodes.items() if any(shipyard.inside(y, p[0], p[1], -2000) for y in yards)}
+        edges = [e for e in edges if e[0] not in drop and e[1] not in drop]
         used = {n for e in edges for n in e[:2]}
         nodes = {n: p for n, p in nodes.items() if n in used}
     cw = canal_wet(city, o)
@@ -918,21 +964,14 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
             out[key] = [r for r in out[key] if not wet(r[0], r[1])]
         out["streets"] = [s for s in out["streets"] if not any(wet(p[0], p[1]) for p in s)]
     out["grounds"], out["plan"], out["water"], out["waterfront"] = [], None, [], None
-    ring_of = lambda x, y: (lambda s: "core" if s <= down else "normal" if s <= normal else "housing")(
-        zone_share(city, x, y))
-    ind = districts(city, o)["industrial"]
-
-    def industrial(x, y):
-        a = math.degrees(math.atan2(y - city["y"], x - city["x"]))
-        off = abs((a - ind["angle"] + 180) % 360 - 180)
-        return off <= ind["spread"] / 2 and zone_share(city, x, y) > normal * 0.8
+    ring_of, industrial = zoning(city, o)
     if o["waterfront"] == "yes" and water and water.get("sea") is not None and ground:
         # waterfront first: the shore's quays, marinas, beaches and ports take their land before the services
         from . import waterfront
         pop = round(len(out["lots"]) * 9)  # a rough count for the port / ferry thresholds; urban.plan counts properly
         wf = waterfront.plan(city, water, out["lots"], ring_of, industrial, ground, nodes, pop)
         out["lots"], out["water"] = wf["lots"], wf["rows"]
-        out["waterfront"] = {k: wf[k] for k in ("segments", "developments", "shoreline_m", "report")}
+        out["waterfront"] = {k: wf[k] for k in ("segments", "developments", "shoreline_m", "report", "shipyards")}
     if o["planner"] == "yes" and out["lots"]:
         from . import urban
         barriers = [(p, q) for ln in fw.lines for p, q in zip(ln["points"], ln["points"][1:])]
@@ -1278,6 +1317,16 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
     if wet or any(canal_lines(c, o) for c in cities):  # cross roads added after city_graph bridge or stop too
         graphs = [over_water(n, e, water_of(c, o, wet), bridges=bridges) for c, (n, e) in zip(cities, graphs)]
     out = {f"{c['name']} Roads": build_actor(n, e, ground, folder) for c, (n, e) in zip(cities, graphs)}
+    for c in cities:  # graving docks: laid at the dock floor so the spline digs the basin
+        if c.get("shipyards"):
+            from . import shipyard
+            dn, de = {}, []
+            for y in c["shipyards"]:
+                n_, e_ = shipyard.dock_edges(y)
+                dn.update(n_)
+                de += e_
+            if de:
+                out[f"{c['name']} Docks"] = build_actor(dn, de, lambda x, y: ground(x, y) - shipyard.DOCK_DEPTH_CM, folder)
     for c in cities:  # canals: laid at the channel bed so the spline lowers the ground into them
         lines = canal_lines(c, o)
         if lines:

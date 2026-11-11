@@ -65,6 +65,25 @@ KINDS = {
     "stilt_house": ("SM_Kit_StiltHouse", [10, 8, 6], "mix:fg-dim:amber:0.45", "Stilt houses"),
     "float_home": ("SM_Kit_FloatHome", [10, 7, 5], "mix:fg:amber:0.3", "Floating homes"),
     "pylon": ("SM_Kit_BridgePylon", [6, 6, 100], "fg-dim", "Bridge towers"),
+    # shipyards (shipyard.py)
+    "ship_hull": ("SM_Kit_ShipHull", [100, 20, 24], "mix:red:fg-dim:0.55", "Ships"),
+    "goliath": ("SM_Kit_GoliathCrane", [20, 70, 80], "mix:red:amber:0.3", "Goliath gantry cranes"),
+    "portal_crane": ("SM_Kit_PortalCrane", [36, 12, 45], "mix:amber:fg:0.3", "Portal cranes"),
+    "tower_crane": ("SM_Kit_TowerCrane", [53, 6, 60], "amber", "Tower cranes"),
+    "crane_rail": ("SM_Kit_CraneRail", [1, 1, 0.2], "fg-dim", "Crane rails"),
+    "keel": ("SM_Kit_KeelBlock", [2, 1.5, 1.5], "mix:amber:bg:0.5", "Keel blocks"),
+    "hardstand": ("SM_Kit_Apron", [1, 1, 0.1], "mix:fg-dim:bg:0.4", "Yard hardstand"),
+    "steel_stack": ("SM_Kit_SteelStack", [12, 3, 1.5], "mix:fg-dim:blue:0.2", "Steel storage"),
+    "rail": ("SM_Kit_RailTrack", [1, 3, 0.2], "mix:fg-dim:amber:0.2", "Rail sidings"),
+    "float_drydock": ("SM_Kit_FloatingDryDock", [200, 45, 18], "mix:fg-dim:red:0.3", "Floating dry docks"),
+    "tank": ("SM_Kit_FuelTank", [20, 20, 12], "mix:fg:bg:0.2", "Fuel tanks"),
+    "fence": ("SM_Kit_Fence", [1, 0.1, 2.5], "fg-dim", "Security fences"),
+    "boat_lift": ("SM_Kit_BoatLift", [12, 8, 10], "mix:blue:fg:0.4", "Boat lifts"),
+    "offshore_module": ("SM_Kit_OffshoreJacket", [20, 20, 60], "mix:amber:red:0.4", "Offshore jackets"),
+    "slipway": ("SM_Kit_Apron", [1, 1, 0.1], "mix:fg-dim:amber:0.35", "Slipways"),
+    "scrap": ("SM_Kit_ScrapPile", [16, 16, 5], "mix:red:bg:0.5", "Scrap yards"),
+    "dock_gate": ("SM_Kit_Seawall", [1, 0.6, 1], "mix:red:fg-dim:0.5", "Dock gates"),
+    "gatehouse": ("SM_Kit_Gatehouse", [8, 6, 4], "fg-dim", "Gatehouses"),
 }
 TYPES = ("natural", "beach", "residential", "commercial", "marina", "industrial", "public")
 
@@ -377,14 +396,10 @@ def marina(out, ground, sea, s, water_type, sheltered, slips_wanted=60):
     return slips
 
 
-def plan(city: dict, analysis: dict, lots: list, ring_of, industrial, ground, nodes: dict | None = None,
-         population: int = 0) -> dict:
-    """WaterfrontPlanner + generators for one city: classified segments, structures (rows), land buildings
-    (lot rows), the lots kept, and the validator report."""
-    sea = analysis.get("sea")
-    out = _Out()
-    if sea is None:
-        return {"lots": lots, "rows": [], "segments": [], "developments": [], "report": None}
+def segments_for(city: dict, analysis: dict, ring_of, industrial, population: int = 0) -> list:
+    """The city's shoreline in classified stretches (shipyard.sites uses them before the streets exist)."""
+    if analysis.get("sea") is None:
+        return []
     R = city["radius"]
     near = lambda s: math.hypot(s["x"] - city["x"], s["y"] - city["y"]) < R * 1.25
     segments = []
@@ -404,6 +419,22 @@ def plan(city: dict, analysis: dict, lots: list, ring_of, industrial, ground, no
                 segments.append({"shore": sh["id"], "water": sh["type"], "type": kind, "samples": list(part)})
     for seg in segments:
         seg["length_m"] = round(len(seg["samples"]) * STEP / 100)
+    return segments
+
+
+def plan(city: dict, analysis: dict, lots: list, ring_of, industrial, ground, nodes: dict | None = None,
+         population: int = 0) -> dict:
+    """WaterfrontPlanner + generators for one city: classified segments, structures (rows), land buildings
+    (lot rows), the lots kept, and the validator report. The city's shipyards (city['shipyards'], planned with
+    the streets) are built here too: they take their stretch of shore instead of a plain port."""
+    from . import shipyard
+    sea = analysis.get("sea")
+    out = _Out()
+    if sea is None:
+        return {"lots": lots, "rows": [], "segments": [], "developments": [], "report": None, "shipyards": []}
+    segments = segments_for(city, analysis, ring_of, industrial, population)
+    yards = city.get("shipyards") or []
+    in_yard = lambda s: any(shipyard.inside(y, s["x"], s["y"], 3000) for y in yards)
     # no private lot on the public water's edge; residential keeps its yards but not in the water margin
     public = [s for seg in segments if seg["type"] in ("commercial", "beach", "public", "industrial", "marina")
               for s in seg["samples"]]
@@ -443,6 +474,8 @@ def plan(city: dict, analysis: dict, lots: list, ring_of, industrial, ground, no
     ferry_done = False
     for seg in sorted(segments, key=lambda g: -g["length_m"]):
         S, t = seg["samples"], seg["type"]
+        if any(in_yard(s) for s in S[len(S) // 3: 2 * len(S) // 3 + 1]):
+            continue  # a shipyard's own quay
         z_land = lambda s: ground(s["x"] - s["nx"] * 1000, s["y"] - s["ny"] * 1000) or sea
         if t in ("commercial", "industrial"):  # quay seawall: only where the city meets the water hard
             for a, b in zip(S, S[1:]):
@@ -534,6 +567,16 @@ def plan(city: dict, analysis: dict, lots: list, ring_of, industrial, ground, no
         elif t == "wetland":
             for a in S[::2]:
                 out.row(a["x"], a["y"], sea - 40, _yaw(a["tx"], a["ty"]), STEP * 2 / 100, 20, 1, "wetland")
+    # shipyards: dedicated industrial districts (their land is theirs, no city lot inside)
+    yard_reports = []
+    for y in yards:
+        got = shipyard.build(y, ground, sea, nodes)
+        out.rows += got["rows"]
+        out.lots += got["lots"]
+        keep = [q for q in keep if not shipyard.inside(y, q[0], q[1], 1000)]
+        yard_reports.append({"type": y["type"], "docks": len(y.get("docks") or []), "site_m": [round(y["L"] / 100),
+                             round(y["D"] / 100)], "flow_m": got["flow"], "report": got["report"]})
+        devs.append({"type": f"{y['type']} shipyard", "docks": len(y.get("docks") or [])})
     # claimed land: no lot under a new waterfront building
     for b in out.lots:
         r = max(b[3], b[4]) / 2 + 800
@@ -546,7 +589,7 @@ def plan(city: dict, analysis: dict, lots: list, ring_of, industrial, ground, no
             "segments": [{"type": g["type"], "water": g["water"], "length_m": g["length_m"],
                           "from": [g["samples"][0]["x"], g["samples"][0]["y"]],
                           "to": [g["samples"][-1]["x"], g["samples"][-1]["y"]]} for g in segments],
-            "developments": devs, "shoreline_m": counts, "report": report}
+            "developments": devs, "shoreline_m": counts, "report": report, "shipyards": yard_reports}
 
 
 def validate(out: _Out, segments: list) -> dict:
@@ -671,6 +714,19 @@ def _demo() -> None:
     # buildings face the water and replaced the lots under them
     wb = [r for r in got["lots"] if r[8] is True]
     assert wb and len(got["lots"]) < len(lots) + len(wb)
+    # shipyards: planned on the deep industrial shore before the streets, built as a district with docks
+    from . import shipyard
+    city["shipyards"] = shipyard.sites(city, segments_for(city, a, ring, industrial, 90000), 90000)
+    types = {y["type"] for y in city["shipyards"]}
+    assert "commercial" in types, ("800 m of deep industrial ocean shore in a 90k city: a commercial yard", types)
+    yard = plan(city, a, lots, ring, industrial, ground, nodes, 90000)
+    assert all(y["report"]["ok"] for y in yard["shipyards"]), yard["shipyards"]
+    kinds = {r[7] for r in yard["rows"]}
+    assert {"goliath", "ship_hull", "portal_crane", "keel", "dock_gate"} <= kinds, kinds
+    for y in city["shipyards"]:
+        assert not any(shipyard.inside(y, r[0], r[1], 0) for r in yard["lots"] if r[8] is not True), \
+            "no city lot inside a yard"
+    print("  shipyards", [(y["type"], y["docks"], y["site_m"]) for y in yard["shipyards"]])
     t, lift = bridge_kind(90000, "4L")
     assert t == "cable-stayed bridge" and lift == 3000.0
     print("waterfront ok", len(got["rows"]), "pieces", len(wb), "waterfront buildings")

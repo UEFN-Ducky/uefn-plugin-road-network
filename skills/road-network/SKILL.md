@@ -50,7 +50,7 @@ UEFN. A blown-out or empty screenshot is a failure, not a pass.
 
 ## Going deeper
 - `references/systems.md`: every system in detail (pipeline, parcels, neighbourhoods, freeways, urban planner,
-  waterfront, PCG tiles, push/pull).
+  waterfront, shipyards, PCG tiles, push/pull).
 - `references/pieces.md`: exact sizes, cross-sections and materials of every piece, and the checklist for a new
   one.
 - `references/city-method.md`: how procedural cities are built in PCG (Epic's City Sample method, Polygon 2D,

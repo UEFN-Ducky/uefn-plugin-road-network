@@ -132,6 +132,22 @@ KIT = {
     "SM_Kit_StiltHouse": ("Kit/Street", -500, -400, 0, 500, 400, 600),
     "SM_Kit_FloatHome": ("Kit/Street", -500, -350, 0, 500, 350, 500),
     "SM_Kit_BridgePylon": ("Kit/Street", -300, -300, 0, 300, 300, 10000),
+    # shipyards (shipyard.py)
+    "SM_Kit_ShipHull": ("Kit/Street", -5000, -1000, 0, 5000, 1000, 2400),
+    "SM_Kit_GoliathCrane": ("Kit/Street", -1000, -3500, 0, 1000, 3500, 8000),
+    "SM_Kit_PortalCrane": ("Kit/Street", -600, -600, 0, 3000, 600, 4500),
+    "SM_Kit_TowerCrane": ("Kit/Street", -300, -300, 0, 5000, 300, 6000),
+    "SM_Kit_CraneRail": ("Kit/Street", -50, -50, 0, 50, 50, 20),
+    "SM_Kit_KeelBlock": ("Kit/Street", -100, -75, 0, 100, 75, 150),
+    "SM_Kit_SteelStack": ("Kit/Street", -600, -150, 0, 600, 150, 150),
+    "SM_Kit_RailTrack": ("Kit/Street", -50, -150, 0, 50, 150, 20),
+    "SM_Kit_FloatingDryDock": ("Kit/Street", -10000, -2250, 0, 10000, 2250, 1800),
+    "SM_Kit_FuelTank": ("Kit/Street", -1000, -1000, 0, 1000, 1000, 1200),
+    "SM_Kit_Fence": ("Kit/Street", -50, -5, 0, 50, 5, 250),
+    "SM_Kit_BoatLift": ("Kit/Street", -600, -400, 0, 600, 400, 1000),
+    "SM_Kit_OffshoreJacket": ("Kit/Street", -1000, -1000, 0, 1000, 1000, 6000),
+    "SM_Kit_ScrapPile": ("Kit/Street", -800, -800, 0, 800, 800, 500),
+    "SM_Kit_Gatehouse": ("Kit/Street", -400, -300, 0, 400, 300, 400),
 }
 
 

@@ -739,8 +739,9 @@ def register(api) -> None:
                        else (lambda x, y: st.sample_grid(ter, x, y) or 0.0))
         wet = cg.wet_from(ter)  # roads know the water: main roads and highways bridge it, side streets stop
         bridges: list = []
-        actors = cg.generate(towns, road_ground, folder, int(seed), opts, keep, wet, bridges)
         water = waterfront.analyze(ter)  # ShorelineAnalyzer: waterbodies and shorelines for the planner
+        cg.plan_shipyards(towns, water, opts)  # shipyards are districts: planned before the streets
+        actors = cg.generate(towns, road_ground, folder, int(seed), opts, keep, wet, bridges)
         before = data.get(f"net.{nid}")
         saved = save_network(nid, name, "", "live")
         if not saved.get("ok"):

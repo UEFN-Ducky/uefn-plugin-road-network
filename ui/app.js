@@ -34,11 +34,11 @@ const GEN_DEFAULTS = {
   hill_km: 2, roughness: 0.5, detail: 5, ridges: 0, peaks: 0, flatten_m: 300, sea_m: -1000, water_depth_m: 12, terrace_m: 0,
   block_m: 100, wobble: 0.28, prune: 0.22, downtown: 0.4, normal: 0.75, highway: "4L", highway_curve: 0.08,
   core_roads: "4L", neighbourhood_roads: "2S", suburb_roads: "2L", one_way_core: "no", interchange: "direct", overpasses: "yes",
-  city_size: 1, city_gap_m: 300, freeways: "yes", waterfront: "yes", canals: "none",
+  city_size: 1, city_gap_m: 300, freeways: "yes", waterfront: "yes", canals: "none", shipyards: "auto",
 };
 const OPTION_KEYS = ["hill_km", "roughness", "detail", "ridges", "peaks", "flatten_m", "sea_m", "water_depth_m", "terrace_m", "block_m", "wobble",
   "prune", "downtown", "normal", "highway", "highway_curve", "core_roads", "neighbourhood_roads", "suburb_roads", "one_way_core",
-  "interchange", "overpasses", "city_size", "city_gap_m", "freeways", "waterfront", "canals"];
+  "interchange", "overpasses", "city_size", "city_gap_m", "freeways", "waterfront", "canals", "shipyards"];
 const VIEW_DEFAULTS = { zx: 1, pcg: true, terrain: true, water: true, districts: true, points: false, look: "natural", sunAz: 135, sunEl: 38, shadows: true };
 const state = {
   nets: [], net: "", actor: "", geo: null, sel: null, cities: [], tab: "world", framed: false, live: false,
@@ -56,6 +56,7 @@ const FAMILY = [
   [/Elev_Ramp/, 650, "yellow", "Flyover ramp"],
   [/Bridge/, 925, "red", "Bridge"],
   [/Water_Canal/, 1200, "blue", "Canal"],
+  [/Water_DryDock/, 2000, "red", "Dry dock"],
   [/Path_Sidewalk/, 190, "fg", "Sidewalk"],
   [/Path_Walkway/, 80, "fg-dim", "Walkway"],
   [/Path_DrivewayDouble/, 275, "fg-dim", "Double driveway"],
@@ -893,6 +894,7 @@ function buildPanes() {
     seg("freeways", "Urban freeways through big cities", [["yes", "Freeways", "layers"], ["no", "None", "route"]]),
     seg("waterfront", "Waterfront (quays, marinas, beaches, ports)", [["yes", "Develop", "wave"], ["no", "Leave natural", "terrain"]]),
     seg("canals", "Canals", [["none", "None", "route"], ["canal_city", "Canal city", "wave"]]),
+    seg("shipyards", "Shipyards on deep industrial shore", [["auto", "Plan them", "wrench"], ["none", "None", "route"]]),
     h("div", { class: "rn-hint" }, "Diamond, trumpet and cloverleaf are built from our ramp, bridge and road pieces: the highway " +
       "bridges over a cross road with slip ramps (diamond), one loop (trumpet) or four loops (cloverleaf). Stack rises onto the " +
       "elevated deck. You see every ramp in the 3D view."));
@@ -1127,6 +1129,9 @@ function cityWater(w) {
       h("span", {}, `${m.toLocaleString()} m`)])),
     h("div", { class: "dk-row", style: "margin-top: 8px; flex-wrap: wrap" },
       ...Object.entries(devs).map(([k, n]) => h("span", { class: "rn-tag" }, n > 1 ? `${k} × ${n}` : k))),
+    ...(w.shipyards || []).map((y) => h("div", { class: "rn-hint", style: "margin-top: 6px" },
+      `${y.type[0].toUpperCase() + y.type.slice(1)} shipyard · ${y.site_m[0]} × ${y.site_m[1]} m`
+      + (y.docks ? ` · ${y.docks} dry dock${y.docks > 1 ? "s" : ""}` : "") + (y.report.ok ? "" : ` · check: ${y.report.problems[0]}`))),
     w.report && !w.report.ok ? h("div", { class: "rn-hint", style: "margin-top: 6px; color: var(--amber)" },
       "Check: " + w.report.problems.slice(0, 3).join("; ")) : h("span"));
 }
