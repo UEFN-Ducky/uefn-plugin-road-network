@@ -197,11 +197,13 @@ renderer.domElement.addEventListener("pointerdown", (e) => {
   drag = { x: e.clientX, y: e.clientY, button: e.button, moved: false };
   renderer.domElement.setPointerCapture(e.pointerId);
   if (e.button === 0 && state.tool === "area") { drag.drawing = true; note.points = []; addAreaPoint(e); }
+  if (e.button === 0 && state.tool === "move") startCityMove(e);
 });
 renderer.domElement.addEventListener("pointermove", (e) => {
   if (!drag) return;
   const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
   if (Math.abs(dx) + Math.abs(dy) > 2) drag.moved = true;
+  if (drag.city) { dragCity(e); return; }  // moving a city: it follows the pointer, the camera stays
   if (drag.drawing) {  // drawing an area: a point every few pixels, no orbit
     if (Math.abs(dx) + Math.abs(dy) > 6) { drag.x = e.clientX; drag.y = e.clientY; addAreaPoint(e); }
     return;
@@ -220,6 +222,7 @@ renderer.domElement.addEventListener("pointermove", (e) => {
 });
 renderer.domElement.addEventListener("pointerup", (e) => {
   if (drag?.drawing) { drag = null; finishArea(); return; }
+  if (drag?.city) { const d = drag; drag = null; dropCity(d); return; }
   if (drag && !drag.moved && drag.button === 0) {
     if (state.tool === "pin") placePin(e); else pick(e);
   }
@@ -858,7 +861,7 @@ function buildPanes() {
       ctl.seed.el),
     section("Selected city", h("div", { id: "worldCity" })),
     section("Where it goes", ctl.ground.el),
-    section("This world", h("div", { id: "worldSummary" })));
+    section("This world", h("div", { id: "worldSummary" }), h("div", { id: "worldHeightmap" })));
   // ---- Terrain
   ctl.look = segmented({ label: "Preview look", value: state.view.look, options: [["natural", "Natural", "terrain"], ["height", "Height", "layers"], ["slope", "Slope", "wave"]],
     onChange: (v) => { state.view.look = v; savePrefs(); buildScene(); } });
@@ -1358,6 +1361,21 @@ function renderUefnPane() {
       button("Copy text", "copy", onCopy, "secondary", "Spline text on the clipboard for a manual paste")),
     h("div", { class: "rn-hint", style: "margin-top: 8px" }, "The terrain is never written: the landscape's Splines edit layer follows the roads.")));
 }
+// the World section's heightmap: a world on New terrain makes a PNG to import as a new landscape in UEFN
+function renderWorldHeightmap(n) {
+  const box = $("worldHeightmap");
+  if (!box) return;
+  if (!n?.generated) return box.replaceChildren();
+  if (n.generated.ground_from) {
+    return box.replaceChildren(h("div", { class: "rn-hint", style: "margin-top: 8px" },
+      "This world sits on scanned ground, so it has no heightmap of its own. For a heightmap: pick New terrain above, "
+      + "Generate, then Make heightmap."));
+  }
+  box.replaceChildren(h("div", { class: "rn-stack", style: "margin-top: 8px" },
+    button("Make heightmap", "download", onHeightmap, "secondary",
+      "Write this world's terrain (lots levelled in) as a 16-bit PNG and the Landscape import settings"),
+    h("div", { id: "hmInfoWorld" })));
+}
 async function onHeightmap() {
   if (!state.net) return;
   busy("Writing the heightmap…");
@@ -1365,7 +1383,7 @@ async function onHeightmap() {
   busy("");
   if (out.ok === false) return showError(out.error);
   showError("");
-  $("hmInfo").innerHTML = `<div class="rn-card"><div class="rn-kv"><span>Resolution</span><span>${esc(out.resolution)}</span>
+  ($("hmInfoWorld") || $("hmInfo")).innerHTML = `<div class="rn-card"><div class="rn-kv"><span>Resolution</span><span>${esc(out.resolution)}</span>
     <span>Location</span><span>${esc(out.location.join(", "))}</span><span>Scale</span><span>${esc(out.scale.join(", "))}</span></div>
     <div class="rn-section">File</div><div class="rn-code">${esc(out.path)}</div>
     <div class="rn-hint" style="margin-top: 8px">${esc(out.how)}</div></div>`;
@@ -1416,6 +1434,7 @@ function renderHud() {
   const n = currentNet();
   const t = state.stats?.total;
   $("hud").innerHTML = n ? `<b>${esc(n.name)}</b><span>${state.cities.length ? `${state.cities.length} cities · ` : ""}${t ? `${((t.road_length_m || 0) / 1000).toFixed(1)} km of road` : ""}</span>` : "";
+  renderWorldHeightmap(n);
   const ws = $("worldSummary");
   if (ws) ws.innerHTML = n ? `<div class="rn-card"><div class="rn-card__head">${iconHTML(n.generated ? "world" : "network")}<span class="rn-card__name">${esc(n.name)}</span><span class="rn-tag">${n.generated ? "generated" : "from UEFN"}</span></div>
       <div class="rn-kv"><span>Road actors</span><span>${(n.actors || []).length}</span><span>Cities</span><span>${state.cities.length || "—"}</span>
@@ -1816,6 +1835,7 @@ function renderTools() {
     tool("select", "Select", "pointer", "Click roads and junctions to edit them"),
     tool("pin", "Pin", "pin", "Click a spot, then tell an AI what to do there"),
     tool("area", "Area", "pen", "Draw round an area, then tell an AI what to do there"),
+    tool("move", "Move city", "grip", "Drag a city to a new place: its roads, freeways, airport, waterfront and buildings are rebuilt there"),
     h("span", { class: "rn-sep" }),
     act("Frame", "frame", () => frame(), "Show the whole world"),
     act("Clear", "x", clearNote, "Remove the pin or area"));
@@ -1851,6 +1871,42 @@ function placePin(e) {
   note.points = [toUE(v)];
   drawMarks();
   openNote();
+}
+// Move city: press on a city, drag it, let go; the world is generated again with the city at its new place
+function startCityMove(e) {
+  const v = groundAt(e);
+  if (!v || !state.cities.length) return;
+  const [x, y] = toUE(v);
+  const c = state.cities.map((k) => [k, Math.hypot(k.x - x, k.y - y)]).filter(([k, d]) => d < k.radius)
+    .sort((a, b) => a[1] - b[1])[0]?.[0];
+  if (!c) return showError("Press inside a city's ring to move it.");
+  showError("");
+  drag.city = { c, dx: c.x - x, dy: c.y - y, to: [c.x, c.y] };
+  drawCityGhost(drag.city);
+}
+function dragCity(e) {
+  const v = groundAt(e);
+  if (!v) return;
+  const [x, y] = toUE(v);
+  drag.city.to = [x + drag.city.dx, y + drag.city.dy];
+  drawCityGhost(drag.city);
+}
+function drawCityGhost(m) {
+  clear(marks);
+  const pts = [];
+  for (let k = 0; k <= 64; k++) {
+    const a = (k / 64) * Math.PI * 2;
+    pts.push(toV(m.to[0] + Math.cos(a) * m.c.radius, m.to[1] + Math.sin(a) * m.c.radius, 300));
+  }
+  marks.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+    new THREE.LineBasicMaterial({ color: col("accent"), depthTest: false })));
+  needsDraw = true;
+}
+async function dropCity(m) {
+  clear(marks);
+  needsDraw = true;
+  if (Math.hypot(m.to[0] - m.c.x, m.to[1] - m.c.y) < 1000) return;  // a click, not a move
+  await saveCity(m.c, { x: Math.round(m.to[0]), y: Math.round(m.to[1]) });
 }
 function drawMarks() {
   clear(marks);

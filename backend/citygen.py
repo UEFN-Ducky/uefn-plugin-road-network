@@ -649,24 +649,6 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
             todo.extend(adj.get(n, []))
         edges = [e for e in edges if e[0] in seen]
         nodes = {n: p for n, p in nodes.items() if n in seen}
-    fw = freeway_plan(city, o)
-    if fw.lines:  # a street a low ramp or an at-grade freeway would cut gives way (streets pass under viaducts)
-        # the cross road keeps its interchange width through the whole interchange (ramps were sized for it)
-        for ic in fw.interchanges:
-            if not ic.get("b_axis"):
-                continue
-            bx, by = ic["b_axis"]
-            for e in edges:
-                p, q = nodes[e[0]], nodes[e[1]]
-                L = math.dist(p[:2], q[:2]) or 1.0
-                along = abs((q[0] - p[0]) * bx + (q[1] - p[1]) * by) / L
-                mx, my = (p[0] + q[0]) / 2 - ic["at"][0], (p[1] + q[1]) / 2 - ic["at"][1]
-                off = abs(mx * by - my * bx)  # distance of the edge's middle from the cross road's line
-                if along > 0.97 and off < 1500 and math.hypot(mx, my) < 20000 and HALF.get(e[2], 0) < HALF[ic["cross_road"]]:
-                    e[2] = ic["cross_road"]
-        edges = [e for e in edges if not fw.street_blocked(nodes[e[0]], nodes[e[1]], HALF.get(e[2], 500.0))]
-        used = {n for e in edges for n in e[:2]}
-        nodes = {n: p for n, p in nodes.items() if n in used}
     yards = city.get("shipyards") or []
     fields = city.get("airports") or []
     if yards or fields:  # shipyards and airports are dedicated districts with their own roads
@@ -699,7 +681,44 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
         wet = water_of(city, o, wet)
     if wet:  # main roads bridge water, side streets stop at the shore
         nodes, edges = over_water(nodes, edges, wet, bridges=bridges)
+    # freeways last: every street that water, canals, an airport or a shipyard took is gone by now, so an
+    # interchange whose cross road is gone is dropped before any street is cut for its ramps
+    fw = freeway_plan(city, o)
+    if fw.lines:
+        def crosses(ic):
+            bx, by = ic["b_axis"]
+            for e in edges:
+                p, q = nodes[e[0]], nodes[e[1]]
+                L = math.dist(p[:2], q[:2]) or 1.0
+                if abs((q[0] - p[0]) * bx + (q[1] - p[1]) * by) / L > 0.97 and \
+                        _dist_seg(ic["at"], p[:2], q[:2]) < 1500:
+                    return True
+            return False
+        fw.drop({ic["group"] for ic in fw.interchanges if ic.get("b_axis") and not crosses(ic)})
+        # the cross road keeps its interchange width through the whole interchange (ramps were sized for it)
+        for ic in fw.interchanges:
+            if not ic.get("b_axis"):
+                continue
+            bx, by = ic["b_axis"]
+            for e in edges:
+                p, q = nodes[e[0]], nodes[e[1]]
+                L = math.dist(p[:2], q[:2]) or 1.0
+                along = abs((q[0] - p[0]) * bx + (q[1] - p[1]) * by) / L
+                mx, my = (p[0] + q[0]) / 2 - ic["at"][0], (p[1] + q[1]) / 2 - ic["at"][1]
+                off = abs(mx * by - my * bx)  # distance of the edge's middle from the cross road's line
+                if along > 0.97 and off < 1500 and math.hypot(mx, my) < 20000 and HALF.get(e[2], 0) < HALF[ic["cross_road"]]:
+                    e[2] = ic["cross_road"]
+        # a street a low ramp or an at-grade freeway would cut gives way (streets pass under viaducts)
+        edges = [e for e in edges if not fw.street_blocked(nodes[e[0]], nodes[e[1]], HALF.get(e[2], 500.0))]
+        used = {n for e in edges for n in e[:2]}
+        nodes = {n: p for n, p in nodes.items() if n in used}
     return nodes, edges
+
+
+def _dist_seg(p, a, b):
+    L2 = (b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2 or 1.0
+    t = max(0.0, min(1.0, ((p[0] - a[0]) * (b[0] - a[0]) + (p[1] - a[1]) * (b[1] - a[1])) / L2))
+    return math.hypot(p[0] - a[0] - t * (b[0] - a[0]), p[1] - a[1] - t * (b[1] - a[1]))
 
 
 WATER_SPAN = {"6L": 300000.0, "4L": 40000.0, "2S": 40000.0, "ED": 300000.0, "ER": 300000.0,
@@ -834,7 +853,9 @@ def freeway_plan(city: dict, opts: dict | None = None):
     o = options(opts)
     key = repr((city.get("name"), city["x"], city["y"], city["radius"], city.get("seed"),
                 [o[k] for k in ("freeways", "block_m", "downtown", "normal", "collector_every", "core_roads",
-                                "neighbourhood_roads")]))
+                                "neighbourhood_roads", "canals")],
+                [(a.get("center"), a.get("heading"), a.get("type")) for a in city.get("airports") or []],
+                [(y.get("frame"), y.get("L"), y.get("D")) for y in city.get("shipyards") or []]))
     if key not in _FW_CACHE:
         if len(_FW_CACHE) > 32:
             _FW_CACHE.clear()
@@ -1695,6 +1716,20 @@ def _demo() -> None:
     assert not any(_ap.inside(aps[0], *gn[n][:2]) for n in gn), "no city street on the airfield"
     lay = city_layout(ac, {"planner": "no"})
     assert not any(r[7] in ("house", "apartment") and _ap.in_noise(aps[0], r[0], r[1]) for r in lay["lots"])
+    # reserved land beats freeways: an airport across the freeway's path stops the mainline short and drops
+    # the interchanges whose cross roads it took; every ramp left still lands on a road
+    for s in (1, 2, 3):
+        rc = {"name": "Res", "x": 0, "y": 0, "radius": 160000, "seed": s, "style": "mixed"}
+        base = freeway_plan(rc)
+        ns = next(l for l in base.lines if l["group"] == ("main", "ns"))
+        tip = ns["points"][-1]
+        rc["airports"] = [{"city": "Res", "type": "general_aviation", "center": [round(tip[0]), round(tip[1])],
+                           "heading": 0.0}]
+        fwr = freeway_plan(rc)
+        main = next(l for l in fwr.lines if l["group"] == ("main", "ns"))
+        assert not any(_ap.inside(rc["airports"][0], p[0], p[1]) for p in main["points"]), "freeway stops short"
+        rep = freeway_report(rc)["validation"]
+        assert rep["ok"], (s, {k: v for k, v in rep.items() if v and k != "ok"})
     print("citygen ok", {k: len(v["segments"]) for k, v in actors.items()}, "metro interchanges", kinds)
 
 

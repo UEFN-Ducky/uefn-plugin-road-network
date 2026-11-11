@@ -219,13 +219,16 @@ def _densify(pts, step=1500.0):
 
 class Plan:
     """A city's freeway layer: the '<City> Freeways' actor graph (nodes / edges), every line for the validator,
-    and the land it takes (a point grid with a half width each, for blocked())."""
+    and the land it takes (a point grid with a half width each, for blocked()). Each piece belongs to a group
+    (a mainline, the stack, one interchange): drop() takes whole interchanges out again."""
 
     def __init__(self):
         self.nodes, self.edges, self.lines, self.interchanges = {}, [], [], []
         self._grid: dict = {}
+        self._builds: list = []
 
-    def add(self, bld: Builder, ground_kind: str):
+    def add(self, bld: Builder, ground_kind: str, group=None):
+        self._builds.append((bld, ground_kind, group))
         self.nodes.update(bld.nodes)
         for (a, b, kind, via), r in zip(bld.edges, bld.ramps):
             if r["cls"] == "freeway":  # a viaduct where lifted, a plain freeway on the ground
@@ -236,7 +239,8 @@ class Plan:
             self.edges.append([a, b, kind, via])
             half = {"freeway": FW_HALF, "frontage": 525.0}.get(r["cls"], RAMP_HALF)
             name = f"{r['cls']} {len(self.lines)}"
-            self.lines.append({"name": name, "cls": r["cls"], "kind": kind, "points": r["points"], "half": half})
+            self.lines.append({"name": name, "cls": r["cls"], "kind": kind, "points": r["points"], "half": half,
+                               "group": group})
             dense = _densify(r["points"])
             ends = (r["points"][0], r["points"][-1])
             for p in dense:
@@ -244,6 +248,17 @@ class Plan:
                 near_end = r["cls"] != "freeway" and min(math.dist(p[:2], e[:2]) for e in ends) < 3000
                 cell = (int(p[0] // 10000), int(p[1] // 10000))
                 self._grid.setdefault(cell, []).append((p[0], p[1], p[2], half, near_end))
+
+    def drop(self, groups: set) -> None:
+        """Take these interchanges out (their cross road is gone: water, an airport, a shipyard)."""
+        if not groups:
+            return
+        keep = [b for b in self._builds if b[2] not in groups]
+        ics = [i for i in self.interchanges if i.get("group") not in groups]
+        self.__init__()
+        for bld, gk, g in keep:
+            self.add(bld, gk, g)
+        self.interchanges = ics
 
     def blocked(self, x, y, r=0.0, low_only=False):
         """Does anything of the freeway layer come within r of (x, y)? low_only: only parts too low to pass
@@ -266,18 +281,30 @@ class Plan:
                    for k in range(n + 1))
 
 
+def reserved(city: dict):
+    """(x, y) -> True on land the city has given to an airport or a shipyard (freeways keep off it)."""
+    from . import airport, shipyard
+    aps, yards = city.get("airports") or [], city.get("shipyards") or []
+    if not aps and not yards:
+        return None
+    return lambda x, y: any(airport.inside(a, x, y, 3000) for a in aps) or any(shipyard.inside(y_, x, y, 2000)
+                                                                                for y_ in yards)
+
+
 def plan(city: dict, o: dict) -> Plan:
     """HighwayNetworkPlanner for one city, before its blocks: a north-south urban freeway on the city's grid,
     mid-block just past downtown (it never sits on a street), and from STACK_MIN_R an east-west one too, joined
     by a directional stack. Each freeway is a viaduct one level over the city (the streets keep running under
-    it), back to grade out past the edge. A service interchange where it crosses a main road (collector or
-    axis), at least IC_SPACING apart and clear of the stack: diamond downtown (tight land), partial cloverleaf
-    in the normal city, diamond with frontage roads in the suburbs. Returns a Plan."""
+    it), back to grade out past the edge, and ends short of land the city reserved (an airport, a shipyard). A
+    service interchange where it crosses a main road (collector or axis), at least IC_SPACING apart, clear of
+    the stack and of reserved land: diamond downtown (tight land), partial cloverleaf in the normal city,
+    diamond with frontage roads in the suburbs. Returns a Plan."""
     from . import citygen as cg
     out = Plan()
     R = city["radius"]
     if o.get("freeways", "yes") != "yes" or R < FW_MIN_R:
         return out
+    hard = reserved(city)
     block, down, normal = o["block_m"] * 100, o["downtown"], max(o["normal"], o["downtown"])
     turn = math.radians(cg.orientation(city))
     c, s = math.cos(turn), math.sin(turn)
@@ -298,14 +325,24 @@ def plan(city: dict, o: dict) -> Plan:
         stack_along = stack_at[1] if name == "ns" else stack_at[0]
         upper = name == "ns"
         lf = lambda t, sa=stack_along, up=upper: lift(t, (t - sa) if up else None)
+        ts = [k * 2000.0 for k in range(int(-(span + fade + 20000) // 2000), int((span + fade + 20000) // 2000) + 1)]
         pts = []
-        for k in range(int(-(span + fade + 20000) // 2000), int((span + fade + 20000) // 2000) + 1):
-            t = k * 2000.0
+        for t in ts:
             lx, ly = normal_axis[0] * at + axis[0] * t, normal_axis[1] * at + axis[1] * t
             pts.append((*W(lx, ly), lf(t)))
+        if hard:  # stop short of an airport or a shipyard: keep the run through the city centre
+            mid = min(range(len(ts)), key=lambda k: abs(ts[k]))
+            lo = hi = mid
+            while lo > 0 and not hard(*pts[lo - 1][:2]):
+                lo -= 1
+            while hi < len(pts) - 1 and not hard(*pts[hi + 1][:2]):
+                hi += 1
+            pts = pts[lo:hi + 1]
+        if len(pts) < 2:
+            continue
         bld = Builder(("fw", name))
         bld.edge(pts, "ED", "freeway")
-        out.add(bld, "6L")
+        out.add(bld, "6L", ("main", name))
         # service interchanges on the main roads this freeway crosses
         ax_w = (c * axis[0] - s * axis[1], s * axis[0] + c * axis[1])
         done = [stack_along] if two else []
@@ -322,22 +359,25 @@ def plan(city: dict, o: dict) -> Plan:
             share = cg.zone_share(city, cx, cy)
             if share > 0.9:
                 continue
+            if hard and any(hard(cx + math.cos(a) * 30000, cy + math.sin(a) * 30000) or hard(cx, cy)
+                            for a in (k * math.pi / 4 for k in range(8))):
+                continue  # its ramps would be on reserved land
             kind = "diamond" if share <= down else "parclo" if share <= normal else "diamond_frontage"
             road = o["core_roads"] if share <= down or not n else "4L" if share <= normal else o["neighbourhood_roads"]
             f = Frame(cx, cy, *ax_w)
             bld = interchange(kind, f, FW_HALF, cg.HALF.get(road, 1400.0), lambda a, t=t, lf=lf: lf(t + a), lambda b: 0.0,
                               ("ic", name, n), frontage_b=block / 2, frontage_a=math.ceil((DIAMOND_A + 4000) / block) * block)
-            out.add(bld, "6L")
+            out.add(bld, "6L", ("ic", name, n))
             out.interchanges.append({"kind": kind, "at": [round(cx), round(cy)], "freeway": name, "cross_road": road,
-                                     "b_axis": [round(-ax_w[1], 4), round(ax_w[0], 4)]})
+                                     "b_axis": [round(-ax_w[1], 4), round(ax_w[0], 4)], "group": ("ic", name, n)})
             done.append(t)
-    if two:
+    if two and not (hard and hard(*W(*stack_at))):
         cx, cy = W(*stack_at)
         f = Frame(cx, cy, -s, c)  # a along the north-south freeway (upper), b along the east-west one
         ns = lambda a: lift(a + stack_at[1], a)
         ew = lambda b: lift(-b + stack_at[0], None)  # frame b runs along -x local
-        out.add(interchange("stack", f, FW_HALF, FW_HALF, ns, ew, ("stack",)), "6L")
-        out.interchanges.append({"kind": "stack", "at": [round(cx), round(cy)], "freeway": "ns+ew"})
+        out.add(interchange("stack", f, FW_HALF, FW_HALF, ns, ew, ("stack",)), "6L", ("stack",))
+        out.interchanges.append({"kind": "stack", "at": [round(cx), round(cy)], "freeway": "ns+ew", "group": ("stack",)})
     return out
 
 

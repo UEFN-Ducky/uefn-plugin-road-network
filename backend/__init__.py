@@ -837,8 +837,9 @@ def register(api) -> None:
         return {"ok": True, "id": nid, "items": sorted(items, key=lambda c: c["name"]), "count": len(items)}
 
     def save_city(net_id: str = "", city: str = "", name: str = "", style: str = "", radius_m: float = 0.0,
-                  buildings: str = "") -> dict:
-        """Change one city's style, size or building sets ({"downtown": [mesh paths], ...})."""
+                  buildings: str = "", x: float | None = None, y: float | None = None) -> dict:
+        """Change one city's style, size, place (x, y: its new centre in cm) or building sets
+        ({"downtown": [mesh paths], ...})."""
         nid, cslug = slug(net_id), slug(city)
         before = data.get(f"net.{nid}.city.{cslug}") if nid and cslug else None
         if not before:
@@ -848,6 +849,8 @@ def register(api) -> None:
         doc = dict(before)
         if style:
             doc["style"] = style
+        if x is not None and y is not None and str(x) != "" and str(y) != "":
+            doc["x"], doc["y"] = round(float(x)), round(float(y))  # moved: generate again rebuilds it there
         if radius_m:
             doc["radius"] = max(150.0, float(radius_m)) * 100
             doc["districts"] = cg.districts(doc)
@@ -1805,11 +1808,13 @@ def register(api) -> None:
 
     @api.tool(intent=GEN_INTENT, listener=False)
     def road_network_city_save(net_id: str = "", city: str = "", name: str = "", style: str = "",
-                               radius_m: float = 0.0, buildings: str = "") -> dict:
+                               radius_m: float = 0.0, buildings: str = "", x: float | None = None,
+                               y: float | None = None) -> dict:
         """Change one city of a generated world: rename it, its road style (mixed / grid / organic), its
-        radius, or its own building sets (JSON {"downtown": [mesh paths], "normal": [...], "housing": [...]}).
-        Generate again with cities empty to rebuild its roads."""
-        return safe(save_city)(net_id, city, name, style, radius_m, buildings)
+        radius, move it (x, y: its new centre in cm, UE world), or its own building sets (JSON {"downtown":
+        [mesh paths], "normal": [...], "housing": [...]}). Generate again with cities empty to rebuild its
+        roads, freeways, airport, waterfront and everything on it at the new place."""
+        return safe(save_city)(net_id, city, name, style, radius_m, buildings, x, y)
 
     @api.tool(intent=GEN_INTENT, listener=False)
     def road_network_heightmap(net_id: str = "") -> dict:
@@ -1829,8 +1834,8 @@ def register(api) -> None:
                                name, seed, cities, size_km, relief_m, ground_from, folder, center_x, center_y, options))
     api.register_panel_rpc("generate_options", lambda: road_network_generate_options())
     api.register_panel_rpc("cities", lambda net_id="": safe(list_cities)(net_id))
-    api.register_panel_rpc("city_save", lambda net_id="", city="", name="", style="", radius_m=0.0, buildings="":
-                           safe(save_city)(net_id, city, name, style, radius_m, buildings))
+    api.register_panel_rpc("city_save", lambda net_id="", city="", name="", style="", radius_m=0.0, buildings="",
+                           x=None, y=None: safe(save_city)(net_id, city, name, style, radius_m, buildings, x, y))
     api.register_panel_rpc("heightmap", lambda net_id="": safe(heightmap)(net_id))
     api.register_panel_rpc("pipeline", lambda net_id="", run_from="", confirm=False: safe(pipeline_run)(net_id, run_from, confirm))
 
