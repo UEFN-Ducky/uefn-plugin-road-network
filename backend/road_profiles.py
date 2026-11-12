@@ -24,6 +24,32 @@ MEDIAN = ("6L", "ED")  # divided by a concrete median barrier
 NO_PAINT = ("DT",)
 
 
+def shape(name: str, y0: float, y1: float, z0: float, z1: float) -> list:
+    """A part's cross-section as a closed polygon [(y, z), ...] (counter-clockwise seen from -X): what a model's
+    edge loop is. Parapets and the median are Jersey barriers (the sloped face toward the traffic), a sidewalk's
+    kerb is chamfered, a deck slab tapers to its beams underneath; the rest are plain bands."""
+    w, h = y1 - y0, z1 - z0
+    if name in ("parapet", "median"):
+        def face(base, sd):  # one Jersey face from the bottom up: 7.5 cm upright, slope, steep top
+            return [(base, z0), (base, z0 + 7.5), (base + sd * w * 0.3, z0 + min(33.0, h * 0.4)), (base + sd * w * 0.4, z1)]
+        if name == "median":
+            left, right = face(y0, 1), face(y1, -1)
+            return left[:1] + right[:1] + right[1:] + left[1:][::-1]
+        if (y0 + y1) / 2 < 0:  # left edge: the outside (y0) is upright, the face toward the road (y1) slopes
+            inner = face(y1, -1)
+            return [(y0, z0), inner[0], *inner[1:], (y0, z1)]
+        inner = face(y0, 1)
+        return [inner[0], (y1, z0), (y1, z1), *inner[1:][::-1]]
+    if name == "sidewalk":  # the kerb's top edge on the road side is chamfered 4 cm
+        if (y0 + y1) / 2 < 0:
+            return [(y0, z0), (y1, z0), (y1, z1 - 4), (y1 - 4, z1), (y0, z1)]
+        return [(y0, z0), (y1, z0), (y1, z1), (y0 + 4, z1), (y0, z1 - 4)]
+    if name == "deck":  # the slab's underside tapers in to its beams
+        t = min(150.0, w * 0.15)
+        return [(y0 + t, z0), (y1 - t, z0), (y1, z1 - min(40.0, h * 0.3)), (y1, z1), (y0, z1), (y0, z1 - min(40.0, h * 0.3))]
+    return [(y0, z0), (y1, z0), (y1, z1), (y0, z1)]
+
+
 def length_of(mesh: str) -> float:
     m = re.search(r"(\d+)m$", mesh)
     return float(m.group(1)) * 100 if m else 1000.0
@@ -67,6 +93,8 @@ def profile(code: str) -> dict | None:
     return {"code": code, "mesh": mesh.split("/")[-1], "length": length_of(mesh), "half": half, "carriageway": c,
             "sidewalk": walk, "structure": structure, "lanes": lanes,
             "parts": [[n, s, round(y0, 1), round(y1, 1), z0, z1] for n, s, y0, y1, z0, z1 in parts],
+            "shapes": [[n, s, [[round(y, 1), round(z, 1)] for y, z in shape(n, y0, y1, z0, z1)]]
+                       for n, s, y0, y1, z0, z1 in parts],
             "paint": [[round(y, 1), wd, d, s] for y, wd, d, s in paint]}
 
 
@@ -134,6 +162,10 @@ def _demo() -> None:
     dashes = [k for k in kp if k[0] == "box"]
     assert len(dashes) == 4 * 2 and all(-1000 <= k[2][0] - k[4][0] / 2 and k[2][0] + k[4][0] / 2 <= 1000 for k in dashes)
     assert "median (Plinth)" in spec(fw)
+    for p in ps.values():  # every cross-section closed, counter-clockwise, inside its part's box
+        for (n, s, poly), (_n, _s, y0, y1, z0, z1) in zip(p["shapes"], p["parts"]):
+            area = sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(poly, poly[1:] + poly[:1])) / 2
+            assert area > 0 and all(y0 - 0.1 <= y <= y1 + 0.1 and z0 - 0.1 <= z <= z1 + 0.1 for y, z in poly), (p["mesh"], n, poly)
     print("road profiles ok", len(ps), "pieces;", len(kp), "parts on the freeway")
 
 

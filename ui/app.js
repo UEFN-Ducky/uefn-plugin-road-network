@@ -214,8 +214,24 @@ function stripe(curve, off, half, z0, z1, dash, out) {
 }
 // a road piece drawn from its cross-section (backend/road_profiles: the same one its UEFN mesh is built from):
 // every part's top and both its faces, the deck's underside, the paint 1 cm proud
+// one face of a swept cross-section: the edge (ya, za) -> (yb, zb) carried along the curve
+function sweepEdge(curve, ya, za, yb, zb, out) {
+  for (let k = 0; k + 1 < curve.length; k++) {
+    const a = curve[k], b = curve[k + 1], dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1;
+    const nx = -dy / l, ny = dx / l;
+    const at = (p, y, z) => toV(p[0] + nx * y, p[1] + ny * y, p[2] + z);
+    const q = [at(a, ya, za), at(a, yb, zb), at(b, yb, zb), at(b, ya, za)];
+    for (const v of [q[0], q[1], q[2], q[0], q[2], q[3]]) out.push(v.x, v.y, v.z);
+  }
+}
 function drawProfile(curve, prof, lift, put) {
-  for (const [name, slot, y0, y1, z0, z1] of prof.parts) {
+  if (prof.shapes) {  // the real cross-sections (Jersey barriers, chamfered kerbs, tapered decks), as modelled
+    for (const [, slot, poly] of prof.shapes) {
+      const out = put(SLOT_MAT[slot] || MAT.barrier);
+      poly.forEach((p, i) => { const q = poly[(i + 1) % poly.length]; sweepEdge(curve, p[0], lift + p[1], q[0], lift + q[1], out); });
+    }
+  }
+  for (const [name, slot, y0, y1, z0, z1] of prof.shapes ? [] : prof.parts) {
     const out = put(SLOT_MAT[slot] || MAT.barrier), mid = (y0 + y1) / 2, hw = (y1 - y0) / 2;
     stripe(curve, mid, hw, lift + z1, lift + z1, null, out);
     for (const y of [y0, y1]) stripe(curve, y, 0, lift + z0, lift + z1, null, out);

@@ -94,8 +94,11 @@ def manifest(root: str = "/<project>") -> dict:
                            "size_cm": [prof["length"], round(half * 2), round(max(z1 for *_r, z1 in prof["parts"])
                                                                             - min(z0 for *_r, z0, _z in prof["parts"]))],
                            "sidewalk_cm": prof["sidewalk"], "carriageway_cm": round(prof["carriageway"] * 2),
-                           "profile": {"parts": prof["parts"], "paint": prof["paint"], "paint_period_cm": rp.PAINT_PERIOD,
-                                       "row": "parts: name, slot, y0, y1, z0, z1; paint: y, width, dash cm (0 solid), slot"},
+                           "profile": {"parts": prof["parts"], "shapes": prof["shapes"], "paint": prof["paint"],
+                                       "paint_period_cm": rp.PAINT_PERIOD,
+                                       "row": "parts: name, slot, y0, y1, z0, z1; shapes: name, slot, cross-section "
+                                              "[[y, z], ...] swept along X (an edge loop every 50 cm); paint: y, width, "
+                                              "dash cm (0 solid), slot, 1 cm proud"},
                            "spec": rp.spec(prof),
                            "made_by": "City Builder builds it from this profile when the project has none (street kit); "
                                       "a Blender model with this name, size and slots replaces it"})
