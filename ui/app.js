@@ -242,6 +242,44 @@ function placeCamera() {
   if (typeof sendMyCamera === "function" && liveReady) sendMyCamera();
 }
 let liveReady = false;  // set once the page has started (the live helpers below exist then)
+// Fly camera, like the Unreal viewport: hold the right mouse button to look around, W A S D to move, Q / E to go
+// down / up, Shift to go faster, and the wheel (while held) to set the flying speed.
+const fly = { on: false, keys: new Set(), speed: 1, last: 0 };
+const FLY_KEYS = { w: 1, a: 1, s: 1, d: 1, q: 1, e: 1 };
+function orbitOffset() {
+  const { dist, az, el } = orbit;
+  return new THREE.Vector3(dist * Math.cos(el) * Math.sin(az), dist * Math.sin(el), dist * Math.cos(el) * Math.cos(az));
+}
+function flyLook(dx, dy) {  // turn in place: the eye stays, the point it looks at swings round it
+  const eye = camera.position.clone();
+  orbit.az -= dx * 0.004;
+  orbit.el = Math.max(-1.45, Math.min(1.55, orbit.el + dy * 0.004));
+  orbit.target.copy(eye).sub(orbitOffset());
+  placeCamera();
+}
+function flyStep(now) {
+  if (!fly.on || !fly.keys.size) { fly.last = 0; return; }
+  const dt = Math.min(0.1, fly.last ? (now - fly.last) / 1000 : 0.016);
+  fly.last = now;
+  const f = new THREE.Vector3().subVectors(orbit.target, camera.position).normalize();
+  const r = new THREE.Vector3().crossVectors(f, camera.up).normalize();
+  const v = new THREE.Vector3();
+  if (fly.keys.has("w")) v.add(f);
+  if (fly.keys.has("s")) v.sub(f);
+  if (fly.keys.has("d")) v.add(r);
+  if (fly.keys.has("a")) v.sub(r);
+  if (fly.keys.has("e")) v.y += 1;
+  if (fly.keys.has("q")) v.y -= 1;
+  if (!v.lengthSq()) return;
+  // speed 1 crosses the whole world in about a minute; the wheel takes it from a walk to a jet
+  const world = state.box && !state.box.isEmpty() ? state.box.getSize(new THREE.Vector3()).length() : 20000;
+  orbit.target.addScaledVector(v.normalize(), (world / 60) * fly.speed * (fly.shift ? 3 : 1) * dt);
+  placeCamera();
+}
+function showFlySpeed() {
+  const el = $("zoomPct");
+  if (el) el.textContent = `Fly ×${fly.speed < 1 ? fly.speed.toFixed(2) : fly.speed.toFixed(1)}`;
+}
 let drag = null;
 renderer.domElement.addEventListener("contextmenu", (e) => e.preventDefault());
 // Pointer tool (like the Workflows canvas): press on a city and drag it to move it; drag empty ground to orbit.
@@ -249,6 +287,7 @@ renderer.domElement.addEventListener("contextmenu", (e) => e.preventDefault());
 renderer.domElement.addEventListener("pointerdown", (e) => {
   drag = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, button: e.button, moved: false };
   renderer.domElement.setPointerCapture(e.pointerId);
+  if (e.button === 2) { fly.on = true; fly.keys.clear(); showFlySpeed(); }
   if (e.button === 0 && state.tool === "area") { drag.drawing = true; note.points = []; addAreaPoint(e); }
   if (e.button === 0 && state.tool === "select" && !e.shiftKey) {
     const hit = cityUnder(e);  // a city to move once the pointer really moves (a plain click selects it)
@@ -272,6 +311,9 @@ renderer.domElement.addEventListener("pointermove", (e) => {
     const right = new THREE.Vector3().subVectors(camera.position, orbit.target).cross(camera.up).normalize();
     const fwd = new THREE.Vector3(Math.sin(orbit.az), 0, Math.cos(orbit.az));
     orbit.target.addScaledVector(right, dx * s).addScaledVector(fwd, -dy * s);
+  } else if (drag.button === 2) {
+    flyLook(dx, dy);  // right button: look around from where you are
+    return;
   } else {
     orbit.az -= dx * 0.005;
     orbit.el = Math.max(0.05, Math.min(1.55, orbit.el + dy * 0.005));
@@ -281,6 +323,7 @@ renderer.domElement.addEventListener("pointermove", (e) => {
 });
 renderer.domElement.addEventListener("pointerup", (e) => {
   renderer.domElement.style.cursor = "";
+  if (fly.on) { fly.on = false; fly.keys.clear(); fly.shift = false; renderZoom(); }
   if (drag?.drawing) { drag = null; finishArea(); return; }
   if (drag?.city) { const d = drag; drag = null; dropCity(d.city); return; }
   if (drag && !drag.moved && drag.button === 0) {
@@ -292,6 +335,11 @@ renderer.domElement.addEventListener("pointerup", (e) => {
 });
 renderer.domElement.addEventListener("wheel", (e) => {
   e.preventDefault();
+  if (fly.on) {  // flying: the wheel is the throttle, as in Unreal
+    fly.speed = Math.max(0.02, Math.min(20, fly.speed * (e.deltaY > 0 ? 0.8 : 1.25)));
+    showFlySpeed();
+    return;
+  }
   orbit.dist = Math.max(30, Math.min(150000, orbit.dist * (e.deltaY > 0 ? 1.15 : 0.87)));
   placeCamera();
   renderZoom();
@@ -306,7 +354,8 @@ function resize() {
   needsDraw = true;
 }
 new ResizeObserver(resize).observe(view);
-function loop() {
+function loop(now) {
+  flyStep(now || performance.now());
   if (visible && needsDraw) { renderer.render(scene, camera); placeLabels(); needsDraw = false; }
   requestAnimationFrame(loop);
 }
@@ -2194,7 +2243,8 @@ function toggleHelp() {
   const box = pop || h("div", { class: "rn-help", id: "toolHelp", role: "dialog", "aria-label": "Map controls" });
   box.replaceChildren(h("div", { class: "rn-help__title" }, "Map controls"),
     row("Drag a city", "Move it (Pointer)"), row("Click a city", "Select it"), row("Left drag", "Orbit (Pointer) / pan (Hand)"),
-    row("Right drag", "Orbit"), row("Shift / middle drag", "Pan"), row("Wheel", "Zoom"),
+    row("Hold right mouse", "Fly: look around"), row("+ W A S D, Q / E", "Fly: move, down / up (Shift: faster)"),
+    row("+ Wheel", "Fly: speed"), row("Shift / middle drag", "Pan"), row("Wheel", "Zoom"),
     row("V H P A C", "Pointer, Hand, Pin, Area, Add city"), row("F / T", "Fit / top view"), row("Esc", "Back to Pointer"));
   box.hidden = false;
   if (!pop) $("view").parentElement.append(box);
@@ -2217,12 +2267,20 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") { if (cancelCityDrag()) return; if (state.tool !== "select") setTool("select"); $("toolHelp")?.setAttribute("hidden", ""); return; }
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   const k = e.key.toLowerCase();
+  if (fly.on) {  // flying: W A S D Q E move, never switch tools
+    fly.shift = e.shiftKey;
+    if (FLY_KEYS[k]) { fly.keys.add(k); e.preventDefault(); }
+    return;
+  }
   const tools = { v: "select", h: "hand", p: "pin", a: "area", c: "addcity" };
   if (tools[k] && (k !== "c" || currentNet()?.generated)) setTool(tools[k]);
   else if (k === "f") frame();
   else if (k === "t") topView();
   else if (k === "?") toggleHelp();
 });
+
+window.addEventListener("keyup", (e) => { fly.keys.delete(e.key.toLowerCase()); fly.shift = e.shiftKey; });
+window.addEventListener("blur", () => { fly.on = false; fly.keys.clear(); });
 
 // ------------------------------------------------------------------ left: the world's cities (outliner)
 const fmtK = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n || 0));
