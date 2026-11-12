@@ -31,6 +31,9 @@ RAMP_HALF = 650.0  # a ramp: one lane + shoulders, the elevated ramp mesh's half
 # (road_profiles: 10 m half width at the ramp's end) then widens exactly to the freeway's edge line. Planned at
 # RAMP_HALF, every end was dragged 3 m sideways when welded and the ramp's last stretch bent into an S
 MERGE_CM = 950.0
+# where a ramp meets a city street head on it stops this far past the street's edge (a 3.5 m sidewalk inside it):
+# its 15 m flare (road_profiles) runs on to the carriageway's edge, no sideways drag when it is welded
+FLARE_END_CM = 1100.0
 MAX_GRADE = {"freeway": 0.04, "loop": 0.06, "ramp": 0.06, "direct": 0.06, "frontage": 0.08}
 MIN_RADIUS = {"loop": 4500.0, "ramp": 15000.0, "direct": 12000.0, "frontage": 3000.0}  # cm, by ramp class
 LOOP_R = 5500.0
@@ -141,7 +144,7 @@ def loop(bld: Builder, f: Frame, i, j, hA, hB, z0, z1, R=LOOP_R, n=16, merge=Fal
         sweep = math.pi if i * j > 0 else -math.pi  # round the far side (+i), away from the crossing
         arc = [(ca + R * math.cos(a0 + sweep * k / n), cb + R * math.sin(a0 + sweep * k / n)) for k in range(n + 1)]
         ex, ey = arc[-1]
-        arc += [(ex + (i * (hB + 50) - ex) * k / 4, ey) for k in range(1, 5)]  # straight in to the street's edge
+        arc += [(ex + (i * (hB + FLARE_END_CM) - ex) * k / 4, ey) for k in range(1, 5)]  # straight in to the street
     cum = [0.0]
     for p, q in zip(arc, arc[1:]):
         cum.append(cum[-1] + math.dist(p, q))
@@ -170,7 +173,7 @@ def interchange(kind: str, f: Frame, hA: float, hB: float, liftA, liftB, tag: tu
     fa = frontage_a or DIAMOND_A + 4000
 
     def diamond_ramp(i, j):
-        p0, p3 = (i * DIAMOND_A, j * (hA + MERGE_CM)), (i * (hB + 50), j * end_b)
+        p0, p3 = (i * DIAMOND_A, j * (hA + MERGE_CM)), (i * (hB + FLARE_END_CM), j * end_b)
         ramp(bld, f, p0, (-i, 0.0), p3, (-i, 0.0), liftA(p0[0]), liftB(p3[1]))
 
     if kind in ("diamond", "diamond_frontage"):
