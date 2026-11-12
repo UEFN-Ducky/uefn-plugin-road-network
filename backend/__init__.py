@@ -1482,11 +1482,26 @@ def register(api) -> None:
                 # the ground the city leaves, a landscape pixel at a time: every road cut and filled in first
                 # (its own cells locked), then every lot levelled round them. Re-cut whenever the city changes;
                 # the road pass is kept while the terrain and roads stay the same.
-                rk = hashlib.sha1(pickle.dumps([terrain, actors], protocol=5)).hexdigest()
+                # ... the subdivisions' and complexes' private streets with them (the '<City> Access' actors): left
+                # out, the hill covered them and the houses faced a strip of grass
+                private = []
+                for a, h in actor_docs(nid).items():
+                    if str(h.get("label") or "").endswith(" Access"):
+                        _h, pts, segs = load_actor(nid, a)
+                        private.append((pts, [s for s in segs if "PrivateStreet" in str(s.get("mesh") or "")]))
+                rk = hashlib.sha1(pickle.dumps([terrain, actors, private], protocol=5)).hexdigest()
                 if _GROUND.get("key") != rk:
                     locked: set = set()
                     roads = cg.grade_to_roads(cg.refine(terrain, cg.HEIGHTMAP_RES), {
                         str(k): {"points": p, "segments": s} for k, (p, s) in enumerate(actors)}, locked)
+                    if private:  # after the public roads, which keep every cell of their own where the two meet
+                        own: set = set()
+                        cut2 = cg.grade_to_roads(roads, {str(k): {"points": p, "segments": s}
+                                                         for k, (p, s) in enumerate(private)}, own)
+                        for j, i in locked:
+                            cut2["heights"][j][i] = roads["heights"][j][i]
+                        roads = cut2
+                        locked |= own
                     _GROUND.update(key=rk, ter=roads, locked=locked)
                 fit_ter = cg.cut_pads(_GROUND["ter"], pl.pads(placed, cg.pad_margin(terrain)), _GROUND["locked"])
             fit = fit_buildings(placed, fit_ter, cut, fit_ter is not terrain) if gen and terrain.get("heights") else None

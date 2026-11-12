@@ -1106,7 +1106,9 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
             r = r_base * s
             # scatter keeps the clearance; roadside layers sit at their setback, so only their own size counts
             clear = layer["road_clear_m"] * 100 if layer["kind"] in SCATTERED else 0.0
-            if layer["avoid_roads"] and not lot:  # a lot is off the roads by construction
+            if lot and _lot_hits_road(road_hash, x, y, yaw, bw * 50, bd * 50):
+                continue  # a lot is cut off its own street, but a subdivision's lot can still reach over another one
+            if layer["avoid_roads"] and not lot:
                 if layer["kind"] == "buildings":  # the lot as the rectangle it is, facing its street
                     if _lot_hits_road(road_hash, x, y, yaw, layer["width_m"] * 50, layer["depth_m"] * 50):
                         continue
@@ -1196,29 +1198,16 @@ def _lot_ground(layer: dict, sample_z, x: float, y: float, yaw: float, w_m: floa
         bx, by = ax + fx * reach, ay + fy * reach
         bz = sample_z(bx, by)
         bz = pad if bz is None else bz
-        if width < 3.0:  # a walkway: straight from the door to the sidewalk
-            pts = [(ax, ay, pad), (bx, by, bz)]
-        else:
-            # a driveway: a cubic Bezier B(t) = (1-t)^3 P0 + 3(1-t)^2 t P1 + 3(1-t) t^2 P2 + t^3 P3 from the garage
-            # (P0) to the kerb (P3); P1 / P2 leave the garage and meet the street square on, and on a slope steeper
-            # than STEEP both swing across it so the drive winds down instead of plunging
-            swing = min(hw * 0.8, reach) if abs(bz - pad) > STEEP * reach else 0.0
-            p0, p3 = (ax, ay), (bx, by)
-            p1 = (ax + fx * reach * 0.45 + sx * swing, ay + fy * reach * 0.45 + sy * swing)
-            p2 = (bx - fx * reach * 0.45 + sx * swing, by - fy * reach * 0.45 + sy * swing)
-            pts = []
-            for t in (0.0, 1 / 3, 2 / 3, 1.0):
-                a, b, c, d = (1 - t) ** 3, 3 * (1 - t) ** 2 * t, 3 * (1 - t) * t * t, t ** 3
-                pts.append((a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0], a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1],
-                            pad + (bz - pad) * t))
-        paths.append([width, [round(v) for p in pts for v in p]])
+        # straight from the door or the garage to the kerb (a driveway winding across a slope drew as a fan of
+        # slats wider than its own bend, Nov 12 2026)
+        paths.append([width, [round(v) for p in ((ax, ay, pad), (bx, by, bz)) for v in p]])
 
-    if layer["walkway"]:
+    # ONE strip a lot: a house's drive (it serves the door too), everything else its walkway or frontage. A
+    # walkway and a driveway side by side in front of every house read as road spam
+    if layer["driveway"] and layer["role"] in ("house", "mansion"):
+        path(DRIVE_M, -hw * 0.3)
+    elif layer["walkway"]:
         path(round(w_m * 0.9, 1) if layer["role"] in FRONTAGE_ROLES else WALK_M, 0.0)
-    if layer["driveway"]:
-        # single (3.5 m) or double (5.5 m) by the lot: wide houses and a third of the rest get a double garage
-        double = w_m >= 13 or (abs(int(x) * 7919 + int(y) * 104729) % 3 == 0)
-        path(DRIVE2_M if double and layer["role"] in ("house", "mansion") else DRIVE_M, -hw * 0.55)
     walls = []
     for (ea, eb), (la, lb), along in ((((1, 0), (0, 1)), (hd, hw), w_m), (((-1, 0), (0, 1)), (hd, hw), w_m),
                                        (((0, 1), (1, 0)), (hw, hd), d_m), (((0, -1), (1, 0)), (hw, hd), d_m)):
@@ -1325,11 +1314,10 @@ def _demo() -> None:
     lots = [(p[0], p[1], 50 * max(*pv[n]["size_m"])) for n in pv if "size_m" in pv[n] for p in pv[n]["points"]]
     clash = sum(1 for i, a in enumerate(lots) for b in lots[i + 1:] if math.hypot(a[0] - b[0], a[1] - b[1]) < (a[2] + b[2]) * 0.7)
     assert clash == 0, f"{clash} buildings overlap"
-    # flat ground: no foundation; houses get a walkway and a driveway, shops just a walkway
+    # flat ground: no foundation; a house gets one straight drive, a shop one walkway: one strip a lot
     h = pv["Houses"]["points"][0]
-    assert h[9] == 0.0 and sorted(p[0] for p in h[10]) in ([WALK_M, DRIVE_M], [WALK_M, DRIVE2_M]), h
-    # on flat ground: the walkway is straight (2 points), the driveway a 4-point Bezier
-    assert sorted(len(p[1]) for p in h[10]) == [6, 12] and len(pv["Shops"]["points"][0][10]) == 1
+    assert h[9] == 0.0 and [p[0] for p in h[10]] == [DRIVE_M] and len(h[10][0][1]) == 6, h
+    assert len(pv["Shops"]["points"][0][10]) == 1
     assert pv["Parks"]["shown"] == 0 or pv["Parks"]["points"][0][10] == []
     # a hillside rising 30 % away from the street: a level pad at the mean, a foundation where it falls away,
     # the walkway goes straight down and the driveway winds across the slope
@@ -1341,11 +1329,12 @@ def _demo() -> None:
     assert any(abs(w[4] - 1.8) < 0.05 and w[3] == 12 for w in walls), walls
     shop = clean({"name": "S", "kind": "buildings", "role": "shop"})
     assert _lot_ground(shop, lambda x, y: 0.0, 0, 0, 0.0, 20, 15)[2][0][0] == 18.0, "a shop fronts the street full width"
-    walk, drive = paths
-    assert len(walk[1]) == 6 and len(drive[1]) == 12 and drive[1][2] == round(pad) and drive[1][-1] < pad - 100, paths
-    assert drive[0] in (DRIVE_M, DRIVE2_M), drive[0]
-    # steep: the Bezier's middle points swing across the slope (sideways off the straight line to the kerb)
-    assert abs(drive[1][4] - drive[1][1]) > 100, "the driveway winds across the slope"
+    (drive,) = paths
+    assert drive[0] == DRIVE_M and len(drive[1]) == 6 and drive[1][2] == round(pad) and drive[1][-1] < pad - 100, paths
+    # a lot never reaches onto a street
+    rh = _Hash()
+    rh.add(0.0, 1500.0, 875.0, (0.0, 1500.0, 875.0))
+    assert _lot_hits_road(rh, 0, 0, 90.0, 600, 800) and not _lot_hits_road(rh, 0, -1500, 90.0, 600, 800)
     from . import citygen as cg
     ter = {"min": [-2000, -2000], "max": [2000, 2000], "grid": 40,
            "heights": [[-0.3 * (-2000 + 4000 * (i + 0.5) / 40) for i in range(40)] for _ in range(40)]}
