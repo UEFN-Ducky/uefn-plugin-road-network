@@ -131,3 +131,6 @@ situation and what to do. Keep it to what you couldn't have known.
   them, and kept that result (its key never saw those actors). The ground now takes private streets from each
   city's plan. Anything a preview needs must come from the plan or from actors `generate` has already written:
   never from Paths / Access actors, which are always one step behind inside a generate.
+- The person wants the land left alone when a city moves: a city adapts to the terrain, the terrain is not
+  remade for the city. 'Ground under the cities: Natural' never changes the land; 'Flatten' levels the land under a
+  city but never its lakes or sea (the plateau comes up from the shore). Never fill or move water for a city.

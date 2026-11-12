@@ -1354,9 +1354,20 @@ function openTab(id) {
 
 // a generate setting changed: remember it, and rebuild right away when live preview is on
 let liveTimer = 0;
+// The button at the foot says what it will do: a world of this name is rebuilt whole (terrain, every city, every
+// road), a new name makes a new world. One city is rebuilt from the Cities tab, not from here.
+function syncGenerate() {
+  if (!ctl.generate) return;
+  const name = (state.gen.name || "").trim().toLowerCase();
+  const again = !!name && state.nets.some((n) => n.generated && n.name.toLowerCase() === name);
+  ctl.generate.querySelector("span").textContent = again ? "Regenerate everything" : "Generate world";
+  ctl.generate.title = again ? "Rebuilds this whole world: the terrain, every city and every road (offline, nothing changes in UEFN)"
+    : "Builds the terrain, cities and roads of a new world (offline, nothing changes in UEFN)";
+}
 function setGen(key, v) {
   state.gen[key] = v;
   savePrefs();
+  syncGenerate();
   if (state.live) { clearTimeout(liveTimer); liveTimer = setTimeout(() => generate(), 650); }
 }
 const m = (v) => `${Math.round(v)} m`;
@@ -1386,6 +1397,7 @@ function buildPanes() {
       (ctl.city_ground = segmented({ label: "Ground under the cities", value: state.gen.city_ground, onChange: (v) => setGen("city_ground", v),
         options: [["natural", "Natural", "terrain"], ["flatten", "Flatten", "layers"]] })).el,
       h("div", { class: "rn-hint" }, "Natural keeps the hills as they are: a moved city sits on the land it lands on. "
+        + "Flatten levels the land under each city; lakes and the sea stay where they are either way. "
         + "New terrain only: a world on scanned ground keeps that ground.")),
     section("This world", h("div", { id: "worldSummary" }), h("div", { id: "worldHeightmap" })));
   // ---- Terrain
@@ -1443,7 +1455,9 @@ function buildPanes() {
     roadKinds, junctions, coast);
   // ---- Footer
   ctl.live = toggle({ label: "Live preview", iconName: "play", value: state.live, onChange: (v) => { state.live = v; savePrefs(); } });
-  $("foot").replaceChildren(ctl.live.el, button("Generate", "refresh", () => generate(), "primary", "Build the terrain, cities and roads (offline, nothing changes in UEFN)"));
+  ctl.generate = button("Generate world", "refresh", () => generate(), "primary");
+  $("foot").replaceChildren(ctl.live.el, ctl.generate);
+  syncGenerate();
   renderCitiesPane();
   renderPcgPane();
   renderEditPane();
@@ -2048,6 +2062,7 @@ async function loadNets(autoOpen = true) {
     return;
   }
   state.nets = out.items || [];
+  syncGenerate();
   $("nets").replaceChildren(...(state.nets.length ? state.nets.map((n) => {
     const b = h("button", { type: "button", class: "dk-nav-item", "data-live-id": `net:${n.id}`, "data-net": n.id, "aria-current": n.id === state.net ? "page" : null },
       icon(n.generated ? "world" : "network", 16), h("span", {}, n.name), h("span", { class: "rn-tag" }, n.generated ? "gen" : "UEFN"));
@@ -2071,6 +2086,7 @@ async function openNet(id) {
     Object.assign(state.gen, { name: currentNet().name, seed: g.seed ?? state.gen.seed, size_km: g.size_km ?? state.gen.size_km,
       relief_m: g.relief_m ?? state.gen.relief_m, cities: g.cities ?? state.gen.cities, ground: g.ground_from ? "net" : "new", ...(g.options || {}) });
     syncControls();
+    syncGenerate();
   }
   document.body.dataset.liveView = `${id}:${state.tab}`;
   renderUefnPane();

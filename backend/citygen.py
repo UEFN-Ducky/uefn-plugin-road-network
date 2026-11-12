@@ -333,7 +333,7 @@ def push_out(keep: list, x: float, y: float, margin: float) -> list:
 
 def terrain(seed: int, size_cm: float, relief_cm: float, cities: list, grid: int = 160,
             center: tuple = (0.0, 0.0), opts: dict | None = None, keep: list | None = None) -> dict:
-    """Hills (natural ground; option city_ground 'flatten' presses a plateau under every city). Same shape as a ground scan:
+    """Hills (natural ground; option city_ground 'flatten' levels the land under every city, never its water). Same shape as a ground scan:
     {min, max, grid, heights[j][i]} with cell centres, so the 3D view and drape read it as is."""
     o = options(opts)
     fbm = _fbm(seed, o["detail"], o["roughness"], o["ridges"])
@@ -378,9 +378,28 @@ def terrain(seed: int, size_cm: float, relief_cm: float, cities: list, grid: int
         return base[j][i]
 
     blend = o["flatten_m"] * 100
-    # a city's plateau is its centre's ground, lifted out of the water when it sits in a lake
+    # a city's plateau is its centre's ground (the level just over the water when the centre is in a lake)
     plateaus = [(c, max(at(c["x"], c["y"]), (sea + shore * 2) if sea is not None else -1e9)) for c in cities] \
         if o["city_ground"] == "flatten" else []
+    # ... and it is the LAND's plateau: water is never lifted out of the map. A lake or the sea keeps its place and
+    # its own shore whatever city sits over it, and the plateau comes up from the shore over the same blend, so
+    # moving a city never moves the water (it filled the lake it landed on and let the one it left come back).
+    cell = size_cm / grid
+    dry: dict = {}  # (j, i) -> cells from the nearest water, for the cells near any
+    if plateaus and sea is not None:
+        edge = [(j, i) for j in range(grid) for i in range(grid) if base[j][i] < sea + shore]
+        reach = int(max(blend, 2 * cell) // cell) + 1
+        seen = set(edge)
+        for d in range(1, reach + 1 if edge else 0):
+            nxt = []
+            for j, i in edge:
+                for c in ((j - 1, i), (j + 1, i), (j, i - 1), (j, i + 1), (j - 1, i - 1), (j - 1, i + 1), (j + 1, i - 1), (j + 1, i + 1)):
+                    if c not in seen and 0 <= c[0] < grid and 0 <= c[1] < grid:
+                        seen.add(c)
+                        dry[c] = d
+                        nxt.append(c)
+            edge = nxt
+        dry.update({c: 0 for c in seen if c not in dry})
     rows = []
     for j, y in enumerate(ys):
         row = []
@@ -388,6 +407,8 @@ def terrain(seed: int, size_cm: float, relief_cm: float, cities: list, grid: int
             h = base[j][i]
             for c, flat in plateaus:
                 w = 1 - _smoothstep(c["radius"] * 1.05, c["radius"] * 1.05 + blend, math.hypot(x - c["x"], y - c["y"]))
+                if (j, i) in dry:
+                    w *= _smoothstep(0, max(blend, 2 * cell), dry[(j, i)] * cell)
                 h += (flat - h) * w
             for k in keep or []:  # last: whatever is built there sits exactly on its own ground
                 h += (k["z"] - h) * (1 - _smoothstep(0, max(blend, 5000.0), keep_gap(k, x, y)))
@@ -2886,10 +2907,13 @@ def _demo() -> None:
     assert under and all(w < sea - 1200 for d, w in under), "deep water stays deep"
     assert sum(1 for d, w in under if abs(w - sea) < 50) == 0, "no lake bed sits flat at the water line"
     assert all(w <= d + 1 for rd, rw in zip(dry, wet["heights"]) for d, w in zip(rd, rw)), "water only lowers"
-    # a city in a lake gets dry ground
-    lake_city = [{"name": "L", "x": 0, "y": 0, "radius": 30000}]
-    t = terrain(3, 400000, 6000, lake_city, grid=48, opts={"sea_m": 50, "city_ground": "flatten"})
-    assert st.sample_grid(t, 0, 0) > t["sea"], "a city never sits under water"
+    # a city put over a lake leaves the lake where it is: flattening levels the land, never the water
+    lake_city = [{"name": "L", "x": 0, "y": 0, "radius": 150000}]
+    t = terrain(3, 400000, 6000, lake_city, grid=48, opts={"sea_m": 20, "city_ground": "flatten"})
+    lake = terrain(3, 400000, 6000, [], grid=48, opts={"sea_m": 20})
+    was_wet = [(j, i) for j in range(48) for i in range(48) if lake["heights"][j][i] < lake["sea"]]
+    assert was_wet and all(t["heights"][j][i] == lake["heights"][j][i] for j, i in was_wet), "water stays water under a flattened city"
+    assert t["heights"] != lake["heights"], "the land round it is still levelled"
     small = city_graph(cities[0], {"block_m": 60})[1]
     assert len(small) > len(city_graph(cities[0], {"block_m": 150})[1])
     two = generate(cities, lambda x, y: 0.0, "/Game/X/WorldGen/Roads", seed=3, opts={"highway": "2L"})
