@@ -1376,6 +1376,59 @@ def _lot_ground(layer: dict, sample_z, x: float, y: float, yaw: float, w_m: floa
     return pad, found, paths
 
 
+FOUND_MAX_M = 4.0  # nothing is built where the land falls further than this away under it: the lot is planted
+PLANT_EVERY_CM = 800.0  # ... with a tree about every 8 m
+
+
+def leave_out_deep(placed: dict, max_m: float = FOUND_MAX_M) -> tuple:
+    """Take out every building that would stand on a foundation deeper than `max_m` (its foundation_m, measured on
+    the cut ground): nobody builds where the land drops more than a storey under the floor, and a wall that tall
+    reads as a cliff of concrete. Parks stay (planted ground, no slab), and so does a site the planner chose: a
+    city keeps its one hospital even on a steep lot.
+    Returns (footprints taken out [(x, y, yaw, width_m, depth_m)] for plant_lots, planned sites kept though deep)."""
+    gone, kept_sites = [], 0
+    for v in placed.values():
+        if v.get("kind") != "buildings" or v.get("role") == "park":
+            continue
+        keep = []
+        for p in v.get("points") or []:
+            if len(p) > 9 and p[9] > max_m:
+                if len(p) > 12 and p[12]:
+                    kept_sites += 1
+                else:
+                    gone.append((p[0], p[1], p[3], p[7], p[8]))
+                    continue
+            keep.append(p)
+        if len(keep) != len(v["points"]):
+            v["count"] = max(0, v.get("count", len(v["points"])) - (len(v["points"]) - len(keep)))
+            v["points"], v["shown"] = keep, len(keep)
+    return gone, kept_sites
+
+
+def plant_lots(placed: dict, lots: list, sample_z, sea=None) -> int:
+    """Trees on the lots leave_out_deep emptied, in the 'Infill trees' layer with the lots nothing could be built
+    on: a jittered grid over each footprint, standing on the ground as it is once the lot's pad is gone."""
+    rows = []
+    for x, y, yaw, w_m, d_m in lots:
+        c, s = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+        nu, nv = max(1, int(d_m * 100 // PLANT_EVERY_CM)), max(1, int(w_m * 100 // PLANT_EVERY_CM))
+        for i in range(nu):
+            for j in range(nv):
+                seed = abs(int(x) * 31 + int(y) * 17 + i * 7919 + j * 104729)
+                u = -d_m * 50 + (i + 0.5) * d_m * 100 / nu + (seed % 97 - 48) / 48 * 150
+                w = -w_m * 50 + (j + 0.5) * w_m * 100 / nv + (seed % 89 - 44) / 44 * 150
+                px, py = x + c * u - s * w, y + s * u + c * w
+                z = sample_z(px, py)
+                if z is not None and not (sea is not None and z < sea):
+                    rows.append([round(px), round(py), round(z), seed % 360, round(0.85 + (seed % 40) / 100, 2)])
+    if rows:
+        layer = placed.setdefault("Infill trees", {"kind": "scatter", "role": "tree", "count": 0, "shown": 0, "points": [],
+                                                   "radius_cm": 250, "meshes": [], "build": "", "row": "x, y, z, yaw, scale"})
+        layer["points"] = layer["points"] + rows
+        layer["count"] = layer["shown"] = len(layer["points"])
+    return len(rows)
+
+
 def pads(previewed: dict, margin_cm: float = 400.0) -> list:
     """Every previewed lot as a level pad for the heightmap: (x, y, cos, sin, half width, half depth, z)."""
     out = []
@@ -1483,6 +1536,17 @@ def _demo() -> None:
     assert len(h) > 11 and h[11] == [], "no wall slabs on lot edges"
     shop = clean({"name": "S", "kind": "buildings", "role": "shop"})
     assert _lot_ground(shop, lambda x, y: 0.0, 0, 0, 0.0, 20, 15)[2][0][0] == 18.0, "a shop fronts the street full width"
+    # nothing is built on a foundation deeper than 4 m: the house goes and its lot is planted; a park and a
+    # planned site stay
+    deep = {"Houses": {"kind": "buildings", "role": "house", "count": 3, "shown": 3, "points": [
+                [0, 0, 0, 0, 1, 7, 0, 16, 24, 4.5, [], []], [5000, 0, 0, 0, 1, 7, 0, 12, 12, 4.0, [], []],
+                [9000, 0, 0, 0, 1, 7, 0, 12, 12, 9.0, [], [], "hospital"]]},
+            "Parks": {"kind": "buildings", "role": "park", "count": 1, "shown": 1, "points": [[0, 9000, 0, 0, 1, 0, 0, 40, 40, 12.0, [], []]]}}
+    out_lots, sites = leave_out_deep(deep)
+    assert out_lots == [(0, 0, 0, 16, 24)] and sites == 1 and deep["Houses"]["count"] == 2 and len(deep["Parks"]["points"]) == 1
+    assert plant_lots(deep, out_lots, lambda x, y: 50.0) == 6 and deep["Infill trees"]["count"] == 6
+    assert all(abs(t[0]) <= 1350 and abs(t[1]) <= 950 and t[2] == 50 for t in deep["Infill trees"]["points"])
+    assert plant_lots(deep, out_lots, lambda x, y: -50.0, sea=0.0) == 0, "no tree in the water"
     (drive,) = paths
     assert drive[0] == DRIVE_M and len(drive[1]) == 6 and drive[1][2] == round(pad) and drive[1][-1] < pad - 100, paths
     # a lot never reaches onto a street

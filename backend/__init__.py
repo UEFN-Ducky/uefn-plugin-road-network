@@ -1492,7 +1492,6 @@ def register(api) -> None:
             placed.update(airport.layers([r for c in cities for r in (c.get("private") or {}).get("airport") or []]))
             # every generated world: a building the ground would bury is lifted onto it, here, before any push
             # (worlds over another's landscape were skipped once: their houses went in with the hill inside them)
-            fit_ter = terrain
             if gen and cut and terrain.get("heights"):
                 # the ground the city leaves, a landscape pixel at a time: every road cut and filled in first
                 # (its own cells locked), then every lot levelled round them. Re-cut whenever the city changes;
@@ -1518,8 +1517,33 @@ def register(api) -> None:
                         roads = cut2
                         locked |= own
                     _GROUND.update(key=rk, ter=roads, locked=locked)
-                fit_ter = cg.cut_pads(_GROUND["ter"], pl.pads(placed, cg.pad_margin(terrain)), _GROUND["locked"])
-            fit = fit_buildings(placed, fit_ter, cut, fit_ter is not terrain) if gen and terrain.get("heights") else None
+
+            def cut_and_fit():
+                ter = cg.cut_pads(_GROUND["ter"], pl.pads(placed, cg.pad_margin(terrain)), _GROUND["locked"]) \
+                    if gen and cut and terrain.get("heights") else terrain
+                return ter, fit_buildings(placed, ter, cut, ter is not terrain) if gen and terrain.get("heights") else None
+            fit_ter, fit = cut_and_fit()
+            # Nothing is built where the land falls more than pl.FOUND_MAX_M away under it: those buildings go, the
+            # ground is cut again without their pads (which moves their neighbours' a little, so a few rounds) and
+            # their lots are planted. Then the kerbs and fences that were theirs go too.
+            lots, sites = [], 0
+            for last in (False, False, False, True) if fit else ():
+                gone, sites = pl.leave_out_deep(placed)
+                lots += gone
+                if not gone:
+                    break
+                if last:  # the fourth round's few go without another cut: their pads stay as level ground
+                    fit["checked"] -= len(gone)
+                else:
+                    fit_ter, fit = cut_and_fit()
+            if fit:
+                fit["left_out"] = {"deeper_than_m": pl.FOUND_MAX_M, "buildings": len(lots), "planned_sites_kept": sites}
+            if lots:
+                fit["left_out"]["trees"] = pl.plant_lots(placed, lots, fit["ground"], terrain.get("sea"))
+                if "Driveway aprons" in placed:
+                    rows = (pl.aprons(placed).get("Driveway aprons") or {}).get("points") or []
+                    placed["Driveway aprons"].update(points=rows, count=len(rows), shown=len(rows))
+                pl.fit_fences(placed, pl.road_samples(actors, 400.0) + pl.street_samples(cities))
             if fit:
                 fit["roads"] = road_fit(fit["ground"], actors, terrain)
                 for name, v in placed.items():  # the developments' pieces stand on the cut ground too (stalls on their slab)

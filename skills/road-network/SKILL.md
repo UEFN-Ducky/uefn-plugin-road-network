@@ -123,5 +123,6 @@ situation and what to do. Keep it to what you couldn't have known.
   3 m side walls, every building its own foundation, a deck too low for piers its approach wall. An uphill cut is
   graded ground. Never add a layer of wall boxes to hide a step: fix the piece or the ground.
 - How deep foundations come out is set by the landscape's pixel (about 10 m), not by the pad rule: levelling lots
-  on the road-graded ground or at street level was measured and changed nothing. Don't retry those; a finer
-  heightmap or fewer buildings on steep ground are the levers, and both are the person's call.
+  on the road-graded ground or at street level was measured and changed nothing. Don't retry those. The person
+  chose the rule instead: nothing is built on a foundation deeper than 4 m, the lot is planted (planned sites
+  and parks stay). A finer heightmap is the other lever and is still their call.

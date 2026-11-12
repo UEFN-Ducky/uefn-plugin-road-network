@@ -144,6 +144,9 @@ RULES = [
     "Every building lot is levelled (pad), and every building stands on its own "
     "foundation (a plinth course and a wall 1 m into the ground, deeper where the hill falls away); a walkway to "
     "the kerb and, for houses and businesses, a driveway.",
+    "Nothing is built where the land falls more than 4 m away under it (its foundation would be a concrete cliff): "
+    "the building is left out and its lot planted with trees. Parks stay, and so does a site the planner chose "
+    "(hospital, school, city hall...). ground_fit.left_out counts them.",
     "Nothing stands on air and no loose wall slab holds anything up: ground roads carry their own 3 m side walls, "
     "a deck or ramp too low for piers stands on its approach wall, an uphill cut is graded ground.",
     "Forests grow in dense patches with meadows between, in a belt around each city; parks are dense groves.",

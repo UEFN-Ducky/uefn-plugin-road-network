@@ -138,6 +138,12 @@ Nothing in the city stands on air, and no loose wall slab holds anything up: eve
   road they cross they stay open.
 - **Uphill cuts**: held by the graded ground. A road's own cells sit at the road and blend back to the hill over
   30 m; a lot's pad blends back over a pixel and a half.
+- **No foundation deeper than 4 m** (`pl.FOUND_MAX_M`): a building that would need one is left out and its lot
+  planted (`pl.leave_out_deep`, `pl.plant_lots`, into 'Infill trees'); the ground is cut again without its pad,
+  and its driveway kerb and fences go with it. Parks stay, and so does a planned site (hospital, school, city
+  hall...). `ground_fit.left_out` says how many went, how many planned sites were kept, how many trees came.
+  The '<City> Paths' / 'Access' actors are built from the previewed lots: run the pipeline from `sidewalks`
+  after a change like this, or driveways to lots that are gone stay in the stored world.
 A foundation's depth is measured on the ground the heightmap leaves (`citygen.footings`, after the pads are cut and
 the buildings settled). How deep they come out is set by the landscape's pixel (about 10 m on a 10 km world, with
 16 m lots): neighbours' pads at different heights meet inside one pixel. Measured Nov 12 2026: levelling lots on the
