@@ -121,7 +121,7 @@ GRADE = {"6L": 0.04, "6S": 0.04, "1S": 0.08, "4L": 0.05, "2S": 0.06, "2L": 0.08,
          "SW": 0.08, "WK": 0.08, "DW": 0.15, "PR": 0.10, "DD": 0.15, "FR": 0.08,
          "CN": 0.01, "DK": 0.01,  # canals and dry docks: nearly level (locks are not modelled)
          "RW": 0.01, "RS": 0.015, "TW": 0.015}  # runways and taxiways: FAA-like longitudinal grades
-MAX_CUT_CM = 600.0  # deepest a road is cut into / built up on the ground; past that it follows the hill more steeply
+MAX_CUT_CM = 1200.0  # deepest a road is cut into / built up on the ground; past that it follows the hill more steeply
 CANAL_DEPTH_CM = 300.0  # walkways at ramp grade (8.3 %), driveways up to 15 %
 BRIDGE_LIFT_CM = 750.0  # clearance a highway rises to over a street it crosses (a real freeway overpass: 7.5 m)
 
@@ -530,6 +530,9 @@ def grade_to_roads(ter: dict, actors: dict, locked: set | None = None) -> dict:
         if locked is not None and w >= 0.999:
             locked.add((j, i))  # the road's own cells: nothing cut later may move them
     for (j, i), top in cap.items():
+        own = best.get((j, i))
+        if own and own[4] and own[3] >= 0.999 and abs(own[2] - top - DECK_CLEAR_CM) <= 100:
+            continue  # a ramp lands on this road's own deck: the ground stays at the road (was 2 m under it)
         if rows[j][i] > top and not (sea is not None and rows[j][i] < sea):
             rows[j][i] = round(top, 1)
             if locked is not None:
@@ -1055,6 +1058,11 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
                         changed = True
     for e in edges:  # every city street carries its sidewalks in its own mesh
         e[2] = CITY_STREET.get(e[2], e[2])
+        if len(e) > 3 and e[3]:  # and its bridge pieces follow its final kind: a street widened after its
+            deck, ramp = structure_kinds(e[2])  # bridge was planned rode a narrower deck (a 7 m width jump)
+            for v in e[3]:
+                if len(v) > 3 and v[3]:
+                    v[3] = deck if v[3] in ("BR", "ED", "BW") else ramp if v[3] == "BRR" else e[2]
     return nodes, edges
 
 
@@ -1953,7 +1961,7 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
         hw_nodes, hw_edges = over_water(hw_nodes, hw_edges, wet, long, bridges)
     if hw_edges:
         out["Highways"] = build_actor(hw_nodes, hw_edges, ground, folder, pieces)
-    for _ in range(3):  # again while anything moved: an end may land on a road whose own end just moved
+    for _ in range(8):  # again while anything moved: an end may land on a road whose own end just moved
         if not weld_ends(out):
             break
     return out
@@ -2023,8 +2031,8 @@ def weld_ends(actors: dict) -> int:
             for _ in range(80):  # ease the road back from its end
                 nxt = [n for n in (s["b"] if s["a"] == cur else s["a"] for s in touch[cur] if s["mesh"]) if n != prev]
                 q = by.get(nxt[0]) if len(nxt) == 1 else None
-                if not q or q["mesh"] or any(not s["mesh"] for s in touch[q["i"]]):
-                    break  # a fork, a piece, or a junction's mouth: that stays where it is
+                if not q or q["mesh"] or len(touch[q["i"]]) < 2 or any(not s["mesh"] for s in touch[q["i"]]):
+                    break  # a fork, a piece, a junction's mouth or another end (welded itself): that stays put
                 lim = WELD_GRADE * math.hypot(q["x"] - by[cur]["x"], q["y"] - by[cur]["y"])
                 z = max(by[cur]["z"] - lim, min(by[cur]["z"] + lim, q["z"]))
                 if abs(z - q["z"]) < 1:
@@ -2369,6 +2377,9 @@ def _demo() -> None:
     assert not any(river(*rn[n][:2]) for e in re_ for n in e[:2]), "no junction in the river"
     over = [e for e in re_ if min(rn[e[0]][0], rn[e[1]][0]) < 10000 < 20000 < max(rn[e[0]][0], rn[e[1]][0])]
     assert len(over) >= 5 and all(max(v[2] for v in e[3]) >= 300 for e in over), over[:2]
+    wide_river = city_graph(lake, {"freeways": "no", "core_roads": "6L"}, river)[1]
+    assert all(v[3] in (*structure_kinds(e[2]), e[2]) for e in re_ + wide_river if len(e) > 3 and e[3]
+               for v in e[3] if len(v) > 3), "a bridge is as wide as the street it carries"
     assert len(rb) == len(over), (len(rb), len(over))
     ends = [rn[n] for n in rn if isinstance(n, tuple) and n and n[0] == "shore"]
     assert all(math.hypot(*p[:2]) > 0.85 * lake["radius"] for p in ends), ("only the city edge ends at the bank", ends)

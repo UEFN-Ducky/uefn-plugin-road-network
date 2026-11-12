@@ -1621,7 +1621,7 @@ def register(api) -> None:
                 if min(p["x"] - x0, x1 - p["x"], p["y"] - y0, y1 - p["y"]) < 20000:
                     edge += 1
                     continue
-                near, level = 1e12, None  # nearest road in plan, and the smallest step among the roads in reach
+                near, level, onto = 1e12, None, ""  # nearest road in plan, the smallest step among the roads in reach
                 for lab2, a, b in every:
                     if lab2 == label and i in (a["i"], b["i"]):
                         continue
@@ -1631,12 +1631,13 @@ def register(api) -> None:
                     near = min(near, d)
                     if d <= 2600:
                         dz = a["z"] + (b["z"] - a["z"]) * t - p["z"]
-                        level = dz if level is None or abs(dz) < abs(level) else level
+                        if level is None or abs(dz) < abs(level):
+                            level, onto = dz, f"{lab2} {round(d)} cm"
                 mesh = ss[0]["mesh"].split("/")[-1]
                 if level is None:
                     bad.append(("far", round(p["x"]), round(p["y"]), round(p["z"]), round(near), label, mesh))
                 elif abs(level) > 100:
-                    bad.append(("stepped", round(p["x"]), round(p["y"]), round(p["z"]), round(level), label, mesh))
+                    bad.append(("stepped", round(p["x"]), round(p["y"]), round(p["z"]), round(level), label, mesh, onto))
         # a road that changes width at a plain point (no junction piece there): the two meshes do not meet
         half_of = {m.split("/")[-1]: cg.HALF[k] for k, m in cg.ROAD_MESH.items()}
         jumps = []
@@ -1656,7 +1657,7 @@ def register(api) -> None:
                 "width_jumps": len(jumps), "width_jump_at": sorted(jumps, reverse=True)[:8],
                 "width_row": "cm wider, x, y, actor, mesh, mesh",
                 "stepped": sum(1 for b in bad if b[0] == "stepped"), "worst": sorted(bad, key=lambda b: -abs(b[4]))[:12],
-                "row": "far | stepped, x, y, z, cm to the nearest road | cm above (+) or below (-) it, actor, mesh"}
+                "row": "far | stepped, x, y, z, cm to the nearest road | cm above (+) or below (-) it, actor, mesh[, the road it meets]"}
 
     def ground_fit(net_id: str = "", heights: bool = True) -> dict:
         """The ground as the city leaves it: every lot cut level, every road cut and filled in, on a grid the
