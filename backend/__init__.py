@@ -1625,8 +1625,9 @@ def register(api) -> None:
                     edge += 1
                     continue
                 near, level, onto = 1e12, None, ""  # nearest road in plan, the smallest step among the roads in reach
+                mine = cg.own_run(touch, by, i)  # never its own road: the piece behind it is no road it meets
                 for lab2, a, b in every:
-                    if lab2 == label and i in (a["i"], b["i"]):
+                    if lab2 == label and a["i"] in mine and b["i"] in mine:
                         continue
                     ux, uy = b["x"] - a["x"], b["y"] - a["y"]
                     t = max(0.0, min(1.0, ((p["x"] - a["x"]) * ux + (p["y"] - a["y"]) * uy) / (ux * ux + uy * uy or 1.0)))

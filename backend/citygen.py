@@ -1970,6 +1970,24 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
 WELD_REACH_CM = 2600.0  # an open end this close (in plan) to another road is meant to join it
 WELD_GRADE = 0.08  # the end's own road eases to the new height at most this steeply
 WELD_SNAP_CM = 6000.0  # an end that stops short of every road by less than this is brought up to the nearest one
+FREEWAY_LINK_CM = 15000.0  # a freeway that ends this close to a road runs on to it (an urban freeway ending in a field)
+FREEWAY_MESHES = {ROAD_MESH[k].split("/")[-1] for k in ("6L", "ED")}
+
+
+def own_run(touch: dict, by: dict, i, limit: float = 8000.0) -> set:
+    """The points of the road an open end belongs to, back from the end up to `limit` cm or the first fork: an end
+    never 'joins' its own road (its previous piece, a few metres back at its own height, passed as the road it
+    meets, so ramps planned 16 m off their street were never moved and the check said they were fine)."""
+    run, prev, cur, gone = {i}, None, i, 0.0
+    while gone < limit:
+        nxt = [s["b"] if s["a"] == cur else s["a"] for s in touch.get(cur, ())]
+        nxt = [n for n in nxt if n != prev and n in by]
+        if len(nxt) != 1 or len(touch.get(cur, ())) > 2:
+            break
+        gone += math.hypot(by[nxt[0]]["x"] - by[cur]["x"], by[nxt[0]]["y"] - by[cur]["y"])
+        prev, cur = cur, nxt[0]
+        run.add(cur)
+    return run
 
 
 def weld_ends(actors: dict) -> int:
@@ -1999,9 +2017,10 @@ def weld_ends(actors: dict) -> int:
             if not p or len(ss) != 1 or not ss[0]["mesh"] or p["mesh"]:
                 continue  # only a road's own open end
             own = half_of.get(ss[0]["mesh"].split("/")[-1], 650.0)
-            best, near = None, None  # best: the road in reach nearest the end's own level; near: the closest beyond
+            mine = own_run(touch, by, i)
+            best, near, link = None, None, None  # best: in reach, nearest the end's level; near / link: closest beyond
             for lab2, u, v, mesh in every:
-                if lab2 == label and i in (u["i"], v["i"]):
+                if lab2 == label and u["i"] in mine and v["i"] in mine:
                     continue
                 ux, uy = v["x"] - u["x"], v["y"] - u["y"]
                 t = max(0.0, min(1.0, ((p["x"] - u["x"]) * ux + (p["y"] - u["y"]) * uy) / (ux * ux + uy * uy or 1.0)))
@@ -2013,8 +2032,23 @@ def weld_ends(actors: dict) -> int:
                         best = hit
                 elif d <= WELD_SNAP_CM and (near is None or d < near[0]):
                     near = hit
+                elif d <= FREEWAY_LINK_CM and (link is None or d < link[0]):
+                    link = hit
             hit = best or near
             if not hit:
+                if link and ss[0]["mesh"].split("/")[-1] in FREEWAY_MESHES:
+                    # a freeway that stops short in the fields runs on to the road it meets (the next weld puts
+                    # its new end inside that road, at its height)
+                    d, nx, ny, level, half = link
+                    nid = 1 + max([q["i"] for q in a["points"]] + [s["i"] for s in a["segments"]])
+                    q = {**p, "i": nid, "x": nx + (p["x"] - nx) / d * 2000, "y": ny + (p["y"] - ny) / d * 2000, "z": level,
+                         "lines": list(p.get("lines") or [])}
+                    s = {**ss[0], "i": nid + 1, "a": i, "b": nid, "lines": list(ss[0].get("lines") or [])}
+                    a["points"].append(q)
+                    a["segments"].append(s)
+                    by[nid] = q
+                    st.retangent(by, s)
+                    moved += 1
                 continue
             d, nx, ny, level, half = hit
             # the end lies inside the road it joins, its edge on that road's edge: a ramp merges into the freeway
@@ -2227,6 +2261,14 @@ def _demo() -> None:
     three = far + [{"name": "R", "x": 0, "y": 250000, "radius": 30000, "style": "mixed", "seed": 5}]
     multi = generate(three, lambda x, y: 0.0, "/Game/X/Roads", seed=3, opts={"interchange": "cloverleaf", "highway": "6L"})
     assert weld_ends(multi) == 0, "every ramp and highway end already sits on the road it reaches"
+    # an end never joins its own road (the old weld slid ends onto their own previous point)
+    rb = {k: {"i": k, "x": k * 1000.0, "y": 0.0} for k in range(4)}
+    rs = [{"a": k, "b": k + 1} for k in range(3)]
+    rt: dict = {}
+    for s in rs:
+        for k in (s["a"], s["b"]):
+            rt.setdefault(k, []).append(s)
+    assert own_run(rt, rb, 3) == {0, 1, 2, 3} and own_run(rt, rb, 3, 1500) == {1, 2, 3}
     # every ramp end lies inside the road it joins (its edge on that road's edge), never beside it
     half_of = {m.split("/")[-1]: HALF[k] for k, m in ROAD_MESH.items()}
     segs_all = [(lab, {p["i"]: p for p in a["points"]}, s) for lab, a in multi.items() for s in a["segments"] if s["mesh"]]
