@@ -972,6 +972,9 @@ def register(api) -> None:
         actors = cg.generate(towns, road_ground, folder, int(seed), opts, keep, wet, bridges, airports, airport_builds)
         if not base:  # our own terrain is cut and filled to the roads (a scanned landscape never is)
             ter = cg.grade_to_roads(ter, actors)
+            for label, a in actors.items():  # so freeways and highways stand on it as meshes, never reshaping it
+                if label.endswith(("Freeways", "Highways")):
+                    cg.detach(a)
         before = data.get(f"net.{nid}")
         saved = save_network(nid, name, "", "live")
         if not saved.get("ok"):

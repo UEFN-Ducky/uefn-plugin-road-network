@@ -1691,9 +1691,11 @@ def build_actor(nodes: dict, edges: list, ground, folder: str, pieces: dict | No
             pts.append(p)
             for e in arms:
                 ends[(id(e), n)] = p["i"]
+    chains = []
     for e in edges:
         via = e[3] if len(e) > 3 else []
         chain = [ends[(id(e), e[0])]]
+        chains.append(chain)
         line = [nodes[e[0]]] + via + [nodes[e[1]]]
         lift = {chain[0]: 0.0}
         kinds = [e[2]]  # the kind of the segment starting at each chain point
@@ -1714,10 +1716,55 @@ def build_actor(nodes: dict, edges: list, ground, folder: str, pieces: dict | No
             for i in (a, b):
                 glim[i] = min(glim.get(i, 1.0), GRADE.get(kinds[k], 0.08))
     by_i = {p["i"]: p for p in pts}
+    for chain in chains:  # viaducts, decks and flyovers run level, never riding the hills under them
+        level_decks([by_i[i] for i in chain])
     for s in segs:
         st.retangent(by_i, s)
     st.drape(pts, segs, {p["i"]: p["z"] for p in pts}, iters=4, max_grade=glim, max_cut=MAX_CUT_CM)
     return {"points": pts, "segments": segs}
+
+
+def detach(actor: dict) -> None:
+    """A freeway or highway actor that never shapes the landscape: its splines carry their meshes only (the
+    plugin's own heightmap is already cut to them). City streets keep shaping it."""
+    for x in actor["points"] + actor["segments"]:
+        if "raise" in x:
+            x["raise"] = False
+        x["lines"] = [l.replace("bRaiseTerrain=True", "bRaiseTerrain=False").replace("bLowerTerrain=True", "bLowerTerrain=False")
+                      for l in x.get("lines") or []]
+
+
+DECK_WINDOW_CM = 15000.0  # a deck's height is smoothed over this much road each way
+
+
+def level_decks(ps: list) -> None:
+    """Each run of lifted points along one road (a viaduct, a deck, a flyover) on its own smooth line instead of a
+    fixed lift over every bump of the ground (decks rode the hills, Nov 12 2026). The line is the mean, over
+    DECK_WINDOW_CM each way, of the highest planned height within DECK_WINDOW_CM: never under any point's planned
+    clearance, since each point's height is in every window around it. Toward the run's ends it eases back to the
+    planned heights, so the ramps down still land where they were planned."""
+    k = 0
+    while k < len(ps):
+        if ps[k]["raise"]:
+            k += 1
+            continue
+        j = k
+        while j < len(ps) and not ps[j]["raise"]:
+            j += 1
+        run = ps[k:j]
+        k = j
+        if len(run) < 3:
+            continue
+        s = [0.0]
+        for a, b in zip(run, run[1:]):
+            s.append(s[-1] + math.hypot(b["x"] - a["x"], b["y"] - a["y"]))
+        base = [p["z"] for p in run]
+        W = DECK_WINDOW_CM
+        env = [max(base[m] for m in range(len(run)) if abs(s[m] - s[n]) <= W) for n in range(len(run))]
+        for n, p in enumerate(run):
+            near = [env[m] for m in range(len(run)) if abs(s[m] - s[n]) <= W]
+            ease = min(1.0, min(s[n], s[-1] - s[n]) / W)
+            p["z"] = base[n] + (sum(near) / len(near) - base[n]) * ease
 
 
 def _seg_cross(p1, p2, q1, q2):
@@ -2290,6 +2337,12 @@ def _demo() -> None:
     assert weld_ends(multi) == 0, "every ramp and highway end already sits on the road it reaches"
     ends = [p["mesh"] for a in multi.values() for p in a["points"] if p["mesh"].startswith("SM_Road_Ramp")]
     assert {"SM_Road_RampFlare15m", "SM_Road_RampGore30m"} <= set(ends), ("ramp ends get their connectors", set(ends))
+    # a viaduct over bumpy ground runs level: never under its planned clearance, far smoother than the ground
+    bumps = [_point(k, k * 2000.0, 0, 750 + 400 * math.sin(k * 1.3), 0, 1650, lifted=k not in (0, 60)) for k in range(61)]
+    planned = [p["z"] for p in bumps]
+    level_decks(bumps)
+    wob = lambda zs: max(abs(zs[k - 1] - 2 * zs[k] + zs[k + 1]) for k in range(1, len(zs) - 1))
+    assert all(p["z"] >= z - 1 for p, z in zip(bumps, planned)) and wob([p["z"] for p in bumps[8:53]]) < wob(planned) / 10
     # an end never joins its own road (the old weld slid ends onto their own previous point)
     rb = {k: {"i": k, "x": k * 1000.0, "y": 0.0} for k in range(4)}
     rs = [{"a": k, "b": k + 1} for k in range(3)]
