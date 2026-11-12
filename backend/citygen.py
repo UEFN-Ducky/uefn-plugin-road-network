@@ -1249,12 +1249,85 @@ def over_water(nodes: dict, edges: list, wet, span: dict | None = None, bridges:
                 yaw = math.degrees(math.atan2(b_[1] - a_[1], b_[0] - a_[0]))
                 bridges.append({"type": btype, "kind": kind, "span_m": round((r1 - r0) / 100), "clearance_m": top / 100,
                                 "x": round(mid[0]), "y": round(mid[1]), "yaw": round(yaw, 1), "deck_z_rel": top,
-                                "towers": [at(r0 + (r1 - r0) * f)[:2] for f in (0.3, 0.7)]})
+                                # on the deck as built (a straight chord between its ends), never on the planned
+                                # polyline beside it: towers stood 10-20 m off the deck
+                                "towers": [on_deck(at(d0), at(d1), (r0 + (r1 - r0) * f - d0) / ((d1 - d0) or 1.0))
+                                           for f in (0.3, 0.7)]})
         keep.sort(key=lambda r: r[0])
         out.append([na, nb, first, [[round(v[0]), round(v[1])] + list(v[2:]) for s, v in keep if s_a < s < s_b]])
     nodes = {**nodes, **extra}
     used = {n for e in out for n in e[:2]}
     return {n: p for n, p in nodes.items() if n in used}, out
+
+
+def on_deck(a, b, u: float) -> list:
+    """A point u (0..1, clamped) of the way along a deck from a to b, in plan."""
+    u = max(0.0, min(1.0, u))
+    return [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u]
+
+
+PIER_EVERY_CM = 3000.0  # a pier bent under a deck every 30 m
+PIER_MIN_CM = 300.0  # no pier where the deck is lower than this over the ground (an approach on its fill)
+DECK_DEPTH_CM = 150.0  # road surface to the deck's underside: the pier cap sits under that
+CAP_CM = 120.0  # the cap beam's depth
+
+
+def bridge_piers(actors: dict, ground) -> tuple:
+    """Real bridges: under every deck and elevated ramp a pier bent every PIER_EVERY_CM, from the ground (or the
+    lake bed) up to the deck's underside: a cap beam across the deck's width and one column (two under a deck
+    16 m or wider), turned with the deck. Returns (columns, caps) as site rows [x, y, z, yaw, sx, sy, sz] for
+    SM_Kit_BridgePier (200 x 200 x 100 cm at scale 1) and SM_Kit_PierCap (200 x 100 x 120 cm)."""
+    cols, caps = [], []
+    cell = 5000.0
+    grade: dict = {}  # roads on the ground, by 50 m cell: a pier never stands in a road the deck crosses
+    for label, a in actors.items():
+        by = {p["i"]: p for p in a["points"]}
+        for s in a["segments"]:
+            mesh = (s.get("mesh") or "").split("/")[-1]
+            pa, pb = by.get(s["a"]), by.get(s["b"])
+            if mesh and mesh not in STRUCTURES and pa and pb:
+                h = HALF.get(next((k for k, m in ROAD_MESH.items() if m.split("/")[-1] == mesh), ""), 800.0)
+                for gx in range(int(min(pa["x"], pb["x"]) // cell) - 1, int(max(pa["x"], pb["x"]) // cell) + 2):
+                    for gy in range(int(min(pa["y"], pb["y"]) // cell) - 1, int(max(pa["y"], pb["y"]) // cell) + 2):
+                        grade.setdefault((gx, gy), []).append((pa, pb, h))
+
+    def in_road(x, y):
+        for pa, pb, h in grade.get((int(x // cell), int(y // cell)), ()):
+            ux, uy = pb["x"] - pa["x"], pb["y"] - pa["y"]
+            t = max(0.0, min(1.0, ((x - pa["x"]) * ux + (y - pa["y"]) * uy) / (ux * ux + uy * uy or 1.0)))
+            if math.hypot(x - pa["x"] - ux * t, y - pa["y"] - uy * t) < h + 250:
+                return True
+        return False
+    for label, a in actors.items():
+        by = {p["i"]: p for p in a["points"]}
+        for s in a["segments"]:
+            mesh = (s.get("mesh") or "").split("/")[-1]
+            pa, pb = by.get(s["a"]), by.get(s["b"])
+            if mesh not in STRUCTURES or not pa or not pb:
+                continue
+            half = HALF.get(next((k for k, m in ROAD_MESH.items() if m.split("/")[-1] == mesh), ""), 800.0)
+            L = math.hypot(pb["x"] - pa["x"], pb["y"] - pa["y"])
+            if L < 100:
+                continue
+            yaw = math.degrees(math.atan2(pb["y"] - pa["y"], pb["x"] - pa["x"]))
+            ux, uy = (pb["x"] - pa["x"]) / L, (pb["y"] - pa["y"]) / L
+            n = max(1, int(L // PIER_EVERY_CM))
+            for k in range(n):
+                t = (k + 0.5) / n
+                x, y = pa["x"] + (pb["x"] - pa["x"]) * t, pa["y"] + (pb["y"] - pa["y"]) * t
+                top = pa["z"] + (pb["z"] - pa["z"]) * t - DECK_DEPTH_CM  # the deck's underside
+                legs = [0.0] if half < 800 else [-half * 0.55, half * 0.55]
+                feet = [ground(x - uy * o, y + ux * o) or 0.0 for o in legs]
+                if top - CAP_CM - min(feet) < PIER_MIN_CM:
+                    continue  # the deck is on (or just over) the ground here: no pier
+                if any(in_road(x - uy * o, y + ux * o) for o in legs):
+                    continue  # over a road it crosses: the deck spans it
+                caps.append([round(x), round(y), round(top - CAP_CM), round(yaw, 1), 1.0, round(half * 2 * 0.9 / 100, 2), 1.0])
+                for o, f in zip(legs, feet):
+                    if top - CAP_CM - f >= 50:  # a leg standing on a bank higher than the cap is left out
+                        cols.append([round(x - uy * o), round(y + ux * o), round(f), round(yaw, 1), 1.0, 1.0,
+                                     round((top - CAP_CM - f) / 100, 2)])
+    return cols, caps
 
 
 def structure_kinds(kind: str) -> tuple:
@@ -1875,8 +1948,9 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
         hw_nodes, hw_edges = over_water(hw_nodes, hw_edges, wet, long, bridges)
     if hw_edges:
         out["Highways"] = build_actor(hw_nodes, hw_edges, ground, folder, pieces)
-    weld_ends(out)
-    weld_ends(out)  # again: an end may land on a road whose own end moved in the first pass
+    for _ in range(3):  # again while anything moved: an end may land on a road whose own end just moved
+        if not weld_ends(out):
+            break
     return out
 
 
@@ -1911,7 +1985,8 @@ def weld_ends(actors: dict) -> int:
             p = by.get(i)
             if not p or len(ss) != 1 or not ss[0]["mesh"] or p["mesh"]:
                 continue  # only a road's own open end
-            level, near = None, None
+            own = half_of.get(ss[0]["mesh"].split("/")[-1], 650.0)
+            best, near = None, None  # best: the road in reach nearest the end's own level; near: the closest beyond
             for lab2, u, v, mesh in every:
                 if lab2 == label and i in (u["i"], v["i"]):
                     continue
@@ -1919,15 +1994,23 @@ def weld_ends(actors: dict) -> int:
                 t = max(0.0, min(1.0, ((p["x"] - u["x"]) * ux + (p["y"] - u["y"]) * uy) / (ux * ux + uy * uy or 1.0)))
                 nx, ny, z = u["x"] + ux * t, u["y"] + uy * t, u["z"] + (v["z"] - u["z"]) * t
                 d = math.hypot(p["x"] - nx, p["y"] - ny)
+                hit = (d, nx, ny, z, half_of.get(mesh, 800.0))
                 if d <= WELD_REACH_CM:
-                    if level is None or abs(z - p["z"]) < abs(level - p["z"]):
-                        level = z
+                    if best is None or abs(z - p["z"]) < abs(best[3] - p["z"]):
+                        best = hit
                 elif d <= WELD_SNAP_CM and (near is None or d < near[0]):
-                    near = (d, nx, ny, z, half_of.get(mesh, 800.0))
-            if level is None and near:  # it stops short of the road it was laid toward: up to that road's edge
-                d, nx, ny, level, half = near
-                p["x"], p["y"] = nx + (p["x"] - nx) / d * half, ny + (p["y"] - ny) / d * half
-            elif level is None or abs(level - p["z"]) <= 30:
+                    near = hit
+            hit = best or near
+            if not hit:
+                continue
+            d, nx, ny, level, half = hit
+            # the end lies inside the road it joins, its edge on that road's edge: a ramp merges into the freeway
+            # (a gore), a loop's foot sits on the cross road; never beside it with grass between (Nov 12 2026)
+            tgt = max(0.0, half - own)
+            slide = d > tgt + 50 and d > 1
+            if slide:
+                p["x"], p["y"] = nx + (p["x"] - nx) / d * tgt, ny + (p["y"] - ny) / d * tgt
+            if not slide and abs(level - p["z"]) <= 30:
                 continue
             p["z"] = level
             moved += 1
@@ -2130,6 +2213,38 @@ def _demo() -> None:
     three = far + [{"name": "R", "x": 0, "y": 250000, "radius": 30000, "style": "mixed", "seed": 5}]
     multi = generate(three, lambda x, y: 0.0, "/Game/X/Roads", seed=3, opts={"interchange": "cloverleaf", "highway": "6L"})
     assert weld_ends(multi) == 0, "every ramp and highway end already sits on the road it reaches"
+    # every ramp end lies inside the road it joins (its edge on that road's edge), never beside it
+    half_of = {m.split("/")[-1]: HALF[k] for k, m in ROAD_MESH.items()}
+    segs_all = [(lab, {p["i"]: p for p in a["points"]}, s) for lab, a in multi.items() for s in a["segments"] if s["mesh"]]
+    for lab, a in multi.items():
+        if not lab.endswith(("Freeways", "Highways")):
+            continue
+        by = {p["i"]: p for p in a["points"]}
+        deg: dict = {}
+        for s in a["segments"]:
+            for i in (s["a"], s["b"]):
+                deg.setdefault(i, []).append(s)
+        for i, ss in deg.items():
+            if len(ss) == 1 and ss[0]["mesh"] and not by[i]["mesh"]:
+                p = by[i]
+                gaps = [math.hypot(p["x"] - q["x"] - (r["x"] - q["x"]) * t, p["y"] - q["y"] - (r["y"] - q["y"]) * t)
+                        - max(0.0, half_of.get(s2["mesh"].split("/")[-1], 800.0) - half_of.get(ss[0]["mesh"].split("/")[-1], 650.0))
+                        for lab2, b2, s2 in segs_all if not (lab2 == lab and i in (s2["a"], s2["b"]))
+                        for q, r in [(b2[s2["a"]], b2[s2["b"]])]
+                        for t in [max(0.0, min(1.0, ((p["x"] - q["x"]) * (r["x"] - q["x"]) + (p["y"] - q["y"]) * (r["y"] - q["y"]))
+                                                / (((r["x"] - q["x"]) ** 2 + (r["y"] - q["y"]) ** 2) or 1.0)))]]
+                assert not gaps or min(gaps) <= 60, (lab, round(min(gaps)), "a ramp end beside its road")
+    # real bridges: piers under every deck that stands clear of the ground, none where it sits on it
+    cols, caps = bridge_piers({"x": {"points": [_point(0, 0, 0, 900, 0, 1650, lifted=True), _point(1, 12000, 0, 900, 0, 1650, lifted=True)],
+                                     "segments": [_segment(2, 0, 1, "ED", "/G", lifted=True)]}}, lambda x, y: 0.0)
+    assert len(caps) == 4 and len(cols) == 8 and all(abs(c[2] + c[6] * 100 - (900 - DECK_DEPTH_CM - CAP_CM)) < 2 for c in cols), (caps, cols)
+    under = bridge_piers({"x": {"points": [_point(0, 0, 0, 900, 0, 1650, lifted=True), _point(1, 12000, 0, 900, 0, 1650, lifted=True),
+                                          _point(3, 1500, -5000, 0, 0, 525), _point(4, 1500, 5000, 0, 0, 525)],
+                                "segments": [_segment(2, 0, 1, "ED", "/G", lifted=True), _segment(5, 3, 4, "2L", "/G")]}},
+                         lambda x, y: 0.0)[1]
+    assert len(under) == 3 and all(abs(c[0] - 1500) > 525 for c in under), ("no pier in the street under the deck", under)
+    assert not bridge_piers({"x": {"points": [_point(0, 0, 0, 200, 0, 650, lifted=True), _point(1, 6000, 0, 200, 0, 650, lifted=True)],
+                                   "segments": [_segment(2, 0, 1, "ER", "/G", lifted=True)]}}, lambda x, y: 0.0)[0], "a deck on its fill"
     hilly = generate(three, lambda x, y: 800.0 * math.sin(x / 9000.0) + 600.0 * math.cos(y / 7000.0), "/Game/X/Roads", seed=3)
     assert weld_ends(hilly) == 0, "on hills too: generate welds the ends itself"
     assert all(not any(st.problems(a["points"], a["segments"]).values()) for a in multi.values())

@@ -21,6 +21,12 @@ CONVENTIONS = {
              "Sidewalk), never separate sidewalk pieces. The sidewalk is the outer `sidewalk_cm` of each side, 15 cm "
              "above the deck. Junctions are built by City Builder as one mesh too: deck, stop lines, crossings, kerbs "
              "and the sidewalk corners that join the arms' sidewalks.",
+    "bridges": "A bridge is three things, all placed by City Builder: the deck (the road's own deck piece, SM_Elev_Deck20m "
+               "for 4+ lanes, SM_Road_Bridge_Straight20m for streets; low poly: a 1.5 m slab with a concrete barrier "
+               "on each edge, top at z 0), pier bents every 30 m (SM_Kit_BridgePier columns from the ground or lake "
+               "bed to SM_Kit_PierCap under the deck; two columns under a deck 16 m or wider) and, over wide water, "
+               "SM_Kit_BridgePylon towers on the deck's centre line. To make them real, model these pieces at their "
+               "bounds_cm: column and cap stretch on Z / Y, so keep their detail at the ends.",
     "materials": "one slot per surface, named after what it is so City Builder's world-PBR instances map it: "
                  "Glass, Brick, Concrete, Stone, Trim, Roof, Metal, Frame, Wood, Siding, Gold, Neon, Floor, Foliage. "
                  "Glass slots become see-through M_City_Glass.",
@@ -124,6 +130,7 @@ def _demo() -> None:
     assert {"SM_Road_TwoLane_Straight10m", "SM_Kit_RetainingWall", "SM_Kit_StairCore", "SM_Kit_TreePit"} <= names
     assert set(grammar.modules()) <= names, "every module the grammar places is in the manifest"
     assert all(p["size_cm"] for p in m["pieces"] if not p["name"].startswith("SM_JK_"))
+    assert {"SM_Kit_BridgePier", "SM_Kit_PierCap", "SM_Elev_Deck20m"} <= names and "bridges" in m["conventions"]
     school = next(w for w in m["wanted"] if w["name"] == "SM_Bld_School")
     assert school["size_cm"][0] > 1000 and "Schools" in school["then"], school
     print("pieces ok", len(m["pieces"]), "pieces,", len(m["wanted"]), "wanted")

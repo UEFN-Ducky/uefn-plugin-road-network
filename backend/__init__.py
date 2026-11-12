@@ -1475,6 +1475,14 @@ def register(api) -> None:
                     # roads now, so most of the walls the raw hills asked for are gone and none stands in a slope)
                     walls = pl.road_walls(actors, fit["ground"])
                     placed["Road walls"].update(count=len(walls), shown=len(walls), points=walls)
+            # real bridges: a pier bent every 30 m under every deck and elevated ramp, down to the ground it stands
+            # on (the cut ground once there is one) or the lake bed
+            cols, caps = cg.bridge_piers({str(k): {"points": p, "segments": s} for k, (p, s) in enumerate(actors)},
+                                         (fit or {}).get("ground") or (lambda x, y: ground(x, y) or 0.0))
+            for name, mesh, rows, box in (("Bridge piers", "SM_Kit_BridgePier", cols, [2.0, 2.0, 1.0]),
+                                          ("Pier caps", "SM_Kit_PierCap", caps, [2.0, 1.0, 1.2])):
+                placed[name] = {"kind": "site", "role": "bridge", "mesh": mesh, "box_m": box, "tint": "fg-dim",
+                                "count": len(rows), "shown": len(rows), "points": rows}
             _PREVIEW_CACHE.update(key=key, out=placed, fit=fit, ter=fit_ter)
         out = _PREVIEW_CACHE["out"]
         if layer_id:  # one layer, or several "a,b,c" (the panel asks for small layers together: fewer calls)
@@ -2796,8 +2804,8 @@ def register(api) -> None:
                 # what to BUILD, exactly: one entry per mesh this world uses (size, bounds after import, sidewalk)
                 "specs": {n["mesh"]: spec_of[n["mesh"]] for n in needs if n["mesh"] in spec_of},
                 "no_spec": sorted(n["mesh"] for n in needs if n["mesh"] not in spec_of),
-                "rules": {k: pieces.CONVENTIONS[k] for k in ("roads", "axes", "pivot", "materials", "collision", "export",
-                                                          "import_check", "ground")},
+                "rules": {k: pieces.CONVENTIONS[k] for k in ("roads", "bridges", "axes", "pivot", "materials", "collision",
+                                                          "export", "import_check", "ground")},
                 "junctions": {"by_type": junctions, "total": sum(junctions.values()),
                               "do": "Nothing to model: road_network_build_pieces builds every junction as one mesh fitted "
                                     "to its arms (deck, stop lines, zebra crossings, kerbs, and sidewalk corners joining "

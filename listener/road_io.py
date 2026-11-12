@@ -776,6 +776,10 @@ _STREET_KIT = {
     "SM_Kit_BridgePylon": (["Plinth"], [("box", 0, (0, -200, 0), (0, 0, 0), (300, 150, 10000)),
                                        ("box", 0, (0, 200, 0), (0, 0, 0), (300, 150, 10000)),
                                        ("box", 0, (0, 0, 9000), (0, 0, 0), (300, 550, 300))]),
+    # bridge piers: a 2 x 2 m column 1 m tall (stretched to its height) and a cap beam 1 m across (stretched to the
+    # deck's width), both in concrete; placed by citygen.bridge_piers every 30 m under every deck
+    "SM_Kit_BridgePier": (["Plinth"], [("box", 0, (0, 0, 0), (0, 0, 0), (200, 200, 100))]),
+    "SM_Kit_PierCap": (["Plinth"], [("box", 0, (0, 0, 0), (0, 0, 0), (200, 100, 120))]),
     # shipyards (backend/shipyard.py)
     "SM_Kit_ShipHull": (["Steel", "Hull"], [("box", 0, (0, 0, 0), (0, 0, 0), (9000, 1900, 1400)),
                                            ("box", 0, (4700, 0, 300), (0, 0, 45), (900, 900, 1100)),

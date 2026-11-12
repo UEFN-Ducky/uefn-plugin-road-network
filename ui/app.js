@@ -490,8 +490,11 @@ function buildScene() {
   const g = state.geo;
   $("emptyView").innerHTML = g ? "" : `<div class="dk-empty"><div class="dk-empty__title">No world open</div>Generate one in the World tab, or pull roads from UEFN.</div>`;
   if (!g) { $("hud").innerHTML = ""; needsDraw = true; return; }
-  // the ground as the city leaves it (lots level, roads cut in), once it is worked out for this terrain
-  if (state.ground && state.ground.net === state.net && g.terrain === state.ground.src) g.terrain = state.ground.t;
+  // the ground as the city leaves it (lots level, roads cut in), once it is worked out for this terrain. Matched
+  // by the raw terrain's own numbers, not the object: a geometry reload brought the raw hills back over the
+  // roads until the next city refresh (Nov 12 2026)
+  g.rawTerrain ||= g.terrain;
+  g.terrain = state.ground?.net === state.net && state.ground.key === terrainKey(g.rawTerrain) ? state.ground.t : g.rawTerrain;
   const byColor = {}, legend = {}, box = new THREE.Box3();
   for (const [aslug, actor] of Object.entries(g.actors || {})) {
     const pts = new Map(actor.pts.map((p) => [p[0], p]));
@@ -1034,10 +1037,9 @@ async function loadPcgPreview() {
   const gr = await rpc("ground_fit", { net_id: net });
   card("");
   if (net !== state.net) return;
-  const raw = state.ground?.t === state.geo?.terrain ? state.ground.src : state.geo?.terrain;
-  if (gr.ok !== false && gr.grid && raw) {
-    state.ground = { net, src: raw, t: { ...raw, grid: gr.grid, heights: gr.heights, max: gr.max || raw.max }, fit: gr.ground_fit };
-    state.geo.terrain = raw;  // buildScene swaps it in
+  const raw = state.geo?.rawTerrain || state.geo?.terrain;
+  if (gr.ok !== false && gr.grid && raw?.heights) {  // buildScene swaps it in
+    state.ground = { net, key: terrainKey(raw), t: { ...raw, grid: gr.grid, heights: gr.heights, max: gr.max || raw.max }, fit: gr.ground_fit };
   }
   state.pcg = out;
   renderPcgCounts();
@@ -1086,6 +1088,7 @@ function drawDistricts() {
     }
   }
 }
+const terrainKey = (t) => t?.heights?.length ? `${t.grid}|${t.min}|${t.max}|${t.heights[0][0]}|${t.heights[t.grid >> 1]?.[t.grid >> 1]}|${t.heights[t.grid - 1]?.[t.grid - 1]}` : "";
 function sampleZ(t, x, y) {
   const n = t.grid;
   if (!n || !t.heights?.length) return null;
