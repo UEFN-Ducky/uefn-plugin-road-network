@@ -30,6 +30,7 @@ from . import pcg_batch
 from . import pcg_layers as pl
 from . import pieces
 from . import pipeline
+from . import ramp_joins
 from . import road_profiles as rp
 from . import splines_text as st
 from . import uefn_input
@@ -480,7 +481,18 @@ def register(api) -> None:
         scan = (data.get(f"net.{nid}.scan") or {}) if terrain else {}
         # every road piece's cross-section: the panel draws each road as its real mesh is built
         return {"ok": True, "id": nid, "actors": out, "terrain": scan.get("terrain", {}), "props": scan.get("props", []),
-                "profiles": rp.all_profiles()}
+                "profiles": rp.all_profiles(), "joins": road_joins(nid) if terrain else None}
+
+    _JOINS: dict = {}  # ponytail: one entry, the world being looked at
+
+    def road_joins(nid: str) -> dict:
+        """Every ramp end's merge lane or street mouth (ramp_joins), worked out again only when a road changed."""
+        heads = {a: h for a, h in actor_docs(nid).items()
+                 if " before kit" not in str(h.get("label") or "") and not str(h.get("label") or "").endswith((" Paths", " Access"))}
+        key = (nid, tuple(sorted((a, h.get("sha")) for a, h in heads.items())))
+        if _JOINS.get("key") != key:
+            _JOINS.update(key=key, out=ramp_joins.joins({a: load_actor(nid, a)[1:] for a in heads}))
+        return _JOINS["out"]
 
     def move_point(net_id: str = "", actor: str = "", index: int = -1, x: float = 0.0, y: float = 0.0, z: float = 0.0) -> dict:
         nid, aslug = slug(net_id), slug(actor)

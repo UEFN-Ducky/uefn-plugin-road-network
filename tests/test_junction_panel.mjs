@@ -45,4 +45,24 @@ const air = {};
 junctionTris([0, 0, 0, 0], [arm(0, 900), arm(90, 900), arm(180, 900)], false, air);
 assert.equal(elbow.fg, undefined);
 assert.equal(air.fg, undefined);
+
+// ramp ends (backend/ramp_joins): a merge lane as wide as its rows say, a street mouth that reaches the carriageway
+const j0 = src.indexOf("function joinSkips("), j1 = src.indexOf("function drawProfile(");
+assert.ok(j0 > 0 && j1 > j0, "drawJoins is in app.js");
+const M2 = { asphalt: "asphalt", sidewalk: "sidewalk", barrier: "barrier", paint: "paint" };
+const [joinSkips, drawJoins] = new Function("MAT", "toV", `${src.slice(j0, j1)}; return [joinSkips, drawJoins];`)(M2, toV);
+const joins = { gores: [{ deck: true, rows: [[-600, 1650, 0, 1, 1600, 750], [0, 1650, 0, 1, 1600, 750], [600, 1650, 0, 1, 800, 750], [1200, 1650, 0, 1, 0, 750]] }],
+  flares: [[0, 0, 1, 0, 0, 1, 1450, 600, 350, 0, 0]], done: [] };
+const jb = {};
+drawJoins(joins, (k) => jb[k] ||= []);
+const lane = tris(jb.asphalt).flat();
+assert.equal(Math.max(...lane.filter(([x, , z]) => z > 700).map(([, y]) => y)), 3250, "the merge lane starts as wide as the ramp's outer edge");
+assert.equal(Math.max(...lane.filter(([, , z]) => z < 100).map(([x]) => x)), 1450, "the mouth reaches the street's carriageway");
+assert.ok(tris(jb.sidewalk).length > 0 && jb.paint.length > 0, "kerb corners and a stop line");
+const skips = joinSkips(joins);
+assert.equal(skips("parapet", "SM_Elev_Deck20m")(300, 1650), true, "the freeway's parapet opens along the merge lane");
+assert.equal(skips("parapet", "SM_Elev_Deck20m")(9000, 1650), false);
+assert.equal(skips("sidewalk", "x")(1300, 0), true, "the street's sidewalk is cut across the mouth");
+assert.equal(skips("sidewalk", "x")(1300, 3000), false);
+assert.equal(skips("road", "x"), null);
 console.log("panel junction ok:", deck.length, "deck tris,", walk.length, "paving tris,", paint.length / 2, "painted bars");

@@ -231,20 +231,78 @@ function drawPlan(p, plan, put) {
   for (const [poly, slot] of plan.paint) fan(poly, LIFT + 1, put(SLOT_MAT[slot] || MAT.paint));
 }
 // one face of a swept cross-section: the edge (ya, za) -> (yb, zb) carried along the curve
-function sweepEdge(curve, ya, za, yb, zb, out) {
+function sweepEdge(curve, ya, za, yb, zb, out, skip) {
   for (let k = 0; k + 1 < curve.length; k++) {
     const a = curve[k], b = curve[k + 1], dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1;
     const nx = -dy / l, ny = dx / l;
+    if (skip && skip((a[0] + b[0]) / 2 + nx * skip.y, (a[1] + b[1]) / 2 + ny * skip.y)) continue;
     const at = (p, y, z) => toV(p[0] + nx * y, p[1] + ny * y, p[2] + z);
     const q = [at(a, ya, za), at(a, yb, zb), at(b, yb, zb), at(b, ya, za)];
     for (const v of [q[0], q[1], q[2], q[0], q[2], q[3]]) out.push(v.x, v.y, v.z);
   }
 }
-function drawProfile(curve, prof, lift, put) {
+// What the ramp ends open in the roads they meet (g.joins, backend/ramp_joins): a freeway's parapet along a merge
+// lane, a street's sidewalk across a ramp's mouth. Returns part name -> (x, y) => true where that part is left out.
+function joinSkips(joins) {
+  if (!joins) return () => null;
+  // ponytail: every gap point against every parapet strip (a few million distance checks a rebuild); a grid if
+  // worlds grow past a few hundred ramps
+  const gaps = joins.gores.flatMap((g) => g.rows.map((r) => [r[0], r[1]]));
+  const parapet = (x, y) => gaps.some((g) => (x - g[0]) ** 2 + (y - g[1]) ** 2 < 420 ** 2);
+  const sidewalk = (x, y) => joins.flares.some(([ex0, ey0, ux, uy, tx, ty, D, r, walk]) => {
+    const lx = (x - ex0) * ux + (y - ey0) * uy, ly = (x - ex0) * tx + (y - ey0) * ty;
+    return walk > 0 && lx >= D - walk - 60 && lx <= D + 60 && Math.abs(ly) < 650 + r + 200;
+  });
+  return (part, mesh) => part === "parapet" && /Freeway_Lane|Elev_Deck/.test(mesh) ? parapet : part === "sidewalk" ? sidewalk : null;
+}
+// the ramp ends themselves: merge lanes and street mouths, built from g.joins the way the Blender models are
+function drawJoins(joins, put) {
+  const LIFT = 60, tri = (out, ...vs) => { for (const v of vs) out.push(v.x, v.y, v.z); };
+  const quad = (out, a, b, c, d) => tri(out, a, b, c, a, c, d);
+  for (const { deck, rows } of joins.gores) {
+    const P = (r, k, dz) => toV(r[0] + r[2] * (r[4] - k), r[1] + r[3] * (r[4] - k), r[5] + LIFT + dz);  // k cm in from the lane's outer edge
+    const I = (r, dz) => toV(r[0], r[1], r[5] + LIFT + dz);
+    const asphalt = put(MAT.asphalt), wall = put(MAT.barrier), paint = put(MAT.paint), depth = deck ? 150 : 30;
+    for (let i = 1; i + 1 < rows.length; i++) {
+      const a = rows[i], b = rows[i + 1];
+      if (a[4] < 2) break;
+      quad(asphalt, I(a, 0), P(a, 0, 0), P(b, 0, 0), I(b, 0));
+      quad(wall, P(a, 0, -depth), P(a, 0, 0), P(b, 0, 0), P(b, 0, -depth));
+      if (deck) quad(wall, I(a, -depth), P(a, 0, -depth), P(b, 0, -depth), I(b, -depth));
+      if (deck && Math.min(a[4], b[4]) > 80) {  // the parapet follows the lane's outer edge to the tip
+        quad(wall, P(a, 35, 105), P(a, 0, 105), P(b, 0, 105), P(b, 35, 105));
+        quad(wall, P(a, 35, 0), P(a, 35, 105), P(b, 35, 105), P(b, 35, 0));
+        quad(wall, P(a, 0, 0), P(a, 0, 105), P(b, 0, 105), P(b, 0, 0));
+      }
+      const k0 = deck ? 80 : 45;
+      if (Math.min(a[4], b[4]) > 250) quad(paint, P(a, k0 + 15, 1.5), P(a, k0, 1.5), P(b, k0, 1.5), P(b, k0 + 15, 1.5));
+    }
+  }
+  for (const [ex0, ey0, ux, uy, tx, ty, D, r, walk, z0, z1] of joins.flares) {
+    const A = 650, W = (x, y, dz = 0) => toV(ex0 + ux * x + tx * y, ey0 + uy * x + ty * y, z0 + (z1 - z0) * Math.max(0, Math.min(1, x / D)) + LIFT + dz);
+    const asphalt = put(MAT.asphalt), walkOut = put(MAT.sidewalk);
+    quad(asphalt, W(0, -A), W(D, -A), W(D, A), W(0, A));
+    quad(put(MAT.paint), W(D - 160, -A + 60, 1.5), W(D - 120, -A + 60, 1.5), W(D - 120, A - 60, 1.5), W(D - 160, A - 60, 1.5));  // stop line
+    for (const sy of [-1, 1]) {
+      const arc = (t0, n) => Array.from({ length: n + 1 }, (_, k) => { const th = t0 + (Math.PI / 2 - t0) * k / n; return [D - r + r * Math.sin(th), sy * (A + r - r * Math.cos(th))]; });
+      const kerb = arc(0, 10);  // the kerb curving out of the ramp into the street
+      for (let i = 0; i + 1 < kerb.length; i++) tri(asphalt, W(D, sy * A), W(...kerb[i]), W(...kerb[i + 1]));
+      if (!walk) continue;
+      const sl = arc(Math.asin(Math.max(0, (r - walk) / r)), 8), pivot = [D - walk, sy * (A + r)];
+      for (let i = 0; i + 1 < sl.length; i++) {
+        tri(walkOut, W(...pivot, 15), W(...sl[i], 15), W(...sl[i + 1], 15));
+        quad(walkOut, W(...sl[i]), W(...sl[i], 15), W(...sl[i + 1], 15), W(...sl[i + 1]));  // the kerb's face
+      }
+      quad(walkOut, W(D - walk, sy * (A + r), 15), W(D, sy * (A + r), 15), W(D, sy * (A + r + 500), 15), W(D - walk, sy * (A + r + 500), 15));
+    }
+  }
+}
+function drawProfile(curve, prof, lift, put, skips) {
   if (prof.shapes) {  // the real cross-sections (Jersey barriers, chamfered kerbs, tapered decks), as modelled
-    for (const [, slot, poly] of prof.shapes) {
-      const out = put(SLOT_MAT[slot] || MAT.barrier);
-      poly.forEach((p, i) => { const q = poly[(i + 1) % poly.length]; sweepEdge(curve, p[0], lift + p[1], q[0], lift + q[1], out); });
+    for (const [part, slot, poly] of prof.shapes) {
+      const out = put(SLOT_MAT[slot] || MAT.barrier), skip = skips?.(part, prof.mesh);
+      if (skip) skip.y = poly.reduce((s, p) => s + p[0], 0) / poly.length;  // where across the road this part lies
+      poly.forEach((p, i) => { const q = poly[(i + 1) % poly.length]; sweepEdge(curve, p[0], lift + p[1], q[0], lift + q[1], out, skip); });
     }
   }
   for (const [name, slot, y0, y1, z0, z1] of prof.shapes ? [] : prof.parts) {
@@ -568,6 +626,8 @@ function buildScene() {
   g.rawTerrain ||= g.terrain;
   g.terrain = state.ground?.net === state.net && state.ground.key === terrainKey(g.rawTerrain) ? state.ground.t : g.rawTerrain;
   const byColor = {}, legend = {}, box = new THREE.Box3();
+  const skips = joinSkips(g.joins), joined = new Set(g.joins?.done || []);
+  if (g.joins) drawJoins(g.joins, (key) => byColor[key] ||= []);
   for (const [aslug, actor] of Object.entries(g.actors || {})) {
     const pts = new Map(actor.pts.map((p) => [p[0], p]));
     const dim = state.actor && state.actor !== aslug;
@@ -581,7 +641,7 @@ function buildScene() {
       const put = (key) => byColor[key + (dim ? "|dim" : "")] ||= [];
       const prof = g.profiles?.[s[5].split("/").pop().split(".")[0]];
       if (prof) {  // the real piece: its parts and paint, as its UEFN mesh is built
-        drawProfile(curve, prof, lift, put);
+        drawProfile(curve, prof, lift, put, skips);
         legend[label] = m;
         if (prof.sidewalk) legend["Sidewalk"] = MAT.sidewalk;
         continue;
@@ -613,6 +673,7 @@ function buildScene() {
     }
     for (const p of actor.pts) {
       if (!p[7] || p[7] === "SM_Junc_Empty") continue;
+      if (joined.has(`${aslug}:${p[0]}`)) continue;  // its merge lane / street mouth is drawn (drawJoins)
       if (g.profiles?.[p[7]]?.plan) {  // a ramp's end piece (gore / flare), as its UEFN mesh is built
         drawPlan(p, g.profiles[p[7]], (key) => byColor[key + (dim ? "|dim" : "")] ||= []);
         legend["Ramp end piece"] = MAT.asphalt;
