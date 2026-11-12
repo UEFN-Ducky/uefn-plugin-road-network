@@ -843,6 +843,9 @@ def register(api) -> None:
     def _layout_doc(layout: dict) -> dict:
         return {"lots": layout["lots"], "hoods": layout["hoods"], "plan": layout.get("plan"),
                 "waterfront": layout.get("waterfront"),
+                # every block: [x, y, kind, zone, polygon] (what the panel highlights and names), and the ones the
+                # person rezoned: [[polygon, zone]] (what the layers place by)
+                "blocks": layout.get("blocks") or [], "rezoned": layout.get("rezoned") or [],
                 "private": {k: layout.get(k) or [] for k in ("streets", "parking", "stalls", "pads", "grounds", "water",
                                                              "airport", "trees", "fences", "pools")}}
 
@@ -945,7 +948,8 @@ def register(api) -> None:
                       "radius": float(c.get("radius_m", 450)) * 100, "style": c.get("style") if c.get("style") in cg.STYLES else "mixed",
                       "seed": int(c.get("seed", seed + k))} for k, c in enumerate(given)]
         elif not text and old:  # regenerate the cities already there (their names, styles and buildings stay)
-            towns = [{k: v for k, v in c.items() if k in ("name", "x", "y", "radius", "style", "seed", "features")}
+            towns = [{k: v for k, v in c.items() if k in ("name", "x", "y", "radius", "style", "seed", "features",
+                                                          "turn", "spin", "shape", "zones")}
                      for c in old.values()]
             # City size changed since the last run: every city grows / shrinks by the same factor; then they are
             # pushed apart until the distance between cities holds
@@ -1145,14 +1149,19 @@ def register(api) -> None:
 
     def list_cities(net_id: str = "") -> dict:
         nid = slug(net_id)
-        items = [{"id": k, **v} for k, v in city_docs(nid).items()]
-        return {"ok": True, "id": nid, "items": sorted(items, key=lambda c: c["name"]), "count": len(items)}
+        items = [{"id": k, **v, "turn_deg": round(cg.orientation(v), 1)} for k, v in city_docs(nid).items()]
+        return {"ok": True, "id": nid, "items": sorted(items, key=lambda c: c["name"]), "count": len(items),
+                # what one block of a city can be made (city_save zones): its layout and its zone
+                "block_kinds": cg.BLOCK_KINDS, "block_zones": list(cg.BLOCK_ZONES), "shape_points": cg.SHAPE_POINTS,
+                "shape_range": list(cg.SHAPE_RANGE)}
 
     @holds_the_world
     def save_city(net_id: str = "", city: str = "", name: str = "", style: str = "", radius_m: float = 0.0,
-                  buildings: str = "", x: float | None = None, y: float | None = None, features: str = "") -> dict:
+                  buildings: str = "", x: float | None = None, y: float | None = None, features: str = "",
+                  turn_deg: float | None = None, shape: str = "", zones: str = "") -> dict:
         """Change one city's style, size, place (x, y: its new centre in cm), building sets
-        ({"downtown": [mesh paths], ...}) or features ({"airports": "none", ...}: cg.FEATURES)."""
+        ({"downtown": [mesh paths], ...}), features ({"airports": "none", ...}: cg.FEATURES), the way it is turned
+        (turn_deg), its outline (shape) or the type of its blocks (zones)."""
         nid, cslug = slug(net_id), slug(city)
         before = data.get(f"net.{nid}.city.{cslug}") if nid and cslug else None
         if not before:
@@ -1167,6 +1176,46 @@ def register(api) -> None:
         if radius_m:
             doc["radius"] = max(150.0, float(radius_m)) * 100
             doc["districts"] = cg.districts(doc)
+        if turn_deg is not None and str(turn_deg) != "":
+            # the whole city turns: its street grid, its outline and its industrial side
+            doc["turn"] = round(float(turn_deg) % 360.0, 1)
+            doc["spin"] = round(doc["turn"] - cg.seed_turn(doc), 3)
+            doc["districts"] = cg.districts(doc)
+        if shape:
+            if str(shape).strip().lower() in ("reset", "none", "[]"):
+                doc.pop("shape", None)  # back to the outline its seed gives it
+            else:
+                try:
+                    factors = [float(v) for v in json.loads(shape)]
+                except (ValueError, TypeError) as exc:
+                    return {"ok": False, "error": f"shape is a JSON list of {cg.SHAPE_POINTS} numbers (or 'reset'): {exc}"}
+                if len(factors) != cg.SHAPE_POINTS:
+                    return {"ok": False, "error": f"shape needs {cg.SHAPE_POINTS} numbers: how far the city reaches at each "
+                                                  f"of {cg.SHAPE_POINTS} directions round it, as a share of its radius "
+                                                  f"({cg.SHAPE_RANGE[0]} to {cg.SHAPE_RANGE[1]})."}
+                lo, hi = cg.SHAPE_RANGE
+                doc["shape"] = [round(max(lo, min(hi, v)), 3) for v in factors]
+        if zones:
+            try:
+                given = json.loads(zones)
+            except ValueError as exc:
+                return {"ok": False, "error": f"zones is not valid JSON: {exc}"}
+            rows = [dict(z) for z in doc.get("zones") or []]
+            for z in ([given] if isinstance(given, dict) else given):
+                if not isinstance(z, dict) or "x" not in z or "y" not in z:
+                    return {"ok": False, "error": 'zones: {"x": cm, "y": cm, "kind": ..., "zone": ...} (a spot inside the block), or a list of them.'}
+                kind, zone = str(z.get("kind") or ""), str(z.get("zone") or "")
+                if (kind and kind not in cg.BLOCK_KINDS) or (zone and zone not in cg.BLOCK_ZONES):
+                    return {"ok": False, "error": f"kind is one of {', '.join(cg.BLOCK_KINDS)}; zone is one of {', '.join(cg.BLOCK_ZONES)}."}
+                at = (float(z["x"]), float(z["y"]))
+                # one choice a block: the block this spot is in (as last laid out), else anything within 30 m of it
+                block = next((b for b in (city_docs(nid).get(cslug) or {}).get("blocks") or [] if cg._inside(b[4], *at)), None)
+                same = (lambda r: cg._inside(block[4], r["x"], r["y"])) if block else \
+                    (lambda r: math.hypot(r["x"] - at[0], r["y"] - at[1]) < 3000)
+                rows = [r for r in rows if not same(r)]
+                if kind or zone:  # both empty: the block goes back to the city's own plan
+                    rows.append({"x": round(at[0]), "y": round(at[1]), **({"kind": kind} if kind else {}), **({"zone": zone} if zone else {})})
+            doc["zones"] = rows
         if features:
             try:
                 given = json.loads(features)
@@ -2778,14 +2827,21 @@ def register(api) -> None:
     @api.tool(intent=GEN_INTENT, listener=False)
     def road_network_city_save(net_id: str = "", city: str = "", name: str = "", style: str = "",
                                radius_m: float = 0.0, buildings: str = "", x: float | None = None,
-                               y: float | None = None, features: str = "") -> dict:
+                               y: float | None = None, features: str = "", turn_deg: float | None = None,
+                               shape: str = "", zones: str = "") -> dict:
         """Change one city of a generated world: rename it, its road style (mixed / grid / organic), its
         radius, move it (x, y: its new centre in cm, UE world), its own building sets (JSON {"downtown":
         [mesh paths], "normal": [...], "housing": [...]}), or what it has: features JSON, e.g.
         {"airports": "none"} takes its airport off, {"shipyards": "auto"} adds shipyards, null returns a feature
-        to the world's choice (keys: airports, shipyards, freeways, waterfront, canals, planner). Generate again
+        to the world's choice (keys: airports, shipyards, freeways, waterfront, canals, planner).
+        turn_deg turns the whole city (street grid, outline, industrial side). shape draws its outline by hand: a
+        JSON list of 16 numbers, how far it reaches in each of 16 directions round it as a share of its radius
+        (0.74 to 1.26; 'reset' = the outline its seed gives it). zones gives one block a type: JSON {"x", "y" (a
+        spot inside the block, cm), "kind" (how it is laid out), "zone" (downtown / normal / housing /
+        industrial)}, or a list of them; both empty returns the block to the city's own plan. road_network_cities
+        lists every block ([x, y, kind, zone, polygon]) and the kinds and zones a block can take. Generate again
         with cities empty to rebuild its roads, freeways, airport, waterfront and everything on it."""
-        return safe(save_city)(net_id, city, name, style, radius_m, buildings, x, y, features)
+        return safe(save_city)(net_id, city, name, style, radius_m, buildings, x, y, features, turn_deg, shape, zones)
 
     @api.tool(intent=GEN_INTENT, listener=False)
     def road_network_heightmap(net_id: str = "") -> dict:
@@ -2806,8 +2862,9 @@ def register(api) -> None:
     api.register_panel_rpc("generate_options", lambda: road_network_generate_options())
     api.register_panel_rpc("cities", lambda net_id="": safe(list_cities)(net_id))
     api.register_panel_rpc("city_save", lambda net_id="", city="", name="", style="", radius_m=0.0, buildings="",
-                           x=None, y=None, features="": safe(save_city)(net_id, city, name, style, radius_m,
-                                                                         buildings, x, y, features))
+                           x=None, y=None, features="", turn_deg=None, shape="", zones="":
+                           safe(save_city)(net_id, city, name, style, radius_m, buildings, x, y, features,
+                                           turn_deg, shape, zones))
     api.register_panel_rpc("heightmap", lambda net_id="": safe(heightmap)(net_id))
     api.register_panel_rpc("city_add", lambda net_id="", name="", x=None, y=None, radius_m=0.0, style="":
                            safe(add_city)(net_id, name, x, y, radius_m, style))

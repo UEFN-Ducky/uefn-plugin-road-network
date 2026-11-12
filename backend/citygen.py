@@ -840,12 +840,38 @@ def districts(city: dict, opts: dict | None = None) -> dict:
     return {"downtown": {"radius": round(r * o["downtown"])}, "normal": {"radius": round(r * max(o["normal"], o["downtown"]))},
             "housing": {"radius": round(r)},
             # one wedge of the outer rings is the industrial zone (factories, warehouses), its direction from the seed
-            "industrial": {"angle": (int(city.get("seed", 0)) * 137) % 360, "spread": 75}}
+            # (turned with the city)
+            "industrial": {"angle": ((int(city.get("seed", 0)) * 137) % 360 + float(city.get("spin") or 0.0)) % 360,
+                           "spread": 75}}
+
+
+SHAPE_POINTS = 16  # a hand-drawn outline: this many handles round the city, each a factor of its radius
+SHAPE_RANGE = (0.74, 1.26)  # ... inside what every outline test already allows for (pcg_layers.OUTLINE_MIN / MAX)
+BLOCK_ZONES = ("downtown", "normal", "housing", "industrial")  # what a block can be zoned as
+BLOCK_KINDS = {  # what a block can be laid out as: neighbourhoods.TYPES (never 'collector', a superblock's own) + park
+    "parcels": "Plain lots on the streets", "grid": "Subdivision: grid", "loop": "Subdivision: loop",
+    "cul_de_sac": "Subdivision: cul-de-sacs", "organic": "Subdivision: curving streets",
+    "branch": "Subdivision: winding street", "garden": "Garden apartments", "suburban": "Suburban apartments",
+    "urban": "Urban apartments", "park": "Park (trees, nothing built)"}
+
+
+def seed_turn(city: dict) -> float:
+    """The grid angle a city's seed gives it, degrees (the first draw of city_graph's seeded random)."""
+    return math.degrees(random.Random(city.get("seed", 1)).uniform(0, math.pi / 2))
 
 
 def outline(city: dict, angle_deg: float) -> float:
     """How far the city (and each of its district rings) reaches in this direction, as a factor of its
-    radius (~0.75..1.25): a few seeded waves, so no city or district is a perfect circle."""
+    radius (~0.75..1.25): a few seeded waves, so no city or district is a perfect circle. A city turned by hand
+    (`spin`, degrees) turns its outline with it; one whose outline was drawn by hand (`shape`, SHAPE_POINTS
+    factors round it, the first at the city's own 0 degrees) follows those, eased from handle to handle."""
+    angle_deg -= city.get("spin") or 0.0
+    shape = city.get("shape")
+    if shape:
+        t = (angle_deg % 360.0) / 360.0 * len(shape)
+        i = int(t) % len(shape)
+        a, b = shape[i], shape[(i + 1) % len(shape)]
+        return a + (b - a) * (1 - math.cos(math.pi * (t - int(t)))) / 2
     s = int(city.get("seed", 1))
     a = math.radians(angle_deg)
     f = 0.0
@@ -863,8 +889,9 @@ def zone_share(city: dict, x: float, y: float) -> float:
 
 
 def orientation(city: dict) -> float:
-    """RoadOrientation: the city's grid angle in degrees (the first draw of city_graph's seeded random)."""
-    return math.degrees(random.Random(city.get("seed", 1)).uniform(0, math.pi / 2))
+    """RoadOrientation: the city's grid angle in degrees: the one it was turned to by hand (`turn`), else the one
+    its seed gives it."""
+    return float(city["turn"]) % 360.0 if city.get("turn") is not None else seed_turn(city)
 
 
 def canal_lines(city: dict, opts: dict | None = None) -> list:
@@ -966,6 +993,8 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
     rnd = random.Random(city.get("seed", 1))
     cx, cy, R, style = city["x"], city["y"], city["radius"], city.get("style", "mixed")
     turn = rnd.uniform(0, math.pi / 2)
+    if city.get("turn") is not None:  # turned by hand (the seed's draw is still taken: every later one stays the same)
+        turn = math.radians(float(city["turn"]))
     c, s = math.cos(turn), math.sin(turn)
     k = int(R * 1.3 // block)
     nodes, ring = {}, {}
@@ -1567,6 +1596,7 @@ def freeway_plan(city: dict, opts: dict | None = None):
     from . import freeways
     o = city_options(city, opts)
     key = repr((city.get("name"), city["x"], city["y"], city["radius"], city.get("seed"), city.get("map"),
+                city.get("turn"), city.get("shape"),
                 [o[k] for k in ("freeways", "block_m", "downtown", "normal", "collector_every", "core_roads",
                                 "neighbourhood_roads", "canals")],
                 [(a.get("center"), a.get("heading"), a.get("type")) for a in city.get("airports") or []],
@@ -1722,8 +1752,12 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
     wet = water_of(city, o, wet)  # canals are water too: no lot in them
     rnd = random.Random(f"lots:{city.get('seed', 1)}")
     fw = freeway_plan(city, o)
-    out = {"lots": [], "streets": [], "parking": [], "stalls": [], "pads": [], "trees": [], "fences": [], "pools": [], "hoods": {}}
+    out = {"lots": [], "streets": [], "parking": [], "stalls": [], "pads": [], "trees": [], "fences": [], "pools": [], "hoods": {},
+           "blocks": [], "rezoned": []}
     down, normal = o["downtown"], max(o["normal"], o["downtown"])
+    zones = [z for z in city.get("zones") or [] if isinstance(z, dict) and "x" in z and "y" in z]
+    in_wedge = zoning(city, o)[1]
+    PARTS = ("lots", "streets", "parking", "stalls", "pads", "trees", "fences", "pools")
     for area in parcels.block_areas(nodes, edges, HALF):
         cx, cy = sum(p[0] for p in area) / len(area), sum(p[1] for p in area) / len(area)
         share = zone_share(city, cx, cy)
@@ -1733,21 +1767,39 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
             ux, uy = -uy, ux
         row = round((cx * uy - cy * ux) * (1 if ux > 0 else -1) / 6000)  # blocks side by side along it share a row
         kind = nb.pick(ring, rnd) if ring != "core" and min(L, W) >= nb.MIN_SIDE else "parcels"
-        if fw.lines and fw.blocked(cx, cy, 0.5 * max(L, W)):
+        cut = bool(fw.lines and fw.blocked(cx, cy, 0.5 * max(L, W)))
+        if cut:
             kind = "parcels"
         elif ring != "core" and min(L, W) >= nb.BIG_SIDE:
             kind = "collector"  # a superblock: plain lots would be landlocked in its middle
         elif ring == "housing" and kind != "parcels" and \
                 random.Random(f"row:{city.get('seed', 1)}:{row}").random() < COLLECTOR_ROWS:
             kind = "collector"  # a whole row of suburb blocks: the one winding street runs on through them all  # a block the freeway cuts gets plain lots, the ones clear of it kept
+        plain = lambda r: {"lots": [[x, y, yaw, w, d, fx, fy, "", False]
+                                    for x, y, yaw, w, d, _poly, fx, fy in parcels.lots_in(area, LOT_W_CM, LOT_D_CM, r)]}
+        # the block as the city's own plan lays it, on the city's shared random as always ...
+        add = plain(rnd) if kind == "parcels" else nb.generate(area, kind, rnd)
+        zone = "downtown" if ring == "core" else "industrial" if in_wedge(cx, cy) else ring
+        own = next((z for z in reversed(zones) if _inside(area, z["x"], z["y"])), None) if zones else None
+        if own:
+            # ... then the person's own choice for it, on a random of the block's own: the plan above was still
+            # drawn (and dropped), so no other block of the city changes when one is given a type
+            local = random.Random(f"block:{city.get('seed', 1)}:{round(cx)}:{round(cy)}")
+            want = own.get("kind") or ""
+            if own.get("zone") in BLOCK_ZONES and own["zone"] != zone:
+                zone = own["zone"]
+                out["rezoned"].append([[[round(x), round(y)] for x, y in area], zone])
+                if not want and zone == "downtown":  # a core block is plain lots for the towers; any other keeps
+                    want = "parcels"  # its own layout and only changes what is built on it
+            if want == "park":
+                kind, add = "park", {"trees": _grove(area, local)}
+            elif want == "parcels" or (want in BLOCK_KINDS and want in nb.TYPES and not cut
+                                       and min(L, W) >= nb.MIN_SIDE):
+                kind, add = want, plain(local) if want == "parcels" else nb.generate(area, want, local)
         out["hoods"][kind] = out["hoods"].get(kind, 0) + 1
-        if kind == "parcels":
-            out["lots"] += [[x, y, yaw, w, d, fx, fy, "", False]
-                            for x, y, yaw, w, d, _poly, fx, fy in parcels.lots_in(area, LOT_W_CM, LOT_D_CM, rnd)]
-            continue
-        g = nb.generate(area, kind, rnd)
-        for key in ("lots", "streets", "parking", "stalls", "pads", "trees", "fences", "pools"):
-            out[key] += g[key]
+        for key in PARTS:
+            out[key] += add.get(key) or []
+        out["blocks"].append([round(cx), round(cy), kind, zone, [[round(x), round(y)] for x, y in area]])
     if fw.lines:  # right of way: nothing built under or beside a freeway or ramp
         out["lots"] = [r for r in out["lots"] if not fw.blocked(r[0], r[1], 0.5 * max(r[3], r[4]))]
         for key in ("parking", "stalls", "pads", "trees", "fences", "pools"):
@@ -1769,6 +1821,11 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
         out["streets"] = [s for s in out["streets"] if not any(noisy(p[0], p[1]) for p in s)]
     out["grounds"], out["plan"], out["water"], out["waterfront"] = [], None, [], None
     ring_of, industrial = zoning(city, o)
+    if out["rezoned"]:  # the planner and the waterfront see a rezoned block as what it now is
+        ring0, ind0 = ring_of, industrial
+        zone_at = lambda x, y: next((z for poly, z in out["rezoned"] if _inside(poly, x, y)), "")
+        ring_of = lambda x, y: {"downtown": "core", "normal": "normal", "housing": "housing"}.get(zone_at(x, y)) or ring0(x, y)
+        industrial = lambda x, y: (lambda z: z == "industrial" if z else ind0(x, y))(zone_at(x, y))
     if o["waterfront"] == "yes" and water and water.get("sea") is not None and ground:
         # waterfront first: the shore's quays, marinas, beaches and ports take their land before the services
         from . import waterfront
@@ -1800,6 +1857,34 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
 
 def city_lots(city: dict, opts: dict | None = None) -> list:
     return city_layout(city, opts)["lots"]
+
+
+def _inside(poly: list, x: float, y: float) -> bool:
+    """Point in polygon (even-odd ray cast)."""
+    hit = False
+    for (ax, ay), (bx, by) in zip(poly, list(poly[1:]) + list(poly[:1])):
+        if (ay > y) != (by > y) and x < ax + (y - ay) * (bx - ax) / (by - ay):
+            hit = not hit
+    return hit
+
+
+GROVE_CM = 700.0  # a park block: a tree about every 7 m
+
+
+def _grove(area: list, rnd) -> list:
+    """Trees all over a block ([[x, y]], world cm): a jittered grid inside its polygon."""
+    xs, ys = [p[0] for p in area], [p[1] for p in area]
+    out = []
+    y = min(ys) + GROVE_CM / 2
+    while y < max(ys):
+        x = min(xs) + GROVE_CM / 2
+        while x < max(xs):
+            px, py = x + rnd.uniform(-0.35, 0.35) * GROVE_CM, y + rnd.uniform(-0.35, 0.35) * GROVE_CM
+            if _inside(area, px, py):
+                out.append([round(px), round(py)])
+            x += GROVE_CM
+        y += GROVE_CM
+    return out
 
 
 def gate(nodes: dict, city: dict, toward: tuple):
@@ -2880,6 +2965,37 @@ def _demo() -> None:
     # ... and a foundation is as deep as the ground really falls away under its building
     assert footings(lambda x, y: -0.3 * x, [("h", 0, 0, 0.0, 12, 12, 0)]) == [1.8]
     assert footings(lambda x, y: 0.0, [("h", 0, 0, 0.0, 12, 12, 0)]) == [0.0]
+    # a city turned by hand: its grid, its outline and its industrial side turn together, nothing else changes
+    town = {"name": "T", "x": 0, "y": 0, "radius": 60000, "seed": 5, "style": "grid"}
+    spun = {**town, "turn": 30.0, "spin": 30.0 - seed_turn(town)}
+    assert abs(orientation(spun) - 30.0) < 1e-9 and orientation(town) == seed_turn(town)
+    assert abs(outline(spun, 100.0) - outline(town, 100.0 - spun["spin"])) < 1e-9
+    off = (districts(spun)["industrial"]["angle"] - districts(town)["industrial"]["angle"] - spun["spin"]) % 360
+    assert min(off, 360 - off) < 1e-6, off
+    gn, _ge = city_graph(spun)
+    far = max(gn.values(), key=lambda p: abs(p[0]) + abs(p[1]) if abs(p[1] - p[0] * math.tan(math.radians(30))) < 50 else 0)
+    assert abs(math.degrees(math.atan2(far[1], far[0])) % 180 - 30.0) < 1.0, ("a street through the centre runs at 30 degrees", far)
+    # an outline drawn by hand: each handle is where the city's edge is, eased between them, turned with the city
+    hand = [1.0] * SHAPE_POINTS
+    hand[0], hand[4] = 1.26, 0.74
+    drawn = {**town, "shape": hand}
+    assert outline(drawn, 0.0) == 1.26 and outline(drawn, 90.0) == 0.74 and abs(outline(drawn, 11.25) - 1.13) < 1e-9
+    assert outline({**drawn, "spin": 45.0}, 45.0) == 1.26
+    assert all(SHAPE_RANGE[0] <= outline(drawn, a) <= SHAPE_RANGE[1] for a in range(0, 360, 3))
+    # one block given a type: only that block changes, every other block of the city is exactly as it was
+    big = {"name": "B", "x": 0, "y": 0, "radius": 90000, "seed": 3, "style": "grid"}
+    base = city_layout(big)
+    pick = next(b for b in base["blocks"] if b[2] not in ("parcels", "collector") and b[3] == "housing")
+    parked = city_layout({**big, "zones": [{"x": pick[0], "y": pick[1], "kind": "park"}]})
+    there = lambda rows: [r for r in rows if _inside(pick[4], r[0], r[1])]
+    assert [b[2] for b in parked["blocks"] if b[:2] == pick[:2]] == ["park"]
+    assert not there(parked["lots"]) and len(there(parked["trees"])) > 20, "a park block: trees, nothing built"
+    away = lambda rows: [r for r in rows if not _inside(pick[4], r[0], r[1])]
+    assert away(parked["lots"]) == away(base["lots"]) and [b for b in parked["blocks"] if b[:2] != pick[:2]] == \
+        [b for b in base["blocks"] if b[:2] != pick[:2]], "no other block moved"
+    core = city_layout({**big, "zones": [{"x": pick[0], "y": pick[1], "zone": "downtown"}]})
+    assert core["rezoned"] and core["rezoned"][0][1] == "downtown" and \
+        [b[2:4] for b in core["blocks"] if b[:2] == pick[:2]] == [["parcels", "downtown"]]
     hilly = generate(three, lambda x, y: 800.0 * math.sin(x / 9000.0) + 600.0 * math.cos(y / 7000.0), "/Game/X/Roads", seed=3)
     assert weld_ends(hilly) == 0, "on hills too: generate welds the ends itself"
     assert all(not any(st.problems(a["points"], a["segments"]).values()) for a in multi.values())

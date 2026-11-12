@@ -367,7 +367,7 @@ def rings(c: dict) -> tuple:
 def industrial_angle(c: dict) -> float:
     """Where a city's industrial wedge points (degrees): its own setting, else from its seed."""
     a = ((c.get("districts") or {}).get("industrial") or {}).get("angle")
-    return float(a) if a is not None else float((int(c.get("seed", 0)) * 137) % 360)
+    return float(a) if a is not None else float(((int(c.get("seed", 0)) * 137) % 360 + float(c.get("spin") or 0.0)) % 360)
 
 
 def _in_wedge(c: dict, x: float, y: float) -> bool:
@@ -959,13 +959,19 @@ def _where_test(where: str, cities: list):
     outline reaches from a city skips that city's outline (most forest candidates are)."""
     if where == "everywhere" or not cities:
         return lambda x, y: True
-    rows = [(c, c["x"], c["y"], *rings(c)) for c in cities]
+    # a block the person rezoned (city 'rezoned': [[polygon, zone]]) is that zone whatever ring it lies in
+    rows = [(c, c["x"], c["y"], *rings(c),
+             [(poly, min(p[0] for p in poly), min(p[1] for p in poly), max(p[0] for p in poly), max(p[1] for p in poly), zone)
+              for poly, zone in c.get("rezoned") or []]) for c in cities]
 
     def test(x: float, y: float) -> bool:
-        for c, cx, cy, down, normal, outer in rows:
+        for c, cx, cy, down, normal, outer, rezoned in rows:
             dist = math.hypot(x - cx, y - cy)
             if dist >= outer * OUTLINE_MAX:
                 continue
+            for poly, x0, y0, x1, y1, zone in rezoned:
+                if x0 <= x <= x1 and y0 <= y <= y1 and inside(poly, x, y):
+                    return where == "cities" or where == zone
             if dist < outer * OUTLINE_MIN and where in ("outside", "cities"):
                 return where == "cities"  # inside the outer ring whichever way its outline bends
             # distance against the outline in this direction: the same bent edges the plan's polygons have
@@ -1536,6 +1542,14 @@ def _demo() -> None:
     pad, found, paths = _lot_ground(house, slope, 0, 0, 0.0, 12, 12)
     assert abs(pad) < 1 and found == 1.8, (pad, found)
     assert len(h) > 11 and h[11] == [], "no wall slabs on lot edges"
+    # a block the person rezoned is that zone for every layer, whatever ring it lies in
+    hx = next(r for r in range(20000, 60000, 500) if _in_where("housing", cities, r, 0))  # a spot in the housing ring
+    sq = [[hx - 1000, -2000], [hx + 1000, -2000], [hx + 1000, 2000], [hx - 1000, 2000]]
+    zoned = [{**cities[0], "rezoned": [[sq, "downtown"]]}]
+    assert _in_where("downtown", zoned, hx, 0) and not _in_where("housing", zoned, hx, 0)
+    assert _in_where("cities", zoned, hx, 0) and not _in_where("outside", zoned, hx, 0)
+    assert all(_in_where(w, zoned, hx, 9000) == _in_where(w, cities, hx, 9000)
+               for w in ("downtown", "normal", "housing", "industrial")), "the block beside it is as it was"
     shop = clean({"name": "S", "kind": "buildings", "role": "shop"})
     assert _lot_ground(shop, lambda x, y: 0.0, 0, 0, 0.0, 20, 15)[2][0][0] == 18.0, "a shop fronts the street full width"
     # nothing is built on a foundation deeper than 4 m: the house goes and its lot is planted; a park and a
