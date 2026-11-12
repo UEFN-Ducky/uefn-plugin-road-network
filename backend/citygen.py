@@ -406,7 +406,33 @@ ROAD_BLEND_CM = 3000.0  # generated ground meets a road at its kerb and blends b
 STRUCTURES = {ROAD_MESH[k].split("/")[-1] for k in ("BR", "BRR", "ED", "ER")}  # bridges and viaducts stand free
 
 
-def grade_to_roads(ter: dict, actors: dict) -> dict:
+def cut_pads(ter: dict, pads: list, locked=(), blend: float = 0.0) -> dict:
+    """Every lot (pcg_layers.pads) cut level into a fine terrain grid, a cell at a time, blending back into the
+    hillside. Cells a road owns (`locked`, from grade_to_roads) keep the road's height: a street always wins
+    over the lot beside it, so the ground never climbs over a kerb."""
+    grid, (x0, y0), (x1, y1) = ter["grid"], ter["min"], ter["max"]
+    cw, ch = (x1 - x0) / grid, (y1 - y0) / grid
+    blend = blend or max(PAD_BLEND_CM, 1.5 * max(cw, ch))
+    best: dict = {}  # (j, i) -> (how far outside the pad, pad z): the pad a cell is deepest in wins
+    for cx, cy, c, s, hw, hd, pz in pads:
+        r = math.hypot(hw, hd) + blend
+        for j in range(max(0, int((cy - r - y0) / ch)), min(grid, int((cy + r - y0) / ch) + 1)):
+            dy = y0 + (j + 0.5) * ch - cy
+            for i in range(max(0, int((cx - r - x0) / cw)), min(grid, int((cx + r - x0) / cw) + 1)):
+                if (j, i) in locked:
+                    continue
+                dx = x0 + (i + 0.5) * cw - cx
+                e = max(abs(dx * c + dy * s) - hd, abs(-dx * s + dy * c) - hw)
+                if e < blend and e < best.get((j, i), (blend,))[0]:
+                    best[(j, i)] = (e, pz)
+    rows = [list(r) for r in ter["heights"]]
+    for (j, i), (e, pz) in best.items():
+        z = rows[j][i]
+        rows[j][i] = round(z + (pz - z) * (1 - _smoothstep(0, blend, e)), 1)
+    return {**ter, "heights": rows}
+
+
+def grade_to_roads(ter: dict, actors: dict, locked: set | None = None) -> dict:
     """The generated terrain cut and filled to its roads (what the live splines do to a landscape in UEFN), so
     the ground meets every street at its kerb instead of the street floating on a wall over a valley. Bridges,
     viaducts, structures more than 20 m off the ground, docks, canals and water cells are left alone.
@@ -417,6 +443,7 @@ def grade_to_roads(ter: dict, actors: dict) -> dict:
     cw, ch = (x1 - x0) / grid, (y1 - y0) / grid
     sea = ter.get("sea")
     best: dict = {}  # (j, i) -> (weight, -distance, road z): the strongest, then the nearest road sample wins
+    fine = max(cw, ch) <= 1500  # cells small enough to tell one deck from the next (a landscape pixel, not a scan cell)
     for label, a in actors.items():
         if label.endswith(("Docks", "Canals")):
             continue
@@ -429,6 +456,7 @@ def grade_to_roads(ter: dict, actors: dict) -> dict:
             half = HALF.get(next((k for k, m in ROAD_MESH.items() if m.split("/")[-1] == mesh), ""), 800.0)
             # every grid cell around the road sits exactly at road height, so the ground between them (bilinear)
             # never rises over the road; it blends back to the hills beyond that
+            deck = half + 0.75 * max(cw, ch)  # a cell this close is on the road's own deck (or the nearest to it)
             half = max(half, 1.5 * max(cw, ch))
             reach = half + ROAD_BLEND_CM
             ga, gb = st.sample_grid(ter, pa["x"], pa["y"]), st.sample_grid(ter, pb["x"], pb["y"])
@@ -447,14 +475,29 @@ def grade_to_roads(ter: dict, actors: dict) -> dict:
                     t = max(0.0, min(1.0, ((cx - pa["x"]) * ux + (cy - pa["y"]) * uy) / L2))
                     d = math.hypot(cx - pa["x"] - ux * t, cy - pa["y"] - uy * t)
                     w = 1 - _smoothstep(half, reach, d)
-                    if w > 0 and (w, -d) > best.get((j, i), (0.0, -1e18))[:2]:
-                        best[(j, i)] = (w, -d, pa["z"] + (pb["z"] - pa["z"]) * t, w)
+                    if w <= 0:
+                        continue
+                    new = (w, -d, pa["z"] + (pb["z"] - pa["z"]) * t, w, d <= deck and "Water_" not in mesh)
+                    cur = best.get((j, i))
+                    if cur is None:
+                        take = True
+                    elif fine and new[4] and cur[4] and abs(new[2] - cur[2]) > 30:
+                        # two decks at different heights on one cell (a ramp beside its freeway, a road under a
+                        # flyover, two arms of a junction on a slope): the lower one, so no road is ever buried;
+                        # the upper one's deck and wall cover the step
+                        take = new[2] < cur[2]
+                    else:
+                        take = new[:2] > cur[:2]
+                    if take:
+                        best[(j, i)] = new
     rows = [list(r) for r in ter["heights"]]
-    for (j, i), (_r, _d, z, w) in best.items():
+    for (j, i), (_r, _d, z, w, _deck) in best.items():
         h = rows[j][i]
         if sea is not None and h < sea:
             continue  # the water stays water
         rows[j][i] = round(h + (z - h) * w, 1)
+        if locked is not None and w >= 0.999:
+            locked.add((j, i))  # the road's own cells: nothing cut later may move them
     return {**ter, "heights": rows}
 
 

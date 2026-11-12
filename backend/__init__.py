@@ -1396,11 +1396,12 @@ def register(api) -> None:
         fit = _PREVIEW_CACHE.get("fit")
         return {k: v for k, v in fit.items() if k not in ("pads", "ground")} if fit else None
 
-    def fit_buildings(placed: dict, terrain: dict, cut: bool = True) -> dict:
+    def fit_buildings(placed: dict, terrain: dict, cut: bool = True, final: bool = False) -> dict:
         """Every building against the landscape the heightmap will import (pads cut in, sampled exactly as UEFN
         does): a building that would float gets the deeper foundation it needs, here, so the build uses it.
         cut=False: the level keeps its own landscape (no pads cut): buildings sit on the scanned ground as it is."""
-        pads = pl.pads(placed, cg.pad_margin(terrain)) if cut else []  # frozen: the heightmap is cut from exactly these
+        # frozen: the heightmap is cut from exactly these (final: the terrain given already has them cut in)
+        pads = pl.pads(placed, cg.pad_margin(terrain)) if cut and not final else []
         scan = st.grid_sampler(terrain)
         ground = cg.imported_ground(terrain, pads=pads) if cut else (lambda x, y: scan(x, y) or 0.0)
         rows = [(name, r) for name, v in placed.items() if v.get("kind") == "buildings" for r in v["points"] if len(r) > 9]
@@ -1453,12 +1454,20 @@ def register(api) -> None:
             # every generated world: a building the ground would bury is lifted onto it, here, before any push
             # (worlds over another's landscape were skipped once: their houses went in with the hill inside them)
             fit_ter = terrain
-            if gen.get("ground_from") and cut and terrain.get("heights"):
-                # this world's own heightmap of a landscape it was laid over: every road cut and filled into it a
-                # landscape pixel at a time, so the import is already graded (no saw-tooth along a street)
-                fit_ter = cg.grade_to_roads(cg.refine(terrain, cg.HEIGHTMAP_RES),
-                                            {str(k): {"points": p, "segments": s} for k, (p, s) in enumerate(actors)})
-            fit = fit_buildings(placed, fit_ter, cut) if gen and terrain.get("heights") else None
+            if gen and cut and terrain.get("heights"):
+                # the ground the city leaves, a landscape pixel at a time: every road cut and filled in first
+                # (its own cells locked), then every lot levelled round them. Re-cut whenever the city changes;
+                # the road pass is kept while the terrain and roads stay the same.
+                rk = hashlib.sha1(pickle.dumps([terrain, actors], protocol=5)).hexdigest()
+                if _GROUND.get("key") != rk:
+                    locked: set = set()
+                    roads = cg.grade_to_roads(cg.refine(terrain, cg.HEIGHTMAP_RES), {
+                        str(k): {"points": p, "segments": s} for k, (p, s) in enumerate(actors)}, locked)
+                    _GROUND.update(key=rk, ter=roads, locked=locked)
+                fit_ter = cg.cut_pads(_GROUND["ter"], pl.pads(placed, cg.pad_margin(terrain)), _GROUND["locked"])
+            fit = fit_buildings(placed, fit_ter, cut, fit_ter is not terrain) if gen and terrain.get("heights") else None
+            if fit:
+                fit["roads"] = road_fit(fit["ground"], actors, terrain)
             _PREVIEW_CACHE.update(key=key, out=placed, fit=fit, ter=fit_ter)
         out = _PREVIEW_CACHE["out"]
         if layer_id:  # one layer, or several "a,b,c" (the panel asks for small layers together: fewer calls)
@@ -1475,6 +1484,70 @@ def register(api) -> None:
             return {"ok": True, "id": nid, "counts": {k: v["count"] for k, v in out.items()},
                     "ground_fit": fit_summary()}
         return {"ok": True, "id": nid, "layers": out}
+
+    _GROUND: dict = {}
+
+    def road_fit(ground, actors: list, terrain: dict) -> dict:
+        """Every street point against the ground the buildings were fitted to: how many the ground covers (over)
+        or leaves in the air (under) by more than 30 cm. Bridges, viaducts, decks 20 m up and points over water
+        stand free."""
+        n = over = under = 0
+        worst = 0.0
+        sea, raw = terrain.get("sea"), st.grid_sampler(terrain)
+        bad: dict = {}
+        worst_rows: list = []
+        for pts, segs in actors:
+            by = {p["i"]: p for p in pts}
+            ids: dict = {}
+            for s in segs:
+                mesh = (s.get("mesh") or "").split("/")[-1]
+                if mesh and mesh not in cg.STRUCTURES and "Water_" not in mesh:
+                    ids.setdefault(s["a"], mesh)
+                    ids.setdefault(s["b"], mesh)
+            for i, mesh in ids.items():
+                p = by.get(i)
+                gap = ground(p["x"], p["y"]) - p["z"] if p else -1e9
+                if gap < -2000 or (sea is not None and (raw(p["x"], p["y"]) or 0.0) < sea):
+                    continue
+                n += 1
+                over += gap > 30
+                under += gap < -30
+                worst = max(worst, abs(gap))
+                if abs(gap) > 30:
+                    bad[mesh] = bad.get(mesh, 0) + 1
+                    worst_rows.append((round(gap), round(p["x"]), round(p["y"]), round(p["z"]), mesh))
+        worst_rows.sort(key=lambda r: -abs(r[0]))
+        return {"checked": n, "ground_over_road": over, "road_in_air": under, "worst_cm": round(worst), "by_mesh": bad,
+                "over_1m": sum(1 for r in worst_rows if r[0] > 100), "in_air_1m": sum(1 for r in worst_rows if r[0] < -100),
+                "worst_over": [r for r in worst_rows if r[0] > 0][:8], "worst_in_air": [r for r in worst_rows if r[0] < 0][:8],
+                "row": "ground minus road cm, x, y, road z, mesh"}
+
+    def ground_fit(net_id: str = "", heights: bool = True) -> dict:
+        """The ground as the city leaves it: every lot cut level, every road cut and filled in, on a grid the
+        panel draws ({grid, heights[j][i] at cell centres, cm}), with the building and road fit. It follows the
+        city: any change to the layers, cities or roads gives a new ground. heights=false: the fit only."""
+        nid = slug(net_id)
+        got = pcg_preview(nid, summary=True)
+        if got.get("ok") is False:
+            return got
+        ter = (data.get(f"net.{nid}.scan") or {}).get("terrain") or {}
+        out = {"ok": True, "id": nid, "grid": 0, "ground_fit": fit_summary()}
+        fine = _PREVIEW_CACHE.get("ter") or {}
+        if not heights or fine.get("grid") != cg.HEIGHTMAP_RES or not ter.get("heights"):
+            return out  # no ground of its own yet (laid over another world's landscape, no heightmap made)
+        grid = cg.HEIGHTMAP_RES // 2  # two landscape pixels a cell: light enough to redraw, still shows every cut
+        (x0, y0), (x1, y1) = ter["min"], ter["max"]
+        span = 2 * grid / cg.HEIGHTMAP_RES
+        if _EXACT.get("ground_key") != (_PREVIEW_CACHE.get("key"), grid):
+            H = fine["heights"]
+            cw, ch = (x1 - x0) * span / grid, (y1 - y0) * span / grid
+            known = st.grid_sampler(ter)  # cells with no landscape under them stay empty
+            rows = [[round((H[2 * j][2 * i] + H[2 * j][2 * i + 1] + H[2 * j + 1][2 * i] + H[2 * j + 1][2 * i + 1]) / 4)
+                     if known(x0 + (i + 0.5) * cw, y0 + (j + 0.5) * ch) is not None else None
+                     for i in range(grid)] for j in range(grid)]
+            _EXACT.update(ground_key=(_PREVIEW_CACHE.get("key"), grid), ground_rows=rows)
+        return {**out, "grid": grid, "heights": _EXACT["ground_rows"],
+                "max": [x0 + (x1 - x0) * span, y0 + (y1 - y0) * span]}
 
     _EXACT: dict = {}
 
@@ -2790,6 +2863,13 @@ def register(api) -> None:
         return safe(pcg_preview)(net_id, layer_id, summary)
 
     @api.tool(intent=PCG_INTENT, listener=False)
+    def road_network_ground_fit(net_id: str = "") -> dict:
+        """Is the ground right for the city as it is now? Buildings the ground would bury or leave floating and
+        street points it would cover or leave in the air (all must be 0 before the heightmap is imported and the
+        city pushed). The ground is re-cut from the layout on every change: lots level, roads cut and filled."""
+        return safe(ground_fit)(net_id, False)
+
+    @api.tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_exact(net_id: str = "", x: float = 0.0, y: float = 0.0, radius_m: float = 400.0,
                                summary: bool = True) -> dict:
         """What road_network_pcg_build would place within radius_m of (x, y) (cm), before pushing: each building,
@@ -2824,6 +2904,7 @@ def register(api) -> None:
     api.register_panel_rpc("pcg_plan", lambda net_id="", road_tag="": safe(pcg_plan)(net_id, road_tag))
     api.register_panel_rpc("pcg_assets", lambda net_id="", asset_set="", interiors="": safe(pcg_assets)(net_id, asset_set, interiors))
     api.register_panel_rpc("pcg_preview", lambda net_id="", layer_id="": safe(pcg_preview)(net_id, layer_id))
+    api.register_panel_rpc("ground_fit", lambda net_id="": safe(ground_fit)(net_id))
     api.register_panel_rpc("pcg_exact", lambda net_id="", x=0.0, y=0.0, radius_m=400.0: safe(pcg_exact)(
         net_id, float(x), float(y), float(radius_m)))
     api.register_panel_rpc("pcg_place", lambda net_id="", confirm=False: safe(pcg_place)(net_id, confirm))

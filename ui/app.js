@@ -476,6 +476,8 @@ function buildScene() {
   const g = state.geo;
   $("emptyView").innerHTML = g ? "" : `<div class="dk-empty"><div class="dk-empty__title">No world open</div>Generate one in the World tab, or pull roads from UEFN.</div>`;
   if (!g) { $("hud").innerHTML = ""; needsDraw = true; return; }
+  // the ground as the city leaves it (lots level, roads cut in), once it is worked out for this terrain
+  if (state.ground && state.ground.net === state.net && g.terrain === state.ground.src) g.terrain = state.ground.t;
   const byColor = {}, legend = {}, box = new THREE.Box3();
   for (const [aslug, actor] of Object.entries(g.actors || {})) {
     const pts = new Map(actor.pts.map((p) => [p[0], p]));
@@ -1012,8 +1014,16 @@ async function loadPcgPreview() {
   // the layer order the panel has always drawn: each layer in turn, then the walls and sites
   for (const l of todo) if (l.name in picked) out[l.name] = picked[l.name];
   Object.assign(out, picked);
+  // the ground follows the city: re-cut from this layout, every time the city changes
+  card("Placing the city", { text: "Fitting the ground to the roads and the lots…", step: calls.length, of: calls.length });
+  const gr = await rpc("ground_fit", { net_id: net });
   card("");
   if (net !== state.net) return;
+  const raw = state.ground?.t === state.geo?.terrain ? state.ground.src : state.geo?.terrain;
+  if (gr.ok !== false && gr.grid && raw) {
+    state.ground = { net, src: raw, t: { ...raw, grid: gr.grid, heights: gr.heights, max: gr.max || raw.max }, fit: gr.ground_fit };
+    state.geo.terrain = raw;  // buildScene swaps it in
+  }
   state.pcg = out;
   renderPcgCounts();
   state.fadeNext = true;  // the new city rises into place instead of popping in
