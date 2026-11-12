@@ -1152,7 +1152,7 @@ async function loadPcgPreview() {
   const calls = todo.filter((l) => l.kind === "foliage").map((l) => [l]);
   const rest = todo.filter((l) => l.kind !== "foliage");
   for (let i = 0; i < rest.length; i += PCG_BATCH) calls.push(rest.slice(i, i + PCG_BATCH));
-  calls.push([{ id: "road-walls", name: "Bridges and sites" }]);  // the built-in layers: piers, approach walls, neighbourhood sites
+  calls.push([{ id: "road-walls", name: "Bridges and sites" }]);  // the built-in layers: piers, approach walls, neighbourhood sites, planted lots
   const picked = {};
   // the card is the city's own: a rebuild's or an edit's card stays up while the city fills in under it
   const card = (msg, opts) => { if (!loading.title || loading.title === "Placing the city") busy(msg, opts); };

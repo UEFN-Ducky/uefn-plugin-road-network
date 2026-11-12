@@ -1574,8 +1574,12 @@ def register(api) -> None:
         if layer_id:  # one layer, or several "a,b,c" (the panel asks for small layers together: fewer calls)
             pick: dict = {}
             for lid in str(layer_id).split(","):
-                if lid == "road-walls":  # the built-in layers the plan never lists: walls and neighbourhood sites
-                    pick.update({k: v for k, v in out.items() if v.get("kind") in ("walls", "site")})
+                if lid == "road-walls":
+                    # every built-in layer, the ones no layer of the world's own makes: bridges and approach walls,
+                    # neighbourhood sites, and the trees planted in gardens, interchanges and unbuilt lots (sites
+                    # only came once: the panel never drew a planted lot, it showed bare ground)
+                    own = {d.get("name") for d in docs.values()}
+                    pick.update({k: v for k, v in out.items() if k not in own})
                 else:
                     name = (docs.get(slug(lid)) or {}).get("name")
                     if name in out:
