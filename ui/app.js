@@ -926,7 +926,12 @@ function formParts(form, w, d, h) {
         box(0, w / 2 - t / 2, 0, d - 2 * t, t, h * 0.95), box(0, -w / 2 + t / 2, 0, d - 2 * t, t, h)];
     }
     case "shed": return [box(0, 0, 0, d, w, h * 0.72), box(0, 0, h * 0.72, d * 0.28, w * 0.96, h * 0.28)];
-    case "gable": return [box(0, 0, 0, d, w, h * 0.62), box(0, 0, h * 0.62, d * 0.55, w * 0.92, h * 0.25), box(0, 0, h * 0.87, d * 0.2, w * 0.86, h * 0.13)];
+    case "gable": {  // a house: the main body under a pitched roof (ridge along the street), a lower garage wing
+      // at the driveway's side (the drive runs at fy -0.15 w, pcg_layers._lot_ground), its front on the lot's front
+      const roof = [0.84, 0.62, 0.4, 0.18].map((s, i) => box(-d * 0.1, w * 0.12, h * (0.6 + i * 0.1), d * s, w * 0.74, h * 0.1));
+      return [box(-d * 0.1, w * 0.12, 0, d * 0.8, w * 0.7, h * 0.6), box(d * 0.22, -w * 0.24, 0, d * 0.56, w * 0.4, h * 0.34),
+        box(d * 0.22, -w * 0.24, h * 0.34, d * 0.5, w * 0.34, h * 0.06), ...roof];
+    }
     case "flat": return [box(0, 0, 0, d, w, Math.max(0.4, h))];
     default: return [box(0, 0, 0, d, w, h)];
   }
