@@ -120,20 +120,28 @@ def ramp(bld: Builder, f: Frame, p0, d0, p3, d3, z0, z1, cls="ramp", peak=0.0, k
     return (p0, p1, p2, p3)
 
 
-def loop(bld: Builder, f: Frame, i, j, hA, hB, z0, z1, R=LOOP_R, n=16):
-    """A 270 degree loop in quadrant (i, j): tangent to the freeway's edge where it leaves it, round the far side
-    of the quadrant, tangent to the cross road's edge where it joins it; height z0 -> z1."""
+def loop(bld: Builder, f: Frame, i, j, hA, hB, z0, z1, R=LOOP_R, n=16, merge=False):
+    """A loop in quadrant (i, j), tangent to the freeway's edge where it leaves it. merge (two freeways, a full
+    cloverleaf): 270 degrees round the far side, tangent to the cross road's edge where it merges. Else (a
+    partial cloverleaf on a city street): half a circle round the far side, then straight back to the cross
+    road, meeting it square at a junction like a real parclo loop (merging alongside a street left its end
+    piece sticking out into the field, Nov 12 2026). Height z0 -> z1."""
     ca, cb = i * (R + hB + RAMP_HALF), j * (R + hA + RAMP_HALF)
-    a0, a1 = math.atan2(-j, 0.0), math.atan2(0.0, -i)
-    sweep = (a1 - a0) % (2 * math.pi)
-    if sweep < math.pi:
-        sweep -= 2 * math.pi  # the long way round, away from the crossing
-    pts = []
-    for k in range(n + 1):
-        t = k / n
-        ang = a0 + sweep * t
-        x, y = f.w(ca + R * math.cos(ang), cb + R * math.sin(ang))
-        pts.append((x, y, z0 + (z1 - z0) * _smooth(t)))
+    a0 = math.atan2(-j, 0.0)
+    if merge:
+        sweep = (math.atan2(0.0, -i) - a0) % (2 * math.pi)
+        if sweep < math.pi:
+            sweep -= 2 * math.pi  # the long way round, away from the crossing
+        arc = [(ca + R * math.cos(a0 + sweep * k / n), cb + R * math.sin(a0 + sweep * k / n)) for k in range(n + 1)]
+    else:
+        sweep = math.pi if i * j > 0 else -math.pi  # round the far side (+i), away from the crossing
+        arc = [(ca + R * math.cos(a0 + sweep * k / n), cb + R * math.sin(a0 + sweep * k / n)) for k in range(n + 1)]
+        ex, ey = arc[-1]
+        arc += [(ex + (i * (hB + 50) - ex) * k / 4, ey) for k in range(1, 5)]  # straight in to the street's edge
+    cum = [0.0]
+    for p, q in zip(arc, arc[1:]):
+        cum.append(cum[-1] + math.dist(p, q))
+    pts = [(*f.w(a, b), z0 + (z1 - z0) * _smooth(s / cum[-1])) for (a, b), s in zip(arc, cum)]
     bld.edge(pts, "ER", "loop")
 
 
@@ -179,12 +187,12 @@ def interchange(kind: str, f: Frame, hA: float, hB: float, liftA, liftB, tag: tu
                 diamond_ramp(i, j)
     elif kind == "cloverleaf":
         for i, j in quads:
-            loop(bld, f, i, j, hA, hB, liftA(i * (LOOP_R + hB)), liftB(j * (LOOP_R + hA)))
+            loop(bld, f, i, j, hA, hB, liftA(i * (LOOP_R + hB)), liftB(j * (LOOP_R + hA)), merge=True)
             far = 38000.0  # far enough out that the right-turn connector sweeps round outside the loop
             p0, p3 = (i * (far + hB), j * (hA + RAMP_HALF)), (i * (hB + RAMP_HALF), j * (far + hA))
             ramp(bld, f, p0, (-i, 0.0), p3, (0.0, j), liftA(p0[0]), liftB(p3[1]), cls="direct")
     elif kind == "trumpet":
-        loop(bld, f, 1, 1, hA, hB, liftA(LOOP_R + hB), liftB(LOOP_R + hA))
+        loop(bld, f, 1, 1, hA, hB, liftA(LOOP_R + hB), liftB(LOOP_R + hA), merge=True)
         p0, p3 = (-(hB + 30000), hA + RAMP_HALF), (-(hB + RAMP_HALF), hA + 30000)
         ramp(bld, f, p0, (1.0, 0.0), p3, (0.0, 1.0), liftA(p0[0]), liftB(p3[1]), cls="direct")
     elif kind == "stack":

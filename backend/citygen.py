@@ -2124,6 +2124,7 @@ def weld_ends(actors: dict) -> int:
                 o = by[ss[0]["b"] if ss[0]["a"] == i else ss[0]["a"]]
                 rx, ry = p["x"] - o["x"], p["y"] - o["y"]
                 along = abs(rx * ux + ry * uy) / ((math.hypot(rx, ry) * math.hypot(ux, uy)) or 1.0) > 0.7
+                along = along and onto in FREEWAY_MESHES | STRUCTURES  # a street always gets the flare
                 piece = "SM_Road_RampGore30m" if along else "SM_Road_RampFlare15m"
                 tgt = half + CONNECTOR_HALF[piece] - 50 if along else half - walk_of(half) + FLARE_CM - 50
             slide = abs(d - tgt) > 50 and d > 1
