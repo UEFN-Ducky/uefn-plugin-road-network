@@ -408,6 +408,7 @@ def graded(ter: dict, pads: list, blend: float = PAD_BLEND_CM):
     return at
 
 
+DECK_CLEAR_CM = 200.0  # the ground stays this far under a deck's top (its slab and beams), at least
 ROAD_BLEND_CM = 3000.0  # generated ground meets a road at its kerb and blends back to the hills over this
 STRUCTURES = {ROAD_MESH[k].split("/")[-1] for k in ("BR", "BRR", "ED", "ER")}  # bridges and viaducts stand free
 
@@ -450,6 +451,7 @@ def grade_to_roads(ter: dict, actors: dict, locked: set | None = None) -> dict:
     sea = ter.get("sea")
     best: dict = {}  # (j, i) -> (weight, -distance, road z): the strongest, then the nearest road sample wins
     fine = max(cw, ch) <= 1500  # cells small enough to tell one deck from the next (a landscape pixel, not a scan cell)
+    cap: dict = {}  # (j, i) -> the highest the ground may be there: under a deck or ramp
     for label, a in actors.items():
         if label.endswith(("Docks", "Canals")):
             continue
@@ -457,9 +459,27 @@ def grade_to_roads(ter: dict, actors: dict, locked: set | None = None) -> dict:
         for s in a["segments"]:
             pa, pb = by_i.get(s["a"]), by_i.get(s["b"])
             mesh = (s.get("mesh") or "").split("/")[-1]
-            if not pa or not pb or mesh in STRUCTURES:
+            if not pa or not pb:
                 continue
             half = HALF.get(next((k for k, m in ROAD_MESH.items() if m.split("/")[-1] == mesh), ""), 800.0)
+            if mesh in STRUCTURES:
+                # a deck or ramp stands free, but the ground may never rise through it: where a viaduct comes
+                # down to grade the hill under it is cut to DECK_CLEAR_CM below the deck (never filled up to it)
+                if fine:
+                    reach_s = half + 0.75 * max(cw, ch)
+                    ux, uy = pb["x"] - pa["x"], pb["y"] - pa["y"]
+                    L2 = ux * ux + uy * uy or 1.0
+                    for j in range(max(0, int((min(pa["y"], pb["y"]) - reach_s - y0) / ch)),
+                                   min(grid, int((max(pa["y"], pb["y"]) + reach_s - y0) / ch) + 1)):
+                        cy = y0 + (j + 0.5) * ch
+                        for i in range(max(0, int((min(pa["x"], pb["x"]) - reach_s - x0) / cw)),
+                                       min(grid, int((max(pa["x"], pb["x"]) + reach_s - x0) / cw) + 1)):
+                            cx = x0 + (i + 0.5) * cw
+                            t = max(0.0, min(1.0, ((cx - pa["x"]) * ux + (cy - pa["y"]) * uy) / L2))
+                            if math.hypot(cx - pa["x"] - ux * t, cy - pa["y"] - uy * t) <= reach_s:
+                                z = pa["z"] + (pb["z"] - pa["z"]) * t - DECK_CLEAR_CM
+                                cap[(j, i)] = min(cap.get((j, i), 1e12), z)
+                continue
             # every grid cell around the road sits exactly at road height, so the ground between them (bilinear)
             # never rises over the road; it blends back to the hills beyond that
             deck = half + 0.75 * max(cw, ch)  # a cell this close is on the road's own deck (or the nearest to it)
@@ -506,6 +526,11 @@ def grade_to_roads(ter: dict, actors: dict, locked: set | None = None) -> dict:
         rows[j][i] = round(h + (z - h) * w, 1)
         if locked is not None and w >= 0.999:
             locked.add((j, i))  # the road's own cells: nothing cut later may move them
+    for (j, i), top in cap.items():
+        if rows[j][i] > top and not (sea is not None and rows[j][i] < sea):
+            rows[j][i] = round(top, 1)
+            if locked is not None:
+                locked.add((j, i))  # no lot may lift the ground back into the deck
     return {**ter, "heights": rows}
 
 
@@ -1009,6 +1034,22 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
         edges = [e for e in edges if not fw.street_blocked(nodes[e[0]], nodes[e[1]], HALF.get(e[2], 500.0))]
         used = {n for e in edges for n in e[:2]}
         nodes = {n: p for n, p in nodes.items() if n in used}
+    # a street keeps one width between junctions: where two blocks of different kinds meet at a plain point
+    # (no side street left there) the narrower takes the wider's kind, so no road steps in width mid-block
+    at: dict = {}
+    for e in edges:
+        for n in e[:2]:
+            at.setdefault(n, []).append(e)
+    changed = True
+    while changed:
+        changed = False
+        for es in at.values():
+            if len(es) == 2 and es[0][2] != es[1][2] and "DT" not in (es[0][2], es[1][2]):
+                wide = max(es, key=lambda e: HALF.get(e[2], 0.0))[2]
+                for e in es:
+                    if e[2] != wide:
+                        e[2] = wide
+                        changed = True
     for e in edges:  # every city street carries its sidewalks in its own mesh
         e[2] = CITY_STREET.get(e[2], e[2])
     return nodes, edges
@@ -1172,8 +1213,7 @@ def over_water(nodes: dict, edges: list, wet, span: dict | None = None, bridges:
             if key not in (a, b):
                 p = at(s)
                 extra[key] = [round(p[0]), round(p[1])] + ([round(p[2])] if p[2] > 0 else [])
-        elevated = kind in ("ED", "ER", "6L")
-        deck, ramp = ("ED", "ER") if elevated else ("BR", "BRR")
+        deck, ramp = structure_kinds(kind)
         spans = []
         for r0, r1 in runs:  # merge runs closer than two ramps: one longer bridge
             if spans and r0 - spans[-1][1] < 15000:
@@ -1215,6 +1255,16 @@ def over_water(nodes: dict, edges: list, wet, span: dict | None = None, bridges:
     nodes = {**nodes, **extra}
     used = {n for e in out for n in e[:2]}
     return {n: p for n, p in nodes.items() if n in used}, out
+
+
+def structure_kinds(kind: str) -> tuple:
+    """(deck, approach) for a road of this kind crossing water or another road: a bridge as wide as the road it
+    carries. A four-lane or wider road rides the wide deck piece all the way up and across (the two-lane bridge
+    and the one-lane ramp under an avenue stepped 10-27 m in width at each end); a street takes the bridge pieces;
+    a ramp stays a ramp."""
+    if kind == "ER":
+        return "ER", "ER"
+    return ("ED", "ED") if HALF.get(kind, 0.0) >= 1400.0 else ("BR", "BRR")
 
 
 def _cum_of(line):
@@ -1626,8 +1676,9 @@ def overpass_via(line: list, streets: list, kind: str) -> tuple:
     keep = [(cum[k], list(line[k][:2])) for k in range(1, len(line) - 1)
             if not any(sp[0] - 8000 < cum[k] < sp[1] + 8000 for sp in spans)]
     for a, b in spans:
-        keep += [(a - 7000, at(a - 7000) + [0.0, "BRR"]), (a - 3000, at(a - 3000) + [BRIDGE_LIFT_CM, "BR"]),
-                 (b + 3000, at(b + 3000) + [BRIDGE_LIFT_CM, "BRR"]), (b + 7000, at(b + 7000) + [0.0, kind])]
+        deck, ramp = structure_kinds(kind)
+        keep += [(a - 7000, at(a - 7000) + [0.0, ramp]), (a - 3000, at(a - 3000) + [BRIDGE_LIFT_CM, deck]),
+                 (b + 3000, at(b + 3000) + [BRIDGE_LIFT_CM, ramp]), (b + 7000, at(b + 7000) + [0.0, kind])]
     keep.sort(key=lambda r: r[0])
     return [v for _, v in keep], len(spans)
 
@@ -1771,7 +1822,8 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
             for k, v in enumerate(via):
                 if len(v) > 3 and v[3] is None:
                     up, nxt_up = lifts[k + 1], lifts[k + 2]
-                    v[3] = "BR" if up > 0 and nxt_up > 0 else ("BRR" if up > 0 or nxt_up > 0 else o["highway"])
+                    deck, ramp = structure_kinds(o["highway"])
+                    v[3] = deck if up > 0 and nxt_up > 0 else (ramp if up > 0 or nxt_up > 0 else o["highway"])
         hw_nodes[("hw", a, b, 0)], hw_nodes[("hw", a, b, 1)] = ends
         hw_edges.append([("hw", a, b, 0), ("hw", a, b, 1), o["highway"], via])
     for nodes, edges in graphs:  # a city street never runs into a keep zone
@@ -2036,16 +2088,20 @@ def _demo() -> None:
     assert {"6S", "1S", "DT"} <= kinds and not kinds & set(CITY_STREET), ("city streets all have sidewalks", kinds)
     # a highway bridges over a street it crosses: ramp up, deck, ramp down; bridges never shape the ground
     via, n = overpass_via([[0, 0], [200000, 0]], [([100000, -5000], [100000, 5000])], "4L")
-    assert n == 1 and [v[3] for v in via if len(v) > 3] == ["BRR", "BR", "BRR", "4L"] and max(v[2] for v in via) == BRIDGE_LIFT_CM
+    # (an avenue rides the wide deck up, across and down: its bridge is never narrower than the road)
+    assert n == 1 and [v[3] for v in via if len(v) > 3] == ["ED", "ED", "ED", "4L"] and max(v[2] for v in via) == BRIDGE_LIFT_CM
+    assert [v[3] for v in overpass_via([[0, 0], [200000, 0]], [([100000, -5000], [100000, 5000])], "2L")[0] if len(v) > 3] == \
+        ["BRR", "BR", "BRR", "2L"], "a street takes the two-lane bridge"
+    assert all(HALF[structure_kinds(k)[0]] >= HALF[k] - 351 for k in ("2L", "2S", "4L", "6L", "6S")), "no bridge narrower than its carriageway"
     br = build_actor({"a": [0, 0], "b": [200000, 0]}, [["a", "b", "4L", via]], lambda x, y: 0.0, "/Game/X/Roads")
     meshes = [s["mesh"] for s in br["segments"]]
-    assert "SM_Road_Bridge_Straight20m" in meshes and meshes.count("SM_Road_Bridge_Ramp40m") == 2, meshes
-    deck = next(s for s in br["segments"] if s["mesh"] == "SM_Road_Bridge_Straight20m")
+    assert meshes.count("SM_Elev_Deck20m") == 3, meshes
+    deck = next(s for s in br["segments"] if s["mesh"] == "SM_Elev_Deck20m")
     assert "bRaiseTerrain=False" in deck["lines"] and not deck["raise"]
     top = max(p["z"] for p in br["points"])
     assert abs(top - BRIDGE_LIFT_CM) < 1, top
     text = st.serialize(br["points"], br["segments"])
-    assert "Elevated" not in text and "SM_Road_Bridge_Ramp40m" in text
+    assert "Elevated/SM_Elev_Deck20m" in text and "SM_Road_Bridge" not in text
     # interchanges: a stack rises onto elevated decks, a trumpet puts the loop piece on each highway end
     far = [{"name": "P", "x": -150000, "y": 0, "radius": 30000, "style": "grid", "seed": 3},
            {"name": "Q", "x": 150000, "y": 0, "radius": 30000, "style": "grid", "seed": 4}]
@@ -2059,7 +2115,8 @@ def _demo() -> None:
         hw = world["Highways"]
         meshes = [s["mesh"] for s in hw["segments"]]
         made[kind] = hw
-        assert meshes.count("SM_Road_Bridge_Straight20m") >= 2, (kind, "a bridge at each end")
+        assert meshes.count("SM_Elev_Deck20m") >= 2 and "SM_Road_Bridge_Straight20m" not in meshes, \
+            (kind, "a bridge at each end, as wide as the six-lane highway it carries")
         loops = meshes.count("SM_Elev_Ramp20m")
         assert loops == {"cloverleaf": 2 * 4 * 12, "trumpet": 2 * 12, "diamond": 0}[kind], (kind, loops)
         top = max(p["z"] for p in hw["points"])
@@ -2171,7 +2228,7 @@ def _demo() -> None:
     cut = we[1]  # the street into the lake ends at the shore
     assert cut[0] == 4 and cut[1] == ("shore", 4, 5, 1) and not wet(*wn[cut[1]][:2]) and wn[cut[1]][0] > 37000, cut
     vb = we[0][3]
-    assert [v[3] for v in vb] == ["BRR", "BR", "BRR", "4L"] and max(v[2] for v in vb) == BRIDGE_LIFT_CM, vb
+    assert [v[3] for v in vb] == ["ED", "ED", "ED", "4L"] and max(v[2] for v in vb) == BRIDGE_LIFT_CM, vb
     assert all(not wet(v[0], v[1]) for v in vb if v[2] == 0), "ramps start on land"
     hb: list = []
     hn, he = over_water({"a": [0, 0], "b": [130000, 0]}, [["a", "b", "4L"]], lambda x, y: 20000 < x < 110000,

@@ -1506,6 +1506,7 @@ def register(api) -> None:
         worst_rows: list = []
         every: list = []  # every meshed segment, structures too: (ax, ay, az, bx, by, bz)
         grades: list = []  # every street segment's slope: a street steeper than 15 % is a kink the ground can't follow
+        decks, deck_rows = [0, 0], []  # samples along decks and ramps, and those the ground reaches
         checks: list = []
         for pts, segs in actors:
             by = {p["i"]: p for p in pts}
@@ -1516,6 +1517,14 @@ def register(api) -> None:
                 if not mesh or not a or not b:
                     continue
                 every.append((a["x"], a["y"], a["z"], b["x"], b["y"], b["z"]))
+                if mesh in cg.STRUCTURES:  # a deck or ramp: checked along its length, the ground must stay under it
+                    for k in range(5):
+                        t = k / 4
+                        x, y, z = a["x"] + (b["x"] - a["x"]) * t, a["y"] + (b["y"] - a["y"]) * t, a["z"] + (b["z"] - a["z"]) * t
+                        decks[0] += 1
+                        if ground(x, y) > z - 50 and not (sea is not None and (raw(x, y) or 0.0) < sea):
+                            decks[1] += 1
+                            deck_rows.append((round(ground(x, y) - z), round(x), round(y), round(z), mesh))
                 if mesh not in cg.STRUCTURES and "Water_" not in mesh:
                     run = math.hypot(b["x"] - a["x"], b["y"] - a["y"])
                     if run > 300:
@@ -1561,6 +1570,8 @@ def register(api) -> None:
                           "worst_cm": round(max(steps or [0.0]))}
         return {"checked": n, "ground_over_road": over, "road_in_air": under, "worst_cm": round(worst), "by_mesh": bad,
                 "why": reasons, "unexplained": len(loose), "junction_steps": junction_steps,
+                "decks": {"samples": decks[0], "ground_through_deck": decks[1],
+                          "worst": sorted(deck_rows, reverse=True)[:6], "row": "ground minus deck cm, x, y, deck z, mesh"},
                 "steep": {"segments": len(grades), "over_15pct": sum(1 for g in grades if g[0] > 0.15),
                           "over_30pct": sum(1 for g in grades if g[0] > 0.30),
                           "worst": [(round(g[0] * 100), *g[1:]) for g in sorted(grades, reverse=True)[:6]],
@@ -1618,7 +1629,24 @@ def register(api) -> None:
                     bad.append(("far", round(p["x"]), round(p["y"]), round(p["z"]), round(near), label, mesh))
                 elif abs(level) > 100:
                     bad.append(("stepped", round(p["x"]), round(p["y"]), round(p["z"]), round(level), label, mesh))
+        # a road that changes width at a plain point (no junction piece there): the two meshes do not meet
+        half_of = {m.split("/")[-1]: cg.HALF[k] for k, m in cg.ROAD_MESH.items()}
+        jumps = []
+        for label, by, segs in roads:
+            at: dict = {}
+            for s in segs:
+                for i in (s["a"], s["b"]):
+                    at.setdefault(i, []).append(s)
+            for i, ss in at.items():
+                p = by.get(i)
+                if p and len(ss) == 2 and all(s.get("mesh") for s in ss) and not p.get("mesh"):
+                    h = [half_of.get(s["mesh"].split("/")[-1], 0.0) for s in ss]
+                    if abs(h[0] - h[1]) > 100:
+                        jumps.append((round(abs(h[0] - h[1]) * 2), round(p["x"]), round(p["y"]), label,
+                                      ss[0]["mesh"].split("/")[-1], ss[1]["mesh"].split("/")[-1]))
         return {"ends": ends, "at_map_edge": edge, "far": sum(1 for b in bad if b[0] == "far"),
+                "width_jumps": len(jumps), "width_jump_at": sorted(jumps, reverse=True)[:8],
+                "width_row": "cm wider, x, y, actor, mesh, mesh",
                 "stepped": sum(1 for b in bad if b[0] == "stepped"), "worst": sorted(bad, key=lambda b: -abs(b[4]))[:12],
                 "row": "far | stepped, x, y, z, cm to the nearest road | cm above (+) or below (-) it, actor, mesh"}
 
@@ -2775,6 +2803,9 @@ def register(api) -> None:
                                     "to its arms (deck, stop lines, zebra crossings, kerbs, and sidewalk corners joining "
                                     "the arms' own sidewalks), slots Asphalt / Paint / Sidewalk."},
                 "road_fit": (fit_summary() or {}).get("roads"),
+                # what joins what: every freeway / ramp / highway end against the road it lands on, and every place
+                # a road changes width with no junction (all should be 0; each row says where and by how much)
+                "connections": loose_ends(nid, (data.get(f"net.{nid}.scan") or {}).get("terrain") or {}),
                 "missing": {"street_kit": street_missing, "art": art_missing,
                             "paths": [n["path"] for n in missing][:200],
                             "unknown": None if uefn.get("online") else "call again with check=true while UEFN is open"},
