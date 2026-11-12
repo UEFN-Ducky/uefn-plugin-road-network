@@ -77,7 +77,7 @@ CLOVER_PIECE = "SM_Road_Freeway_Cloverleaf"  # in NeonSkyscrapers RoadKit: impor
 CHOICES = {
     "core_roads": (("4L", "6L", "2S"), "4L"),
     "neighbourhood_roads": (("2S", "2L", "4L"), "2S"),
-    "suburb_roads": (("2L", "2S", "1W", "DT"), "2L"),
+    "suburb_roads": (("2L", "2S", "1W", "DT"), "2S"),  # the default street carries its sidewalks in its own mesh
     "highway": (("4L", "6L", "2L"), "4L"),
     "interchange": (("direct", "diamond", "trumpet", "cloverleaf", "stack"), "direct"),
     "one_way_core": (("no", "yes"), "no"),  # core side streets as alternating one-way lanes

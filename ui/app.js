@@ -416,7 +416,11 @@ function terrainMesh(t) {
     uv.push(i / n * reps, j / n * reps);
   }
   // cells with no landscape under them (off the island) are left out, never drawn at a made-up height
-  const known = (j, i) => H[j][i] !== null && H[j][i] !== undefined;
+  // ... and the square the Real pieces view covers is left open: its own full-resolution ground fills it
+  const ex = state.view.pcg && state.exact?.ground ? state.exact : null;
+  const cw = (t.max[0] - t.min[0]) / n, ch = (t.max[1] - t.min[1]) / n;
+  const inHole = (j, i) => ex && Math.abs(t.min[0] + cw * (i + 0.5) - ex.x) < ex.r - cw && Math.abs(t.min[1] + ch * (j + 0.5) - ex.y) < ex.r - ch;
+  const known = (j, i) => H[j][i] !== null && H[j][i] !== undefined && !inHole(j, i);
   for (let j = 0; j < n - 1; j++) for (let i = 0; i < n - 1; i++) {
     if (!(known(j, i) && known(j, i + 1) && known(j + 1, i) && known(j + 1, i + 1))) continue;
     const a = j * n + i, b = a + 1, c = a + n, d = c + 1;
@@ -580,7 +584,6 @@ function buildScene() {
     }
   }
   if (state.view.districts) drawDistricts();
-  groups.terrain.visible = !(state.view.pcg && state.exact?.ground);  // the real ground patch stands in for it
   if (state.view.pcg) { drawPcg(legend); drawExact(legend); }
   // sun: azimuth and height from the Terrain tab, shadow box fitted to the world
   const az = state.view.sunAz * Math.PI / 180, el = state.view.sunEl * Math.PI / 180;
@@ -1867,7 +1870,11 @@ function renderToolbar() {
     button("Frame all", "frame", () => frame()), button("Top view", "top", () => { orbit.el = 1.55; placeCamera(); }),
     h("span", { class: "rn-sep" }),
     viewChip("terrain", "Terrain", "terrain"), viewChip("water", "Water", "water"), viewChip("districts", "Districts", "city"),
-    viewChip("pcg", "PCG", "layers"), viewChip("points", "Points", "points"));
+    viewChip("pcg", "PCG", "layers"), viewChip("points", "Points", "points"),
+    h("span", { class: "rn-sep" }),
+    // the exact walls, roofs and ground the push builds, round the view's centre: one click, where the eye already is
+    chip({ label: "Real pieces", iconName: "city", value: !!state.exact,
+      onChange: (v) => { if (v) loadExact(); else { state.exact = null; buildScene(); } } }).el);
 }
 function renderHud() {
   const n = currentNet();

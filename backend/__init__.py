@@ -1468,6 +1468,11 @@ def register(api) -> None:
             fit = fit_buildings(placed, fit_ter, cut, fit_ter is not terrain) if gen and terrain.get("heights") else None
             if fit:
                 fit["roads"] = road_fit(fit["ground"], actors, terrain)
+                if fit_ter is not terrain:
+                    # retaining walls only where the cut ground still steps beside a road (it is graded to the
+                    # roads now, so most of the walls the raw hills asked for are gone and none stands in a slope)
+                    walls = pl.road_walls(actors, fit["ground"])
+                    placed["Road walls"].update(count=len(walls), shown=len(walls), points=walls)
             _PREVIEW_CACHE.update(key=key, out=placed, fit=fit, ter=fit_ter)
         out = _PREVIEW_CACHE["out"]
         if layer_id:  # one layer, or several "a,b,c" (the panel asks for small layers together: fewer calls)
