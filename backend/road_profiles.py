@@ -9,6 +9,7 @@ line up from one 10 or 20 m tile to the next).
 
 from __future__ import annotations
 
+import os
 import re
 
 from . import citygen as cg
@@ -137,6 +138,13 @@ def connector(mesh: str) -> dict | None:
             "paint": [[r(poly), s] for poly, s in paint], "spec": CONNECTORS[mesh]}
 
 
+def bundled(mesh: str) -> str:
+    """The model of this road piece that ships with the plugin (assets/roads/<mesh>.fbx: forward +X, up +Z, cm,
+    slots = SLOTS), or '' when there is none."""
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "roads", mesh + ".fbx")
+    return path if os.path.isfile(path) else ""
+
+
 def all_profiles() -> dict:
     """{mesh name: profile} for every road piece (a mesh two codes share keeps the first) and every connector."""
     out: dict = {m: connector(m) for m in CONNECTORS}
@@ -207,6 +215,7 @@ def _demo() -> None:
     two = ps["SM_Road_TwoLaneSidewalk_Straight10m"]
     assert [r[3] for r in two["paint"]].count("PaintYellow") == 2, "two-way: double yellow"
     assert kit_entry(connector("SM_Road_RampGore30m"))[1][0][0] == "poly"
+    assert not [m for m in all_profiles() if not bundled(m)], "every road piece ships with the plugin as a model"
     kp = kit_parts(fw)
     dashes = [k for k in kp if k[0] == "box"]
     assert len(dashes) == 4 * 2 and all(-1000 <= k[2][0] - k[4][0] / 2 and k[2][0] + k[4][0] / 2 <= 1000 for k in dashes)

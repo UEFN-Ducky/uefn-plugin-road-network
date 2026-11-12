@@ -1783,6 +1783,18 @@ def register(api) -> None:
         made, errors = [], []
         late = False
         for name in todo:
+            # a road piece comes with the plugin as a model (assets/roads/<name>.fbx, built in Blender from the same
+            # profile: Jersey barriers, chamfered kerbs, tapered decks); the box build below is the fallback
+            fbx = rp.bundled(name)
+            if name in roads and fbx:
+                dest = f"{root}/WorldGen/{roads[name][2]}"
+                try:
+                    got = listener_long("import_asset", {"source_file": fbx, "destination_path": dest, "replace_existing": False})
+                except Exception as exc:
+                    got = {"ok": False, "error": str(exc)}
+                if isinstance(got, dict) and got.get("ok") is not False and not got.get("error"):
+                    made.append(f"{dest}/{name}")
+                    continue
             got = listener_long("road_network_street_kit",
                                 {"root": root, "rebuild": rebuild, "only": [name], "save": False,
                                  "extra": {name: roads[name]} if name in roads else {}})
