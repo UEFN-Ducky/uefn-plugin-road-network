@@ -144,6 +144,9 @@ Nothing in the city stands on air, and no loose wall slab holds anything up: eve
   hall...). `ground_fit.left_out` says how many went, how many planned sites were kept, how many trees came.
   The '<City> Paths' / 'Access' actors are built from the previewed lots: run the pipeline from `sidewalks`
   after a change like this, or driveways to lots that are gone stay in the stored world.
+The ground is graded to the public roads first, then to each city's private streets as its PLAN has them, laid on
+that ground (`private_plans`, `private_streets` in `pcg_preview`), never to the stored '<City> Access' actors: inside
+a generate those are still the last world's. The sidewalk stage builds Paths and Access on the same public ground.
 A foundation's depth is measured on the ground the heightmap leaves (`citygen.footings`, after the pads are cut and
 the buildings settled). How deep they come out is set by the landscape's pixel (about 10 m on a 10 km world, with
 16 m lots): neighbours' pads at different heights meet inside one pixel. Measured Nov 12 2026: levelling lots on the

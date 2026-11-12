@@ -1410,6 +1410,26 @@ def register(api) -> None:
                       "Then the foliage[] layers in Foliage mode (foliage_how).")
         return out
 
+    def private_plans(nid: str, towns: list) -> list:
+        """[(city, its private streets)] as the city's plan has them, less any that would run across a freeway, a
+        ramp or a highway (those are laid after the blocks are cut)."""
+        fast = pl.road_samples([load_actor(nid, a)[1:] for a, h in actor_docs(nid).items()
+                                if str(h.get("label") or "").endswith(("Freeways", "Highways"))], 400.0)
+        return [(t, pl.off_roads((t.get("private") or {}).get("streets") or [], fast)) for t in towns]
+
+    def private_streets(plans: list, public: dict) -> list:
+        """Every city's private streets as (points, segments), graded like roads on the ground the public roads left
+        (`public`, a terrain grid): what the '<City> Access' actors hold once the sidewalk stage has run."""
+        on = st.grid_sampler(public)
+        out = []
+        for town, streets in plans:
+            if streets:
+                a = cg.access_actor({"private": {"streets": streets}}, [], lambda x, y: on(x, y) or 0.0, road_folder())
+                segs = [s for s in a["segments"] if "PrivateStreet" in str(s.get("mesh") or "")]
+                if segs:
+                    out.append((a["points"], segs))
+        return out
+
     _PREVIEW_CACHE: dict = {}
     FOREST_LIMIT = 200000  # foliage points per layer kept and baked: very dense forests; tiled PCG builds them 400 m at a time
 
@@ -1496,18 +1516,20 @@ def register(api) -> None:
                 # the ground the city leaves, a landscape pixel at a time: every road cut and filled in first
                 # (its own cells locked), then every lot levelled round them. Re-cut whenever the city changes;
                 # the road pass is kept while the terrain and roads stay the same.
-                # ... the subdivisions' and complexes' private streets with them (the '<City> Access' actors): left
-                # out, the hill covered them and the houses faced a strip of grass
-                private = []
-                for a, h in actor_docs(nid).items():
-                    if str(h.get("label") or "").endswith(" Access"):
-                        _h, pts, segs = load_actor(nid, a)
-                        private.append((pts, [s for s in segs if "PrivateStreet" in str(s.get("mesh") or "")]))
-                rk = hashlib.sha1(pickle.dumps([terrain, actors, private], protocol=5)).hexdigest()
+                # ... the subdivisions' and complexes' private streets with them: left out, the hill covered them
+                # and the houses faced a strip of grass. They come from each city's PLAN, laid on the ground the
+                # public roads left, never from the stored '<City> Access' actors: right after a regenerate those
+                # are still the last world's (the sidewalk stage rewrites them after this preview), and the new
+                # ground was cut down to streets that were no longer there, 100 m off after a new seed. Every
+                # block with a complex in it became a pit, and the preview kept it (its key never saw them).
+                plans = private_plans(nid, cities)
+                rk = hashlib.sha1(pickle.dumps([terrain, actors, [s for _c, s in plans]], protocol=5)).hexdigest()
                 if _GROUND.get("key") != rk:
                     locked: set = set()
                     roads = cg.grade_to_roads(cg.refine(terrain, cg.HEIGHTMAP_RES), {
                         str(k): {"points": p, "segments": s} for k, (p, s) in enumerate(actors)}, locked)
+                    public = roads
+                    private = private_streets(plans, public)
                     if private:  # after the public roads, which keep every cell of their own where the two meet
                         own: set = set()
                         cut2 = cg.grade_to_roads(roads, {str(k): {"points": p, "segments": s}
@@ -1516,11 +1538,20 @@ def register(api) -> None:
                             cut2["heights"][j][i] = roads["heights"][j][i]
                         roads = cut2
                         locked |= own
-                    _GROUND.update(key=rk, ter=roads, locked=locked)
+                    _GROUND.update(key=rk, ter=roads, locked=locked, public=public)
+                _GROUND["for"] = key  # (the sidewalk stage builds on this preview's own public ground)
+
+            first_pad: dict = {}  # (x, y) -> the level a lot was first cut at
 
             def cut_and_fit():
-                ter = cg.cut_pads(_GROUND["ter"], pl.pads(placed, cg.pad_margin(terrain)), _GROUND["locked"]) \
-                    if gen and cut and terrain.get("heights") else terrain
+                ter = terrain
+                if gen and cut and terrain.get("heights"):
+                    # every round cuts a lot where it was FIRST levelled: the fit lifts a building onto the highest
+                    # ground under it, and cut again at that lifted floor each round raised the ground further
+                    pads = pl.pads(placed, cg.pad_margin(terrain))
+                    for p in pads:
+                        first_pad.setdefault(p[:2], p[6])
+                    ter = cg.cut_pads(_GROUND["ter"], [(*p[:6], first_pad[p[:2]]) for p in pads], _GROUND["locked"])
                 return ter, fit_buildings(placed, ter, cut, ter is not terrain) if gen and terrain.get("heights") else None
             fit_ter, fit = cut_and_fit()
             # Nothing is built where the land falls more than pl.FOUND_MAX_M away under it: those buildings go, the
@@ -1986,6 +2017,11 @@ def register(api) -> None:
         if not towns or "/WorldGen/Roads" not in folder:
             return {"ok": False, "error": "No generated cities or road folder yet."}
         got = pcg_preview(nid)
+        # ... all of them laid on the ground the public roads left (the preview's own, when it cut one): on the raw
+        # hills a private street dipped or climbed where its public street was cut or filled
+        if _GROUND.get("public") and _GROUND.get("for") == _PREVIEW_CACHE.get("key"):
+            on_public = st.grid_sampler(_GROUND["public"])
+            ground = lambda x, y: on_public(x, y) or 0.0
         rows_by: dict = {t["name"]: [] for t in towns}
         for layer in (got.get("layers") or {}).values():
             if layer.get("kind") != "buildings":
@@ -1995,10 +2031,7 @@ def register(api) -> None:
                 rows_by[t["name"]].append(r)
         out = {}
         # no private street runs across a freeway, a ramp or a highway (they are laid after the blocks are cut)
-        fast = pl.road_samples([load_actor(nid, a)[1:] for a, h in actor_docs(nid).items()
-                                if str(h.get("label") or "").endswith(("Freeways", "Highways"))], 400.0)
-        towns = [{**t, "private": {**(t.get("private") or {}),
-                                   "streets": pl.off_roads((t.get("private") or {}).get("streets") or [], fast)}} for t in towns]
+        towns = [{**t, "private": {**(t.get("private") or {}), "streets": streets}} for t, streets in private_plans(nid, towns)]
         for t in towns:
             for label, actor in ((f"{t['name']} Paths", cg.paths_actor(t, opts, rows_by[t["name"]], ground, folder,
                                                                         cg.wet_from(ter))),

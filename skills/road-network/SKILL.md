@@ -126,3 +126,8 @@ situation and what to do. Keep it to what you couldn't have known.
   on the road-graded ground or at street level was measured and changed nothing. Don't retry those. The person
   chose the rule instead: nothing is built on a foundation deeper than 4 m, the lot is planted (planned sites
   and parks stay). A finer heightmap is the other lever and is still their call.
+- Whole blocks turned into pits after a regenerate (Nov 12 2026): the preview cut the new ground to the LAST
+  world's private streets, read from the stored '<City> Access' actors before the sidewalk stage had rewritten
+  them, and kept that result (its key never saw those actors). The ground now takes private streets from each
+  city's plan. Anything a preview needs must come from the plan or from actors `generate` has already written:
+  never from Paths / Access actors, which are always one step behind inside a generate.
