@@ -1522,7 +1522,7 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
     wet = water_of(city, o, wet)  # canals are water too: no lot in them
     rnd = random.Random(f"lots:{city.get('seed', 1)}")
     fw = freeway_plan(city, o)
-    out = {"lots": [], "streets": [], "parking": [], "stalls": [], "pads": [], "hoods": {}}
+    out = {"lots": [], "streets": [], "parking": [], "stalls": [], "pads": [], "trees": [], "hoods": {}}
     down, normal = o["downtown"], max(o["normal"], o["downtown"])
     for area in parcels.block_areas(nodes, edges, HALF):
         cx, cy = sum(p[0] for p in area) / len(area), sum(p[1] for p in area) / len(area)
@@ -1538,14 +1538,14 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
                             for x, y, yaw, w, d, _poly, fx, fy in parcels.lots_in(area, LOT_W_CM, LOT_D_CM, rnd)]
             continue
         g = nb.generate(area, kind, rnd)
-        for key in ("lots", "streets", "parking", "stalls", "pads"):
+        for key in ("lots", "streets", "parking", "stalls", "pads", "trees"):
             out[key] += g[key]
     if fw.lines:  # right of way: nothing built under or beside a freeway or ramp
         out["lots"] = [r for r in out["lots"] if not fw.blocked(r[0], r[1], 0.5 * max(r[3], r[4]))]
-        for key in ("parking", "stalls", "pads"):
+        for key in ("parking", "stalls", "pads", "trees"):
             out[key] = [r for r in out[key] if not fw.blocked(r[0], r[1])]
     if wet:  # nothing is built in the water
-        for key in ("lots", "parking", "stalls", "pads"):
+        for key in ("lots", "parking", "stalls", "pads", "trees"):
             out[key] = [r for r in out[key] if not wet(r[0], r[1])]
         out["streets"] = [s for s in out["streets"] if not any(wet(p[0], p[1]) for p in s)]
     if city.get("airports"):  # FAA land-use compatibility: no homes in an airport's noise zone, industry instead

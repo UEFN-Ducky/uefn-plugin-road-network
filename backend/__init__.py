@@ -1507,8 +1507,8 @@ def register(api) -> None:
             fit = fit_buildings(placed, fit_ter, cut, fit_ter is not terrain) if gen and terrain.get("heights") else None
             if fit:
                 fit["roads"] = road_fit(fit["ground"], actors, terrain)
-                for v in placed.values():  # the developments' pieces stand on the cut ground too (stalls on their slab)
-                    if v.get("kind") == "site" and v.get("role") == "site":
+                for name, v in placed.items():  # the developments' pieces stand on the cut ground too (stalls on their slab)
+                    if name == "Garden trees" or v.get("kind") == "site" and v.get("role") == "site":
                         up = 9 if v.get("mesh") == "SM_Kit_ParkingStall" else 0
                         for p in v["points"]:
                             p[2] = round(fit["ground"](p[0], p[1]) + up)

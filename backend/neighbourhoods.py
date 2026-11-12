@@ -56,36 +56,68 @@ class _Frame:
         return math.degrees(math.atan2(self.uy * du + self.ux * dv, self.ux * du - self.uy * dv))
 
 
-def _lots_along(street, f: _Frame, lot_w, lot_d, streets, taken, role="house"):
-    """Lots on both sides of a local polyline street, facing it, inside the block, off every street."""
+def _round(street: list, r: float = 2000.0, n: int = 5) -> list:
+    """The polyline with every corner swept as a curve of about radius r (a quadratic through the corner's two
+    tangent points): subdivision streets bend, they do not turn square."""
+    out = [street[0]]
+    for a, b, c in zip(street, street[1:], street[2:]):
+        la, lc = math.dist(a, b), math.dist(b, c)
+        d = min(r, la * 0.45, lc * 0.45)
+        p = (b[0] + (a[0] - b[0]) * d / la, b[1] + (a[1] - b[1]) * d / la)
+        q = (b[0] + (c[0] - b[0]) * d / lc, b[1] + (c[1] - b[1]) * d / lc)
+        for k in range(n + 1):
+            t = k / n
+            out.append(((1 - t) ** 2 * p[0] + 2 * (1 - t) * t * b[0] + t * t * q[0],
+                        (1 - t) ** 2 * p[1] + 2 * (1 - t) * t * b[1] + t * t * q[1]))
+    return out + [street[-1]]
+
+
+def _lots_along(street, f: _Frame, lot_w, lot_d, streets, taken, role="house", rnd=None, trees=None):
+    """Lots on both sides of a local polyline street, walked along its whole length so they follow its bends and
+    face it wherever it turns, each its own width (0.85-1.15 x lot_w: no row of identical plots), inside the block
+    and off every street. trees: gets a back-yard tree for most lots and a front-yard one for some [(u, v)]."""
     out = []
     lim_u, lim_v = f.L / 2 - 100, f.W / 2 - 100
-    for (pu, pv), (qu, qv) in zip(street, street[1:]):
-        L = math.hypot(qu - pu, qv - pv)
-        if L < lot_w:
-            continue
+    cum = [0.0]
+    for p, q in zip(street, street[1:]):
+        cum.append(cum[-1] + math.dist(p, q))
+    back = PRIVATE_HALF + WALK + lot_d / 2
+    t, k = 0.0, 0
+    while True:
+        w = lot_w * (rnd.uniform(0.85, 1.15) if rnd else 1.0)
+        mid = t + w / 2
+        t += w
+        if t > cum[-1]:
+            break
+        while cum[k + 1] < mid:
+            k += 1
+        (pu, pv), (qu, qv) = street[k], street[k + 1]
+        L = cum[k + 1] - cum[k] or 1.0
         du, dv = (qu - pu) / L, (qv - pv) / L
-        for k in range(int(L // lot_w)):
-            t = (k + 0.5) * lot_w
-            su, sv = pu + du * t, pv + dv * t
-            for side in (1, -1):
-                nu, nv = -dv * side, du * side  # away from the street
-                back = PRIVATE_HALF + WALK + lot_d / 2
-                cu, cv = su + nu * back, sv + nv * back
-                corners = [(cu + du * a * lot_w / 2 + nu * b * lot_d / 2, cv + dv * a * lot_w / 2 + nv * b * lot_d / 2)
-                           for a in (1, -1) for b in (1, -1)]
-                if any(abs(x) > lim_u or abs(y) > lim_v for x, y in corners):
-                    continue  # past the block's edge (the public street's sidewalk)
-                if any(_dist_seg((cu, cv), a, b) < PRIVATE_HALF + lot_d * 0.45 for s in streets for a, b in zip(s, s[1:])
-                       if (a, b) != ((pu, pv), (qu, qv))):
-                    continue  # it would sit on another private street
-                if any(math.hypot(cu - x, cv - y) < min(lot_w, lot_d) * 0.92 for x, y in taken):
-                    continue
-                taken.append((cu, cv))
-                fu, fv = su + nu * (PRIVATE_HALF + WALK), sv + nv * (PRIVATE_HALF + WALK)  # front lot line
-                (wx, wy), (frx, fry) = f.w(cu, cv), f.w(fu, fv)
-                out.append([round(wx), round(wy), round(f.yaw(-nu, -nv), 1), round(lot_w), round(lot_d),
-                            round(frx), round(fry), role, False])
+        su, sv = pu + du * (mid - cum[k]), pv + dv * (mid - cum[k])
+        for side in (1, -1):
+            nu, nv = -dv * side, du * side  # away from the street
+            cu, cv = su + nu * back, sv + nv * back
+            corners = [(cu + du * a * w / 2 + nu * b * lot_d / 2, cv + dv * a * w / 2 + nv * b * lot_d / 2)
+                       for a in (1, -1) for b in (1, -1)]
+            if any(abs(x) > lim_u or abs(y) > lim_v for x, y in corners):
+                continue  # past the block's edge (the public street's sidewalk)
+            if any(_dist_seg((cu, cv), a, b) < (back * 0.85 if s is street else PRIVATE_HALF + lot_d * 0.45)
+                   for s in streets for a, b in zip(s, s[1:])):
+                continue  # on another private street, or squeezed inside this one's bend
+            if any(math.hypot(cu - x, cv - y) < min(lot_w, lot_d) * 0.92 for x, y in taken):
+                continue
+            taken.append((cu, cv))
+            fu, fv = su + nu * (PRIVATE_HALF + WALK), sv + nv * (PRIVATE_HALF + WALK)  # front lot line
+            (wx, wy), (frx, fry) = f.w(cu, cv), f.w(fu, fv)
+            out.append([round(wx), round(wy), round(f.yaw(-nu, -nv), 1), round(w), round(lot_d),
+                        round(frx), round(fry), role, False])
+            if trees is not None and rnd:
+                if rnd.random() < 0.8:  # the back yard
+                    o = rnd.uniform(-0.3, 0.3) * w
+                    trees.append((cu + nu * lot_d * 0.36 + du * o, cv + nv * lot_d * 0.36 + dv * o))
+                if rnd.random() < 0.35:  # the front corner, by the lot line
+                    trees.append((fu + nu * 250 + du * w * 0.4, fv + nv * 250 + dv * w * 0.4))
     return out
 
 
@@ -132,14 +164,17 @@ def generate(poly: list, kind: str, rnd, lot_w=1600.0, lot_d=3000.0) -> dict:
     """One neighbourhood in a block (its inset polygon, world cm)."""
     f = _Frame(poly)
     L, W = f.L, f.W
-    out = {"kind": kind, "streets": [], "lots": [], "parking": [], "stalls": [], "pads": []}
+    out = {"kind": kind, "streets": [], "lots": [], "parking": [], "stalls": [], "pads": [], "trees": []}
     edge = -W / 2 - 900  # the private street runs on through the sidewalk to the public street's kerb
     streets = []
-    if kind == "grid":
-        streets = [[(-L / 2 - 900, 0.0), (L / 2 + 900, 0.0)], [(0.0, edge), (0.0, W / 2 + 900)]]
-    elif kind == "loop":
+    trees: list = []
+    if kind == "grid":  # two through streets; the long one sways gently instead of ruling a line
+        sway = min(W * 0.12, 1500.0) * rnd.choice((1, -1))
+        streets = [[(-L / 2 - 900, 0.0)] + _bezier((-L / 2, 0.0), (-L / 6, sway), (L / 6, -sway), (L / 2, 0.0))[1:-1] + [(L / 2 + 900, 0.0)],
+                   [(0.0, edge), (0.0, W / 2 + 900)]]
+    elif kind == "loop":  # a U with swept corners
         a, b = L / 4, W / 2 - lot_d - PRIVATE_HALF - WALK - 200
-        streets = [[(-a, edge), (-a, b), (a, b), (a, edge)]]
+        streets = [_round([(-a, edge), (-a, b), (a, b), (a, edge)])]
     elif kind == "organic":
         a, b = L / 4, W / 2 - lot_d - PRIVATE_HALF - WALK - 200
         streets = [[(-a, edge)] + _bezier((-a, -W / 2), (-a * 1.6, b * 1.5), (a * 1.6, b * 1.5), (a, -W / 2))[1:-1] + [(a, edge)]]
@@ -149,7 +184,7 @@ def generate(poly: list, kind: str, rnd, lot_w=1600.0, lot_d=3000.0) -> dict:
         out["pads"].append([*map(round, f.w(0.0, end)), BULB])
     taken: list = []
     for s in streets:
-        out["lots"] += _lots_along(s, f, lot_w, lot_d, streets, taken)
+        out["lots"] += _lots_along(s, f, lot_w, lot_d, streets, taken, rnd=rnd, trees=trees)
     if kind == "cul_de_sac":  # lots round the bulb, facing its centre
         end = streets[0][-1][1]
         ring = BULB + WALK + lot_d / 2
@@ -184,6 +219,9 @@ def generate(poly: list, kind: str, rnd, lot_w=1600.0, lot_d=3000.0) -> dict:
                     (wx, wy), (frx, fry) = f.w(cu, cv), f.w(cu, cv - row * bd / 2)
                     out["lots"].append([round(wx), round(wy), round(f.yaw(0, -row), 1), round(bw), round(bd),
                                         round(frx), round(fry), "apartment", True])
+            cw, ch = ru - 3000, W / 4 - 300 - bd / 2 - 400  # the courtyard between the rows: a planted green
+            if cw > 500 and ch > 300:
+                trees += [(rnd.uniform(-cw, cw), rnd.uniform(-ch, ch)) for _ in range(max(4, int(cw * ch / 2.5e6)))]
         elif kind == "suburban":  # buildings round a central parking lot, a drive in from the street
             streets = [[(0.0, edge), (0.0, -W / 4)]]
             depth = int((W / 2 - 600) // (2 * STALL_D + AISLE)) * (2 * STALL_D + AISLE)
@@ -210,6 +248,7 @@ def generate(poly: list, kind: str, rnd, lot_w=1600.0, lot_d=3000.0) -> dict:
             out["lots"].append([round(gx), round(gy), round(f.yaw(0, -1), 1), 2200, 4000, round(gfx), round(gfy),
                                 "parking_garage", True])
     out["streets"] = [[[round(c) for c in f.w(u, v)] for u, v in s] for s in streets]
+    out["trees"] = [[round(c) for c in f.w(u, v)] for u, v in trees]
     return out
 
 
@@ -233,6 +272,10 @@ def _demo() -> None:
             assert g["stalls"] and g["parking"], kind
         if kind == "cul_de_sac":
             assert g["pads"], "turnaround bulb"
+        if kind in ("grid", "loop", "organic", "cul_de_sac"):
+            assert g["trees"] and len({r[3] for r in g["lots"]}) > 1, (kind, "yards have trees, lots differ in width")
+        if kind in ("loop", "organic"):
+            assert len({r[2] for r in g["lots"]}) > 3, (kind, "lots turn with the street")
         print(f"  {kind}: {len(g['streets'])} streets, {len(g['lots'])} lots, {len(g['stalls'])} stalls")
     # parking maths: a 60 x 35 m lot = two 17.5 m modules, 23 stalls a row, 4 rows
     f = _Frame([(0, 0), (6000, 0), (6000, 3500), (0, 3500)])

@@ -715,7 +715,7 @@ def site_layers(cities: list, ground) -> dict:
     """The neighbourhoods' own pieces as built-in layers (kind 'site', rows [x, y, z, yaw, sx, sy, sz] already
     scaled for `mesh`, `box_m` its size at scale 1 for the preview): complex parking lots, painted stalls,
     cul-de-sac turnarounds and parking garages (lots a complex reserved with role 'parking_garage')."""
-    lots, stalls, pads, garages = [], [], [], []
+    lots, stalls, pads, garages, trees = [], [], [], [], []
     grounds: dict = {}
     for c in cities:
         priv = c.get("private") or {}
@@ -732,6 +732,8 @@ def site_layers(cities: list, ground) -> dict:
             lots.append([x, y, round(ground(x, y) or 0), yaw, sx, sy, 1.0])
         for x, y, yaw, *_ in priv.get("stalls") or []:
             stalls.append([x, y, round((ground(x, y) or 0) + 9), yaw, 1.0, 1.0, 1.0])
+        for k, (x, y) in enumerate(priv.get("trees") or []):  # back yards, front corners, courtyards
+            trees.append([x, y, round(ground(x, y) or 0), (x * 7 + y * 13) % 360, round(0.8 + (k * 37 % 50) / 100, 2)])
         for x, y, r in priv.get("pads") or []:
             pads.append([x, y, round(ground(x, y) or 0), 0.0, round(r / 1000, 3), round(r / 1000, 3), 1.0])
         for row in c.get("lots") or []:
@@ -746,6 +748,9 @@ def site_layers(cities: list, ground) -> dict:
         if rows:
             out[name] = {"kind": "site", "role": "site", "mesh": mesh, "box_m": box, "count": len(rows),
                          "shown": len(rows), "points": rows, "meshes": [], "row": "x, y, z, yaw, sx, sy, sz"}
+    if trees:  # drawn and baked like any tree layer (role 'tree')
+        out["Garden trees"] = {"kind": "scatter", "role": "tree", "count": len(trees), "shown": len(trees), "points": trees,
+                               "radius_cm": 250, "meshes": [], "build": "", "row": "x, y, z, yaw, scale"}
     for kind, rows in grounds.items():
         mesh, box, tint = GROUNDS[kind]
         out[GROUND_NAMES[kind]] = {"kind": "site", "role": "site", "mesh": mesh, "box_m": box, "tint": tint,
