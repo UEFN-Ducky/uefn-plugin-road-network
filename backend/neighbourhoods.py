@@ -31,12 +31,15 @@ TYPES = {  # name: (group, weight per district ring)
     "cul_de_sac": ("subdivision", {"housing": 3}),
     "organic": ("subdivision", {"housing": 2}),
     "branch": ("subdivision", {"housing": 4, "normal": 1}),  # a winding street through the block, cul-de-sacs off it
+    # a whole superblock (BIG_SIDE): one winding street through it, cul-de-sacs off both sides; never drawn by lot
+    "collector": ("subdivision", {}),
     "garden": ("apartments", {"normal": 2, "housing": 1}),
     "suburban": ("apartments", {"normal": 2, "housing": 1}),
     "urban": ("apartments", {"normal": 1}),
     "parcels": ("parcels", {"normal": 3, "housing": 1}),  # plain lots on the public streets (shops, apartments)
 }
 MIN_SIDE = 12000.0  # a block narrower than this stays plain parcels
+BIG_SIDE = 30000.0  # a block this wide both ways is a superblock: it gets the 'collector' layout
 
 
 def pick(ring: str, rnd) -> str:
@@ -177,6 +180,26 @@ def generate(poly: list, kind: str, rnd, lot_w=1600.0, lot_d=3000.0) -> dict:
     streets = []
     yard: dict = {"trees": [], "fences": [], "pools": []}
     trees = yard["trees"]
+    if kind == "collector":
+        # One winding street right through the superblock, entering and leaving square at the middle of two
+        # opposite sides, always along the same world axis: the next superblock's street starts across the road
+        # where this one ends, so it runs on through block after block. Cul-de-sacs branch off both sides.
+        if abs(f.ux) < abs(f.uy):
+            f.ux, f.uy, f.L, f.W = -f.uy, f.ux, f.W, f.L
+            L, W = f.L, f.W
+        wind = lambda u: W * 0.2 * math.sin(2 * math.pi * (u / L + 0.5)) * math.sin(math.pi * (u / L + 0.5))
+        streets = [[(-L / 2 - 900, 0.0)] + [(u, wind(u)) for u in (L * (k / 24 - 0.5) for k in range(25))] + [(L / 2 + 900, 0.0)]]
+        pitch = 2 * lot_d + 2 * (PRIVATE_HALF + WALK) + 500  # two back-to-back lot rows between neighbouring stubs
+        for side in (1, -1):
+            u = -L / 2 + pitch * (0.6 if side > 0 else 1.1)
+            end = side * (W / 2 - BULB - lot_d * 0.5)
+            while u < L / 2 - pitch * 0.6:
+                v0 = wind(u)
+                lean = rnd.uniform(-0.2, 0.2) * abs(end - v0)
+                if abs(end - v0) > 2 * lot_w:
+                    streets.append(_round([(u, v0), (u, (v0 + end) / 2), (u + lean, end)], n=4))
+                    out["pads"].append([*map(round, f.w(u + lean, end)), BULB])
+                u += pitch
     if kind == "branch":  # an S through the block (two entrances) with a cul-de-sac off each bend
         a = L / 5
         spine = [(-a, edge)] + _bezier((-a, -W / 2), (-a, W * 0.1), (a, -W * 0.1), (a, W / 2))[1:-1] + [(a, W / 2 + 900)]
@@ -287,6 +310,16 @@ def _demo() -> None:
     import random
     block = [(0, 0), (18000, 0), (18000, 16000), (0, 16000)]
     rnd = random.Random(3)
+    big = generate([(0, 0), (38000, 0), (38000, 38000), (0, 38000)], "collector", rnd)
+    (x0, y0), (x1, y1) = big["streets"][0][0], big["streets"][0][-1]
+    assert (x0, y0, x1, y1) == (-900, 19000, 38900, 19000), "the street crosses the superblock, mid-side to mid-side"
+    assert len(big["streets"]) >= 7 and len(big["pads"]) == len(big["streets"]) - 1, "cul-de-sacs off both sides"
+    assert len(big["lots"]) > 120, len(big["lots"])
+    print(f"  collector: {len(big['streets'])} streets, {len(big['lots'])} lots")
+    # two ordinary blocks side by side: the street leaves one where it enters the next, across the public street
+    one = generate(block, "collector", rnd)["streets"]
+    two = generate([(x + 20000, y) for x, y in block], "collector", rnd)["streets"]
+    assert len(one) >= 3 and one[0][-1][1] == two[0][0][1] == 8000 and two[0][0][0] - one[0][-1][0] == 200, (one[0][-1], two[0][0])
     for kind in ("grid", "loop", "cul_de_sac", "organic", "branch", "garden", "suburban", "urban"):
         g = generate(block, kind, rnd)
         assert g["streets"], kind

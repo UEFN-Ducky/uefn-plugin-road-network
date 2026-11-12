@@ -878,6 +878,35 @@ def aprons(placed: dict) -> dict:
                                 "meshes": [], "row": "x, y, z, yaw, sx, sy, sz"}}
 
 
+def off_roads(streets: list, samples: list, margin: float = 1000.0) -> list:
+    """Private streets stopped short of every freeway, ramp and highway (road_samples of those actors): each
+    polyline is walked every 5 m and cut where it comes within margin of one, the pieces under 15 m dropped.
+    A subdivision street laid across a highway ramp was graded like a road and filled the ramp's cutting."""
+    cell = 3000.0
+    grid: dict = {}
+    for x, y, half, _dx, _dy in samples:
+        grid.setdefault((int(x // cell), int(y // cell)), []).append((x, y, half + 400.0 + margin))
+    if not grid:
+        return streets
+    near = lambda x, y: any(math.hypot(x - sx, y - sy) < r for i in (-1, 0, 1) for j in (-1, 0, 1)
+                            for sx, sy, r in grid.get((int(x // cell) + i, int(y // cell) + j), ()))
+    out = []
+    for s in streets:
+        piece: list = []
+        pieces = [piece]
+        for a, b in zip(s, s[1:]):
+            n = max(1, int(math.dist(a[:2], b[:2]) // 500))
+            for k in range(n + (b is s[-1])):
+                p = [round(a[0] + (b[0] - a[0]) * k / n), round(a[1] + (b[1] - a[1]) * k / n)]
+                if near(*p):
+                    piece = []
+                    pieces.append(piece)
+                else:
+                    piece.append(p)
+        out += [s] if len(pieces) == 1 else [p for p in pieces if len(p) > 3]  # an uncut street keeps its own points
+    return out
+
+
 def clear_of(placed: dict, samples: list, margin: float = 200.0) -> int:
     """Nothing stands on or under a freeway, a ramp or a highway: every placed thing whose footprint reaches a
     road sample (road_samples of those actors) is taken out. Lots are cut from the city's blocks before the
@@ -1410,6 +1439,10 @@ def _demo() -> None:
     # a dropped kerb at the street end of a house's drive, half the sidewalk past the lot line
     ap = aprons({"H": {"kind": "buildings", "points": [[0, 0, 0, 0, 1, 8, 0, 12, 12, 0, [[DRIVE_M, [600, 0, 0, 1600, 0, 0]]]]]}})
     assert ap["Driveway aprons"]["points"] == [[1775, 0, 0, 0.0, 3.5, DRIVE_M + 1.0, 1.0]], ap
+    # a private street stops each side of a ramp it would cross (ramp half width 500 at x 5000)
+    cut = off_roads([[[0, 0], [10000, 0]]], [(5000, 0, 500, 0, 1)])
+    assert len(cut) == 2 and cut[0][-1][0] <= 3100 and cut[1][0][0] >= 6900 and cut[1][-1] == [10000, 0], cut
+    assert off_roads([[[0, 9000], [10000, 9000]]], [(5000, 0, 500, 0, 1)]) == [[[0, 9000], [10000, 9000]]]
     # nothing stands on a freeway or a ramp: a tower on it goes, its neighbour 60 m off stays, bridge parts stay
     on = {"T": {"kind": "buildings", "role": "office", "count": 2, "points": [[0, 500, 0, 0, 1, 40, 0, 30.0, 30.0], [0, 6000, 0, 0, 1, 40, 0, 30.0, 30.0]]},
           "Bridge piers": {"kind": "site", "role": "bridge", "box_m": [2, 2, 1], "points": [[0, 0, 0, 0, 1, 1, 5]]}}

@@ -942,6 +942,20 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
             return (max(ring[a], ring[b]) > down and line % 2 != 0 and line % o["collector_every"] != 0
                     and not axis)
         edges = [e for e in edges if not drop(e)]
+        # suburbs go further: most whole collector cells there keep no public street inside at all. Each is one
+        # subdivision (neighbourhoods 'collector'): a winding street through it, cul-de-sacs off that
+        ce, big, fwp = o["collector_every"], {}, freeway_plan(city, o)
+
+        def superblock(g):
+            if g not in big:
+                ks = [(g[0] * ce + i, g[1] * ce + j) for i in range(ce + 1) for j in range(ce + 1)]
+                inner = lambda n: 0 < n[0] - g[0] * ce < ce and 0 < n[1] - g[1] * ce < ce  # its edge may be in town
+                big[g] = all(n in nodes and (ring[n] > normal or not inner(n)) for n in ks) and not (
+                    fwp.lines and fwp.blocked(*nodes[(g[0] * ce + ce // 2, g[1] * ce + ce // 2)][:2], 0.75 * ce * block)
+                ) and random.Random(f"superblock:{city.get('seed', 1)}:{g}").random() < SUPERBLOCK_SHARE
+            return big[g]
+        edges = [e for e in edges if (e[0][0] if e[1][0] == e[0][0] else e[0][1]) % ce == 0
+                 or not superblock((e[0][0] // ce, e[0][1] // ce))]
     if style != "grid" and o["prune"]:
         # neighbourhoods drop some side streets (never a main one, never a dead end); suburbs drop more and
         # may leave cul-de-sacs, like real subdivisions
@@ -1506,6 +1520,8 @@ def access_actor(city: dict, rows: list, ground, folder: str) -> dict:
     return build_actor(nodes, edges, ground, folder)
 
 
+COLLECTOR_ROWS = 0.5  # of the suburbs' rows of blocks, how many share one winding street from block to block
+SUPERBLOCK_SHARE = 0.7  # of the suburbs' whole collector cells, how many are one subdivision with no public street inside
 LOT_W_CM, LOT_D_CM = 1600.0, 3500.0  # a lot: 16 m frontage, up to 35 m deep (two back to back in a block)
 
 
@@ -1528,10 +1544,18 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
         cx, cy = sum(p[0] for p in area) / len(area), sum(p[1] for p in area) / len(area)
         share = zone_share(city, cx, cy)
         ring = "core" if share <= down else "normal" if share <= normal else "housing"
-        _, _, _, _, L, W = parcels._obb(area)
+        _, _, ux, uy, L, W = parcels._obb(area)
+        if abs(ux) < abs(uy):  # the axis neighbourhoods' 'collector' street runs along (the same for every block)
+            ux, uy = -uy, ux
+        row = round((cx * uy - cy * ux) * (1 if ux > 0 else -1) / 6000)  # blocks side by side along it share a row
         kind = nb.pick(ring, rnd) if ring != "core" and min(L, W) >= nb.MIN_SIDE else "parcels"
         if fw.lines and fw.blocked(cx, cy, 0.5 * max(L, W)):
-            kind = "parcels"  # a block the freeway cuts gets plain lots, the ones clear of it kept
+            kind = "parcels"
+        elif ring != "core" and min(L, W) >= nb.BIG_SIDE:
+            kind = "collector"  # a superblock: plain lots would be landlocked in its middle
+        elif ring == "housing" and kind != "parcels" and \
+                random.Random(f"row:{city.get('seed', 1)}:{row}").random() < COLLECTOR_ROWS:
+            kind = "collector"  # a whole row of suburb blocks: the one winding street runs on through them all  # a block the freeway cuts gets plain lots, the ones clear of it kept
         out["hoods"][kind] = out["hoods"].get(kind, 0) + 1
         if kind == "parcels":
             out["lots"] += [[x, y, yaw, w, d, fx, fy, "", False]

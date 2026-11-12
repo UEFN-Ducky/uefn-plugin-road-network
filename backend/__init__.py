@@ -1868,6 +1868,11 @@ def register(api) -> None:
                 t = min(towns, key=lambda c: (c["x"] - r[0]) ** 2 + (c["y"] - r[1]) ** 2)
                 rows_by[t["name"]].append(r)
         out = {}
+        # no private street runs across a freeway, a ramp or a highway (they are laid after the blocks are cut)
+        fast = pl.road_samples([load_actor(nid, a)[1:] for a, h in actor_docs(nid).items()
+                                if str(h.get("label") or "").endswith(("Freeways", "Highways"))], 400.0)
+        towns = [{**t, "private": {**(t.get("private") or {}),
+                                   "streets": pl.off_roads((t.get("private") or {}).get("streets") or [], fast)}} for t in towns]
         for t in towns:
             for label, actor in ((f"{t['name']} Paths", cg.paths_actor(t, opts, rows_by[t["name"]], ground, folder,
                                                                         cg.wet_from(ter))),
