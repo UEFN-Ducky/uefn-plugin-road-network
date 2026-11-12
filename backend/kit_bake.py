@@ -302,6 +302,11 @@ def _size(name: str) -> tuple:
     return b[3] - b[0], b[4] - b[1], b[5] - b[2]
 
 
+def bounds(name: str):
+    """A kit mesh's box (min x, y, z, max x, y, z) in cm, or None for a mesh the plugin has no size for."""
+    return KIT[name][1:] if name in KIT else grammar.BOUNDS.get(name)
+
+
 def _height(parts: list) -> float:
     return max(KIT[p][6] for p in parts)
 

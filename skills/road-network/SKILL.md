@@ -93,6 +93,12 @@ situation and what to do. Keep it to what you couldn't have known.
   whole folder: kit_materials loading WorldGen/Kit's 256 leftover materials took UEFN past 100 GB and crashed it.
 - FBX from BuildingKit.blend: rotate −90° about Z, forward X / up Z, FBX_SCALE_NONE, and save the imported
   materials at once (a crash before the save leaves every slot empty).
+- Before any push: `road_network_pcg_exact(net_id, x, y, radius_m)` is what the push will place there (each
+  piece's real box, the ground as the landscape has it). `ground_fit.buried` / `floating` must be 0 and `unknown`
+  empty. The panel's "Real pieces here" draws the same thing. A world laid over another's landscape is fitted to
+  the scanned ground; once `road_network_heightmap` is made for it, to that heightmap (import it, then push).
+- A BuildingKit mesh in UEFN must measure `grammar.BOUNDS` (walls 0..512 on X, roof slab 0..512 on X and Y). An
+  FBX import that mirrors Y puts roofs beside their buildings: fix the export, never the placement.
 - `road_network_pcg_build(confirm=true)` runs in the background, a batch of tiles per editor script: call it again
   for progress (done / total), `stop=true` to stop. Trees, bushes and rocks sit in their own 1.6 km `n` tiles, so a
   nature setting never rebuilds buildings.

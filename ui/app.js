@@ -305,7 +305,7 @@ renderer.domElement.addEventListener("pointermove", (e) => {
     return;
   }
   drag.x = e.clientX; drag.y = e.clientY;
-  const pan = drag.button === 1 || e.shiftKey || (drag.button === 0 && state.tool === "hand");
+  const pan = drag.button === 1 || (e.shiftKey && drag.button !== 2) || (drag.button === 0 && state.tool === "hand");  // flying: Shift is speed
   if (pan) {
     const s = orbit.dist / 900;
     const right = new THREE.Vector3().subVectors(camera.position, orbit.target).cross(camera.up).normalize();
@@ -584,7 +584,8 @@ function buildScene() {
     }
   }
   if (state.view.districts) drawDistricts();
-  if (state.view.pcg) drawPcg(legend);
+  groups.terrain.visible = !(state.view.pcg && state.exact?.ground);  // the real ground patch stands in for it
+  if (state.view.pcg) { drawPcg(legend); drawExact(legend); }
   // sun: azimuth and height from the Terrain tab, shadow box fitted to the world
   const az = state.view.sunAz * Math.PI / 180, el = state.view.sunEl * Math.PI / 180;
   const dir = new THREE.Vector3(Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az));
@@ -711,6 +712,7 @@ function drawBuildings(layer, colour) {
   const glass = layer.role === "skyscraper" || layer.role === "office";
   for (const p of layer.points || []) {
     const [x, y, z, yaw, , hgt, fi, wv, dv] = p;
+    if (inExact(x, y)) continue;  // drawn there as its real pieces
     const [w0, d0] = layer.size_m || [12, 12];
     const w = (wv || w0) * 0.92, d = (dv || d0) * 0.92;
     const r = yaw * Math.PI / 180, fxv = Math.cos(r), fyv = Math.sin(r);
@@ -744,6 +746,7 @@ function drawLotGround(layer) {
   const found = [], walks = [];
   for (const p of layer.points || []) {
     const [x, y, z, yaw, , , , w, d, depth, paths, walls] = p;
+    if (inExact(x, y)) continue;
     for (const [wx, wy, wyaw, len, hgt] of walls || []) {  // retaining walls on uphill cuts
       dummy.position.copy(toV(wx, wy, z));
       dummy.position.y += hgt * zx / 2;
@@ -796,6 +799,7 @@ function drawPcg(legend) {
         dummy.position.y += bz * sz * zx / 2;
         dummy.rotation.set(0, -yaw * Math.PI / 180, 0);
         dummy.scale.set(by * sy, Math.max(0.05, bz * sz) * zx, bx * sx);
+        if (inExact(x, y)) dummy.scale.setScalar(0);
         dummy.updateMatrix();
         mesh.setMatrixAt(i, dummy.matrix);
       });
@@ -812,6 +816,7 @@ function drawPcg(legend) {
         dummy.position.y += hgt * zx / 2;
         dummy.rotation.set(0, -yaw * Math.PI / 180, 0);
         dummy.scale.set(0.5, hgt * zx, len);  // along yaw is the box's z here (toV turns x into -z), as site pieces
+        if (inExact(x, y)) dummy.scale.setScalar(0);
         dummy.updateMatrix();
         mesh.setMatrixAt(i, dummy.matrix);
       });
@@ -845,6 +850,62 @@ function drawPcg(legend) {
     if (building) drawLotGround(layer);
     legend[`${name} · ${layer.count.toLocaleString()}`] = colour;
   });
+}
+// Real pieces: what the push places round the view's centre, each piece as its mesh's own box (kit bounds) at
+// its real position, turn and stretch, on the ground sampled as the landscape has it. A roof beside its
+// building or a hill through a floor shows here, before anything goes to UEFN.
+const inExact = (x, y) => !!state.exact && Math.abs(x - state.exact.x) <= state.exact.r && Math.abs(y - state.exact.y) <= state.exact.r;
+const EXACT_TINT = [[/Floor|Roof|Slab|Parking|Apron/, "mix:fg-dim:bg:0.35"], [/Glass|Curtain|Storefront|Window|Lobby|Band/, "mix:blue:fg:0.55"],
+  [/Awning|Door|Entrance|Gate|Garage|SallyPort/, "amber"], [/Facade|Parapet|Corner|Column|Pillar/, "fg-dim"]];
+async function loadExact(keep) {
+  if (!state.net) return;
+  const c = orbit.target;  // three (m) -> UE (cm): x = -z, y = x
+  const at = keep && state.exact ? { x: state.exact.x, y: state.exact.y } : { x: -c.z * 100, y: c.x * 100 };
+  busy("Building the real pieces here…");
+  const r = await rpc("pcg_exact", { net_id: state.net, ...at, radius_m: 400 });
+  busy("");
+  if (r.ok === false) return showError(r.error);
+  state.exact = r;
+  buildScene();
+}
+function drawExact(legend) {
+  const ex = state.exact;
+  if (!ex) return;
+  const zx = state.view.zx || 1, dummy = new THREE.Object3D();
+  const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ roughness: 0.8 }), Math.max(1, ex.pieces));
+  let i = 0;
+  ex.meshes.forEach(([name, x0, y0, z0, x1, y1, z1], k) => {
+    const tint = col((EXACT_TINT.find(([re]) => re.test(name)) || [0, "mix:fg:bg:0.25"])[1]);
+    for (const [x, y, z, yaw, sx, sy, sz] of ex.rows[k]) {
+      const r = yaw * Math.PI / 180, c = Math.cos(r), s = Math.sin(r);
+      const cx = (x0 + x1) / 2 * sx, cy = (y0 + y1) / 2 * sy;  // the box's middle in the piece's own frame
+      dummy.position.copy(toV(x + cx * c - cy * s, y + cx * s + cy * c, z + (z0 + z1) / 2 * sz));
+      dummy.rotation.set(0, -r, 0);
+      dummy.scale.set(Math.max(2, Math.abs((y1 - y0) * sy)) / 100, Math.max(2, Math.abs((z1 - z0) * sz)) * zx / 100, Math.max(2, Math.abs((x1 - x0) * sx)) / 100);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+      mesh.setColorAt(i++, vary(tint, x, y));
+    }
+  });
+  mesh.count = i;
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  groups.pcg.add(mesh);
+  const g = ex.ground;
+  if (g) {  // one vertex per heightmap pixel: the triangles the landscape gets
+    const rows = g.z.length, cols = g.z[0].length, pos = [], idx = [];
+    for (let j = 0; j < rows; j++) for (let a = 0; a < cols; a++) { const v = toV(g.x + a * g.dx, g.y + j * g.dy, g.z[j][a]); pos.push(v.x, v.y, v.z); }
+    for (let j = 0; j < rows - 1; j++) for (let a = 0; a < cols - 1; a++) { const p = j * cols + a; idx.push(p, p + 1, p + cols, p + 1, p + cols + 1, p + cols); }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    geo.setIndex(idx);
+    geo.computeVertexNormals();
+    const land = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: tone("green", 0.5, 0.34), roughness: 0.95, side: THREE.DoubleSide }));
+    land.receiveShadow = true;
+    groups.pcg.add(land);
+  }
+  const lost = Object.keys(ex.unknown || {}).length;
+  legend[`Real pieces · ${ex.pieces.toLocaleString()}${lost ? ` (${lost} meshes with no known size not drawn)` : ""}`] = "fg";
 }
 let pcgPreviewTimer = 0;
 function schedulePcgPreview(delay = 700) {
@@ -882,7 +943,8 @@ async function loadPcgPreview() {
   state.pcg = out;
   renderPcgCounts();
   state.fadeNext = true;  // the new city rises into place instead of popping in
-  buildScene();
+  if (state.exact) await loadExact(true);  // the city changed: the real pieces on screen are rebuilt with it
+  else buildScene();
   loadSync();  // after the city: the badge reads the preview just computed instead of building its own
 }
 function renderPcgCounts() {
@@ -1183,7 +1245,10 @@ function renderPcgPane() {
       "Layers place in order: each one keeps clear of the roads and the layers you tick under Keep clear of.")),
     ...(cards.length ? cards : [h("div", { class: "dk-empty" }, h("div", { class: "dk-empty__title" }, "No layers yet"), "Add the starter layers or a new one.")]),
     section("Build", h("div", { id: "pcgPlanInfo", class: "rn-hint", style: "margin-bottom: 8px" }),
-      h("div", { class: "rn-stack" }, button("Refresh 3D preview", "refresh", () => loadPcgPreview()), place)));
+      h("div", { class: "rn-stack" }, button("Refresh 3D preview", "refresh", () => loadPcgPreview()),
+        button("Real pieces here", "city", () => loadExact(), "secondary",
+          "Draws every wall, roof and floor the push will place within 400 m of the view's centre, on the ground UEFN will have"),
+        button("Back to the simple view", "refresh", () => { state.exact = null; buildScene(); }), place)));
   renderPcgCounts();
   if (layers.length) rpc("pcg_plan", { net_id: state.net }).then((p) => {
     const el = $("pcgPlanInfo");
@@ -1723,7 +1788,7 @@ async function loadNets(autoOpen = true) {
   else if (!state.net) buildScene();
 }
 async function openNet(id) {
-  state.net = id; state.framed = false; state.sel = null; state.actor = ""; state.pcg = {};
+  state.net = id; state.framed = false; state.sel = null; state.actor = ""; state.pcg = {}; state.exact = null;
   call("prefs.set", { id: "last_net", value: id }).catch(() => {});
   renderWorldPick();
   $("syncBadge")?.replaceChildren();  // filled after this world's city preview (loadPcgPreview)

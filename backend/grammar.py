@@ -72,6 +72,32 @@ STYLES = {
                 "front_ground": "[Arch*,Entrance,Arch*]", "ground": "[{Arch:2,Bay:1}*]", "upper": "[{Arch:2,Bay:1}*]"},
 }
 SHARED = {"parapet": "SM_BK_Parapet", "roof": "SM_BK_Floor"}
+# name -> (min x, y, z, max x, y, z) in cm, as modelled in BuildingKit.blend: a wall runs 0..512 along +X, its
+# thickness on +Y (the inside), whatever sticks out (lobby, awning, balcony) on -Y. The panel draws these boxes
+# (pcg_exact), and a mesh imported into UEFN must measure the same: an importer that mirrors Y puts every roof
+# slab beside its building and every lobby inside it.
+BOUNDS = {"SM_BK_" + k: tuple(int(v) for v in b.split(",")) for k, b in (s.split(":") for s in """
+Facade_Camera:-9,-63,304,9,0,330 Facade_Downpipe:22,-22,0,42,0,384 Facade_FireEscape:-252,-132,5,252,0,498
+Facade_SplitAC:-45,-45,30,45,0,260 Facade_Vent:-28,-9,280,28,0,315 Facade_WallLight:-10,-28,230,10,0,256
+Facade_WindowAC:-35,-52,78,35,5,130 Floor:0,0,-20,512,512,0 House_Corner:0,0,0,20,20,384
+House_Wall_Balcony:0,-120,0,512,21,384 House_Wall_Door:0,-6,0,512,21,384 House_Wall_DoubleWindow:0,-8,0,512,21,384
+House_Wall_Garage:0,-6,0,512,21,384 House_Wall_Solid:0,0,0,512,20,384 House_Wall_Window:0,-8,0,512,21,384
+Ind_Corner:-20,-20,0,20,20,384 Ind_Wall_Door:0,-100,0,512,25,384 Ind_Wall_Metal:0,-3,0,512,25,384
+Ind_Wall_RollerDoor:0,-50,0,512,30,384 Ind_Wall_Window:0,-3,0,512,25,384 Jail_Corner:-20,-20,0,20,20,384
+Jail_Wall_SallyPort:0,-3,0,512,30,384 Jail_Wall_Slit:0,0,0,512,30,384 Jail_Wall_Solid:0,-2,0,512,30,384
+Mansion_Column:-39,-39,0,39,39,384 Mansion_Wall_ArchWindows:0,-20,0,512,30,384
+Mansion_Wall_BayWindow:0,-175,0,512,30,384 Mansion_Wall_GrandEntrance:0,-120,-45,512,30,384
+Modern_GarageDoor:0,-20,0,512,0,384 Modern_SlidingGlassWall:0,-20,0,512,0,384 Modern_StonePillar:-7,-68,0,68,7,384
+Modern_Wall_Wood:0,-24,0,512,0,384 Parapet:0,-5,0,512,25,88 Roof_ACUnit_Large:-170,-120,0,170,120,185
+Roof_ACUnit_Small:-70,-60,0,70,60,101 Roof_Antenna:-60,-30,0,60,30,532 Roof_Duct:-200,-45,0,205,45,130
+Roof_ExhaustFan:-52,-55,0,52,55,115 Roof_Hatch:-50,-50,0,50,50,30 Roof_SatelliteDish:-58,-42,0,58,40,146
+Roof_Skylight:-110,-110,0,110,110,80 Roof_SolarArray:-195,-180,0,195,180,109
+Roof_StairBulkhead:-235,-235,0,235,235,300 Roof_VentStack:-16,-16,0,56,56,132 Roof_WaterTank:-151,-155,0,155,155,670
+Shop_Awning:0,-140,255,512,0,330 Shop_Corner:-5,-5,0,25,25,384 Shop_Wall_Entrance:0,-12,0,512,21,384
+Shop_Wall_Solid:0,0,0,512,20,384 Shop_Wall_Storefront:0,-12,0,512,21,384 Shop_Wall_Window:0,-8,0,512,21,384
+Tower_Corner:-10,-10,0,30,30,384 Tower_Wall_Band:0,-1,0,512,21,384 Tower_Wall_Curtain:0,-1,0,512,21,384
+Tower_Wall_Lobby:0,-150,0,512,21,384 Tower_Wall_RevolvingDoor:0,-125,0,512,150,384 Tower_Wall_Solid:0,0,0,512,20,384
+""".split())}
 # role -> style (a planned facility can pick its own style instead: kit_bake.FACILITIES)
 STYLE_BY_ROLE = {"skyscraper": "tower", "office": "tower", "apartment": "apartment", "shop": "shop", "mall": "shop",
                  "transit": "shop", "gas_station": "shop", "house": "house", "mansion": "mansion", "school": "school",
@@ -324,6 +350,12 @@ def _demo() -> None:
     assert len(blocks) == 2 and blocks[1][2] == blocks[0][5] and blocks[1][5] <= 11000 + STOREY_CM, blocks
     assert len(rows["SM_BK_Tower_Wall_RevolvingDoor"]) == 1, "one front door at street level"
     assert all(m in modules() for m in rows), "the manifest lists every placed module"
+    assert not [m for m in modules() if m not in BOUNDS], "every module has its size: the panel draws it"
+    # a roof slab covers exactly its block (podium, then tower): placed at the corner, stretched over +X / +Y
+    b = BOUNDS["SM_BK_Floor"]
+    for r, blk in zip(rows["SM_BK_Floor"], blocks):
+        assert (r[0] + b[0] * r[4], r[1] + b[1] * r[5], r[0] + b[3] * r[4], r[1] + b[4] * r[5]) == \
+            (blk[0], blk[1], blk[3], blk[4]), (r, blk)
     # on the podium roof no gear stands inside the tower's footprint, and the tower gets its roof-access hut
     tx0, ty0, tz0, tx1, ty1, _ = blocks[1]
     for name in ROOF["tower"]:

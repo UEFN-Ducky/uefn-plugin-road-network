@@ -1188,6 +1188,9 @@ def register(api) -> None:
         ter = (data.get(f"net.{src}.scan") or {}).get("terrain") or {}
         if not ter.get("heights"):
             return {"ok": False, "error": f"{src!r} has no stored ground scan. Generate the world again."}
+        if not doc["generated"].get("heightmap"):  # from now on the buildings are fitted to this landscape
+            doc["generated"]["heightmap"] = True
+            data.put(f"net.{nid}", doc)
         hm = write_heightmap(nid, ter)  # always from the stored terrain, so every PC gets the same file
         return {"ok": True, "id": nid, **hm, "ground_fit": fit_summary(),
                 "how": f"Landscape mode > Manage > New > Import from File: pick the PNG, resolution {hm['resolution']}, "
@@ -1388,13 +1391,15 @@ def register(api) -> None:
     @one_run_at_a_time
     def fit_summary():
         fit = _PREVIEW_CACHE.get("fit")
-        return {k: v for k, v in fit.items() if k != "pads"} if fit else None
+        return {k: v for k, v in fit.items() if k not in ("pads", "ground")} if fit else None
 
-    def fit_buildings(placed: dict, terrain: dict) -> dict:
+    def fit_buildings(placed: dict, terrain: dict, cut: bool = True) -> dict:
         """Every building against the landscape the heightmap will import (pads cut in, sampled exactly as UEFN
-        does): a building that would float gets the deeper foundation it needs, here, so the build uses it."""
-        pads = pl.pads(placed, cg.pad_margin(terrain))  # frozen: the heightmap is cut from exactly these
-        ground = cg.imported_ground(terrain, pads=pads)
+        does): a building that would float gets the deeper foundation it needs, here, so the build uses it.
+        cut=False: the level keeps its own landscape (no pads cut): buildings sit on the scanned ground as it is."""
+        pads = pl.pads(placed, cg.pad_margin(terrain)) if cut else []  # frozen: the heightmap is cut from exactly these
+        scan = st.grid_sampler(terrain)
+        ground = cg.imported_ground(terrain, pads=pads) if cut else (lambda x, y: scan(x, y) or 0.0)
         rows = [(name, r) for name, v in placed.items() if v.get("kind") == "buildings" for r in v["points"] if len(r) > 9]
         moves, before, after = cg.settle(ground, [(name, r[0], r[1], r[3], r[7], r[8], r[2], r[9]) for name, r in rows])
         for k, (z, found) in moves.items():
@@ -1404,7 +1409,7 @@ def register(api) -> None:
                     p[1][2] = z
             r[2], r[9] = z, found
         return {**after, "settled": len(moves), "before": {k: before[k] for k in ("buried", "floating", "overlapping")},
-                "pads": pads}
+                "pads": pads, "ground": ground}
 
     def pcg_preview(net_id: str = "", layer_id: str = "", summary: bool = False) -> dict:
         """Every enabled layer placed offline with the graph's rules; one layer per call when layer_id is
@@ -1422,7 +1427,11 @@ def register(api) -> None:
         # once per input set and serve the panel's per-layer calls from that.
         keep = ((data.get(f"net.{nid}") or {}).get("generated") or {}).get("keep") or []
         # pickle, not sorted JSON: the same inputs read back the same way give the same bytes, several times faster
-        key = hashlib.sha1(pickle.dumps([nid, docs, cities, terrain, actors, keep], protocol=5)).hexdigest()
+        gen = (data.get(f"net.{nid}") or {}).get("generated") or {}
+        # the ground the buildings stand on: this world's own heightmap (lots cut in) once it has one; a world laid
+        # over another's landscape keeps that landscape as scanned until its heightmap is made
+        cut = not gen.get("ground_from") or bool(gen.get("heightmap"))
+        key = hashlib.sha1(pickle.dumps([nid, docs, cities, terrain, actors, keep, cut], protocol=5)).hexdigest()
         if _PREVIEW_CACHE.get("key") != key:  # ponytail: one entry, the world being looked at
             ground = st.grid_sampler(terrain) if terrain.get("heights") else (lambda x, y: 0.0)
             placed = pl.preview(list(docs.values()), cities, terrain, pl.road_samples(actors), ground,
@@ -1438,8 +1447,9 @@ def register(api) -> None:
             placed.update(waterfront.layers(cities, (data.get(f"net.{nid}.water") or {}).get("towers")))
             # airports: aircraft, jet bridges, hangars, tower, lights, aprons, fuel farm
             placed.update(airport.layers([r for c in cities for r in (c.get("private") or {}).get("airport") or []]))
-            gen = (data.get(f"net.{nid}") or {}).get("generated") or {}
-            fit = fit_buildings(placed, terrain) if gen and not gen.get("ground_from") and terrain.get("heights") else None
+            # every generated world: a building the ground would bury is lifted onto it, here, before any push
+            # (worlds over another's landscape were skipped once: their houses went in with the hill inside them)
+            fit = fit_buildings(placed, terrain, cut) if gen and terrain.get("heights") else None
             _PREVIEW_CACHE.update(key=key, out=placed, fit=fit)
         out = _PREVIEW_CACHE["out"]
         if layer_id:  # one layer, or several "a,b,c" (the panel asks for small layers together: fewer calls)
@@ -1456,6 +1466,47 @@ def register(api) -> None:
             return {"ok": True, "id": nid, "counts": {k: v["count"] for k, v in out.items()},
                     "ground_fit": fit_summary()}
         return {"ok": True, "id": nid, "layers": out}
+
+    _EXACT: dict = {}
+
+    def pcg_exact(net_id: str = "", x: float = 0.0, y: float = 0.0, radius_m: float = 400.0, summary: bool = False) -> dict:
+        """What the push places within radius_m of (x, y), before anything is pushed: every building, site and wall
+        piece as its mesh's real box ([name, min x, y, z, max x, y, z] + rows [x, y, z, yaw, sx, sy, sz]) and the
+        ground under them sampled as the landscape has it. The panel draws it; summary=true: counts only."""
+        nid = slug(net_id)
+        got = pcg_preview(nid)
+        if got.get("ok") is False:
+            return got
+        if _EXACT.get("key") != _PREVIEW_CACHE.get("key"):  # ponytail: one entry, as the preview
+            solid = {k: v for k, v in (got.get("layers") or {}).items() if v.get("kind") in ("buildings", "site", "walls")}
+            _EXACT.update(key=_PREVIEW_CACHE.get("key"), groups=kit_bake.bake(solid, "", interiors_of(nid))[0])
+        r = float(radius_m) * 100
+        meshes, rows, unknown = [], [], {}
+        for path, rs in _EXACT["groups"].items():
+            name = path.rsplit(".", 1)[-1]
+            near = [p for p in rs if abs(p[0] - x) <= r and abs(p[1] - y) <= r]
+            box = kit_bake.bounds(name)
+            if near and box:
+                meshes.append([name, *box])
+                rows.append(near)
+            elif near:
+                unknown[name] = len(near)
+        out = {"ok": True, "id": nid, "x": x, "y": y, "r": r, "pieces": sum(len(v) for v in rows),
+               "unknown": unknown, "ground_fit": fit_summary()}
+        if summary:
+            return {**out, "meshes": {m[0]: len(v) for m, v in zip(meshes, rows)}}
+        ter = (data.get(f"net.{nid}.scan") or {}).get("terrain") or {}
+        ground = (_PREVIEW_CACHE.get("fit") or {}).get("ground")
+        if ground and ter.get("heights"):  # on the heightmap's own pixels: the landscape's real triangles
+            (x0, y0), (x1, y1) = ter["min"], ter["max"]
+            dx, dy = (x1 - x0) / (cg.HEIGHTMAP_RES - 1), (y1 - y0) / (cg.HEIGHTMAP_RES - 1)
+            i0, i1 = max(0, int((x - r - x0) // dx)), min(cg.HEIGHTMAP_RES - 1, int((x + r - x0) // dx) + 1)
+            j0, j1 = max(0, int((y - r - y0) // dy)), min(cg.HEIGHTMAP_RES - 1, int((y + r - y0) // dy) + 1)
+            if i1 > i0 and j1 > j0:
+                out["ground"] = {"x": x0 + i0 * dx, "y": y0 + j0 * dy, "dx": dx, "dy": dy,
+                                 "z": [[round(ground(x0 + i * dx, y0 + j * dy)) for i in range(i0, i1 + 1)]
+                                       for j in range(j0, j1 + 1)]}
+        return {**out, "meshes": meshes, "rows": rows}
 
     def kit_root() -> str:
         folder = road_folder()
@@ -2730,6 +2781,15 @@ def register(api) -> None:
         return safe(pcg_preview)(net_id, layer_id, summary)
 
     @api.tool(intent=PCG_INTENT, listener=False)
+    def road_network_pcg_exact(net_id: str = "", x: float = 0.0, y: float = 0.0, radius_m: float = 400.0,
+                               summary: bool = True) -> dict:
+        """What road_network_pcg_build would place within radius_m of (x, y) (cm), before pushing: each building,
+        site and wall piece with its mesh's real box and the ground under them as the landscape has it. The
+        panel's 'Real pieces here' draws it. summary=true (default): piece counts per mesh, meshes with no known
+        size, and ground_fit (buildings the ground would bury or leave floating; must be 0 before a push)."""
+        return safe(pcg_exact)(net_id, float(x), float(y), float(radius_m), summary)
+
+    @api.tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_build(net_id: str = "", confirm: bool = False, force: bool = False,
                                stop: bool = False) -> dict:
         """Build the world's previewed city in the open UEFN level as PCG of the project's own kit, in 400 m
@@ -2755,6 +2815,8 @@ def register(api) -> None:
     api.register_panel_rpc("pcg_plan", lambda net_id="", road_tag="": safe(pcg_plan)(net_id, road_tag))
     api.register_panel_rpc("pcg_assets", lambda net_id="", asset_set="", interiors="": safe(pcg_assets)(net_id, asset_set, interiors))
     api.register_panel_rpc("pcg_preview", lambda net_id="", layer_id="": safe(pcg_preview)(net_id, layer_id))
+    api.register_panel_rpc("pcg_exact", lambda net_id="", x=0.0, y=0.0, radius_m=400.0: safe(pcg_exact)(
+        net_id, float(x), float(y), float(radius_m)))
     api.register_panel_rpc("pcg_place", lambda net_id="", confirm=False: safe(pcg_place)(net_id, confirm))
     api.register_panel_rpc("pcg_build", lambda net_id="", confirm=False, force=False: safe(pcg_build)(net_id, confirm, force))
 
