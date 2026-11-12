@@ -842,7 +842,7 @@ def register(api) -> None:
         return {"lots": layout["lots"], "hoods": layout["hoods"], "plan": layout.get("plan"),
                 "waterfront": layout.get("waterfront"),
                 "private": {k: layout.get(k) or [] for k in ("streets", "parking", "stalls", "pads", "grounds", "water",
-                                                             "airport")}}
+                                                             "airport", "trees", "fences", "pools")}}
 
     FIELD_SPLIT = 32_000  # a city field whose JSON is bigger (its lots, its plan) goes in the city's file
     CITY_KEEP = ("name", "x", "y", "radius", "style", "seed", "roads")  # always in the head itself
@@ -1467,6 +1467,7 @@ def register(api) -> None:
                                     "points": walls, "meshes": [],
                                     "row": "x, y, base z, yaw, 1, length_m, height_m"}
             placed.update(pl.site_layers(cities, ground))  # complexes' parking, stalls, turnarounds, garages
+            placed.update(pl.aprons(placed))  # a dropped kerb where each driveway meets its street
             # nothing on or under a freeway, a ramp or a highway (lots are cut before those are laid)
             fast = [load_actor(nid, a)[1:] for a, h in actor_docs(nid).items()
                     if str(h.get("label") or "").endswith(("Freeways", "Highways"))]
@@ -1509,7 +1510,8 @@ def register(api) -> None:
                 fit["roads"] = road_fit(fit["ground"], actors, terrain)
                 for name, v in placed.items():  # the developments' pieces stand on the cut ground too (stalls on their slab)
                     if name == "Garden trees" or v.get("kind") == "site" and v.get("role") == "site":
-                        up = 9 if v.get("mesh") == "SM_Kit_ParkingStall" else 0
+                        # (an apron lies on its road's sidewalk: the ground there is ROAD_SINK_CM under the road)
+                        up = 9 if v.get("mesh") == "SM_Kit_ParkingStall" else cg.ROAD_SINK_CM + 6 if v.get("on_road") else 0
                         for p in v["points"]:
                             p[2] = round(fit["ground"](p[0], p[1]) + up)
                 if fit_ter is not terrain:

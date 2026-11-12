@@ -1031,7 +1031,8 @@ function drawPcg(legend) {
       const zx = state.view.zx || 1;
       pts.forEach(([x, y, z, yaw, sx, sy, sz], i) => {
         const a = yaw * Math.PI / 180, side = stall ? by * sy * 50 : 0;  // the line down one long side of the stall
-        dummy.position.copy(toV(x - Math.sin(a) * side, y + Math.cos(a) * side, z + 20));
+        // (roads are drawn 60 cm up so they never sink into the ground: a piece lying on one goes up with it)
+        dummy.position.copy(toV(x - Math.sin(a) * side, y + Math.cos(a) * side, z + (layer.on_road ? 60 : 20)));
         dummy.position.y += bz * sz * zx / 2;
         dummy.rotation.set(0, -yaw * Math.PI / 180, 0);
         dummy.scale.set(stall ? 0.12 : by * sy, Math.max(0.05, bz * sz) * zx, bx * sx);

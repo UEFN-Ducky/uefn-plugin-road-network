@@ -709,6 +709,8 @@ _STREET_KIT = {
     "SM_Kit_ParkingStall": (["Panel"], [("box", 0, (0, -125, 0), (0, 0, 0), (550, 10, 2)),
                                         ("box", 0, (0, 125, 0), (0, 0, 0), (550, 10, 2))]),
     "SM_Kit_Turnaround": (["Asphalt"], [("cyl", 0, (0, 0, -10), (0, 0, 0), (1000, 10, 24))]),
+    # a yard's timber fence along a lot line: 1 m long, 10 cm thick, 2.5 m tall (placed at 0.6: 1.5 m)
+    "SM_Kit_Fence": (["Wood"], [("box", 0, (0, 0, 0), (0, 0, 0), (100, 10, 250))]),
     # stone retaining wall along a cut / filled road: 1 m long, 50 cm thick, 1 m tall, a capping course on top
     "SM_Kit_StoneWall": (["StoneWall", "Plinth"], [("box", 0, (0, 0, 0), (0, 0, 0), (100, 50, 95)),
                                                   ("box", 1, (0, 0, 95), (0, 0, 0), (100, 56, 5))]),

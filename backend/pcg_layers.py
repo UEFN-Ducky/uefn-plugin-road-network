@@ -715,7 +715,7 @@ def site_layers(cities: list, ground) -> dict:
     """The neighbourhoods' own pieces as built-in layers (kind 'site', rows [x, y, z, yaw, sx, sy, sz] already
     scaled for `mesh`, `box_m` its size at scale 1 for the preview): complex parking lots, painted stalls,
     cul-de-sac turnarounds and parking garages (lots a complex reserved with role 'parking_garage')."""
-    lots, stalls, pads, garages, trees = [], [], [], [], []
+    lots, stalls, pads, garages, trees, fences = [], [], [], [], [], []
     grounds: dict = {}
     for c in cities:
         priv = c.get("private") or {}
@@ -732,6 +732,10 @@ def site_layers(cities: list, ground) -> dict:
             lots.append([x, y, round(ground(x, y) or 0), yaw, sx, sy, 1.0])
         for x, y, yaw, *_ in priv.get("stalls") or []:
             stalls.append([x, y, round((ground(x, y) or 0) + 9), yaw, 1.0, 1.0, 1.0])
+        for x, y, yaw, ln in priv.get("fences") or []:  # back and side lot lines: 1.5 m timber fence
+            fences.append([x, y, round(ground(x, y) or 0), yaw, ln, 1.0, 0.6])
+        for x, y, yaw, sx, sy in priv.get("pools") or []:  # back-yard pools
+            grounds.setdefault("pool", []).append([x, y, round(ground(x, y) or 0), yaw, sx, sy, 1.0])
         for k, (x, y) in enumerate(priv.get("trees") or []):  # back yards, front corners, courtyards
             trees.append([x, y, round(ground(x, y) or 0), (x * 7 + y * 13) % 360, round(0.8 + (k * 37 % 50) / 100, 2)])
         for x, y, r in priv.get("pads") or []:
@@ -744,6 +748,7 @@ def site_layers(cities: list, ground) -> dict:
     for name, mesh, rows, box in (("Complex parking", "SM_Kit_ParkingLot", lots, [1, 1, 0.08]),
                                   ("Parking stalls", "SM_Kit_ParkingStall", stalls, [5.5, 2.6, 0.02]),
                                   ("Turnarounds", "SM_Kit_Turnaround", pads, [20, 20, 0.1]),
+                                  ("Yard fences", "SM_Kit_Fence", fences, [1, 0.1, 2.5]),
                                   ("Parking garages", "SM_City_CT_MidRise", garages, [16.8, 20.6, 24.7])):
         if rows:
             out[name] = {"kind": "site", "role": "site", "mesh": mesh, "box_m": box, "count": len(rows),
@@ -847,6 +852,30 @@ def road_samples(actors: list, step: float = 500.0) -> list:
                 t = k / max(1, int(L // step))
                 out.append((a["x"] + dx * t, a["y"] + dy * t, half, dx / L, dy / L))
     return out
+
+
+def aprons(placed: dict) -> dict:
+    """A dropped kerb where every driveway meets its street: a concrete apron from the lot line across the
+    3.5 m sidewalk to the carriageway, a metre wider than the drive, lying on the sidewalk (the kerb is lowered
+    there, the sidewalk runs on across it). Built from the previewed lots' driveways ([.., paths])."""
+    rows = []
+    for v in placed.values():
+        if v.get("kind") != "buildings":
+            continue
+        for p in v.get("points") or []:
+            for width, flat in (p[10] if len(p) > 10 else []):
+                if not 3.0 <= width < 8.0 or len(flat) < 6:
+                    continue
+                ux, uy = flat[-3] - flat[0], flat[-2] - flat[1]
+                d = math.hypot(ux, uy)
+                if d > 1:
+                    rows.append([round(flat[-3] + ux / d * 175), round(flat[-2] + uy / d * 175), flat[-1],
+                                 round(math.degrees(math.atan2(uy, ux)), 1), 3.5, width + 1.0, 1.0])
+    if not rows:
+        return {}
+    return {"Driveway aprons": {"kind": "site", "role": "site", "mesh": "SM_Kit_Apron", "box_m": [1, 1, 0.1], "on_road": True,
+                                "tint": "mix:fg-dim:bg:0.2", "count": len(rows), "shown": len(rows), "points": rows,
+                                "meshes": [], "row": "x, y, z, yaw, sx, sy, sz"}}
 
 
 def clear_of(placed: dict, samples: list, margin: float = 200.0) -> int:
@@ -1232,6 +1261,8 @@ def pads(previewed: dict, margin_cm: float = 400.0) -> list:
     """Every previewed lot as a level pad for the heightmap: (x, y, cos, sin, half width, half depth, z)."""
     out = []
     for v in previewed.values():
+        if v.get("on_road"):
+            continue  # lies on a road's own sidewalk: nothing to level
         if v.get("kind") == "site" and v.get("role") == "site" and list((v.get("box_m") or [0, 0])[:2]) == [1, 1]:
             # a development's slab (car park, apron, field, pool, yard): level under it too, or it lies half
             # buried on a slope with its stalls draped over the hill beside it
@@ -1362,7 +1393,7 @@ def _demo() -> None:
     town = {"name": "L", "x": 0, "y": 0, "radius": 40000, "seed": 4, "style": "grid"}
     town["districts"] = cg.districts(town)
     town["lots"] = cg.city_lots(town, {"planner": "no"})  # every lot plain: this checks the house fill
-    assert len(town["lots"]) > 200, len(town["lots"])
+    assert len(town["lots"]) > 120, len(town["lots"])  # nine blocks; which neighbourhood each gets moves the count
     houses = clean({"name": "Houses", "kind": "buildings", "role": "house", "where": "cities", "width_m": 12,
                     "depth_m": 12, "setback_m": 6, "spacing_m": 20})
     hv = preview([houses], [town], {"min": [-50000, -50000], "max": [50000, 50000]}, [], lambda x, y: 0.0)["Houses"]
@@ -1376,6 +1407,9 @@ def _demo() -> None:
         front = (row[0] + math.cos(f) * (600 + row[8] * 50), row[1] + math.sin(f) * (600 + row[8] * 50))
         assert any(math.dist(front, (frx, fry)) < 30 and abs((row[3] - lyaw + 180) % 360 - 180) < 1
                    for lyaw, frx, fry in by_front.values()), row[:4]
+    # a dropped kerb at the street end of a house's drive, half the sidewalk past the lot line
+    ap = aprons({"H": {"kind": "buildings", "points": [[0, 0, 0, 0, 1, 8, 0, 12, 12, 0, [[DRIVE_M, [600, 0, 0, 1600, 0, 0]]]]]}})
+    assert ap["Driveway aprons"]["points"] == [[1775, 0, 0, 0.0, 3.5, DRIVE_M + 1.0, 1.0]], ap
     # nothing stands on a freeway or a ramp: a tower on it goes, its neighbour 60 m off stays, bridge parts stay
     on = {"T": {"kind": "buildings", "role": "office", "count": 2, "points": [[0, 500, 0, 0, 1, 40, 0, 30.0, 30.0], [0, 6000, 0, 0, 1, 40, 0, 30.0, 30.0]]},
           "Bridge piers": {"kind": "site", "role": "bridge", "box_m": [2, 2, 1], "points": [[0, 0, 0, 0, 1, 1, 5]]}}
