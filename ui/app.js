@@ -1085,10 +1085,17 @@ function drawLotGround(layer) {
     groups.pcg.add(mesh);
   }
 }
-function drawPcg(legend, only) {  // only: just these layers (the city coming in a few layers at a time)
-  const layers = state.pcg || {};
+// only: just these layers. from: the layers to draw instead of the world's (same names in the same order, so each
+// keeps its colour): a rebuild draws what stayed and what is new of a layer apart (revealLayers)
+function drawPcg(legend, only, from) {
+  const layers = from || state.pcg || {};
   const dummy = new THREE.Object3D();
-  Object.entries(layers).forEach(([name, layer], k) => {
+  Object.entries(layers).forEach((entry, k) => {
+    const n0 = groups.pcg.children.length;
+    drawLayer(entry, k);
+    for (let i = n0; i < groups.pcg.children.length; i++) groups.pcg.children[i].userData.layer = entry[0];
+  });
+  function drawLayer([name, layer], k) {
     const pts = layer.points || [];
     if (only && !(name in only)) return;
     if (!pts.length || layer.role === "sidewalk_corner") return;  // corners are part of each junction's mesh now
@@ -1149,7 +1156,7 @@ function drawPcg(legend, only) {  // only: just these layers (the city coming in
     }
     if (building) drawLotGround(layer);
     legend[`${name} · ${layer.count.toLocaleString()}`] = colour;
-  });
+  }
 }
 // Real pieces: what the push places round the view's centre, each piece as its mesh's own box (kit bounds) at
 // its real position, turn and stretch, on the ground sampled as the landscape has it. A roof beside its
@@ -1238,7 +1245,7 @@ function schedulePcgPreview(delay = 700) {
 // PCG_BATCH layers to a call, the road walls with the last (every call re-reads the world's inputs once).
 const PCG_BATCH = 12;
 async function loadPcgPreview() {
-  if (!state.net || !(state.layers || []).length) { state.pcg = {}; settleCity(); buildScene(); loadSync(); return; }
+  if (!state.net || !(state.layers || []).length) { state.pcg = {}; settleCity(); state.lifted = null; buildScene(); loadSync(); return; }
   const net = state.net;
   const out = {};
   const todo = state.layers.filter((x) => x.enabled);
@@ -1254,7 +1261,7 @@ async function loadPcgPreview() {
       step: i, of: calls.length });
     const r = await rpc("pcg_preview", { net_id: net, layer_id: ls.map((l) => l.id).join(",") });
     if (net !== state.net) return card("");
-    if (r.ok === false && ls[0].id !== "road-walls") { card(""); settleCity(); return showError(r.error, () => loadPcgPreview()); }
+    if (r.ok === false && ls[0].id !== "road-walls") { card(""); settleCity(); state.lifted = null; buildScene(); return showError(r.error, () => loadPcgPreview()); }
     if (r.ok !== false) {
       Object.assign(picked, r.layers || {});
       await revealLayers(r.layers || {}, i === 0);  // a few layers at a time, each rising out of the ground
@@ -1274,6 +1281,7 @@ async function loadPcgPreview() {
     state.ground = { net, key: terrainKey(raw), t: { ...raw, grid: gr.grid, heights: gr.heights, max: gr.max || raw.max }, fit: gr.ground_fit };
   }
   state.pcg = out;
+  state.lifted = null;  // every layer is in: the moved city's old place is whatever the rebuild left there
   renderPcgCounts();
   state.fadeNext = false;  // it already came in, layer by layer (revealLayers)
   if (state.exact) await loadExact(true);  // the city changed: the real pieces on screen are rebuilt with it
@@ -1987,7 +1995,7 @@ function renderCitiesPane() {
       cityPlan(c.plan), cityWater(c.waterfront), cityAirport(c.airport));
   });
   pane.replaceChildren(section(`Cities · ${state.cities.length}`, ...cards),
-    h("div", { class: "rn-hint" }, "Each city keeps its own roads actor, style and building sets. Changing one rebuilds the world with the same seed."));
+    h("div", { class: "rn-hint" }, "Each city keeps its own roads actor, style and building sets. Changing one places that city again; the others stay as they are."));
 }
 // ------------------------------------------------------------------ city edits: queued into one rebuild
 // Moving, resizing, restyling, adding and deleting cities never rebuilds per edit: each edit shows at once and
@@ -3133,7 +3141,7 @@ function hideLifted() {  // after every redraw too: the old city stays gone unti
   const none = new THREE.Matrix4().makeScale(0, 0, 0);
   for (const o of groups.pcg.children) {
     const xy = o.userData.xy;
-    if (!o.isInstancedMesh || !xy) continue;
+    if (!o.isInstancedMesh || !xy || o.userData.fresh) continue;  // (what the rebuild already put there stays)
     for (let i = 0; i < o.count; i++) if (inCity(L, xy[2 * i], xy[2 * i + 1])) o.setMatrixAt(i, none);
     o.instanceMatrix.needsUpdate = true;
   }
@@ -3146,27 +3154,53 @@ function dropLift() {  // the move was called off: the city is back where it was
   buildScene();
 }
 function settleCity() {  // the rebuilt city is coming in: the copy has done its job
-  if (!state.lifted && !cityGhost.children.length) return;
-  state.lifted = null;
+  if (!cityGhost.children.length) return;
   clear(cityGhost);
   needsDraw = true;
 }
-// The city comes in a few layers at a time, each rising out of the ground, never all at once at the end
+// A rebuild comes in a few layers at a time and changes only what changed: of each layer, what stood before stays
+// on screen exactly as it is (the other cities, the forests), what is gone goes, and only what is new rises out of
+// the ground. Nothing is cleared first: the world never blinks empty.
+const NO_POINTS = { points: [] };
 async function revealLayers(layers, first) {
-  if (first) { settleCity(); state.pcg = {}; clear(groups.pcg); }
-  Object.assign(state.pcg, layers);
+  if (first) settleCity();
+  const old = state.pcg || {};
+  const spot = (p) => `${p[0]},${p[1]},${p[3]}`;
+  const stay = {}, fresh = {};
+  for (const [name, layer] of Object.entries(layers)) {
+    const had = old[name]?.points?.length ? new Set(old[name].points.map(spot)) : null;
+    if (!had) { fresh[name] = layer; continue; }
+    const s = [], f = [];
+    for (const p of layer.points || []) (had.has(spot(p)) ? s : f).push(p);
+    stay[name] = { ...layer, points: s };
+    if (f.length) fresh[name] = { ...layer, points: f };
+  }
+  state.pcg = { ...old, ...layers };
   if (!state.view.pcg || !state.geo) return;
-  const before = new Set(groups.pcg.children);
-  drawPcg({}, layers);
-  const fresh = groups.pcg.children.filter((o) => !before.has(o));
-  if (!fresh.length) return;
+  for (const o of [...groups.pcg.children]) {
+    if (!(o.userData.layer in layers)) continue;
+    groups.pcg.remove(o);
+    o.geometry?.dispose?.();
+    o.material?.dispose?.();
+  }
+  const whole = (part) => Object.fromEntries(Object.keys(state.pcg).map((n) => [n, part[n] || NO_POINTS]));
+  let before = new Set(groups.pcg.children);
+  drawPcg({}, null, whole(stay));
+  for (const o of groups.pcg.children) if (!before.has(o)) o.userData.fresh = true;
+  before = new Set(groups.pcg.children);
+  drawPcg({}, null, whole(fresh));
+  const risen = groups.pcg.children.filter((o) => !before.has(o));
+  for (const o of risen) o.userData.fresh = true;
+  needsDraw = true;
+  if (!risen.length) return;
+  const fresh_ = risen;
   // one after another, each a moment behind the last: a batch of thirty kinds of thing takes over a second to
   // come up, so the city fills in as it is made
-  const start = performance.now(), ms = 520, gap = Math.min(45, 900 / fresh.length);
-  fresh.forEach((o) => { o.scale.y = 0.02; });
+  const start = performance.now(), ms = 520, gap = Math.min(45, 900 / fresh_.length);
+  fresh_.forEach((o) => { o.scale.y = 0.02; });
   const step = (now) => {
     let rising = false;
-    fresh.forEach((o, i) => {
+    fresh_.forEach((o, i) => {
       const k = Math.max(0, Math.min(1, (now - start - i * gap) / ms));
       o.scale.y = 0.02 + 0.98 * (1 - Math.pow(1 - k, 3));
       if (k < 1) rising = true;
@@ -3175,7 +3209,7 @@ async function revealLayers(layers, first) {
     if (rising) requestAnimationFrame(step);
   };
   requestAnimationFrame(step);
-  await new Promise((done) => setTimeout(done, 170 + fresh.length * gap));
+  await new Promise((done) => setTimeout(done, 170 + fresh_.length * gap));
 }
 function startCityDrag(c) {
   const v = groundAt({ clientX: drag.x0, clientY: drag.y0 });

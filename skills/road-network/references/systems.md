@@ -402,7 +402,35 @@ Airports are planned at world level **before the streets** (`citygen.plan_airpor
 Sizes are game approximations of FAA AC 150/5300-13B and 150/5360-13A, not certified designs.
 
 ## Generate again, any time
-Regenerating is never blocked. A world on scanned ground keeps using that ground. The header badge
+Regenerating is never blocked. A world on scanned ground keeps using that ground.
+
+**A rebuild changes only what changed.** Generating again with nothing changed gives exactly the same world.
+After an edit to one city, that city is placed again and everything else is put back as it stood:
+- Every layer is placed unit by unit (`pcg_layers.preview`): a city's lots are one unit per city, scatter,
+  roadside and junction pieces one unit per 500 m tile. A piece's size, height and shape come from its own spot
+  (`_u01`), a tile's candidates from that tile's own random, a city's lots in an order of their own. Nothing
+  depends on a random shared with another place.
+- `pcg_layers.PreviewMemo` (one per world, kept by `pcg_preview`) remembers each unit and what it was placed
+  from. The next run places again only the units within 100 m of a change: a road sample, a city that moved, a
+  plan row (lot, block, private street) or a ground cell that is not what it was.
+- The planner re-reads its last plan (`urban.plan` keep) and adds nothing when nothing changed.
+- Still world-wide on every rebuild: the ground cut and fit, fences and the road stage. A move on a three-city
+  10 km world takes about 30 s (it was about 110 s); nothing changed, about 6 s.
+- The panel replaces each layer in place: what stood before stays on screen, only what is new rises.
+
+**Cities close together or overlapping.**
+- A city moved by hand (`road_network_city_save` with x, y) is `pinned`: it stays where it was put and pushes no
+  other city away, however close (`citygen.spread`). Only cities never placed by hand are spread apart.
+- Where two cities overlap, the bigger one keeps the land (`citygen.yield_plan`, `yielded`; the name settles a
+  tie). The smaller city's streets, lots and freeways stop 30 m short of the bigger one's edge, so no street is
+  laid on another and nothing is built twice. The layers read the shared land as the bigger city's districts.
+- Cities whose edges are closer than 600 m are joined street to street (`citygen.joins`): five streets where
+  they touch, one at 600 m, spread across the side where they face each other, never through water or a keep
+  zone. Each city lays its own half to the middle. No highway runs between two cities joined this way.
+- The land along a joining street fills in with house lots (`citygen.join_lots`), and that corridor counts as
+  housing for every layer (the city's `rezoned`), so no forest grows there.
+
+The header badge
 (`road_network_sync`) says whether UEFN is behind this world: road actors changed or never pushed, and
 city tiles to build or remove. The next build in UEFN changes only those.
 

@@ -800,7 +800,7 @@ def fit_inside(towns: list, bounds: tuple, gap_cm: float, keep: list | None = No
 
     def crowded() -> bool:
         return any(math.hypot(a["x"] - b["x"], a["y"] - b["y"]) < a["radius"] + b["radius"] + gap_cm - 100
-                   for i, a in enumerate(towns) for b in towns[i + 1:])
+                   for i, a in enumerate(towns) for b in towns[i + 1:] if not (a.get("pinned") or b.get("pinned")))
 
     for _ in range(12):
         for _ in range(30):  # push apart, pull back onto the map, until both hold
@@ -819,13 +819,17 @@ def fit_inside(towns: list, bounds: tuple, gap_cm: float, keep: list | None = No
 
 def spread(towns: list, gap_cm: float, keep: list | None = None) -> list:
     """Existing cities pushed apart (each pair moves equally along the line between them) until at least gap_cm
-    of open country lies between every two edges; cities already far enough apart stay where they are."""
+    of open country lies between every two edges; cities already far enough apart stay where they are. A city the
+    person put somewhere by hand ('pinned') stays there and pushes nobody: it may lie as close to another city as
+    it was put, even over it (yield_plan: the bigger city keeps the land they share)."""
     towns = [dict(t) for t in towns]
     for _ in range(60):
         moved = False
         for i in range(len(towns)):
             for j in range(i + 1, len(towns)):
                 a, b = towns[i], towns[j]
+                if a.get("pinned") or b.get("pinned"):
+                    continue
                 dx, dy = b["x"] - a["x"], b["y"] - a["y"]
                 d = math.hypot(dx, dy) or 1.0
                 short = a["radius"] + b["radius"] + gap_cm - d
@@ -884,6 +888,39 @@ def outline(city: dict, angle_deg: float) -> float:
         phase = ((s * (k * 7919 + 13)) % 997) / 997 * 2 * math.pi
         f += amp * math.sin(k * a + phase)
     return 1.0 + f
+
+
+YIELD_CM = 3000.0  # a city's streets stop this far short of the edge of a city it gives way to
+
+
+def rank(city: dict) -> tuple:
+    """Which of two cities keeps the land they share: the bigger one; the name settles a tie."""
+    return (-float(city["radius"]), str(city.get("name") or ""))
+
+
+def yield_plan(cities: list) -> None:
+    """Cities that overlap (put close by hand, or their outlines bulging into each other): the bigger one keeps
+    the shared land. Sets city['yield_to'] on every city that gives way: the outlines it stays out of ([{name, x,
+    y, radius, seed, spin, shape}]). Its streets, lots and freeways stop at them, so no street is laid on another
+    and nothing is built twice."""
+    for c in cities:
+        over = [{k: o[k] for k in ("name", "x", "y", "radius", "seed", "spin", "shape") if o.get(k) is not None}
+                for o in cities if o is not c and rank(o) < rank(c)
+                and math.hypot(o["x"] - c["x"], o["y"] - c["y"]) < (o["radius"] + c["radius"]) * 1.3]
+        if over:
+            c["yield_to"] = over
+        else:
+            c.pop("yield_to", None)
+
+
+def yielded(city: dict, x: float, y: float, margin: float = YIELD_CM) -> bool:
+    """Is this spot inside a city this one gives way to, or within `margin` of its edge?"""
+    for o in city.get("yield_to") or ():
+        dx, dy = x - o["x"], y - o["y"]
+        d = math.hypot(dx, dy)
+        if d < o["radius"] * 1.27 + margin and d < o["radius"] * outline(o, math.degrees(math.atan2(dy, dx))) + margin:
+            return True
+    return False
 
 
 def zone_share(city: dict, x: float, y: float) -> float:
@@ -1052,6 +1089,8 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
             wx, wy, share = at(ix, iy)
             if share > 1.0:
                 continue  # outside this city's irregular edge
+            if city.get("yield_to") and yielded(city, wx, wy):
+                continue  # a bigger city's land: its streets are the streets there
             nodes[(ix, iy)] = [wx, wy]
             ring[(ix, iy)] = share
     edges = []
@@ -1743,7 +1782,7 @@ def freeway_plan(city: dict, opts: dict | None = None):
     from . import freeways
     o = city_options(city, opts)
     key = repr((city.get("name"), city["x"], city["y"], city["radius"], city.get("seed"), city.get("map"),
-                city.get("turn"), city.get("shape"),
+                city.get("turn"), city.get("shape"), city.get("yield_to"),
                 [o[k] for k in ("freeways", "block_m", "block_ratio", "downtown", "normal", "collector_every", "core_roads",
                                 "neighbourhood_roads", "canals")],
                 [(a.get("center"), a.get("heading"), a.get("type")) for a in city.get("airports") or []],
@@ -2070,6 +2109,101 @@ def gate(nodes: dict, city: dict, toward: tuple):
     return max(streets, key=lambda n: ((nodes[n][0] - city["x"]) * dx + (nodes[n][1] - city["y"]) * dy) / L)
 
 
+JOIN_MAX_CM = 60000.0  # cities whose edges are closer than this (600 m) are joined by streets
+JOIN_ROADS = 5  # ... this many where they touch, one where they are at the limit: the closer, the more
+JOIN_LONGEST_CM = 45000.0  # a joining street is never longer than the gap plus this
+
+
+def joins(cities: list, graphs: list, opts: dict | None = None, wet=None, keep: list | None = None) -> list:
+    """Streets between cities that lie close together or touch: the closer two cities are, the more streets run
+    from one to the other (JOIN_ROADS where they touch, one at JOIN_MAX_CM), spread across the side where they
+    face each other. Each joins a street corner at the edge of one city to one of the other, straight, never
+    through water or a keep zone. Returns [(i, j, node of i, node of j, [mid x, mid y])]: each city lays its own
+    half, from its corner to the middle."""
+    out = []
+    edge_nodes = []
+    for nodes, edges in graphs:
+        used = {n for e in edges for n in e[:2]}
+        edge_nodes.append([(n, nodes[n]) for n in nodes if n in used and isinstance(n, tuple) and len(n) == 2
+                           and isinstance(n[0], int)])
+    for i in range(len(cities)):
+        for j in range(i + 1, len(cities)):
+            a, b = cities[i], cities[j]
+            dx, dy = b["x"] - a["x"], b["y"] - a["y"]
+            d = math.hypot(dx, dy) or 1.0
+            if d > (a["radius"] + b["radius"]) * 1.27 + JOIN_MAX_CM:
+                continue
+            ux, uy = dx / d, dy / d
+            way = math.degrees(math.atan2(dy, dx))
+            gap = d - a["radius"] * outline(a, way) - b["radius"] * outline(b, way + 180.0)
+            if gap > JOIN_MAX_CM:
+                continue
+            n = 1 + round((JOIN_ROADS - 1) * (1.0 - max(0.0, gap) / JOIN_MAX_CM))
+            wide = 1.2 * min(a["radius"], b["radius"])  # the side where they face each other
+            slot = wide / n
+            # every corner as (how far along the line from a to b, how far to its side, node, spot)
+            side = lambda p: (-(p[0] - a["x"]) * uy + (p[1] - a["y"]) * ux)
+            along = lambda p: ((p[0] - a["x"]) * ux + (p[1] - a["y"]) * uy)
+            mine = [(along(p), side(p), n_, p) for n_, p in edge_nodes[i]]
+            theirs = [(along(p), side(p), n_, p) for n_, p in edge_nodes[j]]
+            taken: set = set()
+            for k in range(n):
+                at = wide * ((k + 0.5) / n - 0.5)
+                near_a = sorted((r for r in mine if abs(r[1] - at) <= slot / 2), key=lambda r: -r[0])[:4]
+                near_b = sorted((r for r in theirs if abs(r[1] - at) <= slot / 2), key=lambda r: r[0])[:4]
+                best = None
+                for ra in near_a:
+                    for rb in near_b:
+                        L = math.dist(ra[3][:2], rb[3][:2])
+                        if (ra[2], rb[2]) in taken or not 1500.0 <= L <= max(0.0, gap) + JOIN_LONGEST_CM or rb[0] <= ra[0]:
+                            continue
+                        if best is None or L < best[0]:
+                            best = (L, ra, rb)
+                if not best:
+                    continue
+                L, ra, rb = best
+                p, q = ra[3], rb[3]
+                steps = max(2, int(L // 2000))
+                line = [(p[0] + (q[0] - p[0]) * t / steps, p[1] + (q[1] - p[1]) * t / steps) for t in range(steps + 1)]
+                if (wet and any(wet(x, y) for x, y in line)) or any(in_keep(keep, x, y, 2000) for x, y in line):
+                    continue
+                taken.add((ra[2], rb[2]))
+                out.append((i, j, ra[2], rb[2], [round((p[0] + q[0]) / 2), round((p[1] + q[1]) / 2)]))
+    return out
+
+
+JOIN_LOT_D_CM = 3000.0  # a house lot along a joining street: 16 m of frontage, 30 m deep
+
+
+def join_lots(city: dict, cities: list, opts: dict | None = None, wet=None, keep: list | None = None) -> tuple:
+    """The open land between two cities that lie close fills in: house lots along both sides of each of this
+    city's joining streets (city['joins']: [[x0, y0, x1, y1]] from its corner to the middle), never inside a
+    city's own edge (its blocks are there), in water or in a keep zone. Returns (lots, corridors): lots as
+    city_layout makes them, and each street's corridor as a polygon the layers treat as housing."""
+    o = options(opts)
+    half = HALF.get(CITY_STREET.get(o["neighbourhood_roads"], o["neighbourhood_roads"]), 875.0)
+    lots, corridors = [], []
+    for x0, y0, x1, y1 in city.get("joins") or []:
+        L = math.hypot(x1 - x0, y1 - y0)
+        if L < LOT_W_CM * 2:
+            continue
+        ux, uy = (x1 - x0) / L, (y1 - y0) / L
+        reach = half + 50 + JOIN_LOT_D_CM + 300
+        corridors.append([[round(x0 + ux * t - uy * s * reach), round(y0 + uy * t + ux * s * reach)]
+                          for t, s in ((0, 1), (L, 1), (L, -1), (0, -1))])
+        n = int((L - 400) // LOT_W_CM)
+        for k in range(n):
+            t = 200 + (L - 400 - n * LOT_W_CM) / 2 + (k + 0.5) * LOT_W_CM
+            for s in (1, -1):
+                fx, fy = x0 + ux * t - uy * s * (half + 50), y0 + uy * t + ux * s * (half + 50)
+                cx, cy = fx - uy * s * JOIN_LOT_D_CM / 2, fy + ux * s * JOIN_LOT_D_CM / 2
+                if any(zone_share(c, cx, cy) <= 1.03 for c in cities) or (wet and wet(cx, cy)) or in_keep(keep, cx, cy, 2000):
+                    continue
+                yaw = math.degrees(math.atan2(-ux * s, uy * s))  # +X faces the street
+                lots.append([round(cx), round(cy), round(yaw, 1), round(LOT_W_CM), round(JOIN_LOT_D_CM), round(fx), round(fy), "", False])
+    return lots, corridors
+
+
 def links(cities: list) -> list:
     """Highways: the shortest tree joining every city (Prim)."""
     if len(cities) < 2:
@@ -2388,7 +2522,22 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
             if sum(1 for u, _v in every_tip if math.dist(u[:2], p[:2]) < 200) == 1 and not in_keep(keep, p[0], p[1], 6000):
                 mine.append([p[0], p[1], (p[0] - q[0]) / L, (p[1] - q[1]) / L, bool(wet and wet(p[0], p[1]))])
         tips.append(mine)
+    # cities that lie close together are joined street to street, the closer the more; each lays its own half
+    joined: set = set()
+    for c in cities:
+        c.pop("joins", None)
+    join_kind = CITY_STREET.get(o["neighbourhood_roads"], o["neighbourhood_roads"])
+    for k, (i, j, ni, nj, mid) in enumerate(joins(cities, graphs, o, wet, keep)):
+        joined.add((i, j))
+        for me, other, node in ((i, j, ni), (j, i, nj)):
+            nodes, edges = graphs[me]
+            end = ("join", other, k)
+            nodes[end] = list(mid)
+            edges.append([node, end, join_kind])
+            cities[me].setdefault("joins", []).append([round(nodes[node][0]), round(nodes[node][1]), mid[0], mid[1]])
     for a, b in links(cities):
+        if (min(a, b), max(a, b)) in joined:
+            continue  # one town to the eye: its streets join them, no highway runs between
         ends, leads = [], []
         for me, other in ((a, b), (b, a)):
             cx, cy, ox, oy = cities[me]["x"], cities[me]["y"], cities[other]["x"], cities[other]["y"]
@@ -2709,6 +2858,19 @@ def weld_ends(actors: dict, edge: dict | None = None) -> int:
         every += [(label, by[s["a"]], by[s["b"]], s["mesh"].split("/")[-1])
                   for s in a["segments"] if s["mesh"] and s["a"] in by and s["b"] in by]
     half_of = {m.split("/")[-1]: HALF[k] for k, m in ROAD_MESH.items()}
+    # the roads near each end only (every road of the world for every open end was 5 s a rebuild): by 200 m cell
+    cell, reach = 20000.0, max(WELD_REACH_CM, WELD_SNAP_CM, FREEWAY_REACH_CM)
+    by_cell: dict = {}
+    for k, (_lab, u, v, _mesh) in enumerate(every):
+        for cx in range(int(min(u["x"], v["x"]) // cell), int(max(u["x"], v["x"]) // cell) + 1):
+            for cy in range(int(min(u["y"], v["y"]) // cell), int(max(u["y"], v["y"]) // cell) + 1):
+                by_cell.setdefault((cx, cy), []).append(k)
+
+    def roads_near(p):  # in the order they were listed: the first of two equal finds still wins
+        ks = {k for cx in range(int((p["x"] - reach) // cell), int((p["x"] + reach) // cell) + 1)
+              for cy in range(int((p["y"] - reach) // cell), int((p["y"] + reach) // cell) + 1)
+              for k in by_cell.get((cx, cy), ())}
+        return [every[k] for k in sorted(ks)]
     moved = 0
     for label, a in actors.items():
         if not label.endswith(("Freeways", "Highways")):
@@ -2726,7 +2888,7 @@ def weld_ends(actors: dict, edge: dict | None = None) -> int:
             mine = own_run(touch, by, i)
             o0 = by[ss[0]["b"] if ss[0]["a"] == i else ss[0]["a"]]
             best, near, link = None, None, None  # best: in reach, nearest the end's level; near / link: closest beyond
-            for lab2, u, v, mesh in every:
+            for lab2, u, v, mesh in roads_near(p):
                 if lab2 == label and u["i"] in mine and v["i"] in mine:
                     continue
                 ux, uy = v["x"] - u["x"], v["y"] - u["y"]
@@ -3118,6 +3280,42 @@ def _demo() -> None:
                                 "segments": [_segment(2, 0, 1, "ED", "/G", lifted=True), _segment(5, 3, 4, "2L", "/G")]}},
                          lambda x, y: 0.0)[1]
     assert len(under) == 3 and all(abs(c[0] - 1500) > 525 for c in under), ("no pier in the street under the deck", under)
+    # two cities that overlap: the bigger keeps the land (none of the smaller one's streets inside it), the bigger
+    # one's own streets are exactly what they were, and a city put somewhere by hand is never pushed away
+    big_c = {"name": "Big", "x": 0, "y": 0, "radius": 90000, "seed": 3, "style": "grid"}
+    small_c = {"name": "Small", "x": 120000, "y": 0, "radius": 60000, "seed": 5, "style": "grid"}
+    alone, _e0 = city_graph(dict(small_c))
+    pair = [dict(big_c), dict(small_c)]
+    yield_plan(pair)
+    assert "yield_to" not in pair[0] and [o["name"] for o in pair[1]["yield_to"]] == ["Big"]
+    clipped, _e1 = city_graph(pair[1])
+    inside_big = lambda p: zone_share(big_c, p[0], p[1]) <= 1.0
+    assert any(inside_big(p) for p in alone.values()) and not any(inside_big(p) for p in clipped.values()), "no street twice"
+    assert city_graph(pair[0])[0] == city_graph(dict(big_c))[0], "the bigger city is as it was"
+    assert len(clipped) > 0.5 * len(alone)
+    kept_put = spread([dict(big_c), {**small_c, "pinned": True}], 30000)
+    assert [(t["x"], t["y"]) for t in kept_put] == [(0, 0), (120000, 0)], "a city put by hand stays, and pushes nobody"
+    assert spread([dict(big_c), dict(small_c)], 30000)[1]["x"] > 120000
+    # cities that lie close are joined street to street, the closer the more; far apart, not at all
+    def joined_at(gap_cm):
+        cs = [{"name": "A", "x": 0, "y": 0, "radius": 60000, "seed": 3, "style": "grid", "shape": [1.0] * SHAPE_POINTS},
+              {"name": "B", "x": 120000 + gap_cm, "y": 0, "radius": 60000, "seed": 5, "style": "grid", "shape": [1.0] * SHAPE_POINTS}]
+        gs = [city_graph(c, {"freeways": "no"}) for c in cs]
+        return cs, gs, joins(cs, gs, {"freeways": "no"})
+    cs, gs, close = joined_at(8000)
+    _cs, _gs, mid_far = joined_at(40000)
+    assert len(close) >= 3 and len(close) > len(mid_far) >= 1 and not joined_at(90000)[2], (len(close), len(mid_far))
+    for i, j, ni, nj, mid in close:
+        p, q = gs[i][0][ni], gs[j][0][nj]
+        assert p[0] < mid[0] < q[0] and math.dist(p, q) < 8000 + JOIN_LONGEST_CM and abs(mid[1]) < 60000, (p, mid, q)
+    assert len({(ni, nj) for _i, _j, ni, nj, _m in close}) == len(close), "each street joins its own two corners"
+    assert not joins(cs, gs, {"freeways": "no"}, wet=lambda x, y: 60000 < x < 68000), "never through water"
+    # ... and the land along a joining street fills in with house lots, outside both cities' own edges
+    cs2 = [{**cs[0], "joins": [[60000, 0, 80000, 0]]}, {**cs[1], "x": 220000}]
+    jl, corridors = join_lots(cs2[0], cs2)
+    assert len(jl) >= 12 and len(corridors) == 1 and all(_inside(corridors[0], r[0], r[1]) for r in jl), len(jl)
+    assert all(abs(r[1]) > 875 and abs(r[6]) < abs(r[1]) and all(zone_share(c, r[0], r[1]) > 1.0 for c in cs2) for r in jl)
+    assert {r[2] for r in jl} == {90.0, -90.0}, "each lot faces the street"
     # a cable-stayed bridge: each tower stands astride the deck (a leg outside each edge, nothing in the roadway),
     # beams join its legs, and its stays run from a leg's top down to that edge of the deck
     long_deck = {"x": {"points": [_point(k, k * 6000, 0, 3000, 0, 1650, lifted=True) for k in range(11)],

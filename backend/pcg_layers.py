@@ -15,10 +15,12 @@ and every Difference subtracts the *bounds-modified* points of the other set, ne
 
 from __future__ import annotations
 
+import copy
 import functools
-import itertools
 import math
+import random
 import re
+import zlib
 
 from .citygen import outline  # every district edge follows the city's irregular outline
 
@@ -651,11 +653,21 @@ class _Hash:
     def __init__(self, cell: float = 2000.0):
         self.cell, self.cells = cell, {}
         self.reach = 0.0  # the widest point added (capped at 20 m, the most a look ever reached out for)
+        self.box = [math.inf, math.inf, -math.inf, -math.inf]  # where its points are: a look outside is a miss at once
 
     def add(self, x, y, r, item=None):
         self.cells.setdefault((int(x // self.cell), int(y // self.cell)), []).append((x, y, r, item))
         if r > self.reach:
             self.reach = min(r, 2000.0)
+        b = self.box
+        if x < b[0]:
+            b[0] = x
+        if y < b[1]:
+            b[1] = y
+        if x > b[2]:
+            b[2] = x
+        if y > b[3]:
+            b[3] = y
 
     def _keys(self, x, y, r):
         """The cells a point within r of (x, y) can be in: as far out as r plus the widest point added (a
@@ -677,6 +689,9 @@ class _Hash:
 
     def hit(self, x, y, r) -> bool:
         """Is anything within r of (x, y)? near(), stopping at the first (millions of calls per city)."""
+        b, far = self.box, r + self.reach
+        if x + far < b[0] or x - far > b[2] or y + far < b[1] or y - far > b[3]:
+            return False  # a forest tile asks every building layer: most have nothing anywhere near it
         cell = self.cell
         k = int(math.ceil((r + self.reach) / cell))
         if (2 * k + 1) ** 2 > len(self.cells):
@@ -963,18 +978,22 @@ def _where_test(where: str, cities: list):
     if where == "everywhere" or not cities:
         return lambda x, y: True
     # a block the person rezoned (city 'rezoned': [[polygon, zone]]) is that zone whatever ring it lies in
+    # (the bigger city first: where two overlap, the land is the bigger one's, citygen.yield_plan)
     rows = [(c, c["x"], c["y"], *rings(c),
              [(poly, min(p[0] for p in poly), min(p[1] for p in poly), max(p[0] for p in poly), max(p[1] for p in poly), zone)
-              for poly, zone in c.get("rezoned") or []]) for c in cities]
+              for poly, zone in c.get("rezoned") or []])
+            for c in sorted(cities, key=lambda c: (-float(c["radius"]), str(c.get("name") or "")))]
 
     def test(x: float, y: float) -> bool:
+        for c, cx, cy, down, normal, outer, rezoned in rows:
+            # (before the rings: the houses along a street that joins two cities lie outside both cities' edges)
+            for poly, x0, y0, x1, y1, zone in rezoned:
+                if x0 <= x <= x1 and y0 <= y <= y1 and inside(poly, x, y):
+                    return where == "cities" or where == zone
         for c, cx, cy, down, normal, outer, rezoned in rows:
             dist = math.hypot(x - cx, y - cy)
             if dist >= outer * OUTLINE_MAX:
                 continue
-            for poly, x0, y0, x1, y1, zone in rezoned:
-                if x0 <= x <= x1 and y0 <= y <= y1 and inside(poly, x, y):
-                    return where == "cities" or where == zone
             if dist < outer * OUTLINE_MIN and where in ("outside", "cities"):
                 return where == "cities"  # inside the outer ring whichever way its outline bends
             # distance against the outline in this direction: the same bent edges the plan's polygons have
@@ -1130,12 +1149,143 @@ def _height(layer: dict, cities: list, x: float, y: float, rnd, neighbours: "_Ha
     return h
 
 
+TILE_CM = 50000.0  # scatter, roadside and junction pieces are placed in 500 m tiles. A tile's candidates come from a
+# random of its own, a city's lots are taken in an order of their own, and every piece's size, height and shape
+# come from its own spot: what stands in one place never depends on what was placed anywhere else, so changing one
+# city leaves the rest of the world exactly as it was
+DIRTY_CM = 10000.0  # a change is tracked on a 100 m grid (PreviewMemo)
+
+
+def _u01(*key) -> float:
+    """A fixed number 0..1 for a key (a layer and a spot): the same on every run, whatever else is placed."""
+    return zlib.crc32(repr(key).encode()) / 4294967296.0
+
+
+def _city_sig(c: dict) -> tuple:
+    """Everything of a city the placement reads, as (where and how big it is, its plan part by part): a city that
+    moved, turned or changed size is placed again whole; one whose plan changed in a block, only round what
+    changed. Each part: {a row as text: where that row is ((x, y) or a polygon or a line)}."""
+    num = lambda v: round(float(v), 2) if isinstance(v, (int, float)) and not isinstance(v, bool) else v
+    frame = zlib.crc32(repr([num(c.get(k)) for k in ("x", "y", "radius", "seed", "spin")]
+                            + [c.get(k) for k in ("shape", "districts")]).encode())
+    parts = ({repr(r): [r[:2]] for r in c.get("lots") or []},
+             {repr(b): b[4] for b in c.get("blocks") or [] if len(b) > 4},
+             {repr(z): z[0] for z in c.get("rezoned") or []},
+             {repr(s): s for s in (c.get("private") or {}).get("streets") or []})
+    return frame, parts
+
+
+class PreviewMemo:
+    """One world's last placement, unit by unit (a layer's lots in one city, its roadside, junction or scatter
+    pieces in one 500 m tile), with what it was placed from. The next run places again only the units a change can
+    reach: a city that is not what it was, and every unit within 100 m of a road sample, a city or a piece of
+    ground that changed. Every other unit is put back exactly as it stood, so a small edit costs a small part of
+    the world and changes nothing else."""
+
+    def __init__(self):
+        self.sig = self.frame = self.heights = None
+        self.units: dict = {}    # (layer, unit) -> what it placed
+        self.cities: dict = {}   # name -> (signature, x, y, radius)
+        self.roads: set = set()  # road samples to half a metre
+        self.dirty = None        # the 100 m cells a change touched; None = everything
+        self.moved: list = []    # cities that changed: (as it was, as it is), each (x, y, radius) or None
+        self.last = {"placed": 0, "kept": 0}  # units placed again / put back in the last run
+
+    def begin(self, sig, cities: list, roads: list, terrain: dict) -> None:
+        cell, reach = DIRTY_CM, 1.35  # (a layer that reaches further out from a city asks reaches() too)
+        self.moved = []
+        new_cities = {str(c.get("name") or k): (*_city_sig(c), c["x"], c["y"], c["radius"]) for k, c in enumerate(cities)}
+        new_roads = {(round(x / 50), round(y / 50), round(half)) for x, y, half, *_ in roads}
+        heights = terrain.get("heights")
+        frame = (terrain.get("min"), terrain.get("max"), terrain.get("grid"), terrain.get("sea"), len(heights or ()))
+        if sig != self.sig or frame != self.frame:
+            self.dirty, self.units = None, {}
+        else:
+            dirty: set = set()
+            why = {"road samples": len(new_roads ^ self.roads), "cities": 0, "ground cells": 0}
+            for qx, qy, _half in new_roads ^ self.roads:
+                cx, cy = int(qx * 50 // cell), int(qy * 50 // cell)
+                dirty.update((cx + i, cy + j) for i in (-1, 0, 1) for j in (-1, 0, 1))
+            for name in set(new_cities) | set(self.cities):
+                a, b = self.cities.get(name), new_cities.get(name)
+                if a and b and a[0] == b[0]:
+                    # where it was, as big, turned the same way: only the rows of its plan that are not what they
+                    # were (a block given another type, a lot the planner took) are a change, where they lie
+                    for old, new in zip(a[1], b[1]):
+                        for row in set(old) ^ set(new):
+                            why["plan rows"] = why.get("plan rows", 0) + 1
+                            pts = (old.get(row) or new.get(row))
+                            xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+                            dirty.update((i, j) for i in range(int(min(xs) // cell) - 1, int(max(xs) // cell) + 2)
+                                         for j in range(int(min(ys) // cell) - 1, int(max(ys) // cell) + 2))
+                    continue
+                why["cities"] += 1
+                self.moved.append((a and a[2:], b and b[2:]))
+                for got in (a, b):
+                    if got:
+                        _frame, _parts, x, y, radius = got
+                        r = radius * reach + 20000
+                        for i in range(int((x - r) // cell), int((x + r) // cell) + 1):
+                            for j in range(int((y - r) // cell), int((y + r) // cell) + 1):
+                                if ((i + 0.5) * cell - x) ** 2 + ((j + 0.5) * cell - y) ** 2 <= (r + cell) ** 2:
+                                    dirty.add((i, j))
+            if heights and self.heights is not None and heights != self.heights:
+                (x0, y0), (x1, y1) = terrain["min"], terrain["max"]
+                rows, cols = len(heights), len(heights[0])
+                sx, sy = (x1 - x0) / cols, (y1 - y0) / rows
+                for j, (new, old) in enumerate(zip(heights, self.heights)):
+                    if new == old:
+                        continue
+                    for i, (p, q) in enumerate(zip(new, old)):
+                        if p != q:
+                            why["ground cells"] += 1
+                            cx, cy = int((x0 + (i + 0.5) * sx) // cell), int((y0 + (j + 0.5) * sy) // cell)
+                            dirty.update((cx + a, cy + b) for a in (-1, 0, 1) for b in (-1, 0, 1))
+            self.dirty = dirty
+            self.why = {**why, "cells": len(dirty)}
+        self.sig, self.frame, self.cities, self.roads, self.heights = sig, frame, new_cities, new_roads, heights
+        self.last = {"placed": 0, "kept": 0, **(getattr(self, "why", None) or {})}
+
+    def reaches(self, box: tuple, reach: float) -> bool:
+        """For a layer placed within `reach` radii of every city: is this box somewhere a changed city's reach
+        was and is no longer, or the other way round? (Deep inside it both times, or outside both, nothing moved.)"""
+        if self.dirty is None:
+            return True
+        x0, y0, x1, y1 = box
+
+        def side(city):  # 1 inside its reach, -1 clear of it, 0 across its edge
+            if not city:
+                return -1
+            cx, cy, radius = city
+            r = radius * reach
+            if all((x - cx) ** 2 + (y - cy) ** 2 <= r * r for x in (x0, x1) for y in (y0, y1)):
+                return 1
+            return -1 if max(x0 - cx, 0.0, cx - x1) ** 2 + max(y0 - cy, 0.0, cy - y1) ** 2 > r * r else 0
+        return any(side(a) != side(b) or side(a) == 0 for a, b in self.moved)
+
+    def touched(self, x0: float, y0: float, x1: float, y1: float) -> bool:
+        """Did anything change inside this box or within 100 m of it?"""
+        if self.dirty is None:
+            return True
+        if not self.dirty:
+            return False
+        c = DIRTY_CM
+        i0, i1, j0, j1 = int(x0 // c) - 1, int(x1 // c) + 1, int(y0 // c) - 1, int(y1 // c) + 1
+        if (i1 - i0 + 1) * (j1 - j0 + 1) > len(self.dirty):
+            return any(i0 <= i <= i1 and j0 <= j <= j1 for i, j in self.dirty)
+        return any((i, j) in self.dirty for i in range(i0, i1 + 1) for j in range(j0, j1 + 1))
+
+
 def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, limit: int = 2500,
-            juncs: list | None = None, keep: list | None = None, foliage_limit: int = 0) -> dict:
+            juncs: list | None = None, keep: list | None = None, foliage_limit: int = 0,
+            memo: PreviewMemo | None = None) -> dict:
     """Run every enabled layer offline with the same rules as the graph (mask, off roads, keep clear of
     earlier layers, self pruning, sink) and return {layer name: {points: [[x, y, z, yaw, scale]], ...}}.
-    Scatter is thinned to ``limit`` points per layer for the view; ``count`` says the full estimate."""
-    import random
+    Scatter is thinned to ``limit`` points per layer for the view; ``count`` says the full estimate.
+    Every layer is placed unit by unit (a city's lots; a 500 m tile's scatter, roadside or junction pieces) and
+    nothing in a unit depends on a random shared with another, so a change in one place moves nothing elsewhere.
+    ``memo`` (a PreviewMemo kept by the caller for this world) puts back every unit no change can reach and
+    places only the others again."""
     layers = sorted((clean(l) for l in layers if l.get("enabled", True)), key=lambda l: (l["order"], l["name"]))
     lo, hi = terrain.get("min"), terrain.get("max")
     # with a terrain, nothing is placed past its edge (its sampler answers the edge's height out there, so the
@@ -1164,12 +1314,23 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
     taken: set = set()  # lots already built on (by front point)
     lot_layers: set = set()  # layers that filled lots
     out = {}
+    T = TILE_CM
+    tile_of = lambda x, y: (int(x // T), int(y // T))
+    tile_box = lambda t: (t[0] * T, t[1] * T, t[0] * T + T, t[1] * T + T)
+    if memo is not None:
+        memo.begin(repr([layers, limit, foliage_limit, keep, lo, hi]), cities, roads, terrain)
+    units_now: dict = {}
     for layer in layers:
-        rnd = random.Random(f"{layer['seed']}:{layer['name']}")  # different densities never share spots in PCG either
-        cands = []
+        seed, name = layer["seed"], layer["name"]
+        building = layer["kind"] == "buildings"
+        units = []  # (unit id, its box (x0, y0, x1, y1), its candidates or a function that makes them)
+        full = 0.0
+        uses_lots = False
         if layer["kind"] == "at_junctions":
-            cands = junction_corners(juncs or [], layer["setback_m"], layer["corners"])
-            thin = 1.0
+            by_tile: dict = {}
+            for c in junction_corners(juncs or [], layer["setback_m"], layer["corners"]):
+                by_tile.setdefault(tile_of(c[0], c[1]), []).append(c)
+            units = [(("t", *t), tile_box(t), cs) for t, cs in sorted(by_tile.items())]
         elif layer["kind"] in SCATTERED:
             cap = (foliage_limit or limit) if layer["kind"] == "foliage" else limit
             discs = [(c["x"], c["y"], c["radius"] * layer["reach"]) for c in cities] if layer["reach"] and cities else []
@@ -1177,33 +1338,51 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
             # density counts inside the patches only: a forest is dense, the meadows between are open
             full = area_m2 * layer["density"] / 100.0 * layer["cover"]
             n = int(min(full / layer["cover"], cap * 4))  # candidates before patches, masks and pruning
-            cum = list(itertools.accumulate(r * r for _, _, r in discs))  # choices() sums them per draw otherwise
-            for _ in range(n):
-                if discs:
-                    cx, cy, r = rnd.choices(discs, cum_weights=cum)[0]
-                    a, d = rnd.uniform(0, 2 * math.pi), r * math.sqrt(rnd.random())
-                    x, y = cx + d * math.cos(a), cy + d * math.sin(a)
-                else:
-                    x, y = rnd.uniform(lo[0], hi[0]), rnd.uniform(lo[1], hi[1])
-                if layer["cover"] < 1.0 and patch(x, y) > layer["cover"]:
-                    continue  # a meadow, not a forest
-                cands.append((x, y, rnd.uniform(0, 360)))
-            thin = full / max(1, len(cands)) if cands else 1.0
-        elif layer["kind"] == "buildings" and (layer["width_m"] < BIG_SITE_M or planned(layer)) and any(c.get("lots") for c in cities):
+            per_m2 = n / area_m2 if area_m2 > 0 else 0.0
+
+            def scatter(ix, iy, layer=layer, discs=discs, per_m2=per_m2, seed=seed, name=name):
+                x0, y0, x1, y1 = max(lo[0], ix * T), max(lo[1], iy * T), min(hi[0], ix * T + T), min(hi[1], iy * T + T)
+                rnd = random.Random(f"{seed}:{name}:{ix}:{iy}")  # this tile's own: no other tile draws from it
+                want = per_m2 * max(0.0, x1 - x0) * max(0.0, y1 - y0) / 1e4
+                cs = []
+                for _ in range(int(want) + (rnd.random() < want - int(want))):
+                    x, y, yaw = rnd.uniform(x0, x1), rnd.uniform(y0, y1), rnd.uniform(0, 360)
+                    if discs and not any((x - cx) ** 2 + (y - cy) ** 2 <= r * r for cx, cy, r in discs):
+                        continue
+                    if layer["cover"] < 1.0 and patch(x, y) > layer["cover"]:
+                        continue  # a meadow, not a forest
+                    cs.append((x, y, yaw))
+                return cs
+            spans = [(cx - r, cy - r, cx + r, cy + r) for cx, cy, r in discs] or [(lo[0], lo[1], hi[0], hi[1])]
+            tiles = sorted({(ix, iy) for x0, y0, x1, y1 in spans
+                            for ix in range(int(max(lo[0], x0) // T), int(min(hi[0], x1) // T) + 1)
+                            for iy in range(int(max(lo[1], y0) // T), int(min(hi[1], y1) // T) + 1)}) if n else []
+            units = [(("t", *t), tile_box(t), functools.partial(scatter, *t)) for t in tiles]
+        elif building and (layer["width_m"] < BIG_SITE_M or planned(layer)) and any(c.get("lots") for c in cities):
             # everyday buildings fill the lots cut from the city's blocks (parcels): each faces its street square
             # on, its front yard is the layer's setback, and it is sized to its lot, never over a road
+            uses_lots = True
             for c in cities:
+                cs = []
                 for lot_row in c.get("lots") or []:
                     lx, ly, lyaw, lw, ld, frx, fry = lot_row[:7]
                     role, foot = (lot_row[7], lot_row[8]) if len(lot_row) > 8 else ("", False)
                     fac = lot_row[9] if len(lot_row) > 9 and isinstance(lot_row[9], str) else ""  # planner's facility
-                    cands.append((lx, ly, lyaw, "lot", lw, ld, frx, fry, role, foot, fac))
-            rnd.shuffle(cands)  # which layer gets which free lot is mixed, not swept from one corner
-            thin = 1.0
+                    cs.append((lx, ly, lyaw, "lot", lw, ld, frx, fry, role, foot, fac))
+                # which layer gets which free lot is mixed, not swept from one corner; each lot's place in the order
+                # is its own, so a city that gains or loses a lot keeps every other one as it was
+                cs.sort(key=lambda k: _u01(seed, name, k[6], k[7]))
+                r = c["radius"] * 1.35
+                if cs:  # (its box: the city, and any lot of its own beyond it, along a street that joins it to another)
+                    units.append((("c", str(c.get("name"))), (min(c["x"] - r, min(k[0] for k in cs) - 5000),
+                                                              min(c["y"] - r, min(k[1] for k in cs) - 5000),
+                                                              max(c["x"] + r, max(k[0] for k in cs) + 5000),
+                                                              max(c["y"] + r, max(k[1] for k in cs) + 5000)), cs))
         else:
             # every road sample on both sides is a candidate; the placing loop below takes the first good one
             # once `spacing` has passed since the last placed one on that side (a lot blocked by a cross
             # street slides along to the next good spot instead of being lost)
+            by_tile = {}
             progress, last = 0.0, None
             for x, y, half, dx, dy in roads:
                 if last is not None and math.hypot(x - last[0], y - last[1]) <= 2000:
@@ -1211,17 +1390,17 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                 last = (x, y)
                 # from this road's kerb, whatever its width; a building's centre is half its depth further back;
                 # street furniture stands its own size past the setback line, never on the kerb
-                back = half + layer["setback_m"] * 100 + (layer["depth_m"] * 50 if layer["kind"] == "buildings"
+                back = half + layer["setback_m"] * 100 + (layer["depth_m"] * 50 if building
                                                           else BASE_RADIUS[layer["kind"]] * layer["footprint"] * layer["scale_max"])
+                cs = by_tile.setdefault(tile_of(x, y), [])
                 for side in (1, -1):  # normal to the road, both sides, facing it
                     nx, ny = -dy * side, dx * side
                     yaw = math.degrees(math.atan2(-ny, -nx))
-                    cands.append((x + nx * back, y + ny * back, yaw, progress, side))
-            thin = 1.0
+                    cs.append((x + nx * back, y + ny * back, yaw, progress, side))
+            units = [(("t", *t), tile_box(t), cs) for t, cs in sorted(by_tile.items())]
         spacing = layer["spacing_m"] * 100
-        last_at = {1: -1e18, -1: -1e18}
         r_base = BASE_RADIUS[layer["kind"]] * layer["footprint"]
-        if layer["kind"] == "buildings":  # its lot, not a fixed size: a skyscraper needs far more room than a shop
+        if building:  # its lot, not a fixed size: a skyscraper needs far more room than a shop
             r_base = 50.0 * max(layer["width_m"], layer["depth_m"]) * layer["footprint"]
         # cells about twice this layer's widest thing (5-20 m): a look at a forest reads a few trees, not dozens
         own = _Hash(max(500.0, min(2000.0, 2 * r_base * layer["scale_max"])))
@@ -1229,116 +1408,162 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
         pts = []
         avoid = avoid_list(layer, [l for l in layers if l["name"] in kept])
         where_ok = _where_test(layer["where"], cities)
-        for cand in cands:
-            x, y, yaw = cand[:3]
-            along = len(cand) == 5
-            lot = len(cand) == 11
-            lot_role = cand[8] if lot else ""
-            if lot:
-                if (cand[6], cand[7]) in taken:
-                    continue  # an earlier layer built on this lot
-                if lot_role and lot_role != layer["role"]:
-                    continue  # a neighbourhood decided this lot: houses in a subdivision, apartments in a complex
-                if not lot_role and layer["role"] in PLANNED_ROLES and planned(layer):
-                    continue  # the planner placed these: a school is where children live, not on any free lot
-                lw, ld = cand[4] / 100, cand[5] / 100
-                if cand[9]:  # a building footprint the complex planned: exactly that size and spot
-                    bw, bd = round(lw * 0.96, 1), round(ld * 0.96, 1)
-                else:
-                    bw = round(min(layer["width_m"] * (1 + layer["size_jitter"] * 0.5), lw * 0.85), 1)
-                    bd = round(min(layer["depth_m"] * (1 + layer["size_jitter"] * 0.3), ld - layer["setback_m"] - 2), 1)
-                    if bw < layer["width_m"] * 0.6 or bd < layer["depth_m"] * 0.5:
-                        continue  # the lot is too small for this kind of building
-                    f = math.radians(yaw)  # centre: the front lot line, back by the setback and half the building
-                    back = (layer["setback_m"] + bd / 2) * 100
-                    x, y = cand[6] - math.cos(f) * back, cand[7] - math.sin(f) * back
-            if along and cand[3] - last_at[cand[4]] < spacing:
-                continue  # too soon after the last one on this side of the street
-            if not lot_role and not where_ok(x, y):
-                continue  # (a neighbourhood's own lots are already in the right place)
-            if layer["area"] and not inside(layer["area"], x, y):
-                continue  # outside the area this layer was drawn for
-            if parks and layer["kind"] == "buildings" and not lot and \
-                    any(x0 <= x <= x1 and y0 <= y <= y1 and inside(poly, x, y) for poly, x0, y0, x1, y1 in parks):
-                continue  # a park block: nothing is built on it
-            if keep and any(max(k["x0"] - x, 0, x - k["x1"]) ** 2 + max(k["y0"] - y, 0, y - k["y1"]) ** 2 < 4e6 for k in keep):
-                continue  # 20 m around a keep zone (a cinema, a spawn) stays clear
-            if layer["kind"] == "buildings" and layer["height_min_m"] >= 40 and rnd.random() > 0.08 + 0.92 * core_peak(cities, x, y):
-                continue  # towers cluster at the core and thin out toward the edge: no wall of equal towers
-            z = sample_z(x, y)
-            if z is None or (sea is not None and z < sea + 50) or not on_map(x, y):
-                continue  # nothing grows under water or off the map
-            s = rnd.uniform(layer["scale_min"], layer["scale_max"])
-            r = r_base * s
-            # scatter keeps the clearance; roadside layers sit at their setback, so only their own size counts
-            clear = layer["road_clear_m"] * 100 if layer["kind"] in SCATTERED else 0.0
-            if lot and _lot_hits_road(road_hash, x, y, yaw, bw * 50, bd * 50):
-                continue  # a lot is cut off its own street, but a subdivision's lot can still reach over another one
-            if layer["avoid_roads"] and not lot:
-                if layer["kind"] == "buildings":  # the lot as the rectangle it is, facing its street
-                    if _lot_hits_road(road_hash, x, y, yaw, layer["width_m"] * 50, layer["depth_m"] * 50):
-                        continue
-                elif road_hash.hit(x, y, r + clear):
-                    continue
-            # lots never overlap each other, so a lot only keeps clear of layers that did NOT use lots (big sites)
-            if any(kept[other].hit(x, y, r) for other in avoid if not (lot and other in lot_layers)):
+        candidates = 0
+        todo = []
+        for uid, box, cands in units:
+            had = memo.units.get((name, uid)) if memo is not None else None
+            if had is None or memo.touched(*box) or (layer["reach"] and layer["kind"] in SCATTERED and memo.reaches(box, layer["reach"])):
+                todo.append((uid, cands))
                 continue
-            # one of a kind per `spacing` in any direction (two hospitals never sit across the street from
-            # each other); dense layers just must not overlap
-            if lot:  # only one-of-a-kind spacing (100 m+) applies on lots; neighbours sit lot to lot.
-                # A site the planner chose (a library next to city hall) is never pruned by the layer's spacing:
-                # that spacing is for scattering, and it silently dropped planned civic buildings and schools
-                gap = 0.0 if cand[9] else spacing * 0.5 if spacing >= 10000 else 0.0
-            else:
-                gap = max(r, spacing * 0.5) if along and spacing > 4 * r else r
-            if layer["self_prune"] and gap and own.hit(x, y, gap):
-                continue
-            if layer["kind"] == "buildings":
-                # Never on another building, never on a street: its own rectangle against every one placed so far
-                # (lots overlap inside a street's bend, and big sites along a road knew nothing of private streets)
-                rw, rd = (bw, bd) if lot else (layer["width_m"] * (1 + layer["size_jitter"] * 0.5),
-                                               layer["depth_m"] * (1 + layer["size_jitter"] * 0.3))
-                rect = (x, y, math.cos(math.radians(yaw)), math.sin(math.radians(yaw)), rw * 50, rd * 50)
-                if _lot_hits_road(priv_hash, x, y, yaw, rw * 50, rd * 50) or built.hit(rect):
-                    if lot:
-                        infill.append([round(x), round(y), round(z), round((x * 7 + y * 13) % 360), round(0.9 + (len(infill) * 37 % 40) / 100, 2)])
-                    continue
+            # as it stood: no change reaches it. Put back first, so the units placed again fit round these
+            units_now[(name, uid)] = had
+            memo.last["kept"] += 1
+            candidates += had["n"]
+            for x, y, r in had["own"]:
+                own.add(x, y, r)
+            for rect in had["rects"]:
                 built.add(rect)
-            own.add(x, y, r)
-            if along:
-                last_at[cand[4]] = cand[3]
-            yaw = yaw if layer["random_yaw"] or layer["kind"] not in SCATTERED else 0.0
-            row = [round(x), round(y), round(z - layer["sink_cm"]), round(yaw), round(s, 2)]
-            if layer["kind"] == "buildings":  # + its height in metres, so the preview draws a real skyline
-                row.append(round(_height(layer, cities, x, y, rnd, own_heights), 1))
-                # its form and its own size: no two neighbours the same shape and footprint
-                names, weights = list(layer["forms"]), list(layer["forms"].values())
-                j = layer["size_jitter"]
-                row += [FORM_NAMES.index(rnd.choices(names, weights)[0]),
-                        bw if lot else round(layer["width_m"] * rnd.uniform(1 - j, 1 + j * 0.5), 1),
-                        bd if lot else round(layer["depth_m"] * rnd.uniform(1 - j, 1 + j * 0.3), 1)]
+            taken.update(had["taken"])
+            for x, y, h in had["heights"]:
+                own_heights.add(x, y, 0.0, h)
+            infill.extend(list(r) for r in had["infill"])
+            pts.extend(copy.deepcopy(had["rows"]) if building else [list(r) for r in had["rows"]])
+        for uid, cands in todo:
+            if callable(cands):
+                cands = cands()
+            candidates += len(cands)
+            rec = {"n": len(cands), "rows": [], "own": [], "rects": [], "taken": [], "heights": [], "infill": []}
+            last_at = {1: -1e18, -1: -1e18}
+            for cand in cands:
+                x, y, yaw = cand[:3]
+                along = len(cand) == 5
+                lot = len(cand) == 11
+                lot_role = cand[8] if lot else ""
                 if lot:
-                    taken.add((cand[6], cand[7]))
-                own_heights.add(x, y, 0.0, row[5])
-                pad, found, paths = _lot_ground(layer, sample_z, x, y, yaw, row[7], row[8])
-                row[2] = round(pad - layer["sink_cm"])
-                row += [found, paths, []]  # ([]: where lot-edge wall slabs were; the fields after it keep their place)
-                if lot and cand[10]:
-                    row.append(cand[10])  # the facility (city_hall, jail, power_plant...): how the bake builds it
-            pts.append(row)
-        kept[layer["name"]] = own
-        if any(len(c) == 11 for c in cands[:1]):
-            lot_layers.add(layer["name"])
+                    if (cand[6], cand[7]) in taken:
+                        continue  # an earlier layer built on this lot
+                    if lot_role and lot_role != layer["role"]:
+                        continue  # a neighbourhood decided this lot: houses in a subdivision, apartments in a complex
+                    if not lot_role and layer["role"] in PLANNED_ROLES and planned(layer):
+                        continue  # the planner placed these: a school is where children live, not on any free lot
+                    lw, ld = cand[4] / 100, cand[5] / 100
+                    if cand[9]:  # a building footprint the complex planned: exactly that size and spot
+                        bw, bd = round(lw * 0.96, 1), round(ld * 0.96, 1)
+                    else:
+                        bw = round(min(layer["width_m"] * (1 + layer["size_jitter"] * 0.5), lw * 0.85), 1)
+                        bd = round(min(layer["depth_m"] * (1 + layer["size_jitter"] * 0.3), ld - layer["setback_m"] - 2), 1)
+                        if bw < layer["width_m"] * 0.6 or bd < layer["depth_m"] * 0.5:
+                            continue  # the lot is too small for this kind of building
+                        f = math.radians(yaw)  # centre: the front lot line, back by the setback and half the building
+                        back = (layer["setback_m"] + bd / 2) * 100
+                        x, y = cand[6] - math.cos(f) * back, cand[7] - math.sin(f) * back
+                if along and cand[3] - last_at[cand[4]] < spacing:
+                    continue  # too soon after the last one on this side of the street
+                if not lot_role and not where_ok(x, y):
+                    continue  # (a neighbourhood's own lots are already in the right place)
+                if layer["area"] and not inside(layer["area"], x, y):
+                    continue  # outside the area this layer was drawn for
+                if parks and building and not lot and \
+                        any(x0 <= x <= x1 and y0 <= y <= y1 and inside(poly, x, y) for poly, x0, y0, x1, y1 in parks):
+                    continue  # a park block: nothing is built on it
+                if keep and any(max(k["x0"] - x, 0, x - k["x1"]) ** 2 + max(k["y0"] - y, 0, y - k["y1"]) ** 2 < 4e6 for k in keep):
+                    continue  # 20 m around a keep zone (a cinema, a spawn) stays clear
+                spot = (seed, name, round(x), round(y))  # this piece's own: its size, height and shape come from it
+                if building and layer["height_min_m"] >= 40 and _u01("core", *spot) > 0.08 + 0.92 * core_peak(cities, x, y):
+                    continue  # towers cluster at the core and thin out toward the edge: no wall of equal towers
+                z = sample_z(x, y)
+                if z is None or (sea is not None and z < sea + 50) or not on_map(x, y):
+                    continue  # nothing grows under water or off the map
+                s = layer["scale_min"] + (layer["scale_max"] - layer["scale_min"]) * _u01("scale", *spot)
+                r = r_base * s
+                # scatter keeps the clearance; roadside layers sit at their setback, so only their own size counts
+                clear = layer["road_clear_m"] * 100 if layer["kind"] in SCATTERED else 0.0
+                if lot and _lot_hits_road(road_hash, x, y, yaw, bw * 50, bd * 50):
+                    continue  # a lot is cut off its own street, but a subdivision's lot can still reach over another one
+                if layer["avoid_roads"] and not lot:
+                    if building:  # the lot as the rectangle it is, facing its street
+                        if _lot_hits_road(road_hash, x, y, yaw, layer["width_m"] * 50, layer["depth_m"] * 50):
+                            continue
+                    elif road_hash.hit(x, y, r + clear):
+                        continue
+                # lots never overlap each other, so a lot only keeps clear of layers that did NOT use lots (big sites)
+                if any(kept[other].hit(x, y, r) for other in avoid if not (lot and other in lot_layers)):
+                    continue
+                # one of a kind per `spacing` in any direction (two hospitals never sit across the street from
+                # each other); dense layers just must not overlap
+                if lot:  # only one-of-a-kind spacing (100 m+) applies on lots; neighbours sit lot to lot.
+                    # A site the planner chose (a library next to city hall) is never pruned by the layer's spacing:
+                    # that spacing is for scattering, and it silently dropped planned civic buildings and schools
+                    gap = 0.0 if cand[9] else spacing * 0.5 if spacing >= 10000 else 0.0
+                else:
+                    gap = max(r, spacing * 0.5) if along and spacing > 4 * r else r
+                if layer["self_prune"] and gap and own.hit(x, y, gap):
+                    continue
+                if building:
+                    # Never on another building, never on a street: its own rectangle against every one placed so far
+                    # (lots overlap inside a street's bend, and big sites along a road knew nothing of private streets)
+                    rw, rd = (bw, bd) if lot else (layer["width_m"] * (1 + layer["size_jitter"] * 0.5),
+                                                   layer["depth_m"] * (1 + layer["size_jitter"] * 0.3))
+                    rect = (x, y, math.cos(math.radians(yaw)), math.sin(math.radians(yaw)), rw * 50, rd * 50)
+                    if _lot_hits_road(priv_hash, x, y, yaw, rw * 50, rd * 50) or built.hit(rect):
+                        if lot:
+                            tree = [round(x), round(y), round(z), round((x * 7 + y * 13) % 360),
+                                    round(0.9 + int(_u01("infill", round(x), round(y)) * 40) / 100, 2)]
+                            infill.append(tree)
+                            rec["infill"].append(list(tree))
+                        continue
+                    built.add(rect)
+                    rec["rects"].append(rect)
+                own.add(x, y, r)
+                rec["own"].append((x, y, r))
+                if along:
+                    last_at[cand[4]] = cand[3]
+                yaw = yaw if layer["random_yaw"] or layer["kind"] not in SCATTERED else 0.0
+                row = [round(x), round(y), round(z - layer["sink_cm"]), round(yaw), round(s, 2)]
+                if building:  # + its height in metres, so the preview draws a real skyline
+                    rnd = random.Random(zlib.crc32(repr(spot).encode()))  # this building's own
+                    row.append(round(_height(layer, cities, x, y, rnd, own_heights), 1))
+                    # its form and its own size: no two neighbours the same shape and footprint
+                    names, weights = list(layer["forms"]), list(layer["forms"].values())
+                    j = layer["size_jitter"]
+                    row += [FORM_NAMES.index(rnd.choices(names, weights)[0]),
+                            bw if lot else round(layer["width_m"] * rnd.uniform(1 - j, 1 + j * 0.5), 1),
+                            bd if lot else round(layer["depth_m"] * rnd.uniform(1 - j, 1 + j * 0.3), 1)]
+                    if lot:
+                        taken.add((cand[6], cand[7]))
+                        rec["taken"].append((cand[6], cand[7]))
+                    own_heights.add(x, y, 0.0, row[5])
+                    rec["heights"].append((x, y, row[5]))
+                    pad, found, paths = _lot_ground(layer, sample_z, x, y, yaw, row[7], row[8])
+                    row[2] = round(pad - layer["sink_cm"])
+                    row += [found, paths, []]  # ([]: where lot-edge wall slabs were; the fields after it keep their place)
+                    if lot and cand[10]:
+                        row.append(cand[10])  # the facility (city_hall, jail, power_plant...): how the bake builds it
+                pts.append(row)
+                if memo is not None:
+                    rec["rows"].append(copy.deepcopy(row) if building else list(row))
+            if memo is not None:
+                units_now[(name, uid)] = rec
+                memo.last["placed"] += 1
+        kept[name] = own
+        if uses_lots:
+            lot_layers.add(name)
+        thin = full / max(1, candidates) if layer["kind"] in SCATTERED and candidates else 1.0
         count = int(len(pts) * thin) if layer["kind"] in SCATTERED else len(pts)
         shown_cap = (foliage_limit or limit) if layer["kind"] == "foliage" else limit
         if len(pts) > shown_cap:
-            pts = rnd.sample(pts, shown_cap)
-        out[layer["name"]] = {"kind": layer["kind"], "role": layer["role"], "count": count, "shown": len(pts), "points": pts,
-                              "radius_cm": round(r_base), "meshes": layer["meshes"], "build": layer["build"],
-                              **({"size_m": [layer["width_m"], layer["depth_m"]], "setback_m": layer["setback_m"],
-                                  "forms": FORM_NAMES, "driveway": layer["driveway"], "walkway": layer["walkway"],
-                                  "row": "x, y, pad z, yaw, scale, height_m, form, width_m, depth_m, foundation_m, "
-                                         "paths [[width_m, [x, y, z, ...]]], [] (unused), facility (planned sites)"} if layer["kind"] == "buildings" else {})}
+            # shown thinned, each piece by its own spot (a share in steps of 2 %, so it rarely moves): the same
+            # ones stay on screen from run to run
+            share = math.ceil(shown_cap / len(pts) * 50) / 50
+            pts = [p for p in pts if _u01("shown", seed, name, p[0], p[1]) < share]
+        out[name] = {"kind": layer["kind"], "role": layer["role"], "count": count, "shown": len(pts), "points": pts,
+                     "radius_cm": round(r_base), "meshes": layer["meshes"], "build": layer["build"],
+                     **({"size_m": [layer["width_m"], layer["depth_m"]], "setback_m": layer["setback_m"],
+                         "forms": FORM_NAMES, "driveway": layer["driveway"], "walkway": layer["walkway"],
+                         "row": "x, y, pad z, yaw, scale, height_m, form, width_m, depth_m, foundation_m, "
+                                "paths [[width_m, [x, y, z, ...]]], [] (unused), facility (planned sites)"} if building else {})}
+    if memo is not None:
+        memo.units = units_now
     if infill:  # a tree on every lot nothing could be built on
         out["Infill trees"] = {"kind": "scatter", "role": "tree", "count": len(infill), "shown": len(infill), "points": infill,
                                "radius_cm": 250, "meshes": [], "build": "", "row": "x, y, z, yaw, scale"}

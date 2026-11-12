@@ -579,6 +579,10 @@ def plan(lots: list, nodes: dict, edges: list, ring_of, ground=None, anchors: li
             if P < spec["min_pop"]:
                 continue
             for ax, ay in anchors or []:
+                # one per interchange: a site kept from the last plan serves it (every re-plan added another one
+                # beside each interchange, and the city lost twenty lots a rebuild with nothing changed)
+                if any(math.hypot(net.pos[o][0] - ax, net.pos[o][1] - ay) < 40000 for o in at_node.get(key, [])):
+                    continue
                 order = by_score(lambda x: math.hypot(net.pos[x][0] - ax, net.pos[x][1] - ay))
                 if order and math.hypot(net.pos[order[0]][0] - ax, net.pos[order[0]][1] - ay) < 40000:
                     place(key, spec, order[0], "beside a freeway interchange")

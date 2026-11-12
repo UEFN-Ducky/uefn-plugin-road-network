@@ -75,6 +75,9 @@ UEFN. A blown-out or empty screenshot is a failure, not a pass.
   to long blocks), `green_lots`.
 - A look worth keeping: `road_network_preset_save` (layers + options under a name), `road_network_pcg_preset` to
   use it on any world. `references/systems.md` has every field.
+- An edit to one city rebuilds that city only: every other building and tree stays where it was. A city moved
+  by hand stays where it was put, even against or over another city: the bigger one keeps the shared land, and
+  cities closer than 600 m are joined by streets with houses along them.
 
 ## Examples
 - The `full_city` preset's layers are worked examples of every building and street layer. Read one before

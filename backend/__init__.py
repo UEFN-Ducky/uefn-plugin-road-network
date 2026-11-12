@@ -949,7 +949,7 @@ def register(api) -> None:
                       "seed": int(c.get("seed", seed + k))} for k, c in enumerate(given)]
         elif not text and old:  # regenerate the cities already there (their names, styles and buildings stay)
             towns = [{k: v for k, v in c.items() if k in ("name", "x", "y", "radius", "style", "seed", "features",
-                                                          "turn", "spin", "shape", "zones")}
+                                                          "turn", "spin", "shape", "zones", "pinned")}
                      for c in old.values()]
             # City size changed since the last run: every city grows / shrinks by the same factor; then they are
             # pushed apart until the distance between cities holds
@@ -966,6 +966,7 @@ def register(api) -> None:
         towns, fit_notes = cg.fit_inside(towns, bounds, opts["city_gap_m"] * 100, keep)
         for t in towns:  # the map's edges: freeways come back to grade and end before them
             t["map"] = [bounds[0][0], bounds[0][1], bounds[1][0], bounds[1][1]]
+        cg.yield_plan(towns)  # where two cities overlap the bigger keeps the land: no street or house twice
         steps = 4 + len(towns)
 
         def progress(step: int, text: str) -> None:  # the panel's loading card follows these
@@ -1022,6 +1023,10 @@ def register(api) -> None:
             api.search.upsert(f"net.{nid}.city.{cslug}", t["name"], f"City {t['name']} in world {name}: {t['style']} roads")
             layout = cg.city_layout(t, opts, wet, lambda x, y: st.sample_grid(ter, x, y),
                                     ((prev.get("plan") or {}).get("facilities")), water)
+            # the open land along a street that joins this city to one close by fills in with house lots
+            extra, corridors = cg.join_lots(t, towns, opts, wet, keep)
+            layout["lots"] += extra
+            layout["rezoned"] += [[poly, "housing"] for poly in corridors]
             layout["airport"] = []
             for a, got in zip(airports, airport_builds.values()):  # the city's airport: its buildings and pieces
                 if a["city"] == t["name"]:
@@ -1172,6 +1177,7 @@ def register(api) -> None:
             doc["style"] = style
         if x is not None and y is not None and str(x) != "" and str(y) != "":
             doc["x"], doc["y"] = round(float(x)), round(float(y))  # moved: generate again rebuilds it there
+            doc["pinned"] = True  # put there by hand: it stays, however close to another city (never pushed apart)
         if radius_m:
             doc["radius"] = max(150.0, float(radius_m)) * 100
             doc["districts"] = cg.districts(doc)
@@ -1604,6 +1610,8 @@ def register(api) -> None:
         return {**after, "settled": len(moves), "before": {k: before[k] for k in ("buried", "floating", "overlapping")},
                 "pads": pads, "ground": ground}
 
+    _PREVIEW_MEMO: dict = {}  # per world: its last placement, unit by unit
+
     def pcg_preview(net_id: str = "", layer_id: str = "", summary: bool = False) -> dict:
         """Every enabled layer placed offline with the graph's rules; one layer per call when layer_id is
         given (keeps each reply small). Points: [x, y, z, yaw, scale(, height m for buildings)]."""
@@ -1624,11 +1632,18 @@ def register(api) -> None:
         # the ground the buildings stand on: this world's own heightmap (lots cut in) once it has one; a world laid
         # over another's landscape keeps that landscape as scanned until its heightmap is made
         cut = not gen.get("ground_from") or bool(gen.get("heightmap"))
-        key = hashlib.sha1(pickle.dumps([nid, docs, cities, terrain, actors, keep, cut], protocol=5)).hexdigest()
+        # (without each city's plan report: the placement reads its lots, never the report, and the report's wording
+        # alone changes on the rebuild after an edit)
+        key = hashlib.sha1(pickle.dumps([nid, docs, [{k: v for k, v in c.items() if k != "plan"} for c in cities],
+                                         terrain, actors, keep, cut], protocol=5)).hexdigest()
         if _PREVIEW_CACHE.get("key") != key:  # ponytail: one entry, the world being looked at
             ground = st.grid_sampler(terrain) if terrain.get("heights") else (lambda x, y: 0.0)
+            # the whole city, unit by unit: what no change can reach is put back as it stood (pl.PreviewMemo), so an
+            # edit to one city places that city again and leaves every other building and tree where it was
+            memo = _PREVIEW_MEMO.setdefault(nid, pl.PreviewMemo())
             placed = pl.preview(list(docs.values()), cities, terrain, pl.road_samples(actors), ground,
-                                limit=6000, juncs=pl.junctions(actors), keep=keep, foliage_limit=FOREST_LIMIT)  # the whole city
+                                limit=6000, juncs=pl.junctions(actors), keep=keep, foliage_limit=FOREST_LIMIT, memo=memo)
+            _PREVIEW_CACHE["placing"] = dict(memo.last)
             # (no loose wall slabs along the roads: every road piece carries its own side walls down into the
             # ground, road_profiles 'skirt'; every building its own foundation, kit_bake.foundation; every low deck
             # its approach wall, citygen.deck_fills; and the ground is graded to the roads)
