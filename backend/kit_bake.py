@@ -389,6 +389,8 @@ def bake(previewed: dict, root: str, interiors: bool = True) -> tuple:
 
 
 TILE_CM = 40000  # PCG tile: 400 m squares, one graph + volume each, rebuilt only when its content changes
+NATURE_TILE_CM = 160000  # nature is sparse: 1.6 km tiles
+NATURE = ("SM_V4_Tree", "SM_Kit_Bush", "SM_Kit_Rock", "SM_Kit_Boulder")
 
 
 def tiles(groups: dict) -> dict:
@@ -397,9 +399,14 @@ def tiles(groups: dict) -> dict:
     pcg_build rebuilds those and leaves the rest of the city (and the roads) alone."""
     out: dict = {}
     for mesh, rows in groups.items():
+        # trees, bushes and rocks get their own, bigger tiles ('n' keys): thinning the forest then rebuilds a
+        # few nature tiles, never the buildings (in shared tiles one tree setting rebuilt the whole city)
+        nature = any(n in mesh for n in NATURE)
+        size, pre = (NATURE_TILE_CM, "n") if nature else (TILE_CM, "")
         for r in rows:
-            tx, ty = math.floor(r[0] / TILE_CM), math.floor(r[1] / TILE_CM)
-            t = out.setdefault(f"{tx}_{ty}", {"meshes": {}, "centre": ((tx + 0.5) * TILE_CM, (ty + 0.5) * TILE_CM)})
+            tx, ty = math.floor(r[0] / size), math.floor(r[1] / size)
+            t = out.setdefault(f"{pre}{tx}_{ty}", {"meshes": {}, "size": size,
+                                                   "centre": ((tx + 0.5) * size, (ty + 0.5) * size)})
             t["meshes"].setdefault(mesh, []).append(r)
     for t in out.values():
         t["hash"] = hashlib.sha1(json.dumps(t["meshes"], sort_keys=True).encode()).hexdigest()
@@ -775,6 +782,9 @@ def _demo() -> None:
     stored["9_9"] = {"hash": "x"}  # a tile the plan no longer has
     assert tile_diff(t2, stored) == (["2_0"], ["9_9"], ["0_0", "1_0"])
     assert tile_diff(t2, stored, force=True)[0] == ["0_0", "1_0", "2_0"]
+    wild = tiles({path("SM_V4_TreeRound", "/R"): [[10, 10, 0, 0, 1, 1, 1], [150000, 10, 0, 0, 1, 1, 1]],
+                  path("SM_Kit_Plinth", "/R"): [[10, 10, 0, 0, 1, 1, 1]]})
+    assert set(wild) == {"n0_0", "0_0"} and wild["n0_0"]["size"] == NATURE_TILE_CM, "trees in their own big tile"
     # street trees stand in a pit, forest trees do not
     gp = bake({"Street trees": {"kind": "along_roads", "role": "street_tree", "points": [[5, 6, 7, 30, 1.0]]},
                "Trees": {"kind": "foliage", "role": "tree", "points": [[9, 9, 0, 0, 1.0]]}}, "/R")[0]

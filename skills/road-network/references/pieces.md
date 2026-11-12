@@ -171,8 +171,10 @@ the top part's roof is left out):
 
 ## 8. The PCG build (`road_network_pcg_build`)
 
-- One graph `WorldGen/CityPCG/PCG_<World>_<City>` and one volume `City Builder <World> <City>` per city (each lot goes
-  to the nearest city), volume sized to its farthest point + 50 m, **Generate On Demand** (never on load).
+- One graph `WorldGen/CityPCG/PCG_<World>_T<key>` and one volume `City Builder <World> <key>` per tile: 400 m city
+  tiles (`tx_ty`) and 1.6 km nature tiles (`ntx_ty`: trees, bushes, rocks), **Generate On Demand** (never on load).
+- Built in batches (`backend/pcg_batch.py`): one editor script per up to 8 tiles / 6000 points, run as a background
+  job, memory metered per batch. A tile's old volume is found by its label in the level, never by a stored path.
 - Per kit mesh: `Create Points` nodes (world space, cull off, at most 1500 points each, transform = x, y, z, pitch,
   yaw, scale) -> one `Static Mesh Spawner` with `{"meshSelector": {"meshes": [path], "templateDescriptor":
   {"descriptor": {"overrideMaterials": [MI per slot]}}}}`.

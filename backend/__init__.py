@@ -26,6 +26,7 @@ import time
 
 from . import citygen as cg
 from . import kit_bake
+from . import pcg_batch
 from . import pcg_layers as pl
 from . import pieces
 from . import pipeline
@@ -135,13 +136,13 @@ def register(api) -> None:
                 continue
         raise TimeoutError(f"UEFN is still busy with {command} after {round(timeout)} s.")
 
-    def epic(toolset: str, tool: str, arguments: dict):
+    def epic(toolset: str, tool: str, arguments: dict, timeout: float = 120):
         # Same route as Ducky's own Epic callers: the pool keeps the nested arguments intact
         # (api.call_tool's dispatcher drops them for unreal__call_tool).
         from backend.mcp_plugins.client_pool import get_plugin_pool
         pool = get_plugin_pool()
         out = uefn_memory.metered(f"{toolset.rsplit('.', 1)[-1]}.{tool}", lambda: pool.run_sync(pool.call_tool(
-            "unreal__call_tool", {"toolset_name": toolset, "tool_name": tool, "arguments": arguments}), timeout=120))
+            "unreal__call_tool", {"toolset_name": toolset, "tool_name": tool, "arguments": arguments}), timeout=timeout))
         if not isinstance(out, (str, dict)):
             out = getattr(out, "text", None) or str(out)
         if isinstance(out, str):
@@ -1681,15 +1682,29 @@ def register(api) -> None:
                             f"UEFN is behind: {len(changed) + len(never)} road actors, "
                             f"{tiles['build'] + tiles['remove']} city tiles to update")}
 
-    def pcg_build(net_id: str = "", confirm: bool = False, force: bool = False) -> dict:
-        """The world's previewed city as PCG in the open UEFN level, in 400 m tiles (one graph + volume each).
+    _PCG_JOBS: dict = {}  # world id -> the build job running (or last run) for it
+
+    def pcg_build(net_id: str = "", confirm: bool = False, force: bool = False, wait: bool = True,
+                  stop: bool = False) -> dict:
+        """The world's previewed city as PCG in the open UEFN level, in tiles (one graph + volume each).
         Only tiles whose content changed since the last build are rebuilt, tiles gone from the plan are
         removed, and every other tile, the roads and the rest of the level are left alone: edit the plan,
-        build again, and just the edited part changes. force=true rebuilds every tile."""
+        build again, and just the edited part changes. force=true rebuilds every tile. The build runs as a
+        background job in batches; wait=false returns at once, a later call reports progress, stop=true
+        stops it after the batch in flight."""
         nid = slug(net_id)
         doc = data.get(f"net.{nid}") if nid else None
         if not doc:
             return {"ok": False, "error": f"No road network {net_id!r}."}
+        last = _PCG_JOBS.get(nid)
+        if last and last["running"]:
+            if stop:
+                last["stop"] = True
+            return {"ok": True, "running": True, "stopping": last["stop"], "done": last["done"],
+                    "total": last["total"], "seconds": round(time.time() - last["started"]),
+                    "uefn_gb": uefn_memory.uefn_gb()}
+        if stop:
+            return {"ok": True, "running": False, "last_build": (last or {}).get("result")}
         folder = road_folder()
         if "/WorldGen/Roads" not in folder:
             return {"ok": False, "error": "Couldn't find the project's WorldGen folder (import the roads first)."}
@@ -1702,118 +1717,149 @@ def register(api) -> None:
         tag = re.sub(r"[^A-Za-z0-9]", "", name)
         new = kit_bake.tiles(groups)
         state = data.get(f"net.{nid}.pcg") or {"name": f"{name} / PCG tiles", "tiles": {}}
-        if state["tiles"]:  # pull: a tile whose volume was deleted in the level is built again
-            try:
-                present = {str(a.get("label") or "") for a in epic("EditorToolset.LevelToolset", "FindActors", {
-                    "filter": {"name": f"City Builder {name}"}}).get("returnValue", [])}
-                for key in [k for k in state["tiles"] if f"City Builder {name} {k}" not in present]:
-                    state["tiles"][key] = {**state["tiles"][key], "hash": "gone from the level", "volume": ""}
-            except (ConnectionError, RuntimeError, TimeoutError, ValueError):
-                pass  # UEFN not reachable: diff against what was pushed last
+        orphans = []
+        try:  # pull: what is really in the level decides, never only what we remember
+            present = {str(a.get("label") or "") for a in epic("EditorToolset.LevelToolset", "FindActors", {
+                "filter": {"name": f"City Builder {name}"}}).get("returnValue", [])}
+            # a tile whose volume was deleted in the level is built again
+            for key in [k for k in state["tiles"] if f"City Builder {name} {k}" not in present]:
+                state["tiles"][key] = {**state["tiles"][key], "hash": "gone from the level", "volume": ""}
+            # a volume in the level that the plan no longer has and we no longer track (a build that was cut
+            # short): removed too, or its old instances stay forever
+            pre = f"City Builder {name} "
+            orphans = sorted(lab[len(pre):] for lab in present
+                             if lab.startswith(pre) and lab[len(pre):] not in new and lab[len(pre):] not in state["tiles"])
+        except (ConnectionError, RuntimeError, TimeoutError, ValueError):
+            pass  # UEFN not reachable: diff against what was pushed last
         build, remove, same = kit_bake.tile_diff(new, state["tiles"], force)
+        remove = sorted(set(remove) | set(orphans))
         if not confirm:
             return {"ok": False, "error": f"{name}: {len(build)} PCG tiles to (re)build, {len(remove)} to remove, "
                                           f"{len(same)} unchanged (left alone). {sum(baked.values())} buildings and "
                                           f"street pieces on {len(groups)} kit meshes. Call again with confirm=true.",
-                    "build": build, "remove": remove, "unchanged": len(same)}
+                    "build": build, "remove": remove, "unchanged": len(same),
+                    "last_build": (last or {}).get("result")}
         if not build and not remove:
             return {"ok": True, "id": nid, "note": "Nothing changed since the last build: every tile left as it is.",
-                    "unchanged": len(same)}
-        mats = kit_materials(nid) if build else None  # instance-safe textured materials first, or the grey checker
-        if mats is not None and not mats.get("ok"):
-            return {"ok": False, "error": f"Kit materials: {mats.get('error')}"}
-        # the person's own layers: their meshes' materials need the instanced-mesh usage too (10 meshes per call)
-        own = kit_bake.own_meshes(got.get("layers") or {}) if build else []
-        own_report = {"fixed": [], "locked": [], "missing": []}
-        for k in range(0, len(own), 10):
-            r = listener("road_network_ism_ready", {"meshes": own[k:k + 10]}, timeout=300)
-            for key in own_report:
-                own_report[key] += r.get(key) or []
-        if own_report["missing"]:
-            return {"ok": False, "error": f"These layer meshes aren't in the project: {own_report['missing'][:10]}. "
-                                          f"Fix the layer's meshes (Content Browser path) and push again."}
-        legacy_removed = legacy_pcg_cleanup(nid, root, name, tag) if not state["tiles"] else []
+                    "unchanged": len(same), "last_build": (last or {}).get("result")}
+        job = _PCG_JOBS[nid] = {"running": True, "stop": False, "done": 0, "total": len(build) + len(remove),
+                                "started": time.time(), "result": None}
 
-        def drop(key: str) -> None:
-            old = state["tiles"].pop(key, None) or {}
-            if old.get("volume"):
-                try:
-                    epic("EditorToolset.LevelToolset", "RemoveFromScene", {"actor": {"refPath": old["volume"]}})
-                except ValueError:
-                    pass  # already gone from the level
-            if old.get("graph_path") and epic("EditorToolset.AssetToolset", "Exists", {"path": old["graph_path"]}).get("returnValue"):
-                epic("EditorToolset.AssetToolset", "Delete", {"path": old["graph_path"]})
+        def work() -> dict:
+            mats = None
+            if build:
+                # the kit's instance-safe materials: made once, then reused. Making them loads every kit mesh
+                # (minutes); a build that only needs meshes it already has overrides for skips that.
+                cache = data.get(f"net.{nid}.mats") or {}
+                need = {m for k in build for m in new[k]["meshes"] if m.startswith(f"{root}/WorldGen/")}
+                if not force and need and need <= set(cache.get("overrides") or {}):
+                    mats = cache
+                else:
+                    mats = kit_materials(nid)
+                    if not mats.get("ok"):
+                        return {"ok": False, "error": f"Kit materials: {mats.get('error')}"}
+                    data.put(f"net.{nid}.mats", {"name": f"{name} / kit materials",
+                                                 "overrides": mats.get("overrides") or {}})
+            # the person's own layers: their meshes' materials need the instanced-mesh usage too (10 meshes per call)
+            own = kit_bake.own_meshes(got.get("layers") or {}) if build else []
+            own_report = {"fixed": [], "locked": [], "missing": []}
+            for k in range(0, len(own), 10):
+                r = listener("road_network_ism_ready", {"meshes": own[k:k + 10]}, timeout=300)
+                for key in own_report:
+                    own_report[key] += r.get(key) or []
+            if own_report["missing"]:
+                return {"ok": False, "error": f"These layer meshes aren't in the project: {own_report['missing'][:10]}. "
+                                              f"Fix the layer's meshes (Content Browser path) and push again."}
+            legacy_removed = legacy_pcg_cleanup(nid, root, name, tag) if not state["tiles"] else []
 
-        nodes, messages, done = 0, [], []
-        try:
-            for key in remove:
-                drop(key)
-                data.put(f"net.{nid}.pcg", state)
-            for key in build:
-                drop(key)
-                tile = new[key]
+            def tile_job(key: str, tile: dict | None) -> dict:
+                old = state["tiles"].get(key) or {}
                 graph_path = f"{root}/WorldGen/CityPCG/PCG_{tag}_T{key.replace('-', 'm')}"
-                if epic("EditorToolset.AssetToolset", "Exists", {"path": graph_path}).get("returnValue"):
-                    epic("EditorToolset.AssetToolset", "Delete", {"path": graph_path})
-                graph = epic("PCGToolset.PCGToolset", "CreateGraph", {"name": graph_path.rsplit("/", 1)[1],
-                                                                      "path": graph_path.rsplit("/", 1)[0]})["returnValue"]
-                for k, (mesh, rows) in enumerate(sorted(tile["meshes"].items())):
+                meshes = []
+                for mesh, rows in sorted((tile or {}).get("meshes", {}).items()):
                     selector = {"meshes": [mesh]}
                     over = ((mats or {}).get("overrides") or {}).get(mesh)
                     if over and any(over):  # textured MIs as overrides: the kit mesh itself is never edited
                         selector["templateDescriptor"] = {"descriptor": {"overrideMaterials": [m or None for m in over]}}
-                    spawn = epic("PCGToolset.PCGToolset", "AddNode", {
-                        "graph": graph, "nativeNodeType": "Static Mesh Spawner", "nodeName": f"Spawn{k}",
-                        "nodeTitle": mesh.rsplit(".", 1)[1], "xPositionIdx": 400, "yPositionIdx": k * 160,
-                        "jsonParams": json.dumps({"meshSelector": selector})})["returnValue"]
-                    for c in range(0, len(rows), BAKE_CHUNK):
-                        pts = [{"transform": {"location": {"x": r[0], "y": r[1], "z": r[2]},
-                                              "rotation": {"pitch": r[7] if len(r) > 7 else 0, "yaw": r[3], "roll": 0},
-                                              "scale": {"x": r[4], "y": r[5], "z": r[6]}}} for r in rows[c:c + BAKE_CHUNK]]
-                        made = epic("PCGToolset.PCGToolset", "AddNode", {
-                            "graph": graph, "nativeNodeType": "Create Points", "nodeName": f"Lots{k}_{c // BAKE_CHUNK}",
-                            "xPositionIdx": 0, "yPositionIdx": k * 160 + c // BAKE_CHUNK * 40,
-                            "jsonParams": json.dumps({"pointsToCreate": pts, "coordinateSpace": "World",
-                                                      "bCullPointsOutsideVolume": False})})["returnValue"]
-                        epic("PCGToolset.PCGToolset", "ConnectNodePins", {"fromNode": made, "fromPinLabel": "Out",
-                                                                        "toNode": spawn, "toPinLabel": "In"})
-                        nodes += 1
-                    nodes += 1
-                epic("PCGToolset.PCGToolset", "SetGraphDescription", {
-                    "graph": graph, "description": f"City Builder world {name}, tile {key}: the previewed lots in this "
-                                                   f"400 m square on our own kit. Rebuilt by road_network_pcg_build."})
-                half = kit_bake.TILE_CM / 2 + 5000.0
-                volume = epic("PCGToolset.PCGToolset", "SpawnGraphInstance", {
-                    "graph": graph, "name": f"City Builder {name} {key}",
-                    "transform": {"location": {"x": tile["centre"][0], "y": tile["centre"][1], "z": 0},
-                                  "rotation": {"pitch": 0, "yaw": 0, "roll": 0},
-                                  "scale": {"x": half / 100, "y": half / 100, "z": 200}}})["returnValue"]
-                # never regenerate on level load: the instances are saved with the level, rebuild on demand only
-                for prop in ("PCGComponent.GenerationTrigger", "pCGComponent.generationTrigger"):
-                    try:
-                        epic("EditorToolset.ObjectToolset", "SetProperties",
-                             {"instance": volume["actor"], "values": json.dumps({prop: "GenerateOnDemand"})})
-                        break
-                    except ValueError:
-                        continue
-                messages += epic("PCGToolset.PCGToolset", "ExecuteGraphInstance", {"pCGVolume": volume["actor"]}).get("returnValue", [])
-                state["tiles"][key] = {"hash": tile["hash"], "graph_path": graph_path,
-                                       "volume": volume["actor"]["refPath"],
-                                       "pieces": sum(len(v) for v in tile["meshes"].values())}
-                data.put(f"net.{nid}.pcg", state)  # after every tile: a stop keeps what was built
-                done.append(key)
-        except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
-            return {"ok": False, "error": f"Stopped after {len(done)} of {len(build)} tiles: {exc}",
-                    "built": done, "note": "Build again: finished tiles are kept and skipped.",
-                    "memory": uefn_memory.report(5)}
-        return {"ok": True, "id": nid, "built_tiles": done, "removed_tiles": remove, "unchanged_tiles": len(same),
-                "legacy_removed": legacy_removed, "nodes": nodes, "meshes": len(groups), "built": baked,
-                "no_kit_piece": missing, "messages": messages[:20], "memory": uefn_memory.report(5)["worst"],
-                "own_meshes": {"count": len(own), "materials_fixed": own_report["fixed"],
-                               "materials_locked": own_report["locked"]},
-                "note": "One volume per 400 m tile, Generate On Demand (the level never rebuilds them on load). Edit "
-                        "the plan and build again: only changed tiles rebuild. Foliage layers stay for painting; "
-                        "layers in no_kit_piece have no mesh in the kit yet."}
+                    meshes.append({"mesh": mesh, "title": mesh.rsplit(".", 1)[1], "selector": selector, "rows": rows})
+                size = (tile or {}).get("size", kit_bake.TILE_CM)
+                return {"key": key, "meshes": meshes, "graph_path": graph_path, "find": f"City Builder {name}",
+                        "drop_graphs": sorted({g for g in (old.get("graph_path"), graph_path) if g}),
+                        "graph_name": graph_path.rsplit("/", 1)[1], "graph_folder": graph_path.rsplit("/", 1)[0],
+                        "description": f"City Builder world {name}, tile {key}: the previewed lots in this "
+                                       f"{round(size / 100)} m square on our own kit. Rebuilt by road_network_pcg_build.",
+                        "label": f"City Builder {name} {key}", "centre": list((tile or {}).get("centre", (0, 0))),
+                        "half": size / 2 + 5000.0}
+
+            nodes, messages, done, gone = 0, [], [], []
+            todo = [tile_job(k, None) for k in remove] + [tile_job(k, new[k]) for k in build]
+            try:
+                # one editor script per batch of tiles (pcg_batch): metered like any call, so the memory guard
+                # refuses the next batch when one grew UEFN by GBs, and UEFN settles between batches
+                for batch in pcg_batch.batches(todo):
+                    if job["stop"]:
+                        return {"ok": False, "error": f"Stopped after {len(done)} of {len(build)} tiles.", "built": done,
+                                "note": "Build again: finished tiles are kept and skipped."}
+                    base = uefn_memory.uefn_gb()
+                    out = epic("editor_toolset.toolsets.programmatic.ProgrammaticToolset", "execute_tool_script",
+                               {"script": {"language": "Python", "content": pcg_batch.script(batch)}}, timeout=900)
+                    res = out.get("returnValue") if isinstance(out, dict) else out
+                    res = json.loads(res) if isinstance(res, str) else (res or {})
+                    failed = ""
+                    for j in batch:
+                        r = res.get(j["key"])
+                        if r is None:
+                            continue  # the script stopped before this tile: it stays as it was
+                        if r.get("error"):
+                            # its old volume may be gone already: never trust the stored one again
+                            state["tiles"][j["key"]] = {"hash": "failed", "graph_path": j["graph_path"], "volume": ""}
+                            failed = f"tile {j['key']}: {r['error']}"
+                        elif r.get("removed"):
+                            state["tiles"].pop(j["key"], None)
+                            gone.append(j["key"])
+                        else:
+                            tile = new[j["key"]]
+                            state["tiles"][j["key"]] = {"hash": tile["hash"], "graph_path": j["graph_path"],
+                                                        "volume": r["volume"],
+                                                        "pieces": sum(len(v) for v in tile["meshes"].values())}
+                            messages += r.get("messages") or []
+                            nodes += sum(1 + -(-len(m["rows"]) // pcg_batch.CHUNK) for m in j["meshes"])
+                            done.append(j["key"])
+                    data.put(f"net.{nid}.pcg", state)  # after every batch: a stop keeps what was built
+                    job["done"] = len(done) + len(gone)
+                    if failed:
+                        raise ValueError(failed)
+                    uefn_memory.settle(base, slack=2.0, timeout=60)
+            except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
+                return {"ok": False, "error": f"Stopped after {len(done)} of {len(build)} tiles: {exc}",
+                        "built": done, "note": "Build again: finished tiles are kept and skipped.",
+                        "memory": uefn_memory.report(5)}
+            return {"ok": True, "id": nid, "built_tiles": done, "removed_tiles": gone, "unchanged_tiles": len(same),
+                    "legacy_removed": legacy_removed, "nodes": nodes, "meshes": len(groups), "built": baked,
+                    "no_kit_piece": missing, "messages": messages[:20], "memory": uefn_memory.report(5)["worst"],
+                    "seconds": round(time.time() - job["started"]),
+                    "own_meshes": {"count": len(own), "materials_fixed": own_report["fixed"],
+                                   "materials_locked": own_report["locked"]},
+                    "note": "One volume per tile (400 m city tiles, 1.6 km nature tiles), Generate On Demand (the "
+                            "level never rebuilds them on load). Edit the plan and build again: only changed tiles "
+                            "rebuild. Layers in no_kit_piece have no mesh in the kit yet."}
+
+        def runner() -> None:
+            try:
+                job["result"] = work()
+            except Exception as exc:  # noqa: BLE001 - a background job must always leave a result
+                job["result"] = {"ok": False, "error": f"The build stopped: {exc}"[:400]}
+            finally:
+                job["running"] = False
+
+        thread = threading.Thread(target=runner, name=f"city-builder-pcg-{nid}", daemon=True)
+        thread.start()
+        if wait:
+            thread.join()
+            return job["result"]
+        return {"ok": True, "started": True, "id": nid, "tiles": job["total"],
+                "note": "Building in the background, in batches. Call road_network_pcg_build(net_id) again for "
+                        "progress; stop=true stops it after the batch in flight."}
 
     def pcg_place(net_id: str = "", confirm: bool = False) -> dict:
         """Hand the plan to an AI chat that builds it in UEFN (Epic PCGToolset); returns the chat id."""
@@ -2631,13 +2677,16 @@ def register(api) -> None:
         return safe(pcg_preview)(net_id, layer_id, summary)
 
     @api.tool(intent=PCG_INTENT, listener=False)
-    def road_network_pcg_build(net_id: str = "", confirm: bool = False, force: bool = False) -> dict:
+    def road_network_pcg_build(net_id: str = "", confirm: bool = False, force: bool = False,
+                               stop: bool = False) -> dict:
         """Build the world's previewed city in the open UEFN level as PCG of the project's own kit, in 400 m
         tiles (one graph + volume each). Incremental: only tiles whose lots changed since the last build are
         rebuilt, tiles gone from the plan are removed, the rest of the city, the roads and the level are left
         alone, so editing the city plan never means deleting everything. Without confirm it reports how many
-        tiles would change. force=true rebuilds every tile. Ask the person first."""
-        return safe(pcg_build)(net_id, confirm, force)
+        tiles would change. force=true rebuilds every tile. Ask the person first. confirm=true starts the build
+        in the background (batches of tiles, memory checked between them) and returns at once: call again
+        for progress (done / total) and the last result; stop=true stops it after the batch in flight."""
+        return safe(pcg_build)(net_id, confirm, force, False, stop)
 
     @api.tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_place(net_id: str = "", confirm: bool = False) -> dict:

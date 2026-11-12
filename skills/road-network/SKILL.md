@@ -93,5 +93,10 @@ situation and what to do. Keep it to what you couldn't have known.
   whole folder: kit_materials loading WorldGen/Kit's 256 leftover materials took UEFN past 100 GB and crashed it.
 - FBX from BuildingKit.blend: rotate −90° about Z, forward X / up Z, FBX_SCALE_NONE, and save the imported
   materials at once (a crash before the save leaves every slot empty).
+- `road_network_pcg_build(confirm=true)` runs in the background, a batch of tiles per editor script: call it again
+  for progress (done / total), `stop=true` to stop. Trees, bushes and rocks sit in their own 1.6 km `n` tiles, so a
+  nature setting never rebuilds buildings.
+- Never trust a stored actor path to remove something from the level: it goes stale when UEFN reloads. Find the
+  actor by its label in the level, remove that, and count what is left before saying it is gone.
 - A piece taller than a storey, or wider than a roof cell, shows up as junk on the roof (machines through
   ceilings, solar arrays overlapping). Keep new interior and roof pieces inside those sizes.
