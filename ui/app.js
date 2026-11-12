@@ -175,7 +175,21 @@ const swatch = (c) => {
 };
 // what the city is made of, so the preview reads like the place (road types are told apart by width, not colour)
 const MAT = { asphalt: "mix:bg:fg:0.16", sidewalk: "mix:fg-dim:fg:0.35", pavers: "mix:fg-dim:amber:0.3",
-  drive: "mix:bg:fg:0.26", deck: "mix:fg-dim:blue:0.2" };
+  drive: "mix:bg:fg:0.26", paint: "mix:fg-dim:fg:0.8", centre: "mix:yellow:fg:0.2", barrier: "mix:fg-dim:fg:0.55" };
+// what each road's surface carries, like the real piece: lanes, the middle (a two-way centre line or a
+// concrete median barrier) and whether it stands free (barriers on both edges, a 1.5 m slab edge under them)
+const ROAD_LOOK = [
+  [/Freeway_Lane/, 6, "median", false],
+  [/Elev_Deck/, 4, "median", true],
+  [/Elev_Ramp/, 1, "", true],
+  [/BridgeSidewalk/, 6, "centre", true],
+  [/Bridge/, 2, "centre", true],
+  [/BoulevardSidewalk/, 6, "centre", false],
+  [/FourLane/, 4, "centre", false],
+  [/TwoLane/, 2, "centre", false],
+  [/OneLane/, 1, "", false],
+];
+const DASH = [300, 900];  // lane dashes: 3 m paint, 9 m gap
 // the asphalt part of a road whose mesh carries its own sidewalks (2S 8.75 m -> 5.25 m, 4L 14 m -> 10.5 m)
 const ASPHALT_HALF = { 875: 525, 1400: 1050, 650: 300, 2000: 1650 };
 function roadMaterial(mesh) {
@@ -183,8 +197,54 @@ function roadMaterial(mesh) {
   if (/Path_Walkway/.test(mesh)) return [MAT.pavers, "Walkway"];
   if (/Path_Driveway/.test(mesh)) return [MAT.drive, "Driveway"];
   if (/Path_PrivateStreet/.test(mesh)) return [MAT.asphalt, "Private street"];
-  if (/Bridge|Elev_/.test(mesh)) return [MAT.deck, "Bridge / deck"];
-  return [MAT.asphalt, "Road"];
+  return [MAT.asphalt, /Bridge|Elev_/.test(mesh) ? "Bridge / deck" : "Road"];
+}
+// a band along a curve between lateral offsets off-half..off+half at z0 (z1 === z0), or a wall at `off` from z0
+// up to z1; dash = [on, off] cm paints it dashed
+function stripe(curve, off, half, z0, z1, dash, out) {
+  let s = 0;
+  for (let k = 0; k + 1 < curve.length; k++) {
+    const a = curve[k], b = curve[k + 1], dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1;
+    const nx = -dy / l, ny = dx / l, spans = [];
+    if (!dash) spans.push([0, l]);
+    else {
+      const P = dash[0] + dash[1];
+      for (let m = Math.floor(s / P) * P; m < s + l; m += P) {
+        const d0 = Math.max(m, s) - s, d1 = Math.min(m + dash[0], s + l) - s;
+        if (d1 > d0) spans.push([d0, d1]);
+      }
+    }
+    const at = (d, side, z) => { const t = d / l; return toV(a[0] + dx * t + nx * side, a[1] + dy * t + ny * side, a[2] + (b[2] - a[2]) * t + z); };
+    for (const [d0, d1] of spans) {
+      const q = z1 === z0 ? [at(d0, off - half, z0), at(d0, off + half, z0), at(d1, off + half, z0), at(d1, off - half, z0)]
+        : [at(d0, off, z0), at(d0, off, z1), at(d1, off, z1), at(d1, off, z0)];
+      for (const v of [q[0], q[1], q[2], q[0], q[2], q[3]]) out.push(v.x, v.y, v.z);
+    }
+    s += l;
+  }
+}
+// the road's markings and, on a structure, its barriers and slab: c = carriageway half, half = full half (cm)
+function roadDetail(curve, mesh, c, half, lift, put) {
+  const look = ROAD_LOOK.find((r) => r[0].test(mesh));
+  if (!look) return;
+  const [, lanes, mid, structure] = look, z = lift + 10, w = 2 * c / lanes;
+  for (const sd of [-1, 1]) stripe(curve, sd * (c - 45), 8, z, z, null, put(MAT.paint));  // edge lines
+  for (let i = 1; i < lanes; i++) {
+    const off = -c + i * w;
+    if (i * 2 !== lanes || !mid) stripe(curve, off, 8, z, z, DASH, put(MAT.paint));
+    else if (mid === "centre") for (const sd of [-1, 1]) stripe(curve, off + sd * 14, 6, z, z, null, put(MAT.centre));
+    else {  // a concrete median barrier, 60 cm wide and 85 cm high
+      for (const sd of [-1, 1]) stripe(curve, off + sd * 30, 0, lift, lift + 85, null, put(MAT.barrier));
+      stripe(curve, off, 30, lift + 85, lift + 85, null, put(MAT.barrier));
+    }
+  }
+  if (!structure) return;
+  for (const sd of [-1, 1]) {  // parapets on both edges, the slab's edge down to its underside
+    stripe(curve, sd * (half - 35), 0, lift, lift + 105, null, put(MAT.barrier));
+    stripe(curve, sd * half, 0, lift - 150, lift + 105, null, put(MAT.barrier));
+    stripe(curve, sd * (half - 17), 18, lift + 105, lift + 105, null, put(MAT.barrier));
+  }
+  stripe(curve, 0, half, lift - 150, lift - 150, null, put(MAT.barrier));  // underside
 }
 // buildings by what they are: warm houses, pale civic, cool glass towers - never grass green or water blue
 const ROLE_COLOR = { house: "mix:fg-dim:amber:0.45", mansion: "mix:fg:amber:0.25", apartment: "mix:fg-dim:red:0.25",
@@ -506,14 +566,15 @@ function buildScene() {
       const f = family(s[5]);
       const [m, label] = roadMaterial(s[5]);
       const curve = hermite(a, b, s[3], s[4], 6);
-      const lift = f[2] === "purple" || f[2] === "yellow" ? 0 : 60;
-      const inner = ASPHALT_HALF[f[1]];
+      const lift = 60;  // every road a little over its ground: a ramp at grade drawn flush vanished into it
+      const inner = /Sidewalk|FourLane/.test(s[5]) ? ASPHALT_HALF[f[1]] : undefined;
       if (inner && m === MAT.asphalt) {  // a road with its own sidewalks: concrete to the full width, asphalt inside
         (byColor[MAT.sidewalk + (dim ? "|dim" : "")] ||= []).push(...ribbon(curve, f[1], lift - 4));
         legend["Sidewalk"] = MAT.sidewalk;
       }
       (byColor[m + (dim ? "|dim" : "")] ||= []).push(...ribbon(curve, inner && m === MAT.asphalt ? inner : f[1], lift));
       legend[label] = m;
+      if (m === MAT.asphalt) roadDetail(curve, s[5], inner || f[1], f[1], lift, (key) => byColor[key + (dim ? "|dim" : "")] ||= []);
     }
     // a junction is the crossing of its arms (each arm's asphalt from its mouth through the centre, as wide
     // as that road), with a sidewalk corner square between neighbouring arms - not a disc
