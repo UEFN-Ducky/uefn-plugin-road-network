@@ -176,20 +176,9 @@ const swatch = (c) => {
 // what the city is made of, so the preview reads like the place (road types are told apart by width, not colour)
 const MAT = { asphalt: "mix:bg:fg:0.16", sidewalk: "mix:fg-dim:fg:0.35", pavers: "mix:fg-dim:amber:0.3",
   drive: "mix:bg:fg:0.26", paint: "mix:fg-dim:fg:0.8", centre: "mix:yellow:fg:0.2", barrier: "mix:fg-dim:fg:0.55" };
-// what each road's surface carries, like the real piece: lanes, the middle (a two-way centre line or a
-// concrete median barrier) and whether it stands free (barriers on both edges, a 1.5 m slab edge under them)
-const ROAD_LOOK = [
-  [/Freeway_Lane/, 6, "median", false],
-  [/Elev_Deck/, 4, "median", true],
-  [/Elev_Ramp/, 1, "", true],
-  [/BridgeSidewalk/, 6, "centre", true],
-  [/Bridge/, 2, "centre", true],
-  [/BoulevardSidewalk/, 6, "centre", false],
-  [/FourLane/, 4, "centre", false],
-  [/TwoLane/, 2, "centre", false],
-  [/OneLane/, 1, "", false],
-];
-const DASH = [300, 900];  // lane dashes: 3 m paint, 9 m gap
+// a road piece's material slots (backend/road_profiles.SLOTS) as the preview's colours
+const SLOT_MAT = { Asphalt: MAT.asphalt, Pavers: MAT.sidewalk, Plinth: MAT.barrier, Paint: MAT.paint, PaintYellow: MAT.centre };
+const PAINT_PERIOD = 1000;  // road_profiles.PAINT_PERIOD: dashes line up from tile to tile
 // the asphalt part of a road whose mesh carries its own sidewalks (2S 8.75 m -> 5.25 m, 4L 14 m -> 10.5 m)
 const ASPHALT_HALF = { 875: 525, 1400: 1050, 650: 300, 2000: 1650 };
 function roadMaterial(mesh) {
@@ -223,28 +212,18 @@ function stripe(curve, off, half, z0, z1, dash, out) {
     s += l;
   }
 }
-// the road's markings and, on a structure, its barriers and slab: c = carriageway half, half = full half (cm)
-function roadDetail(curve, mesh, c, half, lift, put) {
-  const look = ROAD_LOOK.find((r) => r[0].test(mesh));
-  if (!look) return;
-  const [, lanes, mid, structure] = look, z = lift + 10, w = 2 * c / lanes;
-  for (const sd of [-1, 1]) stripe(curve, sd * (c - 45), 8, z, z, null, put(MAT.paint));  // edge lines
-  for (let i = 1; i < lanes; i++) {
-    const off = -c + i * w;
-    if (i * 2 !== lanes || !mid) stripe(curve, off, 8, z, z, DASH, put(MAT.paint));
-    else if (mid === "centre") for (const sd of [-1, 1]) stripe(curve, off + sd * 14, 6, z, z, null, put(MAT.centre));
-    else {  // a concrete median barrier, 60 cm wide and 85 cm high
-      for (const sd of [-1, 1]) stripe(curve, off + sd * 30, 0, lift, lift + 85, null, put(MAT.barrier));
-      stripe(curve, off, 30, lift + 85, lift + 85, null, put(MAT.barrier));
-    }
+// a road piece drawn from its cross-section (backend/road_profiles: the same one its UEFN mesh is built from):
+// every part's top and both its faces, the deck's underside, the paint 1 cm proud
+function drawProfile(curve, prof, lift, put) {
+  for (const [name, slot, y0, y1, z0, z1] of prof.parts) {
+    const out = put(SLOT_MAT[slot] || MAT.barrier), mid = (y0 + y1) / 2, hw = (y1 - y0) / 2;
+    stripe(curve, mid, hw, lift + z1, lift + z1, null, out);
+    for (const y of [y0, y1]) stripe(curve, y, 0, lift + z0, lift + z1, null, out);
+    if (name === "deck") stripe(curve, mid, hw, lift + z0, lift + z0, null, out);
   }
-  if (!structure) return;
-  for (const sd of [-1, 1]) {  // parapets on both edges, the slab's edge down to its underside
-    stripe(curve, sd * (half - 35), 0, lift, lift + 105, null, put(MAT.barrier));
-    stripe(curve, sd * half, 0, lift - 150, lift + 105, null, put(MAT.barrier));
-    stripe(curve, sd * (half - 17), 18, lift + 105, lift + 105, null, put(MAT.barrier));
+  for (const [y, w, dash, slot] of prof.paint) {
+    stripe(curve, y, w / 2, lift + 1, lift + 1, dash ? [dash, PAINT_PERIOD - dash] : null, put(SLOT_MAT[slot]));
   }
-  stripe(curve, 0, half, lift - 150, lift - 150, null, put(MAT.barrier));  // underside
 }
 // buildings by what they are: warm houses, pale civic, cool glass towers - never grass green or water blue
 const ROLE_COLOR = { house: "mix:fg-dim:amber:0.45", mansion: "mix:fg:amber:0.25", apartment: "mix:fg-dim:red:0.25",
@@ -567,6 +546,14 @@ function buildScene() {
       const [m, label] = roadMaterial(s[5]);
       const curve = hermite(a, b, s[3], s[4], 6);
       const lift = 60;  // every road a little over its ground: a ramp at grade drawn flush vanished into it
+      const put = (key) => byColor[key + (dim ? "|dim" : "")] ||= [];
+      const prof = g.profiles?.[s[5].split("/").pop().split(".")[0]];
+      if (prof) {  // the real piece: its parts and paint, as its UEFN mesh is built
+        drawProfile(curve, prof, lift, put);
+        legend[label] = m;
+        if (prof.sidewalk) legend["Sidewalk"] = MAT.sidewalk;
+        continue;
+      }
       const inner = /Sidewalk|FourLane/.test(s[5]) ? ASPHALT_HALF[f[1]] : undefined;
       if (inner && m === MAT.asphalt) {  // a road with its own sidewalks: concrete to the full width, asphalt inside
         (byColor[MAT.sidewalk + (dim ? "|dim" : "")] ||= []).push(...ribbon(curve, f[1], lift - 4));
@@ -574,7 +561,6 @@ function buildScene() {
       }
       (byColor[m + (dim ? "|dim" : "")] ||= []).push(...ribbon(curve, inner && m === MAT.asphalt ? inner : f[1], lift));
       legend[label] = m;
-      if (m === MAT.asphalt) roadDetail(curve, s[5], inner || f[1], f[1], lift, (key) => byColor[key + (dim ? "|dim" : "")] ||= []);
     }
     // a junction is the crossing of its arms (each arm's asphalt from its mouth through the centre, as wide
     // as that road), with a sidewalk corner square between neighbouring arms - not a disc

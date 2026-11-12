@@ -11,6 +11,7 @@ from . import citygen as cg
 from . import grammar
 from . import kit_bake as kb
 from . import pcg_layers as pl
+from . import road_profiles as rp
 
 CONVENTIONS = {
     "units": "centimetres, real-world scale (a door is 210 cm tall, a storey 400 cm).",
@@ -20,7 +21,9 @@ CONVENTIONS = {
     "roads": "ONE mesh per road type: the deck, both kerbs and both sidewalks are the same mesh (slots Asphalt, Curb, "
              "Sidewalk), never separate sidewalk pieces. The sidewalk is the outer `sidewalk_cm` of each side, 15 cm "
              "above the deck. Junctions are built by City Builder as one mesh too: deck, stop lines, crossings, kerbs "
-             "and the sidewalk corners that join the arms' sidewalks.",
+             "and the sidewalk corners that join the arms' sidewalks. Every road piece carries its `profile`: the exact "
+             "cross-section (deck, kerbs, sidewalks, parapets, median, lane paint) the panel draws and City Builder "
+             "builds itself when the project has no model; a hand-made model follows it part for part.",
     "bridges": "A bridge is three things, all placed by City Builder: the deck (the road's own deck piece, SM_Elev_Deck20m "
                "for 4+ lanes, SM_Road_Bridge_Straight20m for streets; low poly: a 1.5 m slab with a concrete barrier "
                "on each edge, top at z 0), pier bents every 30 m (SM_Kit_BridgePier columns from the ground or lake "
@@ -85,6 +88,18 @@ def manifest(root: str = "/<project>") -> dict:
                                   "replaces it)" if folder == "Kit/Street" else "Blender / imported kit"})
     for code, (mesh, half, lanes, walk, what) in cg.ROAD_TYPES.items():
         length = 2000 if "20m" in mesh else 4000 if "40m" in mesh else 1000
+        prof = rp.profile(code)
+        if prof:  # the exact cross-section the panel draws and City Builder builds when the project has no model
+            pieces.append({"name": prof["mesh"], "folder": "WorldGen/" + rp.kit_entry(prof)[2], "used_by": [f"road {code}: {what}"],
+                           "size_cm": [prof["length"], round(half * 2), round(max(z1 for *_r, z1 in prof["parts"])
+                                                                            - min(z0 for *_r, z0, _z in prof["parts"]))],
+                           "sidewalk_cm": prof["sidewalk"], "carriageway_cm": round(prof["carriageway"] * 2),
+                           "profile": {"parts": prof["parts"], "paint": prof["paint"], "paint_period_cm": rp.PAINT_PERIOD,
+                                       "row": "parts: name, slot, y0, y1, z0, z1; paint: y, width, dash cm (0 solid), slot"},
+                           "spec": rp.spec(prof),
+                           "made_by": "City Builder builds it from this profile when the project has none (street kit); "
+                                      "a Blender model with this name, size and slots replaces it"})
+            continue
         pieces.append({"name": mesh.rsplit("/", 1)[-1], "folder": "WorldGen/Roads" + ("/Elevated" if "/" in mesh else ""),
                        "size_cm": [length, round(half * 2), 30], "used_by": [f"road {code}: {what}"],
                        "sidewalk_cm": cg.WALK.get(code, 0),

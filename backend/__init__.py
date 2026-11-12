@@ -30,6 +30,7 @@ from . import pcg_batch
 from . import pcg_layers as pl
 from . import pieces
 from . import pipeline
+from . import road_profiles as rp
 from . import splines_text as st
 from . import uefn_input
 from . import uefn_memory
@@ -477,7 +478,9 @@ def register(api) -> None:
             out[aslug] = {"label": head.get("label"), "points_total": len(pts), "segments_total": len(segs),
                           "pts": [row(p) for p in pts[lo:hi]], "segs": [seg(s) for s in segs[lo:hi]]}
         scan = (data.get(f"net.{nid}.scan") or {}) if terrain else {}
-        return {"ok": True, "id": nid, "actors": out, "terrain": scan.get("terrain", {}), "props": scan.get("props", [])}
+        # every road piece's cross-section: the panel draws each road as its real mesh is built
+        return {"ok": True, "id": nid, "actors": out, "terrain": scan.get("terrain", {}), "props": scan.get("props", []),
+                "profiles": rp.all_profiles()}
 
     def move_point(net_id: str = "", actor: str = "", index: int = -1, x: float = 0.0, y: float = 0.0, z: float = 0.0) -> dict:
         nid, aslug = slug(net_id), slug(actor)
@@ -1768,12 +1771,17 @@ def register(api) -> None:
         Every mesh build and save opens a progress window, and UEFN frees a window's GPU swap chain only when
         the frame ends: 16 meshes in one call stacked 32 swap chains in one frame, took UEFN past 120 GB and
         crashed it on the D3D12 descriptor limit."""
-        todo = listener("road_network_street_kit", {"root": root, "rebuild": rebuild, "plan": True}).get("todo") or []
+        # every road piece the project has no model of is built from its profile too (a project without the
+        # Blender road kit still gets real decks, kerbs, sidewalks, parapets and paint; a model replaces it)
+        roads = {m: rp.kit_entry(p) for m, p in rp.all_profiles().items()}
+        todo = listener("road_network_street_kit", {"root": root, "rebuild": rebuild, "plan": True,
+                                                    "extra": roads}).get("todo") or []
         made, errors = [], []
         late = False
         for name in todo:
             got = listener_long("road_network_street_kit",
-                                {"root": root, "rebuild": rebuild, "only": [name], "save": False})
+                                {"root": root, "rebuild": rebuild, "only": [name], "save": False,
+                                 "extra": {name: roads[name]} if name in roads else {}})
             late = late or bool(got.get("late"))
             made += got.get("paths") or []
             errors += got.get("errors") or []

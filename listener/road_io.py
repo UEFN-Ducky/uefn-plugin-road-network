@@ -604,6 +604,8 @@ _STREET_LOOKS = {
     "Floor": (("Tile", 200, 0.5, 0.0, 0.0), (0.72, 0.7, 0.66)), "Light": (("Concrete", 400, 0.5, 0.0, 10.0), (1.0, 0.95, 0.85)),
     "Shaft": (("Concrete", 300, 0.9, 0.0, 0.0), (0.55, 0.55, 0.58)), "Fabric": (("Concrete", 150, 1.0, 0.0, 0.0), (0.45, 0.22, 0.18)),
     "Goods": (("Tile", 100, 0.6, 0.0, 0.6), (0.85, 0.45, 0.1)),
+    # road paint (backend/road_profiles): lane lines and the two-way centre line
+    "Paint": (("Concrete", 200, 0.6, 0.0, 0.0), (0.95, 0.95, 0.92)), "PaintYellow": (("Concrete", 200, 0.6, 0.0, 0.0), (0.9, 0.68, 0.08)),
     "StoneWall": (("Stone", 120, 1.0, 0.0, 0.0), (0.55, 0.5, 0.44)),
     "Leaf": (("Rock", 120, 1.0, 0.0, 0.0), (0.13, 0.32, 0.09)), "RockGrey": (("Rock", 200, 1.0, 0.0, 0.0), (0.52, 0.5, 0.47)),
     "Turf": (("Rock", 300, 1.0, 0.0, 0.0), (0.16, 0.4, 0.12)), "Rubber": (("Concrete", 150, 1.0, 0.0, 0.0), (0.6, 0.2, 0.12)),
@@ -893,13 +895,15 @@ _STREET_KIT = {
 
 @register("road_network_street_kit")
 def road_network_street_kit(root: str = "", rebuild: bool = False, plan: bool = False, only: list | None = None,
-                            save: bool = True) -> dict:
+                            save: bool = True, extra: dict | None = None) -> dict:
     """Make the street pieces the kit lacks (traffic lights, stop / street signs, billboards, power poles,
     parking lot, path slab, plinth) as GeometryScript meshes in WorldGen/Kit/Street, in M_City_WorldPBR
     instances. Mesh and material assets only; safe to run again (rebuilt in place).
     plan=true only lists what is missing; only=[names] builds just those; save=false leaves saving to one
     road_network_save_assets call. Call it once per mesh (the backend does): each mesh build opens a
-    progress window whose GPU swap chain UEFN frees only at the end of the frame."""
+    progress window whose GPU swap chain UEFN frees only at the end of the frame.
+    extra: more pieces in the same form, {name: [looks, parts, folder under WorldGen]} (the backend's road
+    pieces, built from their cross-sections when the project has no model of them)."""
     if not root.startswith("/"):
         return {"ok": False, "error": "Give root, the project's content root (for example /<mount>/MovieTheater)."}
     eal = unreal.EditorAssetLibrary
@@ -909,13 +913,17 @@ def road_network_street_kit(root: str = "", rebuild: bool = False, plan: bool = 
             eal.make_directory(f)
     # only the pieces that aren't there yet (rebuild=true remakes all): remaking and saving all of them
     # on every PCG build kept UEFN busy for minutes
-    where = {n: (f"{root}/WorldGen/{v[2]}" if len(v) > 2 else folder) for n, v in _STREET_KIT.items()}
-    todo = {n: v for n, v in _STREET_KIT.items()
+    kit = {**_STREET_KIT, **{n: tuple(v) for n, v in (extra or {}).items()}}
+    where = {n: (f"{root}/WorldGen/{v[2]}" if len(v) > 2 else folder) for n, v in kit.items()}
+    todo = {n: v for n, v in kit.items()
             if (only is None or n in only) and (rebuild or not eal.does_asset_exist(f"{where[n]}/{n}"))}
     if plan:
         return {"ok": True, "todo": list(todo)}
     if not todo:
         return {"ok": True, "made": [], "paths": [], "errors": [], "note": "every street kit piece is already there"}
+    for n in todo:
+        if not eal.does_directory_exist(where[n]):
+            eal.make_directory(where[n])
     master = _world_pbr_master(mat_folder, root)
     need = {m for mats, *_ in todo.values() for m in mats}  # some pieces carry a 3rd value: their folder
     looks = {k: _mi(mat_folder, f"MI_Street_{k}", master, root, look, unreal.LinearColor(*tint, 1))
