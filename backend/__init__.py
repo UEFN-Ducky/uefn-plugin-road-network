@@ -1462,12 +1462,8 @@ def register(api) -> None:
             ground = st.grid_sampler(terrain) if terrain.get("heights") else (lambda x, y: 0.0)
             placed = pl.preview(list(docs.values()), cities, terrain, pl.road_samples(actors), ground,
                                 limit=6000, juncs=pl.junctions(actors), keep=keep, foliage_limit=FOREST_LIMIT)  # the whole city
-            # FoundationGenerator for the roads: stone walls where the graded road is cut into / built up on the
-            # ground, from the height difference (not a layer to edit: it follows the roads and the terrain)
-            walls = pl.road_walls(actors, ground) if terrain.get("heights") else []
-            placed["Road walls"] = {"kind": "walls", "role": "road_wall", "count": len(walls), "shown": len(walls),
-                                    "points": walls, "meshes": [],
-                                    "row": "x, y, base z, yaw, 1, length_m, height_m"}
+            # (no loose wall slabs along the roads any more: every road piece carries its own side walls down into
+            # the ground, road_profiles 'skirt', and the ground is graded to the roads)
             placed.update(pl.site_layers(cities, ground))  # complexes' parking, stalls, turnarounds, garages
             placed.update(pl.aprons(placed))  # a dropped kerb where each driveway meets its street
             # fences only round houses that were built, through no building, across no street, never crossing
@@ -1527,11 +1523,6 @@ def register(api) -> None:
                         up = 9 if v.get("mesh") == "SM_Kit_ParkingStall" else cg.ROAD_SINK_CM + 6 if v.get("on_road") else 0
                         for p in v["points"]:
                             p[2] = round(fit["ground"](p[0], p[1]) + up)
-                if fit_ter is not terrain:
-                    # retaining walls only where the cut ground still steps beside a road (it is graded to the
-                    # roads now, so most of the walls the raw hills asked for are gone and none stands in a slope)
-                    walls = pl.road_walls(actors, fit["ground"])
-                    placed["Road walls"].update(count=len(walls), shown=len(walls), points=walls)
             # real bridges: a pier bent every 30 m under every deck and elevated ramp, down to the ground it stands
             # on (the cut ground once there is one) or the lake bed
             cols, caps = cg.bridge_piers({str(k): {"points": p, "segments": s} for k, (p, s) in enumerate(actors)},
@@ -1814,8 +1805,15 @@ def register(api) -> None:
             H = fine["heights"]
             cw, ch = (x1 - x0) * span / grid, (y1 - y0) * span / grid
             known = st.grid_sampler(ter)  # cells with no landscape under them stay empty
-            rows = [[round((H[2 * j][2 * i] + H[2 * j][2 * i + 1] + H[2 * j + 1][2 * i] + H[2 * j + 1][2 * i + 1]) / 4)
-                     if known(x0 + (i + 0.5) * cw, y0 + (j + 0.5) * ch) is not None else None
+            locked = _GROUND.get("locked") or ()
+
+            def cell(j, i):
+                # A cell with a road in it shows the road's level, not the mean with the pad or bank beside it: the
+                # panel's cells are 20 m, as wide as a street, and the averaged ground lay over half the carriageway
+                four = ((2 * j, 2 * i), (2 * j, 2 * i + 1), (2 * j + 1, 2 * i), (2 * j + 1, 2 * i + 1))
+                vals = [H[a][b] for a, b in four if (a, b) in locked] or [H[a][b] for a, b in four]
+                return round(sum(vals) / len(vals))
+            rows = [[cell(j, i) if known(x0 + (i + 0.5) * cw, y0 + (j + 0.5) * ch) is not None else None
                      for i in range(grid)] for j in range(grid)]
             _EXACT.update(ground_key=(_PREVIEW_CACHE.get("key"), grid), ground_rows=rows)
         return {**out, "grid": grid, "heights": _EXACT["ground_rows"],

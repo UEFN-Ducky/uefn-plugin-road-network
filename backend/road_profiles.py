@@ -21,6 +21,7 @@ DECK_CM = 150.0  # a structure's slab depth under the road surface
 ROAD_CM = 30.0  # a ground road's own thickness (it sits on the cut ground)
 KERB_CM = 15.0  # sidewalk top over the road
 PARAPET_CM = 105.0
+SKIRT_CM = 300.0  # a ground road's side walls, down from its underside
 MEDIAN = ("6L", "ED")  # divided by a concrete median barrier
 NO_PAINT = ("DT",)
 
@@ -76,6 +77,11 @@ def profile(code: str) -> dict | None:
         if structure:  # a parapet on each edge
             top = KERB_CM if walk else 0.0
             parts.append(("parapet", "Plinth", *sorted((sd * (half - 35), sd * half)), top, top + PARAPET_CM))
+    if not structure:
+        # its own side walls: a concrete skirt under each edge, SKIRT_CM down into the ground. Where the land
+        # falls away beside the road the road still stands on a wall, with no separate wall piece to line up
+        for sd in (-1, 1):
+            parts.append(("skirt", "Plinth", *sorted((sd * (half - 25), sd * half)), base - SKIRT_CM, base))
     if structure:
         parts[0] = ("deck", "Plinth", -half, half, base, -20.0)
         parts.insert(1, ("road", "Asphalt", -c, c, -20.0, 0.0))

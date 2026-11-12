@@ -1343,7 +1343,8 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                 if lot:
                     taken.add((cand[6], cand[7]))
                 own_heights.add(x, y, 0.0, row[5])
-                pad, found, paths, walls = _lot_ground(layer, sample_z, x, y, yaw, row[7], row[8])
+                pad, found, paths, _walls = _lot_ground(layer, sample_z, x, y, yaw, row[7], row[8])
+                walls = []  # no loose wall slabs on lot edges: the pad's own foundation and the graded ground do it
                 row[2] = round(pad - layer["sink_cm"])
                 row += [found, paths, walls]
                 if lot and cand[10]:
