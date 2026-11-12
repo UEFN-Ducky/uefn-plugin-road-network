@@ -25,7 +25,8 @@ A road is a landscape spline whose segments carry `SplineMeshes(0)=(Mesh=..., bS
 
 Rules every tile follows (`ROAD_TYPES` in `backend/citygen.py`, `OUR_FAMILIES` in `backend/splines_text.py`):
 - Every vertex stays inside X 0..tile length, or the spline mesh smears at the joints.
-- Deck top is z 0 at the centre line; side walls go down to a skirt at z -40 so the deck never floats on a slope.
+- Deck top is z 0 at the centre line; a ground road's side walls (its skirt) go 3 m down from its underside
+  (`road_profiles.SKIRT_CM`), so the road never floats on a slope and needs no separate wall piece.
 - Control points sit 40 under the road surface and use `SegmentMeshOffset` 50 (the deck lands 10 above ground).
 - Materials: `M_Asphalt`, `M_PaintW`, `M_PaintY`, `M_Gutter`, `M_Curb`, `M_PaverBand`, `M_Pavers`, `M_Grate`, `M_BarrierConcrete`,
   slot order as listed in `OUR_FAMILIES[...]["materials"]`; road materials need **Used with Spline Meshes**.
@@ -96,7 +97,8 @@ GeometryScript parts, origin at the base unless noted; slot materials in bracket
 | `SM_Kit_PowerPole` | cyl r18 h1100 [Wood]; crossbar 20x240x15 at z 1000 [Wood] | 11 m |
 | `SM_Kit_ParkingLot` | box 100x100x8 [Asphalt] | scaled to the lot (X depth, Y width) |
 | `SM_Kit_PathSlab` | box 100x100x8 [Pavers] | X = run length / 100, Y = path width (m), pitched along the slope |
-| `SM_Kit_Plinth` | box 100x100x100 from z -100 to 0 [Plinth] | X/Y = lot, Z = foundation_m + 0.3 |
+| `SM_Kit_Plinth` | box 100x100x100 from z -100 to 0 [Plinth] | a building's foundation, two a building: the course (X/Y = building + 0.6 m, Z 0.5) and the wall under it (X/Y = building + 0.3 m, Z = foundation_m + 0.5) |
+| `SM_Kit_ApproachWall` | box 100x100x100 from z 0 to 100 [Plinth] | under a deck or ramp too low for piers: X = 5.2 m along it, Y = its flat underside, Z = from 1 m in the ground up into the slab |
 
 Simple collision comes from the parts. Sizes are mirrored in `KIT` in `backend/kit_bake.py`; change both together.
 
@@ -113,8 +115,9 @@ Simple collision comes from the parts. Sizes are mirrored in `KIT` in `backend/k
   The lot's yaw turns +X to face its street.
 - `FLAT` roles (parking) stretch a flat piece to the lot and never up.
 - `PROPS[role]`: street pieces keep the preview's scale; one of the role's meshes picked by position.
-- Lots on a hill: the point's z is the level pad; `foundation_m > 0.3` adds a plinth; each path in `paths`
-  becomes one slab per run.
+- Every building and flat lot gets its foundation (`foundation()`): the point's z is the floor, the course and
+  the wall go down from it, `foundation_m` + 1 m deep. `foundation_m > 0.3` adds entrance steps; each wide path
+  in `paths` becomes one slab per run. Parks are planted ground and get none.
 
 ## 6a. Interiors (`_interior()` in `backend/kit_bake.py`, meshes in `_STREET_KIT`)
 
@@ -185,7 +188,7 @@ the top part's roof is left out):
 ## 9. Adding a new piece (checklist)
 
 1. Make it so its pivot is where it meets the ground (or the road's start for a tile), facing +X.
-2. Road tile: keep X inside 0..tile, deck at z 0, skirt to -40, add its row to `ROAD_TYPES` and `OUR_FAMILIES`.
+2. Road tile: keep X inside 0..tile, deck at z 0, its skirt as its profile gives it, add its row to `ROAD_TYPES` and `OUR_FAMILIES`.
 3. Street piece or building: add its bounds to `KIT` (kit_bake) and its role to `PROPS` / `BUILDINGS`; a generated one
    also to `_STREET_KIT` (listener) with matching sizes.
 4. Give every slot an `M_City_WorldPBR` instance (or another material with ISM usage) before PCG spawns it: when

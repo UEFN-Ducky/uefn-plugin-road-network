@@ -119,3 +119,9 @@ situation and what to do. Keep it to what you couldn't have known.
   actor by its label in the level, remove that, and count what is left before saying it is gone.
 - A piece taller than a storey, or wider than a roof cell, shows up as junk on the roof (machines through
   ceilings, solar arrays overlapping). Keep new interior and roof pieces inside those sizes.
+- The person wants no loose upright wall slabs anywhere. What holds a piece up is part of the piece: roads carry
+  3 m side walls, every building its own foundation, a deck too low for piers its approach wall. An uphill cut is
+  graded ground. Never add a layer of wall boxes to hide a step: fix the piece or the ground.
+- How deep foundations come out is set by the landscape's pixel (about 10 m), not by the pad rule: levelling lots
+  on the road-graded ground or at street level was measured and changed nothing. Don't retry those; a finer
+  heightmap or fewer buildings on steep ground are the levers, and both are the person's call.

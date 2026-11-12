@@ -106,7 +106,7 @@ Interchange option detail: `overpasses` (yes = a highway bridges over every stre
 deck at 7.5 m, ramp down; lifted points and segments never shape the ground). Buildings with `walkway` (all but
 parks / parking) get a 1.6 m path from the door to the kerb; `driveway` ones (houses, mansions, businesses) also a
 3.5 m driveway at one side, winding across the slope when steeper than 15 %. On hills every lot gets a level pad
-at its corners' mean height (cut and fill) and `foundation_m` (plinth depth where the ground falls away); preview
+at its corners' mean height (cut and fill) and `foundation_m` (how far the ground falls away under it); preview
 rows add `foundation_m, paths`. The generated heightmap (road_network_heightmap) has the pads cut in; an
 existing terrain is never edited, so there the foundations and paths do the work.
 
@@ -117,7 +117,7 @@ CityGenerator
   UrbanPlanner         Districts, RoadOrientation, Density       rings, grid angle, lots per city
   RoadGenerator        RoadGraph, Intersections, RoadProfiles    '<City> Roads' / 'Highways' (graded)
   BlockGenerator       BuildingParcels                           lots from blocks
-  FoundationGenerator  BuildingPads, CutAndFill, RetainingWalls  pads, plinths, walls
+  FoundationGenerator  BuildingPads, CutAndFill, Foundations     pads, foundations
   BuildingGenerator    Footprints, Buildings, Entrances          PCG layers -> kit meshes -> 400 m tiles
   SidewalkGenerator    PedestrianPaths, Corners, FrontageConn.   '<City> Paths' spline actor
   RoadMeshGenerator    Asphalt, Curbs, Intersections             junction meshes + paste (UEFN, Push roads)
@@ -129,11 +129,21 @@ Sidewalks, walkways and driveways are SPLINES (road types `SW` 3.8 m, `WK` 1.6 m
 and cut / fill the ground. Every city street whose mesh has no sidewalk (`6L`, `1W`) gets one both sides. Only
 the wide frontage aprons (plazas) stay PCG slabs. PCG never lines street furniture up on the Paths actor.
 
-Height-aware pieces (read from the GRADED road vs the original terrain, `pl.road_walls`): every 10 m along a
-ground-level road, both sides, just past the sidewalk: ground > 1.2 m above the road (cut) -> a stone retaining
-wall holding the hill; road > 2 m above the ground (fill) -> a stone wall holding the road up
-(`SM_Kit_StoneWall`, 50 cm thick, capped, scaled to the 10 m stretch and the height). The preview shows them as
-the built-in 'Road walls' layer (`pcg_preview(layer_id='road-walls')`); Push city bakes them with the tiles.
+Nothing in the city stands on air, and no loose wall slab holds anything up: every piece carries its own walls.
+- **Ground roads**: a concrete skirt under each edge, 3 m down (`road_profiles.SKIRT_CM`), part of the road mesh.
+- **Buildings and flat lots**: their own foundation, always (`kit_bake.foundation`): a plinth course round the
+  foot and a wall under it, 1 m into the ground below the lowest corner (`foundation_m` + 1 m).
+- **Decks and ramps too low for piers**: an approach wall under them, from 1 m in the ground up into the slab
+  (`citygen.deck_fills`, the 'Approach walls' layer). Higher up they stand on pier bents; over water and over a
+  road they cross they stay open.
+- **Uphill cuts**: held by the graded ground. A road's own cells sit at the road and blend back to the hill over
+  30 m; a lot's pad blends back over a pixel and a half.
+A foundation's depth is measured on the ground the heightmap leaves (`citygen.footings`, after the pads are cut and
+the buildings settled). How deep they come out is set by the landscape's pixel (about 10 m on a 10 km world, with
+16 m lots): neighbours' pads at different heights meet inside one pixel. Measured Nov 12 2026: levelling lots on the
+road-graded ground, or at their street's level, changed the depths by under 5 %, so neither is done.
+The built-in layers (piers, caps, abutments, approach walls, neighbourhood sites) come with
+`pcg_preview(layer_id='road-walls')`; Push city bakes them with the tiles.
 Every city street has a pavement: `2L`, `6L`, `1W` get sidewalk splines (dirt roads stay bare), and every
 junction corner gets a `SM_Kit_SidewalkCorner` paving pad ('Sidewalk corners' layer, 4 per junction). A street that turns more than
 30 degrees where only two streets meet (`CORNER_DEG`, the city's edge, cul-de-sac returns) gets an ELBOW piece,
@@ -404,8 +414,8 @@ Roads define the city, blocks are what roads enclose, lots are cut from blocks, 
 4. **Buildings**: layers narrower than 25 m (houses, shops, apartments, gas stations) fill lots, one per lot,
    set back from the front lot line; wider ones (offices, towers, civic, mansions, industry) take road frontage
    first and the lot fill keeps clear of them.
-5. **Lot grading** (`_lot_ground`): level pad at the corners' mean, plinth where the ground falls away,
-   retaining wall (`SM_Kit_RetainingWall`) on any edge where the ground stands > 0.5 m above the pad, a
+5. **Lot grading** (`_lot_ground`): level pad at the corners' mean, a foundation
+   on every building (deeper where the ground falls away), the uphill side held by the graded ground, a
    full-width frontage apron (shops, offices, apartments, civic) or walkway + driveway (houses) to the kerb.
 6. **Pieces**: `road_network_piece_manifest` lists every mesh with size, pivot, slots and what places it, plus
    the WANTED ones; build them in Blender to that spec, import to the folder, add buildings to a layer's

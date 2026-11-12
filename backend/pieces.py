@@ -24,11 +24,11 @@ CONVENTIONS = {
              "and the sidewalk corners that join the arms' sidewalks. Every road piece carries its `profile`: the exact "
              "cross-section (deck, kerbs, sidewalks, parapets, median, lane paint) the panel draws and City Builder "
              "builds itself when the project has no model; a hand-made model follows it part for part.",
-    "bridges": "A bridge is three things, all placed by City Builder: the deck (the road's own deck piece, SM_Elev_Deck20m "
+    "bridges": "A bridge is its deck and what it stands on, all placed by City Builder: the deck (the road's own deck piece, SM_Elev_Deck20m "
                "for 4+ lanes, SM_Road_Bridge_Straight20m for streets; low poly: a 1.5 m slab with a concrete barrier "
                "on each edge, top at z 0; the SM_Road_Bridge* pieces also carry I-girders 1.2 m deep under the slab "
                "about every 3.5 m and a coping on each parapet), an SM_Kit_BridgeAbutment where each end meets the "
-               "road on the ground (wall under the deck's end, bearing shelf, a wing wall each side), pier bents every 30 m (SM_Kit_BridgePier columns from the ground or lake "
+               "road on the ground (wall under the deck's end, bearing shelf, a wing wall each side), SM_Kit_ApproachWall blocks under every stretch too low for piers (the ramp's own side walls, from 1 m in the ground up into the slab), pier bents every 30 m (SM_Kit_BridgePier columns from the ground or lake "
                "bed to SM_Kit_PierCap under the deck; two columns under a deck 16 m or wider) and, over wide water, "
                "SM_Kit_BridgePylon towers on the deck's centre line. To make them real, model these pieces at their "
                "bounds_cm: column and cap stretch on Z / Y, so keep their detail at the ends.",
@@ -80,8 +80,8 @@ def manifest(root: str = "/<project>") -> dict:
         users.setdefault(n, set()).add(f"interior: {role}")
     for n in ("SM_Kit_FloorPlate", "SM_Kit_FloorRound", "SM_Kit_FloorSolid", "SM_Kit_StairCore", "SM_Kit_ElevatorCar"):
         users.setdefault(n, set()).add("interior: every building")
-    for n in ("SM_Kit_Plinth", "SM_Kit_PathSlab", "SM_Kit_RetainingWall"):
-        users.setdefault(n, set()).add("lot grading: pad, walkway / frontage, uphill wall")
+    for n in ("SM_Kit_Plinth", "SM_Kit_PathSlab"):
+        users.setdefault(n, set()).add("lot grading: foundation (every building), frontage")
     pieces = []
     for name, (folder, *_b) in kb.KIT.items():
         pieces.append({"name": name, "folder": f"WorldGen/{folder}", "path": kb.path(name, root),
@@ -157,7 +157,7 @@ def _demo() -> None:
     for role, opts in kb.BUILDINGS.items():
         assert all(part in names for parts in opts for part in parts), role
     assert all(n in names for ns in kb.PROPS.values() for n in ns)
-    assert {"SM_Road_TwoLane_Straight10m", "SM_Kit_RetainingWall", "SM_Kit_StairCore", "SM_Kit_TreePit"} <= names
+    assert {"SM_Road_TwoLane_Straight10m", "SM_Kit_Plinth", "SM_Kit_ApproachWall", "SM_Kit_StairCore", "SM_Kit_TreePit"} <= names
     assert set(grammar.modules()) <= names, "every module the grammar places is in the manifest"
     assert all(p["size_cm"] for p in m["pieces"] if not p["name"].startswith("SM_JK_"))
     assert {"SM_Kit_BridgePier", "SM_Kit_PierCap", "SM_Elev_Deck20m"} <= names and "bridges" in m["conventions"]

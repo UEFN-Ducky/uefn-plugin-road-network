@@ -977,27 +977,24 @@ function drawBuildings(layer, colour, name) {
     groups.pcg.add(mesh);
   }
 }
-// Foundations where a hill falls away under a lot, and the walkways / driveways from each door to the kerb
-// (row [.., foundation_m, paths [[width_m, [x, y, z, ...]]]]).
+// Every building's own foundation, as the push builds it (backend/kit_bake.foundation: change both together): a
+// plinth course round its foot and a wall under that, 1 m into the ground below its lowest corner. In the concrete
+// of the roads' side walls, and always there, so a building on a slope stands on it and never on a loose block.
+// Then the frontage slabs from each facade to the kerb (row [.., foundation_m, paths [[width_m, [x, y, z, ...]]]]).
+const FOUND = { course: 0.5, out: 0.3, wallOut: 0.15, embed: 1.0 };
 function drawLotGround(layer) {
   const zx = state.view.zx || 1;
   const dummy = new THREE.Object3D();
   const found = [], walks = [];
   for (const p of layer.points || []) {
-    const [x, y, z, yaw, , , , w, d, depth, paths, walls] = p;
+    const [x, y, z, yaw, , , , w, d, depth, paths] = p;
     if (inExact(x, y)) continue;
-    for (const [wx, wy, wyaw, len, hgt] of walls || []) {  // retaining walls on uphill cuts
-      dummy.position.copy(toV(wx, wy, z));
-      dummy.position.y += hgt * zx / 2;
-      dummy.rotation.set(0, -wyaw * Math.PI / 180, 0);
-      dummy.scale.set(0.3, hgt * zx, len);  // along the edge (its yaw) is the box's z
-      dummy.updateMatrix();
-      found.push(dummy.matrix.clone());
-    }
-    if (depth > 0.3) {
-      dummy.position.copy(toV(x, y, z - depth * 50));
+    const parts = layer.role === "park" ? []  // a park is planted ground, not a slab
+      : [[0.02, FOUND.course, FOUND.out], [FOUND.course, Math.max(0, depth || 0) + FOUND.embed - FOUND.course, FOUND.wallOut]];
+    for (const [drop, deep, out] of parts) {
+      dummy.position.copy(toV(x, y, z - (drop + deep / 2) * 100));
       dummy.rotation.set(0, -yaw * Math.PI / 180, 0);
-      dummy.scale.set(w * 0.94, depth * zx, d * 0.94);  // frontage across the facing, depth along it (the box's z)
+      dummy.scale.set(w + 2 * out, deep * zx, d + 2 * out);  // frontage across the facing, depth along it (the box's z)
       dummy.updateMatrix();
       found.push(dummy.matrix.clone());
     }
@@ -1013,7 +1010,7 @@ function drawLotGround(layer) {
       }
     }
   }
-  for (const [list, colour] of [[found, col("fg-dim").multiplyScalar(0.7)], [walks, col("fg-dim").lerp(col("fg"), 0.5)]]) {
+  for (const [list, colour] of [[found, col(MAT.barrier)], [walks, col("fg-dim").lerp(col("fg"), 0.5)]]) {
     if (!list.length) continue;
     const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: colour, roughness: 0.95 }), list.length);
     list.forEach((m, i) => mesh.setMatrixAt(i, m));
@@ -1036,8 +1033,9 @@ function drawPcg(legend) {
       const zx = state.view.zx || 1;
       pts.forEach(([x, y, z, yaw, sx, sy, sz], i) => {
         const a = yaw * Math.PI / 180, side = stall ? by * sy * 50 : 0;  // the line down one long side of the stall
-        // (roads are drawn 60 cm up so they never sink into the ground: a piece lying on one goes up with it)
-        dummy.position.copy(toV(x - Math.sin(a) * side, y + Math.cos(a) * side, z + (layer.on_road ? 60 : 20)));
+        // (roads are drawn 60 cm up so they never sink into the ground: a piece lying on one goes up with it, and
+        // so does the approach wall a low deck stands on, or a slot of daylight shows under the deck)
+        dummy.position.copy(toV(x - Math.sin(a) * side, y + Math.cos(a) * side, z + (layer.on_road || layer.mesh === "SM_Kit_ApproachWall" ? 60 : 20)));
         dummy.position.y += bz * sz * zx / 2;
         dummy.rotation.set(0, -yaw * Math.PI / 180, 0);
         dummy.scale.set(stall ? 0.12 : by * sy, Math.max(0.05, bz * sz) * zx, bx * sx);
@@ -1049,23 +1047,6 @@ function drawPcg(legend) {
       mesh.userData.info = (i) => layerInfo(name, layer, pts[i]);
       groups.pcg.add(mesh);
       legend[`${name} · ${layer.count.toLocaleString()}`] = tint;
-      return;
-    }
-    if (layer.kind === "walls") {  // stone retaining walls along cut / filled roads: [x, y, z, yaw, 1, length m, height m]
-      const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: col("fg-dim").multiplyScalar(0.8), roughness: 1 }), pts.length);
-      const zx = state.view.zx || 1;
-      pts.forEach(([x, y, z, yaw, , len, hgt], i) => {
-        dummy.position.copy(toV(x, y, z));
-        dummy.position.y += hgt * zx / 2;
-        dummy.rotation.set(0, -yaw * Math.PI / 180, 0);
-        dummy.scale.set(0.5, hgt * zx, len);  // along yaw is the box's z here (toV turns x into -z), as site pieces
-        if (inExact(x, y)) dummy.scale.setScalar(0);
-        dummy.updateMatrix();
-        mesh.setMatrixAt(i, dummy.matrix);
-      });
-      mesh.castShadow = true;
-      groups.pcg.add(mesh);
-      legend[`${name} · ${layer.count.toLocaleString()}`] = "fg-dim";
       return;
     }
     const building = layer.kind === "buildings";
@@ -1171,7 +1152,7 @@ async function loadPcgPreview() {
   const calls = todo.filter((l) => l.kind === "foliage").map((l) => [l]);
   const rest = todo.filter((l) => l.kind !== "foliage");
   for (let i = 0; i < rest.length; i += PCG_BATCH) calls.push(rest.slice(i, i + PCG_BATCH));
-  calls.push([{ id: "road-walls", name: "Road walls" }]);  // stone walls from road cut / fill, and the neighbourhood sites
+  calls.push([{ id: "road-walls", name: "Bridges and sites" }]);  // the built-in layers: piers, approach walls, neighbourhood sites
   const picked = {};
   // the card is the city's own: a rebuild's or an edit's card stays up while the city fills in under it
   const card = (msg, opts) => { if (!loading.title || loading.title === "Placing the city") busy(msg, opts); };

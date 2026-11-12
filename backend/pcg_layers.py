@@ -777,45 +777,6 @@ GROUND_NAMES = {"apron": "Service aprons", "field": "Sports fields", "playground
                 "yard": "Utility yards", "pond": "Ponds and tanks", "tower": "Towers", "telecom": "Telecom masts"}
 
 
-WALL_CUT_CM, WALL_FILL_CM = 120.0, 200.0  # road cut / fill deeper than this gets a stone retaining wall
-
-
-def road_walls(actors: list, sample_z, sidewalk_cm: float = 380.0, step_cm: float = 1000.0) -> list:
-    """Stone retaining walls along the roads, read from the height difference between the GRADED road and
-    the original ground just past its sidewalk (like a hillside street: the road is cut into the slope with a
-    wall holding the hill, or built up on a wall where the ground falls away). Every `step_cm` along each
-    ground-level road segment, both sides. Rows [x, y, base z, yaw, 1, length m, height m]."""
-    rows = []
-    for pts, segs in actors:
-        by_i = {p["i"]: p for p in pts}
-        for s in segs:
-            a, b = by_i.get(s["a"]), by_i.get(s["b"])
-            if not a or not b or not s.get("mesh") or not a.get("raise") or not b.get("raise"):
-                continue  # mesh-less joins, bridges and ramps (lifted) never get walls
-            L = math.hypot(b["x"] - a["x"], b["y"] - a["y"])
-            if L < 100:
-                continue
-            ux, uy = (b["x"] - a["x"]) / L, (b["y"] - a["y"]) / L
-            half = max(float(a.get("w") or 500), float(b.get("w") or 500))
-            yaw = round(math.degrees(math.atan2(uy, ux)), 1)
-            n = max(1, int(L // step_cm))
-            for k in range(n):
-                t = (k + 0.5) / n
-                x, y = a["x"] + (b["x"] - a["x"]) * t, a["y"] + (b["y"] - a["y"]) * t
-                zr = a["z"] + (b["z"] - a["z"]) * t
-                for side in (1, -1):
-                    off = half + sidewalk_cm + 30
-                    wx, wy = x - uy * off * side, y + ux * off * side
-                    g = sample_z(wx, wy)
-                    if g is None:
-                        continue
-                    if g - zr > WALL_CUT_CM:  # cut: the hill stands above the road
-                        rows.append([round(wx), round(wy), round(zr), yaw, 1, round(L / n / 100, 2), round((g - zr) / 100 + 0.3, 2)])
-                    elif zr - g > WALL_FILL_CM:  # fill: the road stands above the ground
-                        rows.append([round(wx), round(wy), round(g), yaw, 1, round(L / n / 100, 2), round((zr - g) / 100, 2)])
-    return rows
-
-
 def junction_corners(juncs: list, setback_m: float, corners: int) -> list:
     """(x, y, yaw) on the kerb corners between neighbouring arms, facing the junction centre: where
     traffic lights, stop signs and street-name signs stand. ``corners`` per junction, widest gaps first."""
@@ -958,7 +919,7 @@ def clear_of(placed: dict, samples: list, margin: float = 200.0) -> int:
                    for gx in range(cx - n, cx + n + 1) for gy in range(cy - n, cy + n + 1) for sx, sy, half in grid.get((gx, gy), ()))
     gone = 0
     for name, layer in placed.items():
-        if layer.get("role") in ("bridge", "road_wall") or name.startswith(("Bridge", "Pier")):
+        if layer.get("role") == "bridge" or name.startswith(("Bridge", "Pier")):
             continue
         box = layer.get("box_m")
         keep = []
@@ -1343,10 +1304,9 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                 if lot:
                     taken.add((cand[6], cand[7]))
                 own_heights.add(x, y, 0.0, row[5])
-                pad, found, paths, _walls = _lot_ground(layer, sample_z, x, y, yaw, row[7], row[8])
-                walls = []  # no loose wall slabs on lot edges: the pad's own foundation and the graded ground do it
+                pad, found, paths = _lot_ground(layer, sample_z, x, y, yaw, row[7], row[8])
                 row[2] = round(pad - layer["sink_cm"])
-                row += [found, paths, walls]
+                row += [found, paths, []]  # ([]: where lot-edge wall slabs were; the fields after it keep their place)
                 if lot and cand[10]:
                     row.append(cand[10])  # the facility (city_hall, jail, power_plant...): how the bake builds it
             pts.append(row)
@@ -1362,7 +1322,7 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                               **({"size_m": [layer["width_m"], layer["depth_m"]], "setback_m": layer["setback_m"],
                                   "forms": FORM_NAMES, "driveway": layer["driveway"], "walkway": layer["walkway"],
                                   "row": "x, y, pad z, yaw, scale, height_m, form, width_m, depth_m, foundation_m, "
-                                         "paths [[width_m, [x, y, z, ...]]], walls [[x, y, yaw, length_m, height_m]], facility (planned sites)"} if layer["kind"] == "buildings" else {})}
+                                         "paths [[width_m, [x, y, z, ...]]], [] (unused), facility (planned sites)"} if layer["kind"] == "buildings" else {})}
     if infill:  # a tree on every lot nothing could be built on
         out["Infill trees"] = {"kind": "scatter", "role": "tree", "count": len(infill), "shown": len(infill), "points": infill,
                                "radius_cm": 250, "meshes": [], "build": "", "row": "x, y, z, yaw, scale"}
@@ -1372,7 +1332,6 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
 BIG_SITE_M = 25.0  # wider than a lot (~17 m frontage, fits up to ~1.5x): offices, towers, civic, mansions take
 # road frontage; apartments, shops, gas stations and houses fill the lots cut from the blocks
 WALK_M, DRIVE_M, DRIVE2_M = 1.6, 3.5, 5.5  # walkway, single and double driveway widths
-WALL_MIN_CM = 50.0  # a cut deeper than this along a lot edge gets a retaining wall
 # lots whose front is a full-width sidewalk apron (plaza) to the kerb rather than a garden walkway
 FRONTAGE_ROLES = ("shop", "mall", "office", "skyscraper", "apartment", "hospital", "school", "police",
                   "fire_station", "gas_station")
@@ -1384,9 +1343,11 @@ def _lot_ground(layer: dict, sample_z, x: float, y: float, yaw: float, w_m: floa
     downhill), a foundation as deep as the ground falls away under it, and the paths from its front to
     the kerb: a walkway from the door, a driveway at one side (winding when steep).
     Shops, offices, apartments and civic buildings get a full-width frontage (a sidewalk apron from the facade
-    to the kerb, ramped from the pad to the street) instead of a narrow walkway. Where the ground stands above
-    the pad along a lot edge (the uphill cut) a retaining wall holds it.
-    Returns (pad z cm, foundation m, paths [[width_m, [x, y, z, ...]]], walls [[x, y, yaw, length_m, height_m]])."""
+    to the kerb, ramped from the pad to the street) instead of a narrow walkway. An uphill cut is held by the
+    graded ground itself (citygen.cut_pads blends the pad back into the hill): no wall slabs on lot edges.
+    The foundation is a real piece on every building (kit_bake.foundation); its depth here is a first figure,
+    measured again on the ground the heightmap leaves once the pads are cut (citygen.footings).
+    Returns (pad z cm, foundation m, paths [[width_m, [x, y, z, ...]]])."""
     fx, fy = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))  # +X faces the street
     sx, sy = -fy, fx
     hd, hw = d_m * 50, w_m * 50
@@ -1412,19 +1373,7 @@ def _lot_ground(layer: dict, sample_z, x: float, y: float, yaw: float, w_m: floa
         path(DRIVE_M, -hw * 0.3)
     elif layer["walkway"]:
         path(round(w_m * 0.9, 1) if layer["role"] in FRONTAGE_ROLES else WALK_M, 0.0)
-    walls = []
-    for (ea, eb), (la, lb), along in ((((1, 0), (0, 1)), (hd, hw), w_m), (((-1, 0), (0, 1)), (hd, hw), w_m),
-                                       (((0, 1), (1, 0)), (hw, hd), d_m), (((0, -1), (1, 0)), (hw, hd), d_m)):
-        # the edge at offset (ea * hd along +X, eb * hw sideways); sample its middle and both ends
-        mx, my = x + fx * ea[0] * hd + sx * ea[1] * hw, y + fy * ea[0] * hd + sy * ea[1] * hw
-        ux, uy = fx * eb[0] + sx * eb[1], fy * eb[0] + sy * eb[1]  # along the edge
-        half = along * 50
-        zs = [sample_z(mx + ux * t, my + uy * t) for t in (-half, 0.0, half)]
-        top = max([z for z in zs if z is not None] or [pad])
-        if top - pad > WALL_MIN_CM:
-            walls.append([round(mx), round(my), round(math.degrees(math.atan2(uy, ux)), 1), round(along, 1),
-                          round((top - pad) / 100, 2)])
-    return pad, found, paths, walls
+    return pad, found, paths
 
 
 def pads(previewed: dict, margin_cm: float = 400.0) -> list:
@@ -1529,10 +1478,9 @@ def _demo() -> None:
     # the walkway goes straight down and the driveway winds across the slope
     house = clean({"name": "H", "kind": "buildings", "role": "house"})
     slope = lambda x, y: -0.3 * x  # +X (the street side) is downhill
-    pad, found, paths, walls = _lot_ground(house, slope, 0, 0, 0.0, 12, 12)
+    pad, found, paths = _lot_ground(house, slope, 0, 0, 0.0, 12, 12)
     assert abs(pad) < 1 and found == 1.8, (pad, found)
-    # the back edge (-X) is 1.8 m above the pad: a retaining wall there, as long as the lot is wide
-    assert any(abs(w[4] - 1.8) < 0.05 and w[3] == 12 for w in walls), walls
+    assert len(h) > 11 and h[11] == [], "no wall slabs on lot edges"
     shop = clean({"name": "S", "kind": "buildings", "role": "shop"})
     assert _lot_ground(shop, lambda x, y: 0.0, 0, 0, 0.0, 20, 15)[2][0][0] == 18.0, "a shop fronts the street full width"
     (drive,) = paths
@@ -1549,11 +1497,6 @@ def _demo() -> None:
     assert abs(g(1500, 0) - (-450)) < 30, "the hill away from the lot is untouched"
     bad = clean({"name": "x", "kind": "nope", "density": -5, "scale_min": 3, "scale_max": 1})
     assert bad["kind"] == "scatter" and bad["density"] == 0.01 and bad["scale_min"] == 1 and bad["scale_max"] == 3
-    # road walls: a flat road cut 3 m into a hill on one side gets a stone wall there, none on the flat side
-    road = ([{"i": 0, "x": 0, "y": 0, "z": 0, "w": 500, "raise": True}, {"i": 1, "x": 3000, "y": 0, "z": 0, "w": 500, "raise": True}],
-            [{"a": 0, "b": 1, "mesh": "SM_Road"}])
-    rw = road_walls([road], lambda x, y: 300.0 if y > 0 else 0.0)
-    assert len(rw) == 3 and all(r[1] > 0 and abs(r[6] - 3.3) < 0.01 and r[5] == 10.0 for r in rw), rw
     # an area-limited layer places only inside its outline
     boxed = clean({"name": "Box trees", "kind": "scatter", "density": 5, "area": [[0, 0], [5000, 0], [5000, 5000], [0, 5000]]})
     bp = preview([boxed], [], {"min": [-20000, -20000], "max": [20000, 20000]}, [], lambda x, y: 0.0)["Box trees"]["points"]

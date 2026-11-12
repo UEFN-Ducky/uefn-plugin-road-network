@@ -606,7 +606,6 @@ _STREET_LOOKS = {
     "Goods": (("Tile", 100, 0.6, 0.0, 0.6), (0.85, 0.45, 0.1)),
     # road paint (backend/road_profiles): lane lines and the two-way centre line
     "Paint": (("Concrete", 200, 0.6, 0.0, 0.0), (0.95, 0.95, 0.92)), "PaintYellow": (("Concrete", 200, 0.6, 0.0, 0.0), (0.9, 0.68, 0.08)),
-    "StoneWall": (("Stone", 120, 1.0, 0.0, 0.0), (0.55, 0.5, 0.44)),
     "Leaf": (("Rock", 120, 1.0, 0.0, 0.0), (0.13, 0.32, 0.09)), "RockGrey": (("Rock", 200, 1.0, 0.0, 0.0), (0.52, 0.5, 0.47)),
     "Turf": (("Rock", 300, 1.0, 0.0, 0.0), (0.16, 0.4, 0.12)), "Rubber": (("Concrete", 150, 1.0, 0.0, 0.0), (0.6, 0.2, 0.12)),
     "Water": (("Tile", 200, 0.05, 0.0, 0.0), (0.08, 0.35, 0.55)), "Gravel": (("Rock", 80, 1.0, 0.0, 0.0), (0.45, 0.44, 0.42)),
@@ -711,13 +710,8 @@ _STREET_KIT = {
     "SM_Kit_Turnaround": (["Asphalt"], [("cyl", 0, (0, 0, -10), (0, 0, 0), (1000, 10, 24))]),
     # a yard's timber fence along a lot line: 1 m long, 10 cm thick, 2.5 m tall (placed at 0.6: 1.5 m)
     "SM_Kit_Fence": (["Wood"], [("box", 0, (0, 0, 0), (0, 0, 0), (100, 10, 250))]),
-    # stone retaining wall along a cut / filled road: 1 m long, 50 cm thick, 1 m tall, a capping course on top
-    "SM_Kit_StoneWall": (["StoneWall", "Plinth"], [("box", 0, (0, 0, 0), (0, 0, 0), (100, 50, 95)),
-                                                  ("box", 1, (0, 0, 95), (0, 0, 0), (100, 56, 5))]),
     # the sidewalk carried round a junction corner: a round 4 m paving pad (any corner angle), top at z 0
     "SM_Kit_SidewalkCorner": (["Pavers"], [("cyl", 0, (0, 0, -15), (0, 0, 0), (200, 15, 16))]),
-    # retaining wall for an uphill lot edge: 1 m long, 30 cm thick, 1 m tall, scaled to the edge and the cut
-    "SM_Kit_RetainingWall": (["Plinth"], [("box", 0, (0, 0, 0), (0, 0, 0), (100, 30, 100))]),
     # nature for the Bushes / Rocks PCG layers: low-poly lumps (instanced by the hundred thousand)
     "SM_Kit_Bush": (["Leaf"], [("sph", 0, (0, 0, 0), (0, 0, 0), (65, 5, 7)), ("sph", 0, (45, 20, 0), (0, 0, 0), (50, 5, 7)),
                                ("sph", 0, (-35, -30, 0), (0, 0, 0), (48, 5, 7))]),
@@ -790,6 +784,9 @@ _STREET_KIT = {
                                            ("box", 0, (30, 0, 0), (0, 0, 0), (60, 100, 130)),
                                            ("box", 0, (-250, 48.5, 0), (0, 0, 0), (400, 3, 250)),
                                            ("box", 0, (-250, -48.5, 0), (0, 0, 0), (400, 3, 250))]),
+    # a low deck's or ramp's approach wall (citygen.deck_fills): a 1 m concrete block, its origin at the middle of
+    # its base, stretched along the deck, across its underside and up from 1 m in the ground into the slab
+    "SM_Kit_ApproachWall": (["Plinth"], [("box", 0, (0, 0, 0), (0, 0, 0), (100, 100, 100))]),
     # shipyards (backend/shipyard.py)
     "SM_Kit_ShipHull": (["Steel", "Hull"], [("box", 0, (0, 0, 0), (0, 0, 0), (9000, 1900, 1400)),
                                            ("box", 0, (4700, 0, 300), (0, 0, 45), (900, 900, 1100)),

@@ -141,8 +141,11 @@ RULES = [
     "so nothing sits inside a hill. Ground-level roads shape the terrain (live splines).",
     "Interchange loops are tangent to the highway and the cross road and come down from deck height to the cross road.",
     "Keep zones (the cinema, spawn islands) are never built on: flat at their height, streets stop short, highways go round.",
-    "Every building lot is levelled (pad) with a plinth where the hill falls away, a walkway to the kerb and, for "
-    "houses and businesses, a driveway.",
+    "Every building lot is levelled (pad), and every building stands on its own "
+    "foundation (a plinth course and a wall 1 m into the ground, deeper where the hill falls away); a walkway to "
+    "the kerb and, for houses and businesses, a driveway.",
+    "Nothing stands on air and no loose wall slab holds anything up: ground roads carry their own 3 m side walls, "
+    "a deck or ramp too low for piers stands on its approach wall, an uphill cut is graded ground.",
     "Forests grow in dense patches with meadows between, in a belt around each city; parks are dense groves.",
     "PCG is tiled (400 m) and incremental: a change rebuilds only the tiles it touches.",
     "Urban freeways are planned before a city's blocks (from 600 m radius one north-south, from 2 km a second "
@@ -421,10 +424,33 @@ ROAD_BLEND_CM = 3000.0  # generated ground meets a road at its kerb and blends b
 STRUCTURES = {ROAD_MESH[k].split("/")[-1] for k in ("BR", "BRR", "BW", "ED", "ER")}  # bridges and viaducts stand free
 
 
+BANK_GRADE = 0.5  # the steepest a lot may leave the ground beside a road: 1 in 2, an earth bank that stands
+BANK_RINGS = 3  # ... kept for this many cells out from the road's own
+
+
+def _beside_roads(rows: list, locked, grid: int, rings: int = BANK_RINGS) -> dict:
+    """{(j, i): (cells out from the nearest road cell, that cell's height)} for every cell within `rings` of a
+    road's own cells."""
+    near: dict = {}
+    edge = [(j, i, rows[j][i]) for j, i in locked]
+    for d in range(1, rings + 1):
+        nxt = []
+        for j, i, z in edge:
+            for c in ((j - 1, i), (j + 1, i), (j, i - 1), (j, i + 1), (j - 1, i - 1), (j - 1, i + 1), (j + 1, i - 1), (j + 1, i + 1)):
+                if c not in near and c not in locked and 0 <= c[0] < grid and 0 <= c[1] < grid:
+                    near[c] = (d, z)
+                    nxt.append((c[0], c[1], z))
+        edge = nxt
+    return near
+
+
 def cut_pads(ter: dict, pads: list, locked=(), blend: float = 0.0) -> dict:
     """Every lot (pcg_layers.pads) cut level into a fine terrain grid, a cell at a time, blending back into the
     hillside. Cells a road owns (`locked`, from grade_to_roads) keep the road's height: a street always wins
-    over the lot beside it, so the ground never climbs over a kerb."""
+    over the lot beside it, so the ground never climbs over a kerb.
+    Beside a road a pad never leaves the ground steeper than BANK_GRADE: a lot levelled 6 m above the street it
+    fronts stood on a dirt cliff one landscape pixel wide. The ground now comes down to the road as a bank and the
+    building's own foundation holds the rest of the step (kit_bake.foundation, measured by footings)."""
     grid, (x0, y0), (x1, y1) = ter["grid"], ter["min"], ter["max"]
     cw, ch = (x1 - x0) / grid, (y1 - y0) / grid
     blend = blend or max(PAD_BLEND_CM, 1.5 * max(cw, ch))
@@ -441,9 +467,15 @@ def cut_pads(ter: dict, pads: list, locked=(), blend: float = 0.0) -> dict:
                 if e < blend and e < best.get((j, i), (blend,))[0]:
                     best[(j, i)] = (e, pz)
     rows = [list(r) for r in ter["heights"]]
+    near = _beside_roads(rows, locked if isinstance(locked, (set, frozenset)) else set(locked), grid) if locked else {}
+    step = BANK_GRADE * max(cw, ch)
     for (j, i), (e, pz) in best.items():
         z = rows[j][i]
-        rows[j][i] = round(z + (pz - z) * (1 - _smoothstep(0, blend, e)), 1)
+        z += (pz - z) * (1 - _smoothstep(0, blend, e))
+        if (j, i) in near:
+            d, zr = near[(j, i)]
+            z = max(zr - d * step, min(zr + d * step, z))
+        rows[j][i] = round(z, 1)
     return {**ter, "heights": rows}
 
 
@@ -620,9 +652,7 @@ def ground_fit(ground, buildings: list, keep: int = 50) -> dict:
         return False
 
     for k, (label, x, y, yaw, w_m, d_m, z, found) in enumerate(buildings):
-        c, s = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
-        pts = [(x + c * a * d_m * 50 - s * b * w_m * 50, y + s * a * d_m * 50 + c * b * w_m * 50)
-               for a in (-1, 0, 1) for b in (-1, 0, 1)]
+        pts = _under(x, y, yaw, w_m, d_m)
         zs = [ground(px, py) for px, py in pts]
         buried, gap = max(zs) - z, z - found * 100 - min(zs)
         if buried > FIT_TOL_CM or gap > FIT_TOL_CM:
@@ -633,6 +663,22 @@ def ground_fit(ground, buildings: list, keep: int = 50) -> dict:
     return {"checked": len(buildings), "buried": sum(1 for b in bad if b["buried_cm"]),
             "floating": sum(1 for b in bad if b["floating_cm"]), "overlapping": sum(1 for b in bad if b["overlaps"]),
             "ok": not bad, "misfits": bad[:keep]}
+
+
+def _under(x, y, yaw, w_m, d_m) -> list:
+    """The nine spots a building is checked at: its corners, the middle of each edge and its centre."""
+    c, s = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+    return [(x + c * a * d_m * 50 - s * b * w_m * 50, y + s * a * d_m * 50 + c * b * w_m * 50)
+            for a in (-1, 0, 1) for b in (-1, 0, 1)]
+
+
+def footings(ground, buildings: list) -> list:
+    """How far the ground falls away under each building's floor, in metres (0 on level ground): what its
+    foundation has to cover, measured on the ground the landscape really has there. buildings as ground_fit takes
+    them. (A lot's first estimate is made before its pad is cut: on a pad filled level it said metres of
+    foundation where none shows.)"""
+    return [round(max(0.0, z - min(ground(px, py) for px, py in _under(x, y, yaw, w_m, d_m))) / 100, 1)
+            for _l, x, y, yaw, w_m, d_m, z, *_r in buildings]
 
 
 def settle(ground, buildings: list) -> tuple:
@@ -1330,17 +1376,15 @@ DECK_DEPTH_CM = 150.0  # road surface to the deck's underside: the pier cap sits
 CAP_CM = 120.0  # the cap beam's depth
 GIRDER_CM = 120.0  # a bridge's girders under its slab (road_profiles); the pier cap carries them
 ABUTMENT_CM = 250.0  # an abutment's wall, from the deck's underside down into the bank
+FILL_STEP_CM = 500.0  # an approach wall's blocks under a low deck, one this long at a time (they overlap a little)
+EMBED_CM = 100.0  # how far a wall or a foundation goes into the ground under its lowest corner
 
 
-def bridge_piers(actors: dict, ground) -> tuple:
-    """Real bridges: under every deck and elevated ramp a pier bent every PIER_EVERY_CM, from the ground (or the
-    lake bed) up to the deck's underside: a cap beam across the deck's width and one column (two under a deck
-    16 m or wider), turned with the deck. Returns (columns, caps) as site rows [x, y, z, yaw, sx, sy, sz] for
-    SM_Kit_BridgePier (200 x 200 x 100 cm at scale 1) and SM_Kit_PierCap (200 x 100 x 120 cm)."""
-    cols, caps = [], []
+def _ground_roads(actors: dict):
+    """in_road(x, y, pad): is this spot on a road that lies on the ground, or within `pad` cm of its edge."""
     cell = 5000.0
-    grade: dict = {}  # roads on the ground, by 50 m cell: a pier never stands in a road the deck crosses
-    for label, a in actors.items():
+    grade: dict = {}  # roads on the ground, by 50 m cell
+    for a in actors.values():
         by = {p["i"]: p for p in a["points"]}
         for s in a["segments"]:
             mesh = (s.get("mesh") or "").split("/")[-1]
@@ -1351,13 +1395,69 @@ def bridge_piers(actors: dict, ground) -> tuple:
                     for gy in range(int(min(pa["y"], pb["y"]) // cell) - 1, int(max(pa["y"], pb["y"]) // cell) + 2):
                         grade.setdefault((gx, gy), []).append((pa, pb, h))
 
-    def in_road(x, y):
+    def in_road(x, y, pad=250.0):
         for pa, pb, h in grade.get((int(x // cell), int(y // cell)), ()):
             ux, uy = pb["x"] - pa["x"], pb["y"] - pa["y"]
             t = max(0.0, min(1.0, ((x - pa["x"]) * ux + (y - pa["y"]) * uy) / (ux * ux + uy * uy or 1.0)))
-            if math.hypot(x - pa["x"] - ux * t, y - pa["y"] - uy * t) < h + 250:
+            if math.hypot(x - pa["x"] - ux * t, y - pa["y"] - uy * t) < h + pad:
                 return True
         return False
+    return in_road
+
+
+def deck_fills(actors: dict, ground, sea=None) -> list:
+    """A deck's or ramp's own side walls where it is too low for piers: an approach wall under it, from the ground
+    up into its slab, as wide as the slab's flat underside. So a ramp coming down to its street, or a freeway deck
+    a few metres over the land, stands on solid concrete the way a ground road stands on its skirts, never on air.
+    Left open: over water (a bridge), over a road it crosses, where the deck already lies on the ground, and where
+    it is high enough for piers (bridge_piers takes over there, the same test).
+    Site rows [x, y, base z, yaw, length_m, width_m, height_m] for SM_Kit_ApproachWall (1 x 1 x 1 m at scale 1,
+    its origin at the middle of its base)."""
+    rows = []
+    in_road = _ground_roads(actors)
+    for a in actors.values():
+        by = {p["i"]: p for p in a["points"]}
+        for s in a["segments"]:
+            mesh = (s.get("mesh") or "").split("/")[-1]
+            pa, pb = by.get(s["a"]), by.get(s["b"])
+            if mesh not in STRUCTURES or not pa or not pb:
+                continue
+            half = HALF.get(next((k for k, m in ROAD_MESH.items() if m.split("/")[-1] == mesh), ""), 800.0)
+            L = math.hypot(pb["x"] - pa["x"], pb["y"] - pa["y"])
+            if L < 100:
+                continue
+            yaw = round(math.degrees(math.atan2(pb["y"] - pa["y"], pb["x"] - pa["x"])), 1)
+            ux, uy = (pb["x"] - pa["x"]) / L, (pb["y"] - pa["y"]) / L
+            inner = half - min(150.0, half * 0.3)  # the slab's flat underside (road_profiles.shape 'deck' tapers in)
+            n = max(1, round(L / FILL_STEP_CM))
+            rise = abs(pb["z"] - pa["z"]) / n / 2  # a block's higher end: its flat top goes up into the sloping slab there
+            for k in range(n):
+                t = (k + 0.5) / n
+                x, y = pa["x"] + (pb["x"] - pa["x"]) * t, pa["y"] + (pb["y"] - pa["y"]) * t
+                top = pa["z"] + (pb["z"] - pa["z"]) * t - DECK_DEPTH_CM - (GIRDER_CM if "Bridge" in mesh else 0.0)
+                spots = [(x - uy * o, y + ux * o) for o in (-inner, 0.0, inner)]
+                feet = [ground(px, py) for px, py in spots]
+                if any(f is None for f in feet):
+                    continue
+                low = min(feet)
+                if sea is not None and low < sea:
+                    continue  # over water: a bridge stands on its piers
+                if top - low < 20 or top - CAP_CM - low >= PIER_MIN_CM:
+                    continue  # on the ground already, or high enough to stand on piers
+                if any(in_road(px, py, -50.0) for px, py in spots):
+                    continue  # a road runs under it here: the deck spans it
+                rows.append([round(x), round(y), round(low - EMBED_CM), yaw, round(L / n * 1.04 / 100, 2),
+                             round(inner * 2 / 100, 2), round((top + rise + 5 - low + EMBED_CM) / 100, 2)])
+    return rows
+
+
+def bridge_piers(actors: dict, ground) -> tuple:
+    """Real bridges: under every deck and elevated ramp a pier bent every PIER_EVERY_CM, from the ground (or the
+    lake bed) up to the deck's underside: a cap beam across the deck's width and one column (two under a deck
+    16 m or wider), turned with the deck. Returns (columns, caps) as site rows [x, y, z, yaw, sx, sy, sz] for
+    SM_Kit_BridgePier (200 x 200 x 100 cm at scale 1) and SM_Kit_PierCap (200 x 100 x 120 cm)."""
+    cols, caps = [], []
+    in_road = _ground_roads(actors)  # a pier never stands in a road the deck crosses
     for label, a in actors.items():
         by = {p["i"]: p for p in a["points"]}
         for s in a["segments"]:
@@ -2738,6 +2838,24 @@ def _demo() -> None:
     assert ab == [[5000, 0, 100 - 150 - 250, 0.0, 1.0, 19.5, 1.0]], ("one abutment, where the street becomes the bridge", ab)
     assert not bridge_piers({"x": {"points": [_point(0, 0, 0, 200, 0, 650, lifted=True), _point(1, 6000, 0, 200, 0, 650, lifted=True)],
                                    "segments": [_segment(2, 0, 1, "ER", "/G", lifted=True)]}}, lambda x, y: 0.0)[0], "a deck on its fill"
+    # ... that low ramp stands on its own approach wall instead: from 1 m in the ground up into its slab, end to end
+    low = {"x": {"points": [_point(0, 0, 0, 400, 0, 650, lifted=True), _point(1, 6000, 0, 400, 0, 650, lifted=True),
+                            _point(3, 3000, -5000, 0, 0, 525), _point(4, 3000, 5000, 0, 0, 525)],
+                 "segments": [_segment(2, 0, 1, "ER", "/G", lifted=True), _segment(5, 3, 4, "2L", "/G")]}}
+    fills = deck_fills(low, lambda x, y: 0.0)
+    assert fills and all(r[2] == -EMBED_CM and abs(r[2] + r[6] * 100 - (400 - DECK_DEPTH_CM + 5)) < 2 for r in fills), fills
+    assert abs(sum(r[4] for r in fills) - (60 - 10.5) * 1.04) < 6 and all(abs(r[0] - 3000) > 500 for r in fills), "open over the street"
+    assert not deck_fills(low, lambda x, y: -900.0), "high enough for piers: no wall"
+    assert not deck_fills(low, lambda x, y: -200.0, sea=0.0), "over water: a bridge"
+    assert not deck_fills(low, lambda x, y: 245.0), "a deck lying on the ground needs none"
+    # a lot levelled 8 m above the street it fronts: the ground comes down to the road no steeper than 1 in 2 ...
+    plain = {"min": [0, 0], "max": [10000, 10000], "grid": 10, "heights": [[0.0] * 10 for _ in range(10)]}
+    lot8 = [(3500, 5000, 1.0, 0.0, 1500, 1500, 800.0)]
+    by_road = cut_pads(plain, lot8, {(j, 0) for j in range(10)})["heights"][5]
+    assert by_road[:3] == [0.0, 500.0, 800.0] and cut_pads(plain, lot8)["heights"][5][1] > 550, by_road
+    # ... and a foundation is as deep as the ground really falls away under its building
+    assert footings(lambda x, y: -0.3 * x, [("h", 0, 0, 0.0, 12, 12, 0)]) == [1.8]
+    assert footings(lambda x, y: 0.0, [("h", 0, 0, 0.0, 12, 12, 0)]) == [0.0]
     hilly = generate(three, lambda x, y: 800.0 * math.sin(x / 9000.0) + 600.0 * math.cos(y / 7000.0), "/Game/X/Roads", seed=3)
     assert weld_ends(hilly) == 0, "on hills too: generate welds the ends itself"
     assert all(not any(st.problems(a["points"], a["segments"]).values()) for a in multi.values())

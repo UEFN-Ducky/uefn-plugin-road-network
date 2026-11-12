@@ -1434,6 +1434,10 @@ def register(api) -> None:
                 if len(p) > 1 and len(p[1]) > 2:
                     p[1][2] = z
             r[2], r[9] = z, found
+        # every foundation as deep as the ground really falls away under it (the lot's own figure was a guess
+        # made before its pad was cut)
+        for (_n, r), need in zip(rows, cg.footings(ground, [(n, r[0], r[1], r[3], r[7], r[8], r[2]) for n, r in rows])):
+            r[9] = need
         return {**after, "settled": len(moves), "before": {k: before[k] for k in ("buried", "floating", "overlapping")},
                 "pads": pads, "ground": ground}
 
@@ -1462,8 +1466,9 @@ def register(api) -> None:
             ground = st.grid_sampler(terrain) if terrain.get("heights") else (lambda x, y: 0.0)
             placed = pl.preview(list(docs.values()), cities, terrain, pl.road_samples(actors), ground,
                                 limit=6000, juncs=pl.junctions(actors), keep=keep, foliage_limit=FOREST_LIMIT)  # the whole city
-            # (no loose wall slabs along the roads any more: every road piece carries its own side walls down into
-            # the ground, road_profiles 'skirt', and the ground is graded to the roads)
+            # (no loose wall slabs along the roads: every road piece carries its own side walls down into the
+            # ground, road_profiles 'skirt'; every building its own foundation, kit_bake.foundation; every low deck
+            # its approach wall, citygen.deck_fills; and the ground is graded to the roads)
             placed.update(pl.site_layers(cities, ground))  # complexes' parking, stalls, turnarounds, garages
             placed.update(pl.aprons(placed))  # a dropped kerb where each driveway meets its street
             # fences only round houses that were built, through no building, across no street, never crossing
@@ -1525,12 +1530,16 @@ def register(api) -> None:
                             p[2] = round(fit["ground"](p[0], p[1]) + up)
             # real bridges: a pier bent every 30 m under every deck and elevated ramp, down to the ground it stands
             # on (the cut ground once there is one) or the lake bed
-            cols, caps = cg.bridge_piers({str(k): {"points": p, "segments": s} for k, (p, s) in enumerate(actors)},
-                                         (fit or {}).get("ground") or (lambda x, y: ground(x, y) or 0.0))
-            ends = cg.bridge_abutments({str(k): {"points": p, "segments": s} for k, (p, s) in enumerate(actors)})
+            decks = {str(k): {"points": p, "segments": s} for k, (p, s) in enumerate(actors)}
+            stands_on = (fit or {}).get("ground") or (lambda x, y: ground(x, y) or 0.0)
+            cols, caps = cg.bridge_piers(decks, stands_on)
+            ends = cg.bridge_abutments(decks)
+            # ... and where a deck or ramp is too low for piers it stands on its own approach wall, never on air
+            fills = cg.deck_fills(decks, stands_on, terrain.get("sea"))
             for name, mesh, rows, box in (("Bridge piers", "SM_Kit_BridgePier", cols, [2.0, 2.0, 1.0]),
                                           ("Pier caps", "SM_Kit_PierCap", caps, [2.0, 1.0, 1.2]),
-                                          ("Bridge abutments", "SM_Kit_BridgeAbutment", ends, [1.0, 1.0, 2.5])):
+                                          ("Bridge abutments", "SM_Kit_BridgeAbutment", ends, [1.0, 1.0, 2.5]),
+                                          ("Approach walls", "SM_Kit_ApproachWall", fills, [1.0, 1.0, 1.0])):
                 placed[name] = {"kind": "site", "role": "bridge", "mesh": mesh, "box_m": box, "tint": "fg-dim",
                                 "count": len(rows), "shown": len(rows), "points": rows}
             _PREVIEW_CACHE.update(key=key, out=placed, fit=fit, ter=fit_ter)

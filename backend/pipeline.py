@@ -7,7 +7,7 @@ CityGenerator
 |- RoadMeshGenerator   Asphalt, Curbs, Intersections            (needs UEFN: junction meshes, road paste)
 |- SidewalkGenerator   PedestrianPaths, Corners, FrontageConnections
 |- BlockGenerator      BuildingParcels
-|- FoundationGenerator BuildingPads, CutAndFill, RetainingWalls
+|- FoundationGenerator BuildingPads, CutAndFill, Foundations
 |- BuildingGenerator   Footprints, Buildings, Entrances
 
 Running from a stage re-runs it and everything after it, never what came before: change the buildings and
@@ -48,8 +48,8 @@ STAGES = [
                  "utilities and transit placed by demand, road travel time and coverage, as complete developments "
                  "(building + parking + aprons / fields / playgrounds / yards) on whole lots; coverage report",
      "code": "urban.plan (Network, population, CATALOG, ARCHETYPES, develop), citygen.city_layout"},
-    {"id": "foundations", "name": "FoundationGenerator", "parts": ["BuildingPads", "CutAndFill", "RetainingWalls"],
-     "consumes": ["terrain", "blocks", "demand"], "produces": "per lot: pad height, plinth depth, retaining walls, paths",
+    {"id": "foundations", "name": "FoundationGenerator", "parts": ["BuildingPads", "CutAndFill", "Foundations"],
+     "consumes": ["terrain", "blocks", "demand"], "produces": "per lot: pad height, foundation depth (measured on the cut ground), paths",
      "code": "pcg_layers._lot_ground"},
     {"id": "buildings", "name": "BuildingGenerator", "parts": ["Footprints", "Buildings", "Entrances"],
      "consumes": ["blocks", "foundations"], "produces": "every PCG layer's placements, baked to kit meshes, "

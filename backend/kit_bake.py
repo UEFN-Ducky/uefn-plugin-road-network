@@ -14,6 +14,7 @@ import json
 import math
 
 from . import grammar
+from .citygen import EMBED_CM
 from .pcg_layers import FORM_NAMES
 
 # name: (folder under WorldGen, bounds min x/y/z, max x/y/z in cm) - measured from the imported meshes
@@ -100,10 +101,8 @@ KIT = {
     "SM_Kit_DeskSet": ("Kit/Street", -80, -40, 0, 85, 40, 115),
     "SM_Kit_SofaSet": ("Kit/Street", -55, -100, 0, 120, 100, 85),
     "SM_Kit_ShopShelf": ("Kit/Street", -30, -100, 0, 30, 100, 180),
-    "SM_Kit_RetainingWall": ("Kit/Street", -50, -15, 0, 50, 15, 100),
     "SM_Kit_ParkingStall": ("Kit/Street", -275, -130, 0, 275, 130, 2),
     "SM_Kit_Turnaround": ("Kit/Street", -1000, -1000, -10, 1000, 1000, 0),
-    "SM_Kit_StoneWall": ("Kit/Street", -50, -25, 0, 50, 25, 100),
     "SM_Kit_SidewalkCorner": ("Kit/Street", -200, -200, -15, 200, 200, 0),
     "SM_Kit_Bush": ("Kit/Street", -83, -95, 0, 110, 85, 130),
     "SM_Kit_Rock": ("Kit/Street", -80, -70, -20, 85, 70, 70),
@@ -156,6 +155,8 @@ KIT = {
     "SM_Kit_BridgePier": ("Kit/Street", -100, -100, 0, 100, 100, 100),
     "SM_Kit_PierCap": ("Kit/Street", -100, -50, 0, 100, 50, 120),
     "SM_Kit_BridgeAbutment": ("Kit/Street", -450, -50, 0, 60, 50, 250),
+    # a low deck's or ramp's approach wall (citygen.deck_fills): 1 m each way, stretched along, across and up
+    "SM_Kit_ApproachWall": ("Kit/Street", -50, -50, 0, 50, 50, 100),
     # shipyards (shipyard.py)
     "SM_Kit_ShipHull": ("Kit/Street", -5000, -1000, 0, 5000, 1000, 2400),
     "SM_Kit_GoliathCrane": ("Kit/Street", -1000, -3500, 0, 1000, 3500, 8000),
@@ -340,10 +341,6 @@ def bake(previewed: dict, root: str, interiors: bool = True) -> tuple:
             for p in pts:
                 groups.setdefault(path(layer["mesh"], root), []).append(list(p[:7]))
             baked[name] = len(pts)
-        elif layer.get("kind") == "walls":  # stone retaining walls along cut / filled roads: length x height
-            for p in pts:
-                groups.setdefault(path("SM_Kit_StoneWall", root), []).append([p[0], p[1], p[2], p[3], p[5], 1.0, p[6]])
-            baked[name] = len(pts)
         elif layer.get("meshes"):  # the person's / an AI's own layer: exactly its meshes, never a guessed kit role
             _own(groups, layer["meshes"], pts, layer.get("kind"), root)
             baked[name] = len(pts)
@@ -358,6 +355,7 @@ def bake(previewed: dict, root: str, interiors: bool = True) -> tuple:
                 d = (p[8] if len(p) > 8 else 30) * 100
                 groups.setdefault(path(FLAT[role], root), []).append([p[0], p[1], p[2], p[3], round(d / 100, 2),
                                                                     round(w / 100, 2), 1.0])
+                _ground_pieces(groups, root, p, p[0], p[1], p[2], p[3], w, d, steps=False)  # a slab has side walls too
             baked[name] = len(pts)
         elif layer.get("kind") == "buildings" and (role in grammar.STYLE_BY_ROLE or role in BUILDINGS):
             opts = BUILDINGS.get(role) or [["SM_City_CT_MidRise"]]
@@ -691,20 +689,35 @@ def _grove(groups: dict, root: str, p: list) -> int:
     return made
 
 
-def _ground_pieces(groups: dict, root: str, p: list, x, y, z, yaw, w, d, front: float = 0.0) -> None:
-    """A lot's foundation (a plinth as deep as the hill falls away), steps down from its door when the plinth
-    lifts it, and its walkway / driveway slabs. front: the door's distance ahead of the lot centre (cm)."""
+FOUND_COURSE_M = 0.5  # the plinth course a building stands on: this tall ...
+FOUND_OUT_M = 0.3  # ... and this far out past its walls
+FOUND_WALL_OUT_M = 0.15  # the foundation wall under the course
+FOUND_EMBED_M = EMBED_CM / 100  # into the ground below the lowest corner, as deep as an approach wall goes
+
+
+def foundation(found_m: float) -> list:
+    """A building's own foundation, the way a road carries its side walls (road_profiles 'skirt'): a plinth
+    course round its foot and, under it, a wall down to FOUND_EMBED_M below the lowest ground it stands over.
+    On EVERY building, however flat its lot: wherever the land falls away it stands on concrete, never on air
+    or on a loose block. [(top below the floor m, depth m, out past the walls m)], the course first: one
+    SM_Kit_Plinth box each, as wide and deep as the building plus twice `out`. The panel draws the same two
+    (ui/app.js FOUND)."""
+    return [(0.02, FOUND_COURSE_M, FOUND_OUT_M),
+            (FOUND_COURSE_M, round(max(0.0, found_m) + FOUND_EMBED_M - FOUND_COURSE_M, 2), FOUND_WALL_OUT_M)]
+
+
+def _ground_pieces(groups: dict, root: str, p: list, x, y, z, yaw, w, d, front: float = 0.0, steps: bool = True) -> None:
+    """A lot's foundation (foundation()), steps down from its door when the land falls away under it, and its
+    frontage slabs. front: the door's distance ahead of the lot centre (cm)."""
     found = p[9] if len(p) > 9 else 0.0
-    if found > 0.3:
-        groups.setdefault(path("SM_Kit_Plinth", root), []).append([x, y, z, yaw, round(d / 100, 2), round(w / 100, 2),
-                                                                  round(found + 0.3, 2)])
+    for drop, deep, out in foundation(found):
+        groups.setdefault(path("SM_Kit_Plinth", root), []).append(
+            [x, y, round(z - drop * 100), yaw, round(d / 100 + 2 * out, 2), round(w / 100 + 2 * out, 2), deep])
+    if found > 0.3 and steps:
         f = front or d / 2
         fx, fy = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
         groups.setdefault(path("SM_Kit_EntranceSteps", root), []).append(
             [round(x + fx * f), round(y + fy * f), round(z - found * 100), yaw, 1.0, 1.0, round(found, 2)])
-    for wx, wy, wyaw, length, height in (p[11] if len(p) > 11 else []):  # uphill cut: a wall from pad to ground
-        groups.setdefault(path("SM_Kit_RetainingWall", root), []).append(
-            [wx, wy, z, wyaw, round(length, 2), 1.0, round(height + 0.2, 2)])
     for width, flat in (p[10] if len(p) > 10 else []):
         if width <= 8.0:
             continue  # walkways (Paths actor) and driveways (Access actor) are splines, not slabs
@@ -735,17 +748,17 @@ def _demo() -> None:
                        "points": [[0, 0, 500, 0, 1, 7, 0, 12, 12, 1.8, [[1.6, [600, 0, 500, 1100, 0, 350]]]]]},
             "Parking lots": {"kind": "buildings", "role": "parking", "points": [[0, 0, 0, 0, 1, 0, 0, 30, 40, 0, []]]}}
     g2, _, _ = bake(hill, "/R")
-    plinth = g2[path("SM_Kit_Plinth", "/R")][0]
-    assert plinth[4:7] == [12.0, 12.0, 2.1], plinth
+    course, wall = g2[path("SM_Kit_Plinth", "/R")][:2]  # its foundation: the course, then the wall 1 m into the ground
+    assert course[2:7] == [498, 0, 12.6, 12.6, 0.5] and wall[2:7] == [450, 0, 12.3, 12.3, 2.3], (course, wall)
+    flat = bake({"Houses": {"kind": "buildings", "role": "house", "points": [[0, 0, 0, 0, 1, 7, 0, 12, 12, 0, []]]}}, "/R")[0]
+    assert [r[6] for r in flat[path("SM_Kit_Plinth", "/R")]] == [0.5, 0.5] and path("SM_Kit_EntranceSteps", "/R") not in flat, \
+        "a building on flat ground has its foundation too, and no steps"
+    assert len(g2[path("SM_Kit_Plinth", "/R")]) == 4, "the parking lot's slab stands on side walls as well"
     assert path("SM_Kit_PathSlab", "/R") not in g2, "a walkway is a spline now, not a slab"
     plaza = {"Shops": {"kind": "buildings", "role": "shop",
                        "points": [[0, 0, 500, 0, 1, 7, 0, 12, 12, 0, [[10.8, [600, 0, 500, 1100, 0, 350]]]]]}}
     slab = bake(plaza, "/R")[0][path("SM_Kit_PathSlab", "/R")][0]
     assert slab[4] == 5.0 and slab[5] == 10.8 and slab[7] < -15, slab
-    walled = {"Houses": {"kind": "buildings", "role": "house",
-                         "points": [[0, 0, 500, 0, 1, 7, 0, 12, 12, 0, [], [[-600, 0, 90.0, 12, 1.8]]]]}}
-    wall = bake(walled, "/R")[0][path("SM_Kit_RetainingWall", "/R")][0]
-    assert wall[:4] == [-600, 0, 500, 90.0] and wall[4:7] == [12, 1.0, 2.0], wall
     assert g2[path("SM_Kit_ParkingLot", "/R")][0][4:7] == [40.0, 30.0, 1.0]
     tall = [p for p, rows in groups.items() if "SM_Kit_" not in p and any(r[0] == 0 for r in rows)]
     assert len(tall) >= 2 and all("SM_City_DT_" in p or "SM_Sky" in p for p in tall), "a 110 m lot gets a whole multi-part tower"
@@ -767,8 +780,6 @@ def _demo() -> None:
     assert own_meshes(mine) == sorted(go)
     gs = bake({"Parking stalls": {"kind": "site", "mesh": "SM_Kit_ParkingStall", "points": [[1, 2, 3, 90.0, 1.0, 1.0, 1.0]]}}, "/R")[0]
     assert gs[path("SM_Kit_ParkingStall", "/R")] == [[1, 2, 3, 90.0, 1.0, 1.0, 1.0]], gs
-    gw = bake({"Road walls": {"kind": "walls", "points": [[0, 0, 100, 90.0, 1, 10.0, 2.5]]}}, "/R")[0]
-    assert gw[path("SM_Kit_StoneWall", "/R")][0] == [0, 0, 100, 90.0, 10.0, 1.0, 2.5], gw
     # a Blender building with its manifest size fits its lot: 24 m deep lot / 12 m model = x2 (clamped to 2)
     blds = {"Mine": {"kind": "buildings", "role": "shop", "meshes": [{"path": "/G/SM_MyShop", "size_cm": [1200, 1500, 900]}],
                      "points": [[0, 0, 0, 0, 1, 9, 0, 15, 24, 1.0, [], []]]}}
