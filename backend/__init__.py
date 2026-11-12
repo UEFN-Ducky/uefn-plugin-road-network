@@ -1618,8 +1618,8 @@ def register(api) -> None:
                     touch.setdefault(i, []).append(s)
             for i, ss in touch.items():
                 p = by.get(i)
-                if not p or len(ss) != 1 or not ss[0].get("mesh") or p.get("mesh"):
-                    continue
+                if not p or len(ss) != 1 or not ss[0].get("mesh") or (p.get("mesh") and p["mesh"] not in rp.CONNECTORS):
+                    continue  # (a ramp's end carries its connector piece: still an end to check)
                 ends += 1
                 if min(p["x"] - x0, x1 - p["x"], p["y"] - y0, y1 - p["y"]) < 20000:
                     edge += 1
@@ -1633,7 +1633,7 @@ def register(api) -> None:
                     t = max(0.0, min(1.0, ((p["x"] - a["x"]) * ux + (p["y"] - a["y"]) * uy) / (ux * ux + uy * uy or 1.0)))
                     d = math.hypot(p["x"] - a["x"] - ux * t, p["y"] - a["y"] - uy * t)
                     near = min(near, d)
-                    if d <= 2600:
+                    if d <= 3500:  # a ramp stops beside its road or 15 m short of a kerb: its gore / flare spans the rest
                         dz = a["z"] + (b["z"] - a["z"]) * t - p["z"]
                         if level is None or abs(dz) < abs(level):
                             level, onto = dz, f"{lab2} {round(d)} cm"

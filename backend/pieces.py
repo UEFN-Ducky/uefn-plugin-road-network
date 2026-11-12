@@ -115,6 +115,16 @@ def manifest(root: str = "/<project>") -> dict:
                        "spec": f"{lanes} lanes{', kerb + sidewalk both sides' if walk else ''}; deck top at z 0, "
                                f"centre line on X, slot Asphalt (+ Curb, Sidewalk); bends as a spline mesh, so "
                                f"enough length loops (every 100 cm)"})
+    for name in rp.CONNECTORS:  # the pieces on every ramp's end (citygen.weld_ends places them)
+        c = rp.connector(name)
+        pieces.append({"name": name, "folder": "WorldGen/Roads", "size_cm": [c["length"], c["half"] * 2, -c["slab"]],
+                       "used_by": ["every ramp end: a gore where it joins a freeway or ramp, a flare at a street"],
+                       "plan": {"outline": c["outline"], "paint": c["paint"], "slab_cm": c["slab"],
+                                "row": "top view [x, y]: the ramp's end at x 0, the ramp comes in from -X; slab from "
+                                       "slab_cm up to z 0; paint 1 cm proud"},
+                       "spec": c["spec"],
+                       "made_by": "City Builder builds it from this plan when the project has none (street kit); a "
+                                  "Blender model with this name, pivot and size replaces it"})
     for name in grammar.modules():  # the BuildingKit modules a `build: modular` layer stacks by grammar
         pieces.append({"name": name, "folder": f"WorldGen/{grammar.FOLDER}", "path": f"{root}/WorldGen/{grammar.FOLDER}/{name}.{name}",
                        "size_cm": [grammar.BOUNDS[name][k + 3] - grammar.BOUNDS[name][k] for k in range(3)],

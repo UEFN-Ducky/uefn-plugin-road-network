@@ -1972,6 +1972,22 @@ WELD_GRADE = 0.08  # the end's own road eases to the new height at most this ste
 WELD_SNAP_CM = 6000.0  # an end that stops short of every road by less than this is brought up to the nearest one
 FREEWAY_LINK_CM = 15000.0  # a freeway that ends this close to a road runs on to it (an urban freeway ending in a field)
 FREEWAY_MESHES = {ROAD_MESH[k].split("/")[-1] for k in ("6L", "ED")}
+RAMP_MESHES = {ROAD_MESH[k].split("/")[-1] for k in ("ER", "FR")}  # their ends get a connector piece
+# a connector's half width at the ramp's end (road_profiles.connector: the gore widens to 10 m, the flare to 10.5 m)
+CONNECTOR_HALF = {"SM_Road_RampGore30m": 1000.0, "SM_Road_RampFlare15m": 1050.0}
+FLARE_CM = 1500.0  # the flare runs this far on past the ramp's end, to the street's kerb line
+
+
+def _connector(p: dict, prev: dict, seg: dict, name: str) -> None:
+    """Put connector `name` (road_profiles.CONNECTORS) on a ramp's end point p, turned along the ramp (from prev),
+    in the roads folder its own segment's mesh comes from."""
+    import re
+    m = re.search(r"StaticMesh'(.+?)/(?:Elevated/)?SM_[^/.']+\.", " ".join(seg.get("lines") or []))
+    folder = m.group(1) if m else ""
+    p["yaw"] = math.degrees(math.atan2(p["y"] - prev["y"], p["x"] - prev["x"]))
+    p["mesh"] = name
+    p["lines"] = [l for l in p.get("lines") or [] if not l.startswith(("Mesh=", "MeshScale=", "SegmentMeshOffset="))] + \
+        [f"Mesh=\"/Script/Engine.StaticMesh'{folder}/{name}.{name}'\"", "MeshScale=(X=1.000000,Y=1.000000,Z=1.000000)"]
 
 
 def own_run(touch: dict, by: dict, i, limit: float = 8000.0) -> set:
@@ -2014,8 +2030,8 @@ def weld_ends(actors: dict) -> int:
                 touch.setdefault(i, []).append(s)
         for i, ss in touch.items():
             p = by.get(i)
-            if not p or len(ss) != 1 or not ss[0]["mesh"] or p["mesh"]:
-                continue  # only a road's own open end
+            if not p or len(ss) != 1 or not ss[0]["mesh"] or (p["mesh"] and p["mesh"] not in CONNECTOR_HALF):
+                continue  # only a road's own open end (one with its connector is welded again: its road may move)
             own = half_of.get(ss[0]["mesh"].split("/")[-1], 650.0)
             mine = own_run(touch, by, i)
             best, near, link = None, None, None  # best: in reach, nearest the end's level; near / link: closest beyond
@@ -2026,7 +2042,7 @@ def weld_ends(actors: dict) -> int:
                 t = max(0.0, min(1.0, ((p["x"] - u["x"]) * ux + (p["y"] - u["y"]) * uy) / (ux * ux + uy * uy or 1.0)))
                 nx, ny, z = u["x"] + ux * t, u["y"] + uy * t, u["z"] + (v["z"] - u["z"]) * t
                 d = math.hypot(p["x"] - nx, p["y"] - ny)
-                hit = (d, nx, ny, z, half_of.get(mesh, 800.0))
+                hit = (d, nx, ny, z, half_of.get(mesh, 800.0), mesh, ux, uy)
                 if d <= WELD_REACH_CM:
                     if best is None or abs(z - p["z"]) < abs(best[3] - p["z"]):
                         best = hit
@@ -2039,7 +2055,7 @@ def weld_ends(actors: dict) -> int:
                 if link and ss[0]["mesh"].split("/")[-1] in FREEWAY_MESHES:
                     # a freeway that stops short in the fields runs on to the road it meets (the next weld puts
                     # its new end inside that road, at its height)
-                    d, nx, ny, level, half = link
+                    d, nx, ny, level, half, *_r = link
                     nid = 1 + max([q["i"] for q in a["points"]] + [s["i"] for s in a["segments"]])
                     q = {**p, "i": nid, "x": nx + (p["x"] - nx) / d * 2000, "y": ny + (p["y"] - ny) / d * 2000, "z": level,
                          "lines": list(p.get("lines") or [])}
@@ -2050,13 +2066,24 @@ def weld_ends(actors: dict) -> int:
                     st.retangent(by, s)
                     moved += 1
                 continue
-            d, nx, ny, level, half = hit
-            # the end lies inside the road it joins, its edge on that road's edge: a ramp merges into the freeway
-            # (a gore), a loop's foot sits on the cross road; never beside it with grass between (Nov 12 2026)
+            d, nx, ny, level, half, onto, ux, uy = hit
+            # where the end sits: inside the road it joins, its edge on that road's edge (never beside it with grass
+            # between, Nov 12 2026). A ramp end gets its own piece: running along the road (a merge or a diverge)
+            # it stops beside it and its gore widens out to the road's edge line; meeting it head on (a loop's foot,
+            # a diamond ramp at the cross street) it ends on the road's edge and its flare meets the kerb line
+            piece = ""
             tgt = max(0.0, half - own)
-            slide = d > tgt + 50 and d > 1
+            if ss[0]["mesh"].split("/")[-1] in RAMP_MESHES:
+                o = by[ss[0]["b"] if ss[0]["a"] == i else ss[0]["a"]]
+                rx, ry = p["x"] - o["x"], p["y"] - o["y"]
+                along = abs(rx * ux + ry * uy) / ((math.hypot(rx, ry) * math.hypot(ux, uy)) or 1.0) > 0.7
+                piece = "SM_Road_RampGore30m" if along else "SM_Road_RampFlare15m"
+                tgt = half + CONNECTOR_HALF[piece] - 50 if along else half - walk_of(half) + FLARE_CM - 50
+            slide = abs(d - tgt) > 50 and d > 1
             if slide:
                 p["x"], p["y"] = nx + (p["x"] - nx) / d * tgt, ny + (p["y"] - ny) / d * tgt
+            if piece:
+                _connector(p, by[ss[0]["b"] if ss[0]["a"] == i else ss[0]["a"]], ss[0], piece)
             if not slide and abs(level - p["z"]) <= 30:
                 continue
             p["z"] = level
@@ -2261,6 +2288,8 @@ def _demo() -> None:
     three = far + [{"name": "R", "x": 0, "y": 250000, "radius": 30000, "style": "mixed", "seed": 5}]
     multi = generate(three, lambda x, y: 0.0, "/Game/X/Roads", seed=3, opts={"interchange": "cloverleaf", "highway": "6L"})
     assert weld_ends(multi) == 0, "every ramp and highway end already sits on the road it reaches"
+    ends = [p["mesh"] for a in multi.values() for p in a["points"] if p["mesh"].startswith("SM_Road_Ramp")]
+    assert {"SM_Road_RampFlare15m", "SM_Road_RampGore30m"} <= set(ends), ("ramp ends get their connectors", set(ends))
     # an end never joins its own road (the old weld slid ends onto their own previous point)
     rb = {k: {"i": k, "x": k * 1000.0, "y": 0.0} for k in range(4)}
     rs = [{"a": k, "b": k + 1} for k in range(3)]

@@ -214,6 +214,22 @@ function stripe(curve, off, half, z0, z1, dash, out) {
 }
 // a road piece drawn from its cross-section (backend/road_profiles: the same one its UEFN mesh is built from):
 // every part's top and both its faces, the deck's underside, the paint 1 cm proud
+// a piece on one point (road_profiles.CONNECTORS): its top-view outline turned to the point's yaw, the slab's
+// sides down to its bottom, the paint 1 cm up; 2 cm over the road it lies on so the two never flicker
+function drawPlan(p, plan, put) {
+  const yaw = (p[5] || 0) * Math.PI / 180, c = Math.cos(yaw), s = Math.sin(yaw), LIFT = 62;
+  const at = ([x, y], z) => toV(p[1] + c * x - s * y, p[2] + s * x + c * y, p[3] + z);
+  const fan = (poly, z, out) => {
+    for (let i = 1; i + 1 < poly.length; i++) for (const q of [poly[0], poly[i], poly[i + 1]]) { const v = at(q, z); out.push(v.x, v.y, v.z); }
+  };
+  const top = put(MAT.asphalt), o = plan.outline;
+  fan(o, LIFT, top);
+  o.forEach((q, i) => {
+    const r = o[(i + 1) % o.length], lo = LIFT + plan.slab;
+    for (const v of [at(q, lo), at(r, lo), at(r, LIFT), at(q, lo), at(r, LIFT), at(q, LIFT)]) top.push(v.x, v.y, v.z);
+  });
+  for (const [poly, slot] of plan.paint) fan(poly, LIFT + 1, put(SLOT_MAT[slot] || MAT.paint));
+}
 // one face of a swept cross-section: the edge (ya, za) -> (yb, zb) carried along the curve
 function sweepEdge(curve, ya, za, yb, zb, out) {
   for (let k = 0; k + 1 < curve.length; k++) {
@@ -597,6 +613,11 @@ function buildScene() {
     }
     for (const p of actor.pts) {
       if (!p[7] || p[7] === "SM_Junc_Empty") continue;
+      if (g.profiles?.[p[7]]?.plan) {  // a ramp's end piece (gore / flare), as its UEFN mesh is built
+        drawPlan(p, g.profiles[p[7]], (key) => byColor[key + (dim ? "|dim" : "")] ||= []);
+        legend["Ramp end piece"] = MAT.asphalt;
+        continue;
+      }
       const drawn = arms.has(p[0]) && (p[6] || 0) <= 8000;  // its crossing is drawn above: the disc only takes clicks
       // a node wider than 80 m is broken data: drawn red at a capped size so it never hides the map
       const giant = (p[6] || 0) > 8000;

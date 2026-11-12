@@ -945,6 +945,9 @@ def road_network_street_kit(root: str = "", rebuild: bool = False, plan: bool = 
                 elif kind == "slab":  # a box cut into sections along X, so a spline mesh bends smoothly
                     gp.append_box(dm, o, t, dimension_x=dims[0], dimension_y=dims[1], dimension_z=dims[2],
                                   steps_x=int(dims[3]), origin=base)
+                elif kind == "poly":  # a top-view outline [[x, y], ...] extruded up by its height (road connectors)
+                    gp.append_simple_extruded_polygon(dm, o, t, [unreal.Vector2D(x, y) for x, y in dims[0]],
+                                                      height=dims[1], height_steps=0, capped=True, origin=base)
                 elif kind == "sph":  # radius, latitude steps, longitude steps (few: a low-poly lump)
                     gp.append_sphere_lat_long(dm, o, t, radius=dims[0], steps_phi=int(dims[1]), steps_theta=int(dims[2]),
                                               origin=base)

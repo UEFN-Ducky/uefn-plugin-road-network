@@ -98,9 +98,48 @@ def profile(code: str) -> dict | None:
             "paint": [[round(y, 1), wd, d, s] for y, wd, d, s in paint]}
 
 
+# Pieces that sit on ONE point, a ramp's end (citygen.weld_ends puts them there): drawn in plan, the ramp's end at
+# x 0 and the piece running on ahead along +X to the road (so the ramp's parapets stop where it starts).
+# outline: the slab's top view [(x, y)], z SLAB..0; paint: [[[(x, y)...], slot]] 1 cm up.
+CONNECTORS = {
+    "SM_Road_RampFlare15m": "where a ramp meets a street at grade: the ramp's last 15 m widen from 13 to 21 m so its "
+                            "edges run into the street's kerb lines, edge lines along the flare, a stop line at the street",
+    "SM_Road_RampGore30m": "where a ramp leaves or joins the freeway (or another ramp): its last 30 m widen from 13 to "
+                           "20 m, filling the wedge between ramp and freeway edge, chevrons painted in the gore",
+}
+
+
+def _bar(p, q, w):
+    """A painted line from p to q, w cm wide, as a quad [(x, y)]."""
+    dx, dy = q[0] - p[0], q[1] - p[1]
+    n = (dx * dx + dy * dy) ** 0.5 or 1.0
+    ox, oy = -dy / n * w / 2, dx / n * w / 2
+    return [(p[0] + ox, p[1] + oy), (p[0] - ox, p[1] - oy), (q[0] - ox, q[1] - oy), (q[0] + ox, q[1] + oy)]
+
+
+def connector(mesh: str) -> dict | None:
+    """A connector piece's plan (CONNECTORS)."""
+    if mesh not in CONNECTORS:
+        return None
+    flare = mesh == "SM_Road_RampFlare15m"
+    L, a, b = (1500.0, 650.0, 1050.0) if flare else (3000.0, 650.0, 1000.0)
+    outline = [(0.0, -a), (L, -b), (L, b), (0.0, a)]
+    paint = [[_bar((0.0, sd * (a - 45)), (L, sd * (b - 45)), 15.0), "Paint"] for sd in (-1, 1)]
+    if flare:
+        paint.append([_bar((L - 150.0, -(b - 90)), (L - 150.0, b - 90), 40.0), "Paint"])  # stop line at the street
+    else:
+        for sd in (-1, 1):  # gore chevrons in each widening wedge
+            for x in (800.0, 1600.0, 2400.0):
+                y0 = a - 45 + (b - a) * x / L
+                paint.append([_bar((x - 300, sd * (a - 200)), (x, sd * y0), 30.0), "Paint"])
+    r = lambda pts: [[round(x, 1), round(y, 1)] for x, y in pts]
+    return {"mesh": mesh, "plan": True, "length": L, "half": b, "slab": -ROAD_CM, "outline": r(outline),
+            "paint": [[r(poly), s] for poly, s in paint], "spec": CONNECTORS[mesh]}
+
+
 def all_profiles() -> dict:
-    """{mesh name: profile} for every road piece (a mesh two codes share keeps the first)."""
-    out: dict = {}
+    """{mesh name: profile} for every road piece (a mesh two codes share keeps the first) and every connector."""
+    out: dict = {m: connector(m) for m in CONNECTORS}
     for code in cg.ROAD_TYPES:
         p = profile(code)
         if p and p["mesh"] not in out:
@@ -111,6 +150,9 @@ def all_profiles() -> dict:
 def kit_parts(p: dict) -> list:
     """The street-kit parts (listener road_network_street_kit) that build this profile as one low-poly mesh:
     bands as slabs cut every metre along X (so the spline mesh bends smoothly), paint as thin boxes 1 cm proud."""
+    if p.get("plan"):  # a connector: its outline extruded up from the slab's bottom, the paint 1 cm on it
+        return [("poly", SLOTS.index("Asphalt"), (0, 0, p["slab"]), (0, 0, 0), (p["outline"], -p["slab"]))] + \
+            [("poly", SLOTS.index(s), (0, 0, 0), (0, 0, 0), (poly, 1)) for poly, s in p["paint"]]
     L = p["length"]
     steps = max(1, int(L // 100))
     out = []
@@ -129,7 +171,7 @@ def kit_parts(p: dict) -> list:
 
 def kit_entry(p: dict) -> list:
     """[slots, parts, folder under WorldGen] as the listener's _STREET_KIT takes it."""
-    code_mesh = cg.ROAD_TYPES[p["code"]][0]
+    code_mesh = cg.ROAD_TYPES[p["code"]][0] if "code" in p else ""
     return [SLOTS, kit_parts(p), "Roads/Elevated" if "/" in code_mesh else "Roads"]
 
 
@@ -147,6 +189,12 @@ def _demo() -> None:
     ps = all_profiles()
     assert {"SM_Road_Freeway_Lane20m", "SM_Elev_Deck20m", "SM_Road_BoulevardSidewalk_Straight20m",
             "SM_Road_BridgeSidewalk_Straight20m", "SM_Road_OneLaneSidewalk_Straight10m"} <= set(ps), sorted(ps)
+    for m in CONNECTORS:  # connectors: the outline counter-clockwise, every paint stroke on the slab
+        c = ps[m]
+        area = sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(c["outline"], c["outline"][1:] + c["outline"][:1])) / 2
+        assert area > 0 and all(-5 <= x <= c["length"] + 5 and abs(y) <= c["half"] + 1 for poly, _s in c["paint"]
+                                for x, y in poly), m
+    ps = {k: v for k, v in ps.items() if not v.get("plan")}
     for p in ps.values():  # every part inside the piece's width, every paint line on the carriageway
         assert all(-p["half"] - 0.1 <= y0 < y1 <= p["half"] + 0.1 for _n, _s, y0, y1, *_z in p["parts"]), p["mesh"]
         assert all(abs(y) + w / 2 <= p["carriageway"] for y, w, *_r in p["paint"]), p["mesh"]
@@ -158,6 +206,7 @@ def _demo() -> None:
     assert {n for n, *_r in bw["parts"]} >= {"deck", "sidewalk", "parapet"}, "a boulevard bridge keeps its sidewalks"
     two = ps["SM_Road_TwoLaneSidewalk_Straight10m"]
     assert [r[3] for r in two["paint"]].count("PaintYellow") == 2, "two-way: double yellow"
+    assert kit_entry(connector("SM_Road_RampGore30m"))[1][0][0] == "poly"
     kp = kit_parts(fw)
     dashes = [k for k in kp if k[0] == "box"]
     assert len(dashes) == 4 * 2 and all(-1000 <= k[2][0] - k[4][0] / 2 and k[2][0] + k[4][0] / 2 <= 1000 for k in dashes)
