@@ -70,12 +70,12 @@ function drawLoading() {
 const GEN_DEFAULTS = {
   name: "Valley", cities: 3, size_km: 6, relief_m: 60, seed: 7, ground: "new",
   hill_km: 2, roughness: 0.5, detail: 5, ridges: 0, peaks: 0, flatten_m: 300, sea_m: -1000, water_depth_m: 12, terrace_m: 0,
-  block_m: 100, wobble: 0.28, prune: 0.22, downtown: 0.4, normal: 0.75, highway: "4L", highway_curve: 0.08,
+  block_m: 100, block_ratio: 1, wobble: 0.12, green_lots: 0, prune: 0.22, downtown: 0.4, normal: 0.75, highway: "4L", highway_curve: 0.08,
   core_roads: "4L", neighbourhood_roads: "2S", suburb_roads: "2L", one_way_core: "no", interchange: "direct", overpasses: "yes",
   city_size: 1, city_gap_m: 300, freeways: "yes", waterfront: "yes", canals: "none", shipyards: "auto",
   airports: "auto", military_base: "no", wind_deg: 240, city_ground: "natural",
 };
-const OPTION_KEYS = ["hill_km", "roughness", "detail", "ridges", "peaks", "flatten_m", "sea_m", "water_depth_m", "terrace_m", "block_m", "wobble",
+const OPTION_KEYS = ["hill_km", "roughness", "detail", "ridges", "peaks", "flatten_m", "sea_m", "water_depth_m", "terrace_m", "block_m", "block_ratio", "wobble", "green_lots",
   "prune", "downtown", "normal", "highway", "highway_curve", "core_roads", "neighbourhood_roads", "suburb_roads", "one_way_core",
   "interchange", "overpasses", "city_size", "city_gap_m", "freeways", "waterfront", "canals", "shipyards", "airports", "military_base", "wind_deg", "city_ground"];
 const VIEW_DEFAULTS = { zx: 1, pcg: true, terrain: true, water: true, districts: true, points: false, look: "natural", sunAz: 135, sunEl: 52, shadows: true };
@@ -330,7 +330,7 @@ const ROLE_COLOR = { house: "mix:fg-dim:amber:0.45", mansion: "mix:fg:amber:0.25
 function themeColors() {
   const bg = col("bg");
   scene.background = bg;
-  scene.fog = new THREE.Fog(bg, 1000, 8000);
+  scene.fog = null;  // no haze: the far side of the world reads as clearly as the near one
   hemi.color = new THREE.Color(0xffffff).lerp(col("blue"), 0.2);  // daylight whatever the theme
   hemi.groundColor = col("bg").lerp(col("green-dim"), 0.4);
   placeCamera();
@@ -426,13 +426,18 @@ renderer.domElement.addEventListener("pointerdown", (e) => {
   }
   if (e.button === 0 && state.tool === "area") { drag.drawing = true; note.points = []; addAreaPoint(e); }
   if (e.button === 0 && state.tool === "select" && !e.shiftKey) {
-    const hit = cityUnder(e);  // a city to move once the pointer really moves (a plain click selects it)
-    if (hit) { drag.cityCand = hit; renderer.domElement.style.cursor = "grab"; }
+    drag.cityCand = cityUnder(e);  // a plain click picks it, then its blocks; the Pointer never moves a city
+  }
+  if (e.button === 0 && state.tool === "city" && !e.shiftKey) {  // Edit city: one of its handles, else the city itself
+    const hnd = handleUnder(e), hit = hnd ? null : cityUnder(e);
+    if (hnd) drag.handle = hnd;
+    else if (hit) { drag.cityCand = hit; drag.cityMove = true; }
+    if (hnd || hit) renderer.domElement.style.cursor = "grab";
   }
   if (e.button === 0 && state.tool === "move" && !e.shiftKey) {  // Move tool: a road under the pointer, else the city
     const pt = roadPointUnder(e), hit = pt ? null : cityUnder(e);
     if (pt) drag.ptCand = pt;
-    else if (hit) drag.cityCand = hit;
+    else if (hit) { drag.cityCand = hit; drag.cityMove = true; }
     if (pt || hit) renderer.domElement.style.cursor = "grab";
   }
 });
@@ -441,7 +446,8 @@ renderer.domElement.addEventListener("pointermove", (e) => {
   const locked = document.pointerLockElement === renderer.domElement;  // a locked pointer reports its travel only
   const dx = locked ? e.movementX : e.clientX - drag.x, dy = locked ? e.movementY : e.clientY - drag.y;
   if (locked || Math.abs(e.clientX - drag.x0) + Math.abs(e.clientY - drag.y0) > 5) drag.moved = true;
-  if (drag.cityCand && drag.moved && !drag.city) startCityDrag(drag.cityCand);
+  if (drag.handle) { if (drag.moved) dragHandle(e); return; }  // turning or shaping a city: the camera stays
+  if (drag.cityCand && drag.cityMove && drag.moved && !drag.city) startCityDrag(drag.cityCand);
   if (drag.city) { dragCity(e); return; }  // moving a city: it follows the pointer, the camera stays
   if (drag.ptCand && drag.moved) { dragRoadPoint(e); return; }  // moving one part of a road
   if (drag.drawing) {  // drawing an area: a point every few pixels, no orbit
@@ -470,12 +476,14 @@ renderer.domElement.addEventListener("pointerup", (e) => {
   if (document.pointerLockElement) document.exitPointerLock();
   if (fly.on) { fly.on = false; fly.keys.clear(); fly.shift = false; renderZoom(); }
   if (drag?.drawing) { drag = null; finishArea(); return; }
+  if (drag?.handle) { const d = drag; drag = null; dropHandle(d.handle); return; }
   if (drag?.city) { const d = drag; drag = null; dropCity(d.city); return; }
   if (drag?.ptCand) { const d = drag; drag = null; if (d.ptTo) dropRoadPoint(d); return; }
   if (drag && !drag.moved && drag.button === 0) {
     if (state.tool === "pin") placePin(e);
     else if (state.tool === "addcity") addCityAt(e);
-    else if (state.tool === "select" && !pick(e) && drag.cityCand) selectCity(drag.cityCand.id);
+    else if (state.tool === "city") clickCity(drag.cityCand, e);
+    else if (state.tool === "select" && !pick(e)) clickCity(drag.cityCand, e);
   }
   drag = null;
 });
@@ -489,6 +497,7 @@ renderer.domElement.addEventListener("wheel", (e) => {
   orbit.dist = Math.max(30, Math.min(150000, orbit.dist * (e.deltaY > 0 ? 1.15 : 0.87)));
   placeCamera();
   renderZoom();
+  if (state.tool === "city") drawCityMark();  // its handles keep their size on screen
 }, { passive: false });
 let needsDraw = true;
 let visible = true;
@@ -629,6 +638,10 @@ function buildScene() {
   const skips = joinSkips(g.joins), joined = new Set(g.joins?.done || []);
   if (g.joins) drawJoins(g.joins, (key) => byColor[key] ||= []);
   for (const [aslug, actor] of Object.entries(g.actors || {})) {
+    // each city's roads are their own meshes (key#city): a city being moved takes its roads with it
+    const mine = cityOfActor(aslug);
+    const bc = !mine ? byColor : new Proxy(byColor, { get: (t, k) => t[`${String(k)}#${mine}`],
+      set: (t, k, v) => { t[`${String(k)}#${mine}`] = v; return true; } });
     const pts = new Map(actor.pts.map((p) => [p[0], p]));
     const dim = state.actor && state.actor !== aslug;
     for (const s of actor.segs) {
@@ -638,7 +651,7 @@ function buildScene() {
       const [m, label] = roadMaterial(s[5]);
       const curve = hermite(a, b, s[3], s[4], 6);
       const lift = 60;  // every road a little over its ground: a ramp at grade drawn flush vanished into it
-      const put = (key) => byColor[key + (dim ? "|dim" : "")] ||= [];
+      const put = (key) => bc[key + (dim ? "|dim" : "")] ||= [];
       const prof = g.profiles?.[s[5].split("/").pop().split(".")[0]];
       if (prof) {  // the real piece: its parts and paint, as its UEFN mesh is built
         drawProfile(curve, prof, lift, put, skips);
@@ -648,10 +661,10 @@ function buildScene() {
       }
       const inner = /Sidewalk|FourLane/.test(s[5]) ? ASPHALT_HALF[f[1]] : undefined;
       if (inner && m === MAT.asphalt) {  // a road with its own sidewalks: concrete to the full width, asphalt inside
-        (byColor[MAT.sidewalk + (dim ? "|dim" : "")] ||= []).push(...ribbon(curve, f[1], lift - 4));
+        (bc[MAT.sidewalk + (dim ? "|dim" : "")] ||= []).push(...ribbon(curve, f[1], lift - 4));
         legend["Sidewalk"] = MAT.sidewalk;
       }
-      (byColor[m + (dim ? "|dim" : "")] ||= []).push(...ribbon(curve, inner && m === MAT.asphalt ? inner : f[1], lift));
+      (bc[m + (dim ? "|dim" : "")] ||= []).push(...ribbon(curve, inner && m === MAT.asphalt ? inner : f[1], lift));
       legend[label] = m;
     }
     // a junction is the crossing of its arms (each arm's asphalt from its mouth through the centre, as wide
@@ -667,7 +680,7 @@ function buildScene() {
     for (const [j, list] of arms) {
       const c = pts.get(j);
       if ((c[6] || 0) > 8000) continue;  // broken data: drawn as the red disc below
-      junctionTris(c, list, !/airport$/.test(aslug), byColor);  // the mesh the junction gets, not a stand-in
+      junctionTris(c, list, !/airport$/.test(aslug), bc);  // the mesh the junction gets, not a stand-in
       legend["Road"] = MAT.asphalt;
       legend["Sidewalk"] = MAT.sidewalk;
     }
@@ -675,7 +688,7 @@ function buildScene() {
       if (!p[7] || p[7] === "SM_Junc_Empty") continue;
       if (joined.has(`${aslug}:${p[0]}`)) continue;  // its merge lane / street mouth is drawn (drawJoins)
       if (g.profiles?.[p[7]]?.plan) {  // a ramp's end piece (gore / flare), as its UEFN mesh is built
-        drawPlan(p, g.profiles[p[7]], (key) => byColor[key + (dim ? "|dim" : "")] ||= []);
+        drawPlan(p, g.profiles[p[7]], (key) => bc[key + (dim ? "|dim" : "")] ||= []);
         legend["Ramp end piece"] = MAT.asphalt;
         continue;
       }
@@ -705,13 +718,14 @@ function buildScene() {
     for (const p of actor.pts) box.expandByPoint(toV(p[1], p[2], p[3]));
   }
   for (const [key, arr] of Object.entries(byColor)) {
-    const [c, dim] = key.split("|");
+    const [mat, city = ""] = key.split("#"), [c, dim] = mat.split("|");
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.Float32BufferAttribute(arr, 3));
     geo.computeVertexNormals();
     const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: dim ? col(c).multiplyScalar(0.45) : col(c), roughness: 0.75,
       side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2 }));
     mesh.receiveShadow = true;
+    mesh.userData.city = city;
     groups.roads.add(mesh);
   }
   for (const pr of g.props || []) {
@@ -760,6 +774,7 @@ function buildScene() {
   state.box = box;
   drawCityMark();
   if (state.fadeNext) { state.fadeNext = false; fadeIn([groups.roads, groups.pieces, groups.pcg]); }
+  hideLifted();
   needsDraw = true;
 }
 // changes come in smoothly: the new roads and buildings fade in and the city rises out of the ground
@@ -791,21 +806,60 @@ function flyTo(target, dist, ms = 650) {
   };
   requestAnimationFrame(step);
 }
-// the selected city's ring on the map
+// the picked city on the map: its real edge, the block picked in it and, with the Edit city tool, its handles
+// (a dot on the edge at each of the outline's directions, and a white one out past the edge that turns it)
 const cityMark = new THREE.Group();
 scene.add(cityMark);
+const cityGhost = new THREE.Group();  // a city being moved: a light copy of its buildings (liftCity)
+scene.add(cityGhost);
 function drawCityMark() {
   clear(cityMark);
   const c = state.cities.find((x) => x.id === state.cityPick);
   if (!c || !state.geo) return;
   const t = state.geo.terrain || {};
-  const pts = [];
-  for (let k = 0; k <= 96; k++) {
-    const a = (k / 96) * Math.PI * 2, x = c.x + Math.cos(a) * c.radius, y = c.y + Math.sin(a) * c.radius;
-    pts.push(toV(x, y, (sampleZ(t, x, y) ?? 0) + 400));
+  const [cx, cy] = c.dragTo || [c.x, c.y];
+  const up = (x, y, lift) => toV(x, y, (sampleZ(t, x, y) ?? 0) + lift);
+  const edge = (deg, lift = 400) => {
+    const a = deg * Math.PI / 180, r = c.radius * cityOutline(c, deg);
+    return up(cx + Math.cos(a) * r, cy + Math.sin(a) * r, lift);
+  };
+  const line = (pts, colour, opacity = 0.9) => new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+    new THREE.LineBasicMaterial({ color: col(colour), depthTest: false, transparent: true, opacity }));
+  cityMark.add(line(Array.from({ length: 181 }, (_, k) => edge(k * 2)), "accent"));
+  const b = pickedBlock(c);
+  if (b) {  // the picked block: its outline and a wash over it
+    const ring = [...b[4], b[4][0]].map(([x, y]) => up(x, y, 150)), mid = up(b[0], b[1], 150), fan = [];
+    for (let i = 0; i + 1 < ring.length; i++) fan.push(mid, ring[i], ring[i + 1]);
+    cityMark.add(new THREE.Mesh(new THREE.BufferGeometry().setFromPoints(fan),
+      new THREE.MeshBasicMaterial({ color: col("accent"), transparent: true, opacity: 0.3, depthTest: false, side: THREE.DoubleSide })));
+    cityMark.add(line(ring, "accent", 1));
+    const seg = [];  // the lots it is cut into: each one gets a building, or trees
+    for (const [x, y, yaw, w, d] of lotsIn(c, b)) {
+      const f = yaw * Math.PI / 180, fx = Math.cos(f), fy = Math.sin(f);
+      const corner = (u, v) => up(x + fx * u * d / 2 - fy * v * w / 2, y + fy * u * d / 2 + fx * v * w / 2, 170);
+      const q = [corner(1, 1), corner(1, -1), corner(-1, -1), corner(-1, 1)];
+      for (let i = 0; i < 4; i++) seg.push(q[i], q[(i + 1) % 4]);
+    }
+    if (seg.length) {
+      cityMark.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(seg),
+        new THREE.LineBasicMaterial({ color: col("fg"), depthTest: false, transparent: true, opacity: 0.75 })));
+    }
   }
-  cityMark.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
-    new THREE.LineBasicMaterial({ color: col("accent"), depthTest: false, transparent: true, opacity: 0.9 })));
+  if (state.tool !== "city") return;
+  const size = Math.max(5, orbit.dist / 75);
+  const dot = (v, handle, k, colour) => {
+    const m = new THREE.Mesh(new THREE.SphereGeometry(size, 14, 10), new THREE.MeshBasicMaterial({ color: col(colour), depthTest: false }));
+    m.position.copy(v);
+    m.renderOrder = 5;
+    m.userData = { handle, k };
+    cityMark.add(m);
+  };
+  const n = state.shapePoints || 16;
+  for (let k = 0; k < n; k++) dot(edge(k * 360 / n + (c.spin || 0), 500), "shape", k, "accent");
+  const a = (c.turn_deg ?? 0) * Math.PI / 180, r = c.radius * 1.42;
+  const out = up(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 500);
+  cityMark.add(line([up(cx, cy, 500), out], "fg", 0.55));
+  dot(out, "turn", 0, "fg");
 }
 // road_io._junction_geometry for our flat kit, drawn here exactly as the mesh is built (keep the two in step):
 // the deck out to every arm's mouth, rounded corners between arms, a stop line and a zebra crossing on each
@@ -877,8 +931,15 @@ function junctionTris(c, list, paint, byColor) {
     }
   }
 }
-// citygen.outline(): a city's edge in a direction as a factor of its radius (keep the two in step)
+// citygen.outline(): a city's edge in a direction as a factor of its radius (keep the two in step): the seed's own
+// waves, turned with the city (spin), or the edge drawn by hand (shape: a factor at each handle, eased between them)
 function cityOutline(c, angleDeg) {
+  angleDeg -= c.spin || 0;
+  if (c.shape?.length) {
+    const n = c.shape.length, t = (((angleDeg % 360) + 360) % 360) / 360 * n, i = Math.floor(t) % n;
+    const p = c.shape[i], q = c.shape[(i + 1) % n];
+    return p + (q - p) * (1 - Math.cos(Math.PI * (t - Math.floor(t)))) / 2;
+  }
   const s = Math.trunc(c.seed || 1), a = angleDeg * Math.PI / 180;
   let f = 0;
   for (const [k, amp] of [[2, 0.11], [3, 0.08], [5, 0.05], [7, 0.025]]) {
@@ -887,6 +948,8 @@ function cityOutline(c, angleDeg) {
   }
   return 1 + f;
 }
+// where each instance of an instanced mesh stands (x, y in world cm), so a city's own can be told apart
+const xyOf = (rows) => { const a = new Float32Array(rows.length * 2); rows.forEach((p, i) => { a[2 * i] = p[0]; a[2 * i + 1] = p[1]; }); return a; };
 
 // PCG preview: one instanced shape per layer, sized in metres like the real thing
 const PCG_COLORS = ["amber", "yellow", "purple", "red", "accent", "fg-dim"];  // street pieces: never grass green
@@ -966,6 +1029,7 @@ function drawBuildings(layer, colour, name) {
     if (!list.length) continue;
     const mesh = new THREE.InstancedMesh(geo, mat, list.length);
     list.forEach(([mtx, tint], i) => { mesh.setMatrixAt(i, mtx); mesh.setColorAt(i, tint); });
+    mesh.userData.xy = xyOf(list.map((row) => row[2]));
     mesh.userData.info = (i) => {
       const p = list[i][2];
       return layerInfo(name, layer, p, [["Form", forms[p[6]] || "box"], ["Lot", `${p[7] || "?"} m wide × ${p[8] || "?"} m deep, ${p[5] || "?"} m tall`],
@@ -985,7 +1049,7 @@ const FOUND = { course: 0.5, out: 0.3, wallOut: 0.15, embed: 1.0 };
 function drawLotGround(layer) {
   const zx = state.view.zx || 1;
   const dummy = new THREE.Object3D();
-  const found = [], walks = [];
+  const found = [], walks = [], foundAt = [], walksAt = [];
   for (const p of layer.points || []) {
     const [x, y, z, yaw, , , , w, d, depth, paths] = p;
     if (inExact(x, y)) continue;
@@ -997,6 +1061,7 @@ function drawLotGround(layer) {
       dummy.scale.set(w + 2 * out, deep * zx, d + 2 * out);  // frontage across the facing, depth along it (the box's z)
       dummy.updateMatrix();
       found.push(dummy.matrix.clone());
+      foundAt.push(p);
     }
     for (const [width, flat] of paths || []) {
       if (width <= 8) continue;  // walkways (Paths actor) and driveways (Access actor) are drawn as splines
@@ -1007,22 +1072,25 @@ function drawLotGround(layer) {
         dummy.lookAt(b);
         dummy.updateMatrix();
         walks.push(dummy.matrix.clone());
+        walksAt.push(p);
       }
     }
   }
-  for (const [list, colour] of [[found, col(MAT.barrier)], [walks, col("fg-dim").lerp(col("fg"), 0.5)]]) {
+  for (const [list, colour, at] of [[found, col(MAT.barrier), foundAt], [walks, col("fg-dim").lerp(col("fg"), 0.5), walksAt]]) {
     if (!list.length) continue;
     const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: colour, roughness: 0.95 }), list.length);
     list.forEach((m, i) => mesh.setMatrixAt(i, m));
+    mesh.userData.xy = xyOf(at);
     mesh.receiveShadow = true;
     groups.pcg.add(mesh);
   }
 }
-function drawPcg(legend) {
+function drawPcg(legend, only) {  // only: just these layers (the city coming in a few layers at a time)
   const layers = state.pcg || {};
   const dummy = new THREE.Object3D();
   Object.entries(layers).forEach(([name, layer], k) => {
     const pts = layer.points || [];
+    if (only && !(name in only)) return;
     if (!pts.length || layer.role === "sidewalk_corner") return;  // corners are part of each junction's mesh now
     const colour = ROLE_COLOR[layer.role] || PCG_COLORS[k % PCG_COLORS.length];
     if (layer.kind === "site") {  // a neighbourhood's pieces, pre-scaled: [x, y, z, yaw, sx, sy, sz] x box_m
@@ -1044,6 +1112,7 @@ function drawPcg(legend) {
         mesh.setMatrixAt(i, dummy.matrix);
       });
       mesh.receiveShadow = true;
+      mesh.userData.xy = xyOf(pts);
       mesh.userData.info = (i) => layerInfo(name, layer, pts[i]);
       groups.pcg.add(mesh);
       legend[`${name} · ${layer.count.toLocaleString()}`] = tint;
@@ -1058,6 +1127,7 @@ function drawPcg(legend) {
       const base = leafy ? tone("green", 0.45, layer.role === "bush" ? 0.4 : 0.33).lerp(tone("amber", 0.4, 0.34), layer.role === "bush" ? 0.25 : 0.12)
         : col(colour);
       const mesh = new THREE.InstancedMesh(geo, new THREE.MeshStandardMaterial({ roughness: 0.85 }), pts.length);
+      mesh.userData.xy = xyOf(pts);
       mesh.userData.info = (i) => layerInfo(name, layer, pts[i]);
       pts.forEach(([x, y, z, yaw, s], i) => {
         dummy.position.copy(toV(x, y, z));
@@ -1145,7 +1215,7 @@ function schedulePcgPreview(delay = 700) {
 // PCG_BATCH layers to a call, the road walls with the last (every call re-reads the world's inputs once).
 const PCG_BATCH = 12;
 async function loadPcgPreview() {
-  if (!state.net || !(state.layers || []).length) { state.pcg = {}; buildScene(); loadSync(); return; }
+  if (!state.net || !(state.layers || []).length) { state.pcg = {}; settleCity(); buildScene(); loadSync(); return; }
   const net = state.net;
   const out = {};
   const todo = state.layers.filter((x) => x.enabled);
@@ -1161,8 +1231,12 @@ async function loadPcgPreview() {
       step: i, of: calls.length });
     const r = await rpc("pcg_preview", { net_id: net, layer_id: ls.map((l) => l.id).join(",") });
     if (net !== state.net) return card("");
-    if (r.ok === false && ls[0].id !== "road-walls") { card(""); return showError(r.error, () => loadPcgPreview()); }
-    if (r.ok !== false) Object.assign(picked, r.layers || {});
+    if (r.ok === false && ls[0].id !== "road-walls") { card(""); settleCity(); return showError(r.error, () => loadPcgPreview()); }
+    if (r.ok !== false) {
+      Object.assign(picked, r.layers || {});
+      await revealLayers(r.layers || {}, i === 0);  // a few layers at a time, each rising out of the ground
+      if (net !== state.net) return card("");
+    }
   }
   // the layer order the panel has always drawn: each layer in turn, then the walls and sites
   for (const l of todo) if (l.name in picked) out[l.name] = picked[l.name];
@@ -1178,7 +1252,7 @@ async function loadPcgPreview() {
   }
   state.pcg = out;
   renderPcgCounts();
-  state.fadeNext = true;  // the new city rises into place instead of popping in
+  state.fadeNext = false;  // it already came in, layer by layer (revealLayers)
   if (state.exact) await loadExact(true);  // the city changed: the real pieces on screen are rebuilt with it
   else buildScene();
   loadSync();  // after the city: the badge reads the preview just computed instead of building its own
@@ -1335,15 +1409,12 @@ function openTab(id) {
   state.tab = id;
   $("pane-uefn")?.classList.remove("is-open");
   for (const [t] of TABS) {
-    $(`pane-${t}`).classList.toggle("is-open", t === id);
     const b = $(`tab-${t}`);
     b?.setAttribute("aria-selected", t === id ? "true" : "false");
     b?.setAttribute("tabindex", t === id ? "0" : "-1");
     b?.toggleAttribute("aria-current", t === id);
   }
-  const [, label = "", ic = "world"] = TABS.find((t) => t[0] === id) || [];
-  $("paneTitle").replaceChildren(icon(ic, 16), h("span", {}, label));
-  $("foot").hidden = !GEN_TABS.has(id);
+  showSide();
   // the left side follows the section: the layer order in Layers, the road actors in Edit roads, else the cities
   $("leftLayers").hidden = id !== "pcg";
   $("leftActors").hidden = id !== "edit";
@@ -1390,7 +1461,6 @@ function buildPanes() {
       sl("city_size", "City size", 0.3, 4, 0.05, (v) => `×${(+v).toFixed(2)}`, "Every city bigger or smaller (regenerating scales the cities you have)"),
       sl("city_gap_m", "Distance between cities", 0, 6000, 50, m, "Open country between two cities' edges, at least: cities closer than this are pushed apart"),
       ctl.seed.el),
-    section("Selected city", h("div", { id: "worldCity" })),
     section("Where it goes", ctl.ground.el),
     section("Ground height", sl("relief_m", "Hill height", 0, 250, 5, m, "Highest hills above the middle, deepest valleys below it"),
       sl("sea_m", "Water level", -1000, 200, 5, (v) => v <= -1000 ? "Off" : m(v), "Ground below this becomes lakes and sea; streets bridge it"),
@@ -1448,7 +1518,12 @@ function buildPanes() {
     seg("military_base", "Military airbase", [["no", "No", "route"], ["yes", "Yes", "layers"]]),
     sl("wind_deg", "Prevailing wind", 0, 360, 5, (v) => `${Math.round(v)}°`, "Runways are turned into the wind"));
   $("pane-roads").replaceChildren(
-    section("Streets", sl("block_m", "Block size", 50, 250, 5, m), sl("wobble", "Curvy streets", 0, 0.45, 0.01, pct, "How far organic streets drift off the grid"),
+    section("Streets", sl("block_m", "Block size", 50, 250, 5, m, "A block's short side"),
+      sl("block_ratio", "Block shape", 1, 3, 0.1, (v) => v <= 1.01 ? "Square" : `1 : ${Math.round(v * 10) / 10}`,
+        "Square blocks, or long ones: 1 : 2 is twice as long as it is wide"),
+      sl("wobble", "Curvy streets", 0, 0.45, 0.01, pct,
+        "0 = dead straight. Higher: the streets between main roads bow in smooth curves (everywhere in an Organic city, past downtown in a Mixed one, never in a Grid one)"),
+      sl("green_lots", "Lots left green", 0, 0.6, 0.05, pct, "Share of every block's lots planted with trees instead of built on"),
       sl("prune", "Side streets removed", 0, 0.5, 0.01, pct)),
     section("Districts", sl("downtown", "Downtown ring", 0.1, 0.8, 0.01, pct, "Four-lane grid inside this share of each city's radius"),
       sl("normal", "Normal city ring", 0.2, 0.95, 0.01, pct, "Streets with pavements up to here; housing beyond")),
@@ -1513,6 +1588,41 @@ function renderPcgPane() {
       await loadLayers();
     }));
   const cards = layers.map((l, idx) => layerCard(l, layers.slice(0, idx)));
+  // presets: the layers of this world kept under a name, and the saved ones (a person's or an AI's) to put back
+  const saved = (state.presets || []).filter((p) => !p.built_in);
+  let saving = false;
+  const savePreset = async (name) => {
+    if (saving || !String(name || "").trim()) return;
+    saving = true;
+    const out = await rpc("preset_save", { name, net_id: state.net });
+    saving = false;
+    if (out.ok === false) return showError(out.error);
+    await loadLayers();
+  };
+  const keep = field({ label: "Save these layers as a preset", value: "", placeholder: "Preset name", onChange: savePreset,
+    button: { icon: "check", title: "Save these layers as a preset", onClick: (input) => savePreset(input.value) } });
+  const presetRows = saved.map((p) => {
+    const use = h("button", { type: "button", class: "rn-mini", title: `Put ${p.name}'s ${p.layers} layers on this world: its settings replace same-named layers` }, "Use");
+    use.addEventListener("click", async () => {
+      const ok = await call("ui.confirm", { title: `Use ${p.name}`, confirm: "Use it",
+        message: `${p.layers} layers from ${p.name} go on this world. Layers of the same name take the preset's settings; your other layers stay.` }).catch(() => null);
+      if (!ok?.confirmed) return;
+      const out = await rpc("pcg_preset", { net_id: state.net, preset: p.id, replace: true });
+      if (out.ok === false) return showError(out.error);
+      await loadLayers();
+    });
+    const del = h("button", { type: "button", class: "rn-mini", title: `Delete the preset ${p.name}`, "aria-label": `Delete the preset ${p.name}` }, icon("trash", 12));
+    del.addEventListener("click", async () => {
+      const ok = await call("ui.confirm", { title: `Delete ${p.name}`, danger: true, confirm: "Delete",
+        message: `The preset ${p.name} goes. Worlds it was used on keep their layers.` }).catch(() => null);
+      if (!ok?.confirmed) return;
+      const out = await rpc("preset_delete", { preset: p.id, confirm: true });
+      if (out.ok === false) return showError(out.error);
+      await loadLayers();
+    });
+    return h("div", { class: "rn-city__kid", title: p.note || (p.layer_names || []).join(", ") }, icon("layers", 13),
+      h("span", {}, `${p.name} · ${p.layers} layers`), use, del);
+  });
   const pieces = choices({ label: "Pieces", value: state.assetSet || "own", options: ASSET_OPTS, onChange: async (v) => {
     const out = await rpc("pcg_assets", { net_id: state.net, asset_set: v });
     if (out.ok === false) return showError(out.error);
@@ -1527,6 +1637,8 @@ function renderPcgPane() {
     section("Placement layers", head, h("div", { class: "rn-hint", style: "margin: 8px 0" },
       "Layers place in order: each one keeps clear of the roads and the layers you tick under Keep clear of.")),
     ...(cards.length ? cards : [h("div", { class: "dk-empty" }, h("div", { class: "dk-empty__title" }, "No layers yet"), "Add the starter layers or a new one.")]),
+    section("Presets", ...presetRows, ...(layers.length ? [keep.el] : []),
+      ...(!presetRows.length ? [h("div", { class: "rn-hint" }, "No saved presets yet. An AI can make one too (road_network_preset_save).")] : [])),
     section("Build", h("div", { id: "pcgPlanInfo", class: "rn-hint", style: "margin-bottom: 8px" }),
       h("div", { class: "rn-stack" }, button("Refresh 3D preview", "refresh", () => loadPcgPreview()),
         button("Real pieces here", "city", () => loadExact(), "secondary",
@@ -1633,8 +1745,9 @@ function layerCard(l, earlier) {
 }
 async function loadLayers() {
   if (!state.net) { state.layers = []; renderPcgPane(); renderLayerList(); return; }
-  const [out, assets] = await Promise.all([rpc("pcg_layers", { net_id: state.net }), rpc("pcg_assets", { net_id: state.net })]);
+  const [out, assets, sets] = await Promise.all([rpc("pcg_layers", { net_id: state.net }), rpc("pcg_assets", { net_id: state.net }), rpc("presets")]);
   state.layers = out.ok === false ? [] : out.items || [];
+  state.presets = sets.ok === false ? [] : sets.items || [];
   renderLayerList();
   state.assetSet = assets.ok === false ? "own" : assets.asset_set;
   const pane = $("pane-pcg");
@@ -1732,20 +1845,99 @@ function cityPlan(p) {
     ...(p.unmet || []).length ? [h("div", { class: "rn-hint", style: "margin-top: 6px" },
       "Not met: " + p.unmet.map((u) => u.type.replace(/_/g, " ")).join(", ") + " (no free land of that size where it is needed)")] : []);
 }
-// the World section's city picker: pick a city, then size it (the same save as the Cities section)
+// The right side is the details of what is picked: a picked city shows only that city (and the block picked in
+// it); with nothing picked it is the open section's own settings.
+function showSide() {
+  const c = state.cities.find((x) => x.id === state.cityPick);
+  const city = !!c && state.tab !== "pcg" && state.tab !== "edit";
+  for (const [t] of TABS) $(`pane-${t}`)?.classList.toggle("is-open", !city && t === state.tab);
+  $("pane-city")?.classList.toggle("is-open", city);
+  const [, label = "", ic = "world"] = TABS.find((t) => t[0] === state.tab) || [];
+  if (city) {
+    const back = h("button", { type: "button", class: "rn-mini", title: `Close ${c.name}: back to ${label}`, "aria-label": `Close ${c.name}` }, icon("x", 12));
+    back.addEventListener("click", () => selectCity(""));
+    $("paneTitle").replaceChildren(icon("city", 16), h("span", { style: "flex: 1" }, c.name), back);
+  } else $("paneTitle").replaceChildren(icon(ic, 16), h("span", {}, label));
+  $("foot").hidden = city || !GEN_TABS.has(state.tab);
+}
+const ZONE_LABEL = { downtown: "Downtown", normal: "Normal", housing: "Housing", industrial: "Industry" };
+const insidePoly = (poly, x, y) => {
+  let hit = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [ax, ay] = poly[i], [bx, by] = poly[j];
+    if ((ay > y) !== (by > y) && x < ax + (y - ay) * (bx - ax) / (by - ay)) hit = !hit;
+  }
+  return hit;
+};
+// the block picked in a city: remembered by a spot inside it, so it is still picked after the city is rebuilt
+const pickedBlock = (c) => (state.block?.city === c?.id && (c.blocks || []).find((b) => insidePoly(b[4], state.block.x, state.block.y))) || null;
+function blockSection(c) {
+  const b = pickedBlock(c);
+  if (!b) {
+    return section("Block", h("div", { class: "rn-hint" }, (c.blocks || []).length
+      ? "Click a block of this city on the map to see what it is and change it."
+      : "Regenerate the world once: then every block of this city can be clicked."));
+  }
+  const own = (c.zones || []).find((z) => insidePoly(b[4], z.x, z.y));
+  const kinds = state.blockKinds || {};
+  return section("Block",
+    h("div", { class: "rn-kv" },
+      h("span", {}, "Zone"), h("span", {}, ZONE_LABEL[b[3]] || b[3]),
+      h("span", {}, "Laid out as"), h("span", {}, kinds[b[2]] || (b[2] === "collector" ? "Superblock: one winding street" : b[2])),
+      h("span", {}, "Planned by"), h("span", {}, own ? "You" : "The city")),
+    segmented({ label: "Zone", value: b[3], options: (state.blockZones || []).map((z) => [z, ZONE_LABEL[z] || z]),
+      onChange: (v) => setBlock(c, b, { zone: v }) }).el,
+    choices({ label: "Laid out as", value: b[2], options: Object.entries(kinds).map(([id, label]) =>
+      [id, label, "", id === "park" ? "terrain" : id === "parcels" ? "grid" : "city"]), onChange: (v) => setBlock(c, b, { kind: v }) }).el,
+    ...(b[2] === "park" ? [] : [slider({ label: "Lots left green", min: 0, max: 100, step: 10, value: Math.round((b[5] || 0) * 100),
+      fmt: (v) => `${Math.round(v)} %`, hint: `${lotsIn(c, b).length} lots in this block (outlined on the map). This share of them is planted with trees instead of built on`,
+      onChange: (v) => setBlock(c, b, { green: v / 100 }) }).el]),
+    ...(own ? [button("Back to the city's own plan", "refresh", () => setBlock(c, b, { reset: true }))] : []),
+    h("div", { class: "rn-hint" }, "Only this block is laid out again; every other block of the city stays as it is."));
+}
+const lotsIn = (c, b) => (c.lots || []).filter((r) => insidePoly(b[4], r[0], r[1]));
+function setBlock(c, b, change) {
+  const own = (c.zones || []).find((z) => insidePoly(b[4], z.x, z.y)) || {};
+  const next = { x: b[0], y: b[1], kind: change.reset ? "" : change.kind ?? own.kind ?? "", zone: change.reset ? "" : change.zone ?? own.zone ?? "" };
+  const green = change.reset ? null : change.green ?? own.green ?? null;
+  if (green != null) next.green = green;
+  // the panel shows it at once; the block itself is laid out with the next rebuild
+  c.zones = [...(c.zones || []).filter((z) => !insidePoly(b[4], z.x, z.y)), ...(next.kind || next.zone || green != null ? [next] : [])];
+  if (next.kind) b[2] = next.kind;
+  if (next.zone) b[3] = next.zone;
+  if (green != null) b[5] = green;
+  renderWorldCity();
+  queueEdit(`Rebuilding a block of ${c.name}`, () => rpc("city_save", { net_id: state.net, city: c.id, zones: JSON.stringify(next) }));
+}
+// The picked city's details (the same saves as the Cities section)
 function renderWorldCity() {
-  const box = $("worldCity");
-  if (!box) return;
-  if (!state.cities.length) return box.replaceChildren(h("div", { class: "rn-hint" }, "Generate a world, then pick a city here to resize it."));
-  const c = state.cities.find((x) => x.id === state.cityPick) || state.cities[0];
-  state.cityPick = c.id;
-  const picks = h("div", { class: "dk-row", style: "margin-bottom: 10px" }, ...state.cities.map((x) => chip({ label: x.name, iconName: "city",
-    value: x.id === c.id, onChange: () => { state.cityPick = x.id; renderWorldCity(); } }).el));
-  box.replaceChildren(picks,
-    slider({ label: `${c.name} radius`, min: 150, max: 5000, step: 10, value: Math.round(c.radius / 100), fmt: m,
-      hint: "Rebuilds this city at its new size; its neighbours move away if they would overlap",
-      onChange: (v) => saveCity(c, { radius_m: v }) }).el,
-    segmented({ label: "Road style", value: c.style, options: STYLE_OPTS, onChange: (v) => saveCity(c, { style: v }) }).el);
+  showSide();
+  const pane = $("pane-city");
+  const c = state.cities.find((x) => x.id === state.cityPick);
+  if (!pane) return;
+  if (!c) return pane.replaceChildren();
+  const d = c.districts || {}, editing = state.tool === "city";
+  pane.replaceChildren(
+    section("City",
+      segmented({ label: "Road style", value: c.style, options: STYLE_OPTS, onChange: (v) => saveCity(c, { style: v }) }).el,
+      slider({ label: "Radius", min: 150, max: 5000, step: 10, value: Math.round(c.radius / 100), fmt: m,
+        hint: "Rebuilds this city at its new size; its neighbours move away if they would overlap",
+        onChange: (v) => saveCity(c, { radius_m: v }) }).el,
+      slider({ label: "Turned", min: 0, max: 359, step: 1, value: Math.round(c.turn_deg ?? 0), fmt: (v) => `${Math.round(v)}°`,
+        hint: "Turns the whole city: its street grid, its edge and its industrial side",
+        onChange: (v) => saveCity(c, { turn_deg: v }) }).el,
+      h("div", { class: "dk-row", style: "margin-top: 8px; flex-wrap: wrap" },
+        button(editing ? "Done editing on the map" : "Edit on the map", "edit", () => setTool(editing ? "select" : "city"),
+          editing ? "primary" : "secondary", "Move it, turn it and shape its edge with the handles on the map (E)"),
+        ...(c.shape?.length ? [button("Reset its edge", "refresh", () => saveCity(c, { shape: "reset" }), "secondary",
+          "Back to the edge its seed gives it")] : []))),
+    blockSection(c),
+    section("What it has", ...cityContents(c)),
+    section("Districts", h("div", { class: "rn-kv" },
+      h("span", {}, "Downtown"), h("span", {}, `${Math.round((d.downtown?.radius || 0) / 100)} m`),
+      h("span", {}, "Normal city"), h("span", {}, `${Math.round((d.normal?.radius || 0) / 100)} m`),
+      h("span", {}, "Housing"), h("span", {}, `${Math.round((d.housing?.radius || 0) / 100)} m`))),
+    section("Plan", cityPlan(c.plan), cityWater(c.waterfront), cityAirport(c.airport)));
 }
 function renderCitiesPane() {
   renderWorldCity();
@@ -1819,6 +2011,10 @@ function saveCity(c, change) {
   if (change.radius_m) c.radius = change.radius_m * 100;
   if (change.style) c.style = change.style;
   if (change.x != null && change.y != null) { c.x = change.x; c.y = change.y; }
+  if (change.turn_deg != null) turnCity(c, change.turn_deg);
+  if (change.shape === "reset") delete c.shape;
+  if (state.view.districts) { clear(groups.districts); drawDistricts(); }
+  if (change.turn_deg != null || change.shape) renderWorldCity();
   drawCityMark();
   needsDraw = true;
   queueEdit(`Rebuilding ${c.name}`, () => rpc("city_save", { net_id: state.net, city: c.id, ...change }));
@@ -1835,6 +2031,7 @@ async function regenerate(title) {
     size_km: gen.size_km ?? state.gen.size_km, relief_m: gen.relief_m ?? state.gen.relief_m,
     ground_from: gen.ground_from || "", options: JSON.stringify(optionsOf(state.gen)) });
   state.generating = false;
+  if (state.lifted) state.lifted.roads = false;  // a moved city: its new roads are in, its buildings still to come
   busy("");
   if (out.ok === false) showError(out.error);
   else showError("");
@@ -2077,6 +2274,8 @@ async function loadNets(autoOpen = true) {
 }
 async function openNet(id) {
   state.net = id; state.framed = false; state.sel = null; state.actor = ""; state.pcg = {}; state.exact = null;
+  state.cityPick = ""; state.block = null;
+  settleCity();
   call("prefs.set", { id: "last_net", value: id }).catch(() => {});
   renderWorldPick();
   $("syncBadge")?.replaceChildren();  // filled after this world's city preview (loadPcgPreview)
@@ -2103,6 +2302,10 @@ async function loadGeometry(keep, quiet = false) {
   if (geo.ok === false) return showError(`Couldn't load ${currentNet()?.name || "the world"}: ${geo.error}`, () => loadGeometry(keep));
   state.geo = geo;
   state.cities = cities.ok === false ? [] : cities.items || [];
+  if (cities.ok !== false) {  // what a block can be made, and how a city's edge is drawn: the generator's own lists
+    Object.assign(state, { blockKinds: cities.block_kinds || {}, blockZones: cities.block_zones || [],
+      shapePoints: cities.shape_points || 16, shapeRange: cities.shape_range || [0.74, 1.26] });
+  }
   if (state.cities.length) {  // the Cities count follows the world's cities (added or removed ones included)
     state.gen.cities = state.cities.length;
     ctl.cities?.set?.(state.cities.length);
@@ -2564,9 +2767,10 @@ function renderTools() {
   zoom.addEventListener("click", () => frame());
   const hasNote = note.points.length > 0;
   $("tools").replaceChildren(
-    tool("select", "pointer", "Pointer: click to select, drag a city to move it", "V"),
+    tool("select", "pointer", "Pointer: click a city, then one of its blocks; nothing moves", "V"),
     tool("hand", "hand", "Hand: drag to pan the view", "H"),
-    tool("move", "route", "Move: press on a road and drag that part of it, or drag a city; the ground is cut again under it", "M"),
+    ...(currentNet()?.generated ? [tool("city", "city", "Edit city: drag it to move it, the white handle to turn it, the dots to shape its edge; click a block to change it", "E")] : []),
+    tool("move", "route", "Move road: press on a road and drag that part of it; the ground is cut again under it", "M"),
     h("span", { class: "rn-sep" }),
     tool("pin", "pin", "Pin a spot, then tell an AI what to do there", "P"),
     tool("area", "pen", "Draw round an area, then tell an AI what to do there", "A"),
@@ -2597,10 +2801,11 @@ function toggleHelp() {
   const row = (keys, what) => h("div", { class: "rn-help__row" }, h("span", { class: "rn-help__keys" }, keys), h("span", {}, what));
   const box = pop || h("div", { class: "rn-help", id: "toolHelp", role: "dialog", "aria-label": "Map controls" });
   box.replaceChildren(h("div", { class: "rn-help__title" }, "Map controls"),
-    row("Drag a city", "Move it (Pointer)"), row("Click a city", "Select it"), row("Left drag", "Orbit (Pointer) / pan (Hand)"),
+    row("Click a city", "Pick it; then click a block of it"), row("Edit city (E)", "Drag to move, white handle turns, dots shape its edge"),
+    row("Left drag", "Orbit (Pointer) / pan (Hand)"),
     row("Hold right mouse", "Fly: look around"), row("+ W A S D, Q / E", "Fly: move, down / up (Shift: faster)"),
     row("+ Wheel", "Fly: speed"), row("Shift / middle drag", "Pan"), row("Wheel", "Zoom"),
-    row("V H P A C", "Pointer, Hand, Pin, Area, Add city"), row("F / T", "Fit / top view"), row("Esc", "Back to Pointer"));
+    row("V H E M P A C", "Pointer, Hand, Edit city, Move road, Pin, Area, Add city"), row("F / T", "Fit / top view"), row("Esc", "Back to Pointer"));
   box.hidden = false;
   if (!pop) $("view").parentElement.append(box);
 }
@@ -2609,8 +2814,16 @@ function setTool(id) {
   $("view").classList.toggle("is-drawing", id === "pin" || id === "area" || id === "addcity");
   $("view").classList.toggle("is-hand", id === "hand");
   renderTools();
+  renderWorldCity();
+  drawCityMark();  // the Edit city tool shows the picked city's handles
+  needsDraw = true;
   const banner = $("banner");
-  if (id === "addcity") {  // placing a new city: click the map, or let City Builder find room
+  if (id === "city") {
+    const c = state.cities.find((x) => x.id === state.cityPick);
+    banner.replaceChildren(h("span", {}, c ? `Editing ${c.name}: drag it to move it, the white handle to turn it, the dots to shape its edge` : "Click a city to edit it"),
+      h("button", { type: "button", class: "rn-mini", onclick: () => setTool("select") }, "Done"));
+    banner.hidden = false;
+  } else if (id === "addcity") {  // placing a new city: click the map, or let City Builder find room
     banner.replaceChildren(h("span", {}, "Click the map where the new city goes"),
       h("button", { type: "button", class: "rn-mini", onclick: () => addCityAt(null) }, "Find a free spot"),
       h("button", { type: "button", class: "rn-mini", onclick: () => setTool("select"), "aria-label": "Cancel" }, icon("x", 12)));
@@ -2627,8 +2840,8 @@ window.addEventListener("keydown", (e) => {
     if (FLY_KEYS[k]) { fly.keys.add(k); e.preventDefault(); }
     return;
   }
-  const tools = { v: "select", h: "hand", m: "move", p: "pin", a: "area", c: "addcity" };
-  if (tools[k] && (k !== "c" || currentNet()?.generated)) setTool(tools[k]);
+  const tools = { v: "select", h: "hand", e: "city", m: "move", p: "pin", a: "area", c: "addcity" };
+  if (tools[k] && ((k !== "c" && k !== "e") || currentNet()?.generated)) setTool(tools[k]);
   else if (k === "f") frame();
   else if (k === "t") topView();
   else if (k === "?") toggleHelp();
@@ -2719,11 +2932,13 @@ function cityFeatures(c) {
   return box;
 }
 function selectCity(id) {
+  if (id !== state.cityPick) state.block = null;
   state.cityPick = id;
   renderCityList();
   renderWorldCity?.();
   drawCityMark();
   needsDraw = true;
+  if (state.tool === "city") setTool("city");  // its banner names the city being edited
   const c = state.cities.find((x) => x.id === id);
   if (!c) return;
   const t = state.geo?.terrain || {};
@@ -2787,14 +3002,164 @@ function cityUnder(e) {
   const v = groundAt(e);
   if (!v || !state.cities.length) return null;
   const [x, y] = toUE(v);
-  return state.cities.map((k) => [k, Math.hypot(k.x - x, k.y - y)]).filter(([k, d]) => d < k.radius)
+  return state.cities.map((k) => [k, Math.hypot(k.x - x, k.y - y)])
+    .filter(([k, d]) => d < k.radius * cityOutline(k, Math.atan2(y - k.y, x - k.x) * 180 / Math.PI))
     .sort((a, b) => a[1] - b[1])[0]?.[0] || null;
+}
+// A click on a city: the first picks it, the next ones pick the block under the pointer (a click on open land lets go)
+function clickCity(c, e) {
+  if (!c) { if (state.cityPick && state.tool === "select") selectCity(""); return; }
+  if (c.id !== state.cityPick) return selectCity(c.id);
+  const v = groundAt(e);
+  if (!v) return;
+  const [x, y] = toUE(v);
+  const b = (c.blocks || []).find((k) => insidePoly(k[4], x, y));
+  state.block = b ? { city: c.id, x: b[0], y: b[1] } : null;
+  renderWorldCity();
+  drawCityMark();
+  needsDraw = true;
+}
+// Edit city: the handles on the picked city (drawCityMark). The white one turns the whole city round its centre;
+// a dot on its edge pulls the edge in or out there (as far as the generator allows, state.shapeRange).
+function handleUnder(e) {
+  const c = state.cities.find((x) => x.id === state.cityPick);
+  if (!c) return null;
+  const r = renderer.domElement.getBoundingClientRect();
+  ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), camera);
+  const hit = ray.intersectObjects(cityMark.children.filter((o) => o.userData.handle), false)[0];
+  return hit ? { c, ...hit.object.userData } : null;
+}
+function turnCity(c, deg) {
+  const d = deg - (c.turn_deg ?? 0);
+  if (!d) return;
+  c.spin = (c.spin || 0) + d;
+  c.turn_deg = deg;
+  if (c.districts?.industrial) c.districts.industrial.angle = (((c.districts.industrial.angle + d) % 360) + 360) % 360;
+}
+function dragHandle(e) {
+  const v = groundAt(e);
+  if (!v) return;
+  const [x, y] = toUE(v), hnd = drag.handle, c = hnd.c;
+  if (hnd.handle === "turn") {
+    turnCity(c, Math.round((((Math.atan2(y - c.y, x - c.x) * 180 / Math.PI) % 360) + 360) % 360));
+  } else {
+    const n = state.shapePoints || 16, [lo, hi] = state.shapeRange || [0.74, 1.26];
+    // the first pull: the edge it has now becomes the hand-drawn one, handle for handle
+    if (!c.shape?.length) c.shape = Array.from({ length: n }, (_, k) => Math.max(lo, Math.min(hi, cityOutline(c, k * 360 / n + (c.spin || 0)))));
+    c.shape[hnd.k] = Math.max(lo, Math.min(hi, Math.hypot(x - c.x, y - c.y) / c.radius));
+  }
+  hnd.moved = true;
+  renderer.domElement.style.cursor = "grabbing";
+  if (state.view.districts) { clear(groups.districts); drawDistricts(); }
+  drawCityMark();
+  needsDraw = true;
+}
+function dropHandle(hnd) {
+  if (!hnd.moved) return;
+  if (hnd.handle === "turn") saveCity(hnd.c, { turn_deg: hnd.c.turn_deg });
+  else saveCity(hnd.c, { shape: JSON.stringify(hnd.c.shape.map((v) => Math.round(v * 1000) / 1000)) });
+}
+// Moving a city: it leaves its place at once (its roads, buildings and props go) and a light copy of its buildings
+// rides with the pointer. After the drop the copy stays at the new place while the city is rebuilt there, and goes
+// when the rebuilt city starts to come in.
+const cityOfActor = (aslug) => state.cities.map((c) => c.id).filter((id) => aslug === id || aslug.startsWith(id + "-"))
+  .sort((p, q) => q.length - p.length)[0] || "";
+function inCity(c, x, y) {
+  const dx = x - c.x, dy = y - c.y, d = Math.hypot(dx, dy);
+  return d < c.radius * 1.35 && d < c.radius * 1.06 * cityOutline(c, Math.atan2(dy, dx) * 180 / Math.PI);
+}
+function liftCity(c) {
+  clear(cityGhost);
+  cityGhost.position.set(0, 0, 0);
+  state.lifted = { id: c.id, x: c.x, y: c.y, radius: c.radius, seed: c.seed, spin: c.spin, shape: c.shape && [...c.shape], roads: true };
+  const rows = [];
+  for (const layer of Object.values(state.pcg || {})) {
+    if (layer.kind !== "buildings" || layer.role === "park") continue;
+    for (const p of layer.points || []) if (inCity(c, p[0], p[1])) rows.push(p);
+  }
+  if (rows.length) {
+    const zx = state.view.zx || 1, dummy = new THREE.Object3D();
+    const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: col("fg-dim"),
+      roughness: 0.9, transparent: true, opacity: 0.6 }), rows.length);
+    rows.forEach(([x, y, z, yaw, , hgt, , w, d], i) => {
+      dummy.position.copy(toV(x, y, z));
+      dummy.position.y += (hgt || 6) * zx / 2;
+      dummy.rotation.set(0, -yaw * Math.PI / 180, 0);
+      dummy.scale.set((w || 12) * 0.8, (hgt || 6) * zx, (d || 12) * 0.8);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+    });
+    cityGhost.add(mesh);
+  }
+  hideLifted();
+}
+function slideGhost(to) {
+  const L = state.lifted;
+  if (!L) return;
+  const t = state.geo?.terrain || {}, zx = state.view.zx || 1;
+  cityGhost.position.set((to[1] - L.y) / 100, ((sampleZ(t, to[0], to[1]) ?? 0) - (sampleZ(t, L.x, L.y) ?? 0)) * zx / 100, -(to[0] - L.x) / 100);
+  needsDraw = true;
+}
+function hideLifted() {  // after every redraw too: the old city stays gone until the rebuilt one is in
+  const L = state.lifted;
+  if (!L) return;
+  if (L.roads) {
+    for (const o of groups.roads.children) if (o.userData.city === L.id) o.visible = false;
+    for (const o of groups.pieces.children) if (cityOfActor(o.userData.actor || "") === L.id) o.visible = false;
+  }
+  const none = new THREE.Matrix4().makeScale(0, 0, 0);
+  for (const o of groups.pcg.children) {
+    const xy = o.userData.xy;
+    if (!o.isInstancedMesh || !xy) continue;
+    for (let i = 0; i < o.count; i++) if (inCity(L, xy[2 * i], xy[2 * i + 1])) o.setMatrixAt(i, none);
+    o.instanceMatrix.needsUpdate = true;
+  }
+  needsDraw = true;
+}
+function dropLift() {  // the move was called off: the city is back where it was
+  if (!state.lifted) return;
+  state.lifted = null;
+  clear(cityGhost);
+  buildScene();
+}
+function settleCity() {  // the rebuilt city is coming in: the copy has done its job
+  if (!state.lifted && !cityGhost.children.length) return;
+  state.lifted = null;
+  clear(cityGhost);
+  needsDraw = true;
+}
+// The city comes in a few layers at a time, each rising out of the ground, never all at once at the end
+async function revealLayers(layers, first) {
+  if (first) { settleCity(); state.pcg = {}; clear(groups.pcg); }
+  Object.assign(state.pcg, layers);
+  if (!state.view.pcg || !state.geo) return;
+  const before = new Set(groups.pcg.children);
+  drawPcg({}, layers);
+  const fresh = groups.pcg.children.filter((o) => !before.has(o));
+  if (!fresh.length) return;
+  // one after another, each a moment behind the last: a batch of thirty kinds of thing takes over a second to
+  // come up, so the city fills in as it is made
+  const start = performance.now(), ms = 520, gap = Math.min(45, 900 / fresh.length);
+  fresh.forEach((o) => { o.scale.y = 0.02; });
+  const step = (now) => {
+    let rising = false;
+    fresh.forEach((o, i) => {
+      const k = Math.max(0, Math.min(1, (now - start - i * gap) / ms));
+      o.scale.y = 0.02 + 0.98 * (1 - Math.pow(1 - k, 3));
+      if (k < 1) rising = true;
+    });
+    needsDraw = true;
+    if (rising) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+  await new Promise((done) => setTimeout(done, 170 + fresh.length * gap));
 }
 function startCityDrag(c) {
   const v = groundAt({ clientX: drag.x0, clientY: drag.y0 });
   if (!v) return;
   const [x, y] = toUE(v);
   drag.city = { c, dx: c.x - x, dy: c.y - y, to: [c.x, c.y] };
+  liftCity(c);  // it leaves its place at once; a light copy of it rides with the pointer
   renderer.domElement.style.cursor = "grabbing";
   state.cityPick = c.id;
   renderCityList();  // only a ghost moves while dragging: nothing is rebuilt until the drop (Esc cancels)
@@ -2806,6 +3171,7 @@ function dragCity(e) {
   const [x, y] = toUE(v);
   drag.city.to = [x + drag.city.dx, y + drag.city.dy];
   drag.city.c.dragTo = drag.city.to;  // its name tag follows
+  slideGhost(drag.city.to);
   drawCityGhost(drag.city);
 }
 function drawCityGhost(m) {
@@ -2832,6 +3198,7 @@ function cancelCityDrag() {  // Esc while dragging: the city stays where it was
   clear(marks);
   delete drag.city.c.dragTo;
   drag = null;
+  dropLift();
   renderer.domElement.style.cursor = "";
   drawCityMark();
   needsDraw = true;
@@ -2841,7 +3208,7 @@ async function dropCity(m) {
   clear(marks);
   delete m.c.dragTo;
   needsDraw = true;
-  if (Math.hypot(m.to[0] - m.c.x, m.to[1] - m.c.y) < 1000) { drawCityMark(); return; }  // barely moved: nothing to do
+  if (Math.hypot(m.to[0] - m.c.x, m.to[1] - m.c.y) < 1000) { dropLift(); drawCityMark(); return; }  // barely moved: nothing to do
   await saveCity(m.c, { x: Math.round(m.to[0]), y: Math.round(m.to[1]) });
 }
 // Move tool: press on a road and drag. The nearest spline point of that road goes with the pointer (a junction
@@ -2893,11 +3260,12 @@ async function dropRoadPoint(d) {
   schedulePcgPreview(0);  // the ground is cut again along the new line, and the buildings keep clear of it
 }
 function hoverCursor(e) {  // the Pointer tool shows a grab hand over a city
-  if (state.tool !== "select" || !state.cities.length) return;
+  if ((state.tool !== "select" && state.tool !== "city") || !state.cities.length) return;
   const now = performance.now();
   if (now - (hoverCursor.t || 0) < 60) return;  // raycasts at most ~16 times a second
   hoverCursor.t = now;
-  renderer.domElement.style.cursor = cityUnder(e) ? "grab" : "";
+  renderer.domElement.style.cursor = state.tool === "city" ? (handleUnder(e) ? "grab" : cityUnder(e) ? "move" : "")
+    : cityUnder(e) ? "pointer" : "";
 }
 function drawMarks() {
   clear(marks);

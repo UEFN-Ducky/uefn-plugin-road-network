@@ -322,14 +322,16 @@ def plan(city: dict, o: dict) -> Plan:
     if o.get("freeways", "yes") != "yes" or R < FW_MIN_R:
         return out
     hard = reserved(city)
-    block, down, normal = o["block_m"] * 100, o["downtown"], max(o["normal"], o["downtown"])
+    down, normal = o["downtown"], max(o["normal"], o["downtown"])
+    bx, by = cg.block_xy(o)  # a block's sides: across the grid angle (x) and along it (y)
     turn = math.radians(cg.orientation(city))
     c, s = math.cos(turn), math.sin(turn)
     W = lambda lx, ly: (city["x"] + c * lx - s * ly, city["y"] + s * lx + c * ly)
-    off = (round(down * R / block) + 0.5) * block  # mid-block, at the edge of downtown
+    # mid-block, at the edge of downtown (citygen.street_grid keeps the two streets beside each one straight)
+    off_x, off_y = (round(down * R / bx) + 0.5) * bx, (round(down * R / by) + 0.5) * by
     span, fade = 1.3 * R, 1.6 * LEVEL_CM / MAX_GRADE["freeway"]
     two = R >= STACK_MIN_R
-    stack_at = (off, -off)
+    stack_at = (off_x, -off_y)
     end = span + fade + 20000  # how far a freeway runs each way from the city: back at grade 200 m past the fade
     box = city.get("map")  # [x0, y0, x1, y1]: a freeway comes down and ends before the map's edge (Nov 11 2026)
 
@@ -351,7 +353,7 @@ def plan(city: dict, o: dict) -> Plan:
             z += LEVEL_CM * _smooth((60000 - abs(other)) / 35000)
         return z
 
-    mains = [("ns", (1.0, 0.0), off, (0.0, 1.0))] + ([("ew", (0.0, 1.0), -off, (1.0, 0.0))] if two else [])
+    mains = [("ns", (1.0, 0.0), off_x, (0.0, 1.0))] + ([("ew", (0.0, 1.0), -off_y, (1.0, 0.0))] if two else [])
     sides_of, reach_of = {}, {}
     for name, normal_axis, at, axis in mains:  # each way: the full run, or as far as the map lets it go
         px, py = W(normal_axis[0] * at, normal_axis[1] * at)
@@ -388,9 +390,10 @@ def plan(city: dict, o: dict) -> Plan:
         ax_w = (c * axis[0] - s * axis[1], s * axis[0] + c * axis[1])
         done = [stack_along] if two else []
         gap = STACK_GAP if two else 0.0
-        n_max = int(R // block)
+        step, across = (by, bx) if name == "ns" else (bx, by)  # the grid along this freeway, and across it
+        n_max = int(R // step)
         for n in sorted(range(-n_max, n_max + 1), key=abs):
-            t = n * block
+            t = n * step
             if n % o["collector_every"] and n:
                 continue  # only collectors and the main axis
             if any(abs(t - d) < (gap if d == stack_along and two else IC_SPACING) for d in done):
@@ -411,7 +414,7 @@ def plan(city: dict, o: dict) -> Plan:
             road = o["core_roads"] if share <= down or not n else "4L" if share <= normal else o["neighbourhood_roads"]
             f = Frame(cx, cy, *ax_w)
             bld = interchange(kind, f, FW_HALF, cg.HALF.get(road, 1400.0), lambda a, t=t, lf=lf: lf(t + a), lambda b: 0.0,
-                              ("ic", name, n), frontage_b=block / 2, frontage_a=math.ceil((DIAMOND_A + 4000) / block) * block)
+                              ("ic", name, n), frontage_b=across / 2, frontage_a=math.ceil((DIAMOND_A + 4000) / step) * step)
             out.add(bld, "6L", ("ic", name, n))
             out.interchanges.append({"kind": kind, "at": [round(cx), round(cy)], "freeway": name, "cross_road": road,
                                      "b_axis": [round(-ax_w[1], 4), round(ax_w[0], 4)], "group": ("ic", name, n)})

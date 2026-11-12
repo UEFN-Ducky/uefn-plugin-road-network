@@ -322,6 +322,9 @@ def patch(x: float, y: float, cell: float = PATCH_CM) -> float:
     return total / norm
 
 
+PRESETS = ("full_city", "city", "buildings", "street", "nature", "forest", "forest_and_streets")  # the built-in sets
+
+
 def preset(name: str = "full_city") -> list:
     """Starter layers. Meshes stay empty: the AI placing it picks them from the world's asset set.
     'full_city': nature (foliage), every kind of building and all street furniture; 'city': buildings and
@@ -1150,6 +1153,10 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
     for x, y, half, _, _ in street_samples(cities):
         priv_hash.add(x, y, half, (x, y, half))
     built = _Rects()  # every building of every layer, as the rectangle it stands on
+    # blocks laid out as a park (city 'blocks': [x, y, kind, zone, polygon]): trees and paths only, so a layer that
+    # builds along road frontage (mansions, offices) leaves them alone too
+    parks = [(b[4], min(p[0] for p in b[4]), min(p[1] for p in b[4]), max(p[0] for p in b[4]), max(p[1] for p in b[4]))
+             for c in cities for b in c.get("blocks") or [] if len(b) > 4 and b[2] == "park" and len(b[4]) > 2]
     infill: list = []  # lots left empty because a building would stand on another or on a street: planted instead
     plan_roles = {row[7] for c in cities for row in c.get("lots") or [] if len(row) > 8 and row[8] is True}
     planned = lambda layer: layer["role"] in PLANNED_ROLES and layer["role"] in plan_roles
@@ -1251,6 +1258,9 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                 continue  # (a neighbourhood's own lots are already in the right place)
             if layer["area"] and not inside(layer["area"], x, y):
                 continue  # outside the area this layer was drawn for
+            if parks and layer["kind"] == "buildings" and not lot and \
+                    any(x0 <= x <= x1 and y0 <= y <= y1 and inside(poly, x, y) for poly, x0, y0, x1, y1 in parks):
+                continue  # a park block: nothing is built on it
             if keep and any(max(k["x0"] - x, 0, x - k["x1"]) ** 2 + max(k["y0"] - y, 0, y - k["y1"]) ** 2 < 4e6 for k in keep):
                 continue  # 20 m around a keep zone (a cinema, a spawn) stays clear
             if layer["kind"] == "buildings" and layer["height_min_m"] >= 40 and rnd.random() > 0.08 + 0.92 * core_peak(cities, x, y):
@@ -1550,6 +1560,17 @@ def _demo() -> None:
     assert _in_where("cities", zoned, hx, 0) and not _in_where("outside", zoned, hx, 0)
     assert all(_in_where(w, zoned, hx, 9000) == _in_where(w, cities, hx, 9000)
                for w in ("downtown", "normal", "housing", "industrial")), "the block beside it is as it was"
+    # a block laid out as a park: a layer that builds along road frontage leaves it empty
+    front = clean({"name": "Mansions", "kind": "buildings", "where": "cities", "width_m": 30, "depth_m": 30, "spacing_m": 60,
+                   "setback_m": 6, "role": "mansion"})
+    street = [(hx - 8000 + i * 400, -2600, 400.0, 1.0, 0.0) for i in range(40)]  # along the block's south edge
+    lawn = [[hx - 6000, -2400], [hx + 6000, -2400], [hx + 6000, 4000], [hx - 6000, 4000]]
+    in_sq = lambda res: [p for p in res["Mansions"]["points"] if inside(lawn, p[0], p[1])]
+    no_lots = [{k: v for k, v in cities[0].items() if k != "lots"}]
+    plain = preview([front], no_lots, {}, street, lambda x, y: 0.0)
+    parked = preview([front], [{**no_lots[0], "blocks": [[hx, 0, "park", "housing", lawn]]}], {}, street, lambda x, y: 0.0)
+    assert in_sq(plain) and not in_sq(parked), ("nothing built on a park block", len(in_sq(plain)), len(in_sq(parked)))
+    assert len(parked["Mansions"]["points"]) >= len(plain["Mansions"]["points"]) - len(in_sq(plain)) - 1
     shop = clean({"name": "S", "kind": "buildings", "role": "shop"})
     assert _lot_ground(shop, lambda x, y: 0.0, 0, 0, 0.0, 20, 15)[2][0][0] == 18.0, "a shop fronts the street full width"
     # nothing is built on a foundation deeper than 4 m: the house goes and its lot is planted; a park and a

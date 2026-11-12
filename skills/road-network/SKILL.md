@@ -67,6 +67,15 @@ A step isn't done until you've looked at the result. Preview a layer and compare
 check before a reimport. Look at the pipeline status after a regenerate. Take a screenshot after a build in
 UEFN. A blown-out or empty screenshot is a failure, not a pass.
 
+## Changing one city, one block, or the whole look
+- One city: `road_network_city_save` moves it (x, y), turns it (`turn_deg`), draws its outline (`shape`) and
+  gives one block a type (`zones`: its layout, its zone, the share of its lots left green). Then generate again
+  with cities empty. The person does the same on the map with the Edit city tool.
+- Street look for the world: options `wobble` (0 = dead straight, higher = smooth curves), `block_ratio` (square
+  to long blocks), `green_lots`.
+- A look worth keeping: `road_network_preset_save` (layers + options under a name), `road_network_pcg_preset` to
+  use it on any world. `references/systems.md` has every field.
+
 ## Examples
 - The `full_city` preset's layers are worked examples of every building and street layer. Read one before
   writing a new layer.

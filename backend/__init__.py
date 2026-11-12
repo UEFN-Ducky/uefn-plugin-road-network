@@ -1203,18 +1203,27 @@ def register(api) -> None:
             rows = [dict(z) for z in doc.get("zones") or []]
             for z in ([given] if isinstance(given, dict) else given):
                 if not isinstance(z, dict) or "x" not in z or "y" not in z:
-                    return {"ok": False, "error": 'zones: {"x": cm, "y": cm, "kind": ..., "zone": ...} (a spot inside the block), or a list of them.'}
+                    return {"ok": False, "error": 'zones: {"x": cm, "y": cm, "kind": ..., "zone": ..., "green": 0 to 1} (a spot inside the block), or a list of them.'}
                 kind, zone = str(z.get("kind") or ""), str(z.get("zone") or "")
                 if (kind and kind not in cg.BLOCK_KINDS) or (zone and zone not in cg.BLOCK_ZONES):
                     return {"ok": False, "error": f"kind is one of {', '.join(cg.BLOCK_KINDS)}; zone is one of {', '.join(cg.BLOCK_ZONES)}."}
+                green = z.get("green")
+                if green is not None and green != "":
+                    try:
+                        green = round(max(0.0, min(1.0, float(green))), 2)
+                    except (TypeError, ValueError):
+                        return {"ok": False, "error": "green is the share of the block's lots planted instead of built on: a number from 0 to 1."}
+                else:
+                    green = None
                 at = (float(z["x"]), float(z["y"]))
                 # one choice a block: the block this spot is in (as last laid out), else anything within 30 m of it
                 block = next((b for b in (city_docs(nid).get(cslug) or {}).get("blocks") or [] if cg._inside(b[4], *at)), None)
                 same = (lambda r: cg._inside(block[4], r["x"], r["y"])) if block else \
                     (lambda r: math.hypot(r["x"] - at[0], r["y"] - at[1]) < 3000)
                 rows = [r for r in rows if not same(r)]
-                if kind or zone:  # both empty: the block goes back to the city's own plan
-                    rows.append({"x": round(at[0]), "y": round(at[1]), **({"kind": kind} if kind else {}), **({"zone": zone} if zone else {})})
+                if kind or zone or green is not None:  # all empty: the block goes back to the city's own plan
+                    rows.append({"x": round(at[0]), "y": round(at[1]), **({"kind": kind} if kind else {}), **({"zone": zone} if zone else {}),
+                                 **({"green": green} if green is not None else {})})
             doc["zones"] = rows
         if features:
             try:
@@ -1370,15 +1379,97 @@ def register(api) -> None:
         push({"what": "pcg", "id": nid})
         return {"ok": True, "id": lid}
 
-    def pcg_preset(net_id: str = "", preset: str = "full_city", reorder: bool = False) -> dict:
+    # A preset is a set of layers by name: the built-in ones (pl.PRESETS) and any a person or an AI saved here, with
+    # the world options (terrain, streets) it was made for. Saved ones live in this plugin's data, like the worlds.
+    def presets() -> dict:
+        built = [{"id": n, "name": n, "built_in": True, "layers": len(pl.preset(n))} for n in pl.PRESETS]
+        saved = [{"id": k.split(".", 1)[1], "name": d.get("name") or k.split(".", 1)[1], "built_in": False,
+                  "layers": len(d.get("layers") or []), "layer_names": [l.get("name") for l in d.get("layers") or []],
+                  "options": d.get("options") or {}, "note": d.get("note") or ""}
+                 for k, d in sorted(data.items("preset.").items()) if k.count(".") == 1]
+        return {"ok": True, "items": built + saved, "count": len(built) + len(saved)}
+
+    def preset_save(name: str = "", net_id: str = "", layers: str = "", options: str = "", note: str = "") -> dict:
+        pid = slug(name)
+        if not pid:
+            return {"ok": False, "error": "Give the preset a name."}
+        if pid in pl.PRESETS:
+            return {"ok": False, "error": f"{name!r} is a built-in preset: pick another name."}
+        nid = slug(net_id)
+        world = data.get(f"net.{nid}") if nid else None
+        if nid and not world:
+            return {"ok": False, "error": f"No road network {net_id!r}."}
+        rows, opts = [], {}
+        if str(layers or "").strip():
+            try:
+                given = json.loads(layers)
+            except ValueError as exc:
+                return {"ok": False, "error": f"layers is not valid JSON: {exc}"}
+            if not isinstance(given, list) or not all(isinstance(l, dict) and l.get("name") for l in given):
+                return {"ok": False, "error": "layers is a JSON list of layers, each with a name (as road_network_pcg_layer_save takes one)."}
+            rows = [pl.clean(dict(l)) for l in given]
+        elif world:
+            rows = sorted(layer_docs(nid).values(), key=lambda l: (l.get("order", 0), l.get("name", "")))
+        if not rows:
+            return {"ok": False, "error": "Nothing to save: give layers (a JSON list), or net_id for a world whose layers to take."}
+        if str(options or "").strip():
+            try:
+                given = json.loads(options)
+            except ValueError as exc:
+                return {"ok": False, "error": f"options is not valid JSON: {exc}"}
+            unknown = [k for k in (given if isinstance(given, dict) else {"?": 0}) if k not in cg.OPTIONS and k not in cg.CHOICES]
+            if unknown:
+                return {"ok": False, "error": f"Unknown option(s): {', '.join(unknown)}. List them with road_network_generate_options."}
+            clamped = cg.options(given)
+            opts = {k: clamped[k] for k in given}
+        elif world and not str(layers or "").strip():
+            opts = dict((world.get("generated") or {}).get("options") or {})  # the world it was taken from: its own
+        before = data.get(f"preset.{pid}")
+        data.put(f"preset.{pid}", {"name": str(name).strip(), "note": str(note or ""), "layers": rows, "options": opts})
+        record("road_network_preset_save", "preset", pid, before,
+               [{"command": "road_network_preset_delete", "params": {"preset": pid, "confirm": True}}] if not before else
+               [{"command": "road_network_preset_save", "params": {"name": before.get("name") or pid, "layers": json.dumps(before.get("layers") or []),
+                                                                   "options": json.dumps(before.get("options") or {}),
+                                                                   "note": before.get("note") or ""}}])
+        push({"what": "presets", "id": pid})
+        return {"ok": True, "id": pid, "layers": len(rows), "options": opts,
+                "note": f"Apply it to a world with road_network_pcg_preset(net_id, preset='{pid}')."}
+
+    def preset_delete(preset: str = "", confirm: bool = False) -> dict:
+        pid = slug(preset)
+        before = data.get(f"preset.{pid}") if pid else None
+        if not before:
+            return {"ok": False, "error": f"No saved preset {preset!r}. List them with road_network_presets."}
+        if not confirm:
+            return {"ok": False, "error": f"This deletes the preset {before.get('name') or pid} ({len(before.get('layers') or [])} layers). "
+                                          "Call again with confirm=true. Worlds it was applied to keep their layers."}
+        data.delete(f"preset.{pid}")
+        record("road_network_preset_delete", "preset", pid, before,
+               [{"command": "road_network_preset_save", "params": {"name": before.get("name") or pid, "layers": json.dumps(before.get("layers") or []),
+                                                                   "options": json.dumps(before.get("options") or {}),
+                                                                   "note": before.get("note") or ""}}])
+        push({"what": "presets", "id": pid})
+        return {"ok": True, "id": pid, "deleted": True}
+
+    def pcg_preset(net_id: str = "", preset: str = "full_city", reorder: bool = False, replace: bool = False) -> dict:
         nid = slug(net_id)
         if not data.get(f"net.{nid}"):
             return {"ok": False, "error": f"No road network {net_id!r}."}
-        added, reordered, undo = [], [], []
-        for layer in pl.preset(preset):
+        saved = data.get(f"preset.{slug(preset)}") if preset not in pl.PRESETS else None
+        if preset not in pl.PRESETS and not saved:
+            return {"ok": False, "error": f"No preset {preset!r}. Built in: {', '.join(pl.PRESETS)}; saved ones: road_network_presets."}
+        added, reordered, replaced, undo = [], [], [], []
+        for layer in (saved["layers"] if saved else pl.preset(preset)):
             lid = slug(layer["name"])
             have = data.get(f"net.{nid}.pcg.{lid}")
-            if not have:  # never overwrite a layer the person already tuned
+            if have and replace and have != layer:  # asked for: the preset's own settings over the world's
+                data.put(f"net.{nid}.pcg.{lid}", layer)
+                replaced.append(layer["name"])
+                undo.append({"command": "road_network_pcg_layer_save",
+                             "params": {"net_id": nid, "layer_id": lid, "layer": json.dumps(have)}})
+            elif have and replace:
+                continue
+            elif not have:  # never overwrite a layer the person already tuned
                 data.put(f"net.{nid}.pcg.{lid}", layer)
                 added.append(layer["name"])
                 undo.append({"command": "road_network_pcg_layer_delete", "params": {"net_id": nid, "layer_id": lid}})
@@ -1389,7 +1480,11 @@ def register(api) -> None:
                              "params": {"net_id": nid, "layer_id": lid, "layer": json.dumps(have)}})
         record("road_network_pcg_preset", "pcg-layer", nid, None, undo)
         push({"what": "pcg", "id": nid})
-        return {"ok": True, "id": nid, "added": added, "reordered": reordered}
+        out = {"ok": True, "id": nid, "added": added, "reordered": reordered, "replaced": replaced}
+        if saved and saved.get("options"):  # the terrain and street settings it was made for: the caller's to use
+            out.update(options=saved["options"], next="To give the world this preset's terrain and streets too, generate it "
+                                                       "again with options=<these, as JSON> (road_network_generate).")
+        return out
 
     def road_tag_for(nid: str) -> str:
         return "CityRoads" if not (data.get(f"net.{nid}") or {}).get("generated") else f"{nid}_roads"
@@ -2665,8 +2760,11 @@ def register(api) -> None:
         [{name, x, y, radius_m, style}] in cm, or empty to rebuild the cities already in this world.
         ground_from: an existing network whose ground scan the roads follow instead (no heightmap).
         options: JSON, any of: terrain hill_km, roughness (0.2-0.8), detail (octaves 1-8), ridges (0-1),
-        flatten_m, sea_m (lake level, -1000 = off), terrace_m; roads block_m, wobble (0-0.45),
-        prune (0-0.5), downtown / normal (ring shares), highway ('4L' or '2L'), highway_curve. Left-out
+        flatten_m, sea_m (lake level, -1000 = off), terrace_m; roads block_m (a block's short side), block_ratio
+        (1 = square blocks, up to 3 = three times as long as wide), wobble (0-0.45: 0 = dead straight streets,
+        higher = the streets between main roads bow in smooth curves), green_lots (0-0.6: share of every block's
+        lots planted with trees instead of built on), prune (0-0.5), downtown / normal (ring shares), highway
+        ('4L' or '2L'), highway_curve. Left-out
         options keep the world's last values. Offline: never touches UEFN or any terrain."""
         return safe(generate)(name, seed, cities, size_km, relief_m, ground_from, folder, center_x, center_y, options)
 
@@ -2838,8 +2936,9 @@ def register(api) -> None:
         JSON list of 16 numbers, how far it reaches in each of 16 directions round it as a share of its radius
         (0.74 to 1.26; 'reset' = the outline its seed gives it). zones gives one block a type: JSON {"x", "y" (a
         spot inside the block, cm), "kind" (how it is laid out), "zone" (downtown / normal / housing /
-        industrial)}, or a list of them; both empty returns the block to the city's own plan. road_network_cities
-        lists every block ([x, y, kind, zone, polygon]) and the kinds and zones a block can take. Generate again
+        industrial), "green" (0 to 1: the share of its lots planted with trees instead of built on)}, or a list of
+        them; all empty returns the block to the city's own plan. road_network_cities lists every block ([x, y,
+        kind, zone, polygon, green share]) and the kinds and zones a block can take. Generate again
         with cities empty to rebuild its roads, freeways, airport, waterfront and everything on it."""
         return safe(save_city)(net_id, city, name, style, radius_m, buildings, x, y, features, turn_deg, shape, zones)
 
@@ -3278,13 +3377,39 @@ def register(api) -> None:
         return safe(pcg_layer_delete)(net_id, layer_id)
 
     @api.tool(intent=PCG_INTENT, listener=False)
-    def road_network_pcg_preset(net_id: str = "", preset: str = "full_city", reorder: bool = False) -> dict:
-        """Add every layer a city needs in one call: 'full_city' (16 building types, traffic lights / stop and
-        street signs on junction corners, lamps, street trees, bus stops, benches, bins, hydrants, billboards,
-        power poles, and trees / rocks / bushes as Foliage-mode layers, no grass), 'city', 'buildings', 'street'
-        or 'nature'. Existing layers keep their settings; reorder=true only moves them into planning order
-        (big civic sites first, dense fill after)."""
-        return safe(pcg_preset)(net_id, preset, reorder)
+    def road_network_pcg_preset(net_id: str = "", preset: str = "full_city", reorder: bool = False, replace: bool = False) -> dict:
+        """Apply a preset to a world: every layer it holds in one call. Built in: 'full_city' (16 building types,
+        traffic lights / stop and street signs on junction corners, lamps, street trees, bus stops, benches, bins,
+        hydrants, billboards, power poles, and trees / rocks / bushes as Foliage-mode layers, no grass), 'city',
+        'buildings', 'street' or 'nature'. Or one saved with road_network_preset_save (road_network_presets lists
+        them). Existing layers keep their settings unless replace=true (the preset's settings win); reorder=true
+        only moves them into planning order (big civic sites first, dense fill after). A saved preset's world
+        options come back as `options`: pass them to road_network_generate to get its terrain and streets too."""
+        return safe(pcg_preset)(net_id, preset, reorder, replace)
+
+    @api.tool(intent=PCG_INTENT, listener=False)
+    def road_network_presets() -> dict:
+        """Every City Builder preset: the built-in layer sets and the ones saved here by a person or an AI (name,
+        how many layers, their names, the world options kept with it, its note). Apply one with
+        road_network_pcg_preset."""
+        return safe(presets)()
+
+    @api.tool(intent=PCG_INTENT, listener=False)
+    def road_network_preset_save(name: str = "", net_id: str = "", layers: str = "", options: str = "", note: str = "") -> dict:
+        """Make or change a preset on the fly: a named set of placement layers, kept with this plugin's data and
+        usable on any world. layers: a JSON list of layers exactly as road_network_pcg_layer_save takes one (name,
+        kind, role, where, density, sizes, meshes...; road_network_describe lists the kinds, roles and areas). Or
+        leave layers empty and give net_id: that world's layers as they are now, with its world options. options:
+        JSON of generate options to keep with it (road_network_generate_options lists them), e.g.
+        {"block_m": 80, "wobble": 0, "city_ground": "flatten"}. note: what the preset is for, in a line. Saving an
+        existing name replaces that preset. Apply it with road_network_pcg_preset(net_id, preset=name)."""
+        return safe(preset_save)(name, net_id, layers, options, note)
+
+    @api.tool(intent=PCG_INTENT, listener=False)
+    def road_network_preset_delete(preset: str = "", confirm: bool = False) -> dict:
+        """Delete a saved City Builder preset (never a built-in one). Worlds it was applied to keep their layers.
+        confirm=true to go ahead."""
+        return safe(preset_delete)(preset, confirm)
 
     @api.tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_plan(net_id: str = "", road_tag: str = "") -> dict:
@@ -3345,8 +3470,12 @@ def register(api) -> None:
     api.register_panel_rpc("pcg_layers", lambda net_id="": safe(pcg_layers)(net_id))
     api.register_panel_rpc("pcg_layer_save", lambda net_id="", layer="", layer_id="": safe(pcg_layer_save)(net_id, layer, layer_id))
     api.register_panel_rpc("pcg_layer_delete", lambda net_id="", layer_id="": safe(pcg_layer_delete)(net_id, layer_id))
-    api.register_panel_rpc("pcg_preset", lambda net_id="", preset="full_city", reorder=False:
-                           safe(pcg_preset)(net_id, preset, reorder))
+    api.register_panel_rpc("pcg_preset", lambda net_id="", preset="full_city", reorder=False, replace=False:
+                           safe(pcg_preset)(net_id, preset, reorder, replace))
+    api.register_panel_rpc("presets", lambda: safe(presets)())
+    api.register_panel_rpc("preset_save", lambda name="", net_id="", layers="", options="", note="":
+                           safe(preset_save)(name, net_id, layers, options, note))
+    api.register_panel_rpc("preset_delete", lambda preset="", confirm=False: safe(preset_delete)(preset, confirm))
     api.register_panel_rpc("pcg_plan", lambda net_id="", road_tag="": safe(pcg_plan)(net_id, road_tag))
     api.register_panel_rpc("pcg_assets", lambda net_id="", asset_set="", interiors="": safe(pcg_assets)(net_id, asset_set, interiors))
     api.register_panel_rpc("pcg_preview", lambda net_id="", layer_id="": safe(pcg_preview)(net_id, layer_id))

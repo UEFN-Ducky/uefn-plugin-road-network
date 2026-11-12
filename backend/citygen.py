@@ -221,10 +221,13 @@ OPTIONS = {
     "city_size": (1.0, 0.3, 4.0),     # every city's radius x this (new cities; regenerating scales the old ones)
     "city_gap_m": (300.0, 0.0, 6000.0),  # open country between two cities' edges, at least
     # roads
-    "block_m": (100.0, 50.0, 250.0),   # city block, centre line to centre line
-    # planned grid (Parish & Mueller hierarchy; real cities ~80 % planned): an intersection moves at most 8 %
-    # of a block, the whole intersection at once, so streets stay straight and blocks stay rectangular
-    "wobble": (0.04, 0.0, 0.08),       # how far an intersection may move (share of a block)
+    "block_m": (100.0, 50.0, 250.0),   # city block, centre line to centre line (its short side)
+    "block_ratio": (1.0, 1.0, 3.0),    # how long a block is for its width: 1 = square, 2 = twice as long as wide
+    # planned grid (Parish & Mueller hierarchy; real cities ~80 % planned). A street between two main roads may
+    # bow off its grid line in one smooth curve (a seeded wave along the whole street, _bow): it never jogs from
+    # intersection to intersection, and its neighbours bow with it, so blocks keep their width. 0 = dead straight
+    "wobble": (0.12, 0.0, 0.45),       # how far a street bows off its grid line (share of a block)
+    "green_lots": (0.0, 0.0, 0.6),     # share of each block's lots planted with trees instead of built on
     "prune": (0.12, 0.0, 0.35),        # share of local side streets removed in neighbourhoods / suburbs
     "collector_every": (4, 2, 8),      # every Nth grid line is a collector (wider, through the city)
     "downtown": (0.4, 0.1, 0.8),       # downtown ring, share of the radius
@@ -894,24 +897,71 @@ def orientation(city: dict) -> float:
     return float(city["turn"]) % 360.0 if city.get("turn") is not None else seed_turn(city)
 
 
+def block_xy(o: dict) -> tuple:
+    """A block's two sides in cm, centre line to centre line: (across the city's grid angle, along it)."""
+    b = o["block_m"] * 100
+    return b, b * o.get("block_ratio", 1.0)
+
+
+def _bow(seed, tag: str):
+    """One seeded wave over the street grid, -1..1: (steps along a street, which street line) -> how far that
+    street is off its grid line there. Long waves (5 to 14 blocks) that drift slowly from one line to the next:
+    a street bends as a whole, and the streets beside it bend with it."""
+    r = random.Random(f"bow:{seed}:{tag}")
+    l1, l2, p1, p2, drift = r.uniform(5.0, 8.0), r.uniform(9.0, 14.0), r.random(), r.random(), r.uniform(0.03, 0.07)
+    tau = 2 * math.pi
+    return lambda along, line: (0.65 * math.sin(tau * (along / l1 + line * drift + p1))
+                                + 0.35 * math.sin(tau * (along / l2 - line * drift + p2)))
+
+
+def street_grid(city: dict, o: dict) -> tuple:
+    """The city's street grid before anything is cut from it: (at, kx, ky). at(ix, iy) -> (x, y, share): where
+    grid lines ix and iy cross in world cm, and that spot's share of the way to the city's edge (zone_share of
+    the plain grid point). Blocks are block_m wide and block_m x block_ratio long. Streets bow by `wobble` of a
+    block, eased in past downtown in a mixed city and nowhere in a grid city; main roads (collectors and the
+    axes) and the two streets under a freeway's viaduct stay dead straight: interchanges land on them exactly."""
+    from . import freeways
+    bx, by = block_xy(o)
+    cx, cy, R, style = city["x"], city["y"], city["radius"], city.get("style", "mixed")
+    turn = math.radians(orientation(city))
+    c, s = math.cos(turn), math.sin(turn)
+    ce, down, seed = o["collector_every"], o["downtown"], city.get("seed", 1)
+    bow_x, bow_y = _bow(seed, "x"), _bow(seed, "y")
+    still_x: set = set()
+    still_y: set = set()
+    if o.get("freeways", "yes") == "yes" and R >= freeways.FW_MIN_R:  # freeways.plan: mid-block past downtown
+        fx, fy = round(down * R / bx), round(down * R / by)
+        still_x, still_y = {fx, fx + 1}, {-fy - 1, -fy}
+    off_x = lambda i: 0.0 if i in still_x else math.sin(math.pi * (i % ce) / ce)  # 0 on a main road, most
+    off_y = lambda i: 0.0 if i in still_y else math.sin(math.pi * (i % ce) / ce)  # halfway between two
+
+    def at(ix: int, iy: int) -> tuple:
+        lx, ly = ix * bx, iy * by
+        share = zone_share(city, cx + c * lx - s * ly, cy + s * lx + c * ly)
+        amount = 0.0 if style == "grid" else o["wobble"] * (_smoothstep(down, down + 0.15, share) if style == "mixed" else 1.0)
+        if amount:
+            lx += amount * bx * off_x(ix) * bow_x(iy, ix)
+            ly += amount * by * off_y(iy) * bow_y(ix, iy)
+        return cx + c * lx - s * ly, cy + s * lx + c * ly, share
+    return at, int(R * 1.3 // bx), int(R * 1.3 // by)
+
+
 def canal_lines(city: dict, opts: dict | None = None) -> list:
     """CanalGenerator: the canal city's canals, polylines in world cm: every third grid line (never a collector or
-    an axis) through the downtown and normal rings, along the city's own grid."""
+    an axis) through the downtown and normal rings, along the city's own grid (and its bows: a canal takes a
+    street's place)."""
     o = city_options(city, opts)
     if o["canals"] != "canal_city":
         return []
-    block, normal = o["block_m"] * 100, max(o["normal"], o["downtown"])
-    t = math.radians(orientation(city))
-    c, s = math.cos(t), math.sin(t)
-    W = lambda lx, ly: [city["x"] + c * lx - s * ly, city["y"] + s * lx + c * ly]
-    k = int(city["radius"] * 1.3 // block)
+    normal = max(o["normal"], o["downtown"])
+    at, kx, ky = street_grid(city, o)
     out = []
-    for ix in range(-k, k + 1):
+    for ix in range(-kx, kx + 1):
         if ix % 3 != 1 or ix % o["collector_every"] == 0:
             continue
-        run = [iy for iy in range(-k, k + 1) if zone_share(city, *W(ix * block, iy * block)) <= normal]
+        run = [iy for iy in range(-ky, ky + 1) if at(ix, iy)[2] <= normal]
         if len(run) >= 3:
-            out.append([W(ix * block, iy * block) for iy in range(run[0], run[-1] + 1)])
+            out.append([list(at(ix, iy)[:2]) for iy in range(run[0], run[-1] + 1)])
     return out
 
 
@@ -989,34 +1039,18 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
     neighbourhoods, curving streets with cul-de-sacs in the suburbs, all inside an irregular outline.
     Downtown and the two main axes are four-lane; suburbs are two-lane; the rest has pavements."""
     o = city_options(city, opts)
-    block, down, normal = o["block_m"] * 100, o["downtown"], max(o["normal"], o["downtown"])
+    down, normal = o["downtown"], max(o["normal"], o["downtown"])
     rnd = random.Random(city.get("seed", 1))
-    cx, cy, R, style = city["x"], city["y"], city["radius"], city.get("style", "mixed")
-    turn = rnd.uniform(0, math.pi / 2)
-    if city.get("turn") is not None:  # turned by hand (the seed's draw is still taken: every later one stays the same)
-        turn = math.radians(float(city["turn"]))
-    c, s = math.cos(turn), math.sin(turn)
-    k = int(R * 1.3 // block)
+    style = city.get("style", "mixed")
+    rnd.uniform(0, math.pi / 2)  # the seed's own grid angle (seed_turn): drawn first, as always
+    at, kx, ky = street_grid(city, o)  # the grid at the city's angle, its streets bowed (never jogged)
     nodes, ring = {}, {}
-    for ix in range(-k, k + 1):
-        for iy in range(-k, k + 1):
-            lx, ly = ix * block, iy * block
-            wx, wy = cx + c * lx - s * ly, cy + s * lx + c * ly
-            share = zone_share(city, wx, wy)
+    for ix in range(-kx, kx + 1):
+        for iy in range(-ky, ky + 1):
+            wx, wy, share = at(ix, iy)
             if share > 1.0:
                 continue  # outside this city's irregular edge
-            # controlled irregularity: the core is exact, everything else moves whole intersections by at
-            # most `wobble` (<= 8 % of a block), so roads stay straight between them
-            amount = 0.0 if style == "grid" or (style == "mixed" and share <= down) else o["wobble"]
-            if amount and (ix or iy):
-                # main roads (collectors and the axes, every collector_every-th line) stay dead straight, as real
-                # arterials do; freeway interchanges and ramps land on them exactly
-                jx, jy = rnd.uniform(-1, 1), rnd.uniform(-1, 1)
-                if ix % o["collector_every"]:
-                    lx += jx * amount * block
-                if iy % o["collector_every"]:
-                    ly += jy * amount * block
-            nodes[(ix, iy)] = [cx + c * lx - s * ly, cy + s * lx + c * ly]
+            nodes[(ix, iy)] = [wx, wy]
             ring[(ix, iy)] = share
     edges = []
     for (ix, iy) in nodes:
@@ -1054,7 +1088,7 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
                 ks = [(g[0] * ce + i, g[1] * ce + j) for i in range(ce + 1) for j in range(ce + 1)]
                 inner = lambda n: 0 < n[0] - g[0] * ce < ce and 0 < n[1] - g[1] * ce < ce  # its edge may be in town
                 big[g] = all(n in nodes and (ring[n] > normal or not inner(n)) for n in ks) and not (
-                    fwp.lines and fwp.blocked(*nodes[(g[0] * ce + ce // 2, g[1] * ce + ce // 2)][:2], 0.75 * ce * block)
+                    fwp.lines and fwp.blocked(*nodes[(g[0] * ce + ce // 2, g[1] * ce + ce // 2)][:2], 0.75 * ce * max(block_xy(o)))
                 ) and random.Random(f"superblock:{city.get('seed', 1)}:{g}").random() < SUPERBLOCK_SHARE
             return big[g]
         edges = [e for e in edges if (e[0][0] if e[1][0] == e[0][0] else e[0][1]) % ce == 0
@@ -1597,7 +1631,7 @@ def freeway_plan(city: dict, opts: dict | None = None):
     o = city_options(city, opts)
     key = repr((city.get("name"), city["x"], city["y"], city["radius"], city.get("seed"), city.get("map"),
                 city.get("turn"), city.get("shape"),
-                [o[k] for k in ("freeways", "block_m", "downtown", "normal", "collector_every", "core_roads",
+                [o[k] for k in ("freeways", "block_m", "block_ratio", "downtown", "normal", "collector_every", "core_roads",
                                 "neighbourhood_roads", "canals")],
                 [(a.get("center"), a.get("heading"), a.get("type")) for a in city.get("airports") or []],
                 [(y.get("frame"), y.get("L"), y.get("D")) for y in city.get("shipyards") or []]))
@@ -1796,10 +1830,15 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
             elif want == "parcels" or (want in BLOCK_KINDS and want in nb.TYPES and not cut
                                        and min(L, W) >= nb.MIN_SIDE):
                 kind, add = want, plain(local) if want == "parcels" else nb.generate(area, want, local)
+        # some of its lots are planted instead of built on: the block's own share, else the world's
+        green = own["green"] if own and own.get("green") is not None else o["green_lots"]
+        green = max(0.0, min(1.0, float(green)))
+        if green and add.get("lots"):
+            add = _green_lots(add, green, random.Random(f"green:{city.get('seed', 1)}:{round(cx)}:{round(cy)}"))
         out["hoods"][kind] = out["hoods"].get(kind, 0) + 1
         for key in PARTS:
             out[key] += add.get(key) or []
-        out["blocks"].append([round(cx), round(cy), kind, zone, [[round(x), round(y)] for x, y in area]])
+        out["blocks"].append([round(cx), round(cy), kind, zone, [[round(x), round(y)] for x, y in area], round(green, 2)])
     if fw.lines:  # right of way: nothing built under or beside a freeway or ramp
         out["lots"] = [r for r in out["lots"] if not fw.blocked(r[0], r[1], 0.5 * max(r[3], r[4]))]
         for key in ("parking", "stalls", "pads", "trees", "fences", "pools"):
@@ -1869,6 +1908,29 @@ def _inside(poly: list, x: float, y: float) -> bool:
 
 
 GROVE_CM = 700.0  # a park block: a tree about every 7 m
+
+
+def _green_lots(add: dict, share: float, rnd) -> dict:
+    """A block's parts with `share` of its lots planted instead of built on: those lots leave 'lots' and their
+    ground is filled with trees ('trees'). Only lots a layer would fill (never a footprint a complex planned).
+    The lots are taken in one seeded order, so a bigger share keeps every lot a smaller one already planted."""
+    free = [k for k, r in enumerate(add["lots"]) if not (len(r) > 8 and r[8] is True)]
+    rnd.shuffle(free)
+    gone = set(free[:round(share * len(free))])
+    if not gone:
+        return add
+    trees = list(add.get("trees") or [])
+    for k in sorted(gone):
+        x, y, yaw, w, d = add["lots"][k][:5]
+        fx, fy = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))  # +X faces the street
+        nu, nv = max(1, round((d - 300) / GROVE_CM)), max(1, round((w - 300) / GROVE_CM))
+        for i in range(nu):
+            for j in range(nv):
+                u = ((i + 0.5) / nu - 0.5) * (d - 300) + rnd.uniform(-0.3, 0.3) * GROVE_CM
+                v = ((j + 0.5) / nv - 0.5) * (w - 300) + rnd.uniform(-0.3, 0.3) * GROVE_CM
+                u, v = max(-d / 2 + 120, min(d / 2 - 120, u)), max(-w / 2 + 120, min(w / 2 - 120, v))
+                trees.append([round(x + fx * u - fy * v), round(y + fy * u + fx * v)])
+    return {**add, "lots": [r for k, r in enumerate(add["lots"]) if k not in gone], "trees": trees}
 
 
 def _grove(area: list, rnd) -> list:
@@ -2743,16 +2805,38 @@ def _demo() -> None:
         cx, cy = sum(p[0] for p in poly) / len(poly), sum(p[1] for p in poly) / len(poly)
         areas["core" if zone_share(sb, cx, cy) < 0.3 else "out"].append(abs(parcels._area(poly)))
     assert max(areas["core"]) < 1.5e8 < max(areas["out"]), {k: max(v) for k, v in areas.items()}
-    # planned grid: every street between neighbouring intersections is one block long within the 8 % jitter
-    # (both ends move at most 8 % each), and collectors run every 4th line
+    # planned grid: streets bow, they never jog. Along one street the heading changes a little from block to block
+    # (always a spline bend, never an elbow), main roads stay dead straight, no block is squeezed thin, and
+    # collectors run every 4th line
+    block = OPTIONS["block_m"][0] * 100
+    ce = OPTIONS["collector_every"][0]
     for style in ("mixed", "organic"):
-        city = {"x": 0, "y": 0, "radius": 60000, "seed": 11, "style": style}
-        gn, ge = city_graph(city, {"wobble": 0.2})  # asked for more: clamped to 0.08
-        block = OPTIONS["block_m"][0] * 100
+        city = {"x": 0, "y": 0, "radius": 60000, "seed": 11, "style": style, "turn": 0.0}
+        gn, ge = city_graph(city, {"wobble": 9, "freeways": "no"})  # asked for more: clamped to 0.45
+        bent = 0.0
         for a, b, _ in ge:
             L = math.dist(gn[a], gn[b])
-            assert block * (1 - 2 * 0.08 * 1.42) <= L <= block * (1 + 2 * 0.08 * 1.42), (style, L)
+            assert block * 0.5 <= L <= block * 1.5, (style, L)
+        for (ix, iy), p in gn.items():
+            for da in ((1, 0), (0, 1)):
+                q, r = gn.get((ix + da[0], iy + da[1])), gn.get((ix + 2 * da[0], iy + 2 * da[1]))
+                if q and r:
+                    turn = abs((math.degrees(math.atan2(r[1] - q[1], r[0] - q[0]) - math.atan2(q[1] - p[1], q[0] - p[0])) + 180) % 360 - 180)
+                    assert turn < CORNER_DEG, (style, "a street bends as a spline, never an elbow", turn)
+                    bent = max(bent, turn)
+                    if (iy if da[0] else ix) % ce == 0:
+                        assert turn < 1e-6, (style, "a main road is dead straight", (ix, iy), turn)
+        assert bent > 5, (style, "streets between the main roads curve", bent)
         assert {"4L"} <= {k for _, _, k in ge}, "collectors / arterials exist"
+    still, _ = city_graph({"x": 0, "y": 0, "radius": 60000, "seed": 11, "style": "organic", "turn": 0.0}, {"wobble": 0, "freeways": "no"})
+    assert all(abs(p[0] - ix * block) < 1e-6 and abs(p[1] - iy * block) < 1e-6 for (ix, iy), p in still.items()), "wobble 0: an exact grid"
+    # long blocks: block_ratio 2 makes every block twice as long as it is wide, the same streets otherwise
+    longn, longe = city_graph({"x": 0, "y": 0, "radius": 60000, "seed": 11, "style": "grid", "turn": 0.0}, {"block_ratio": 2, "freeways": "no"})
+    assert all(abs(p[0] - ix * block) < 1e-6 and abs(p[1] - iy * 2 * block) < 1e-6 for (ix, iy), p in longn.items())
+    assert {round(math.dist(longn[a], longn[b])) for a, b, _ in longe} == {round(block), round(2 * block)}
+    for ratio in (1.5, 2.5):  # freeways and their interchanges still land on the long grid's main roads
+        fr = freeway_report({"name": "L", "x": 0, "y": 0, "radius": 160000, "seed": 4, "style": "mixed"}, {"block_ratio": ratio})
+        assert fr["interchanges"] and fr["validation"]["ok"], (ratio, {k: v for k, v in fr["validation"].items() if v})
     # graded roads: on a 10 % hill no ground-level street segment is steeper than its class allows (the cut and
     # fill it takes stay under MAX_CUT_CM); on a 20 % hill the street follows the hill instead of a 6 m+ wall
     for slope, holds in ((0.1, True), (0.2, False)):
@@ -2993,6 +3077,20 @@ def _demo() -> None:
     away = lambda rows: [r for r in rows if not _inside(pick[4], r[0], r[1])]
     assert away(parked["lots"]) == away(base["lots"]) and [b for b in parked["blocks"] if b[:2] != pick[:2]] == \
         [b for b in base["blocks"] if b[:2] != pick[:2]], "no other block moved"
+    # lots left green: that share of the block's lots is planted instead of built on, a bigger share keeps the
+    # ones a smaller share planted, and no other block changes
+    lots_at = lambda lay: {(r[0], r[1]) for r in lay["lots"] if _inside(pick[4], r[0], r[1])}
+    bare = {"planner": "no"}  # the lots as the blocks cut them, before the planner picks its sites from them
+    plots = city_layout({**big, "zones": [{"x": pick[0], "y": pick[1], "kind": "parcels"}]}, bare)
+    half = city_layout({**big, "zones": [{"x": pick[0], "y": pick[1], "kind": "parcels", "green": 0.5}]}, bare)
+    most = city_layout({**big, "zones": [{"x": pick[0], "y": pick[1], "kind": "parcels", "green": 0.9}]}, bare)
+    n0, n5, n9 = len(lots_at(plots)), len(lots_at(half)), len(lots_at(most))
+    assert 0 < n9 < n5 < n0 and lots_at(most) <= lots_at(half) <= lots_at(plots), (n0, n5, n9)
+    assert len(there(half["trees"])) > len(there(plots["trees"])) + 10 and away(half["lots"]) == away(plots["lots"])
+    assert all(_inside(pick[4], *t) for t in there(half["trees"])), "its trees stand on its own lots"
+    assert [b[5] for b in half["blocks"] if b[:2] == pick[:2]] == [0.5]
+    all_lots, some_green = city_layout(big, bare)["lots"], city_layout(big, {**bare, "green_lots": 0.3})["lots"]
+    assert 0.6 * len(all_lots) < len(some_green) < 0.85 * len(all_lots), (len(all_lots), len(some_green))
     core = city_layout({**big, "zones": [{"x": pick[0], "y": pick[1], "zone": "downtown"}]})
     assert core["rezoned"] and core["rezoned"][0][1] == "downtown" and \
         [b[2:4] for b in core["blocks"] if b[:2] == pick[:2]] == [["parcels", "downtown"]]

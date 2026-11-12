@@ -175,6 +175,32 @@ placed inside, and how to act (save a PCG layer with `"area": [[x, y], ...]` - a
 inside it - then preview and Push city). Colours in the preview are mixes of Appearance variables
 (`mix:a:b:t`), never literals.
 
+**A picked city.** Click a city on the map: the right side becomes that city's details (road style, radius,
+turn, its picked block, what it has, districts, plan); the x closes it. Click again inside it to pick a block:
+the block is washed and outlined, its lots are outlined, and the right side says its zone and layout and lets
+the person change both. Pointer never moves a city. The **Edit city** tool (E) does: drag the city to move it,
+the white handle to turn it, a dot on its edge to pull the edge in or out. While a city is dragged it leaves its
+place at once and a light copy of its buildings rides with the pointer; after the drop the copy stays until the
+rebuilt city starts to come in. A rebuilt city always comes in a few layers at a time, never all at once. The
+map has no distance fog.
+
+## One city by hand: turn, outline, blocks (`road_network_city_save`)
+Everything the panel does to one city is this tool, so an AI can do the same:
+- `turn_deg`: the whole city turns round its centre (street grid, outline, industrial side).
+- `shape`: its outline drawn by hand, a JSON list of 16 numbers (how far it reaches in 16 directions round it,
+  as a share of its radius, 0.74 to 1.26; the first is the city's own 0 degrees and turns with it). `"reset"`
+  returns the outline its seed gives it.
+- `zones`: one block gets a type. `{"x", "y"}` is any spot inside the block (cm). `kind` is how it is laid out
+  (`road_network_cities` returns `block_kinds`: plain lots, each subdivision and complex type, `park` = trees and
+  nothing built). `zone` is what is built on it (downtown / normal / housing / industrial): every layer then
+  treats that block as that zone, whatever ring it lies in. `green` (0 to 1) is the share of its lots planted
+  with trees instead of built on. A list changes several blocks; all three empty returns a block to the city's
+  own plan.
+- `road_network_cities(net_id)` lists each city's `blocks`: `[x, y, kind, zone, polygon, green share]`.
+- Only that block is laid out again (it has a random of its own); the other blocks keep their lots. The planner
+  may still move a service site if the block it had chosen lost its lots.
+- A change is saved at once and shows after the next generate (`road_network_generate` with cities empty).
+
 ## Neighbourhoods and the private access network (`backend/neighbourhoods.py`)
 Outside the core the grid has ~200 m super-blocks (`superblocks`). Each block >= 120 m becomes a neighbourhood,
 picked from the city seed and weighted by its ring (`TYPES`): subdivisions `grid` (two through streets), `loop`
@@ -381,8 +407,8 @@ city tiles to build or remove. The next build in UEFN changes only those.
 ## City size, spacing and water
 - **World tab:** `City size` (option `city_size`, ×0.3–4) scales every city, and regenerating scales the ones you
   have. `Distance between cities` (`city_gap_m`) is the open country between two cities' edges; cities closer
-  than that are pushed apart (`citygen.spread`). Under **Selected city**, pick a city and set its radius
-  (150 m – 5 km) or road style. That calls `road_network_city_save`, then regenerates.
+  than that are pushed apart (`citygen.spread`). Click a city on the map and set its radius (150 m – 5 km), road
+  style or turn on the right side. That calls `road_network_city_save`, then regenerates.
 - **Per-city features** (`citygen.FEATURES`, `city_options`): one city may differ from the world's choice for
   airports, shipyards, freeways, waterfront, canals and planner (city services). Use `road_network_city_save`
   with `features`, for example `{"airports": "none"}` or `{"shipyards": "auto"}`; null returns a feature to the
@@ -410,10 +436,17 @@ city tiles to build or remove. The next build in UEFN changes only those.
 
 ## How a city is generated (the math, in order)
 Roads define the city, blocks are what roads enclose, lots are cut from blocks, buildings fit lots.
-1. **Planned grid** (`citygen.city_graph`): one orientation per city; intersections on a block grid (`block_m`
-   100), each moved as a whole by at most `wobble` (default 4 %, max 8 % of a block), so streets stay straight;
-   hierarchy: the two main axes are arterials, every `collector_every` (4th) line a collector, the rest local;
-   `prune` (12 %) drops only local side streets (suburb cul-de-sacs allowed).
+1. **Planned grid** (`citygen.street_grid`, `city_graph`): one orientation per city; intersections on a block
+   grid. A block is `block_m` (100) wide and `block_m` x `block_ratio` long (1 = square, up to 3 = long
+   rectangles). Hierarchy: the two main axes are arterials, every `collector_every` (4th) line a collector, the
+   rest local; `prune` (12 %) drops only local side streets (suburb cul-de-sacs allowed).
+   - **Streets bow, they never jog** (`wobble`, 0 to 0.45 of a block, default 0.12; `_bow`): a street between
+     two main roads follows one long seeded wave, so it bends as a whole and the streets beside it bend with it.
+     0 = dead straight. A Grid city never bows, a Mixed one only past downtown, an Organic one everywhere.
+   - Main roads (collectors, the axes) and the two streets under a freeway's viaduct stay dead straight:
+     interchanges land on them exactly.
+   - `green_lots` (0 to 0.6): that share of every block's lots is planted with trees instead of built on; one
+     block can have its own share (`zones` with `green`).
 2. **Grading** (`GRADE`, `st.drape(max_grade=...)`): steepest rise per road (6L 4 %, 4L 5 %, 2S 6 %, 2L / 1W
    8 %, dirt 10 %); steeper ground is cut and filled by the live splines. Bridges / ramps sit over the highest
    ground within 15 m.
@@ -529,6 +562,14 @@ Example: Flower beds in the suburbs: `{"name": "Flower beds", "kind": "scatter",
   `height_max_m` and always keep clear of every earlier building layer. `where` also takes `industrial`.
   `road_network_pcg_preview(net_id, layer_id)` places them offline (buildings drawn at real size and height). `road_network_pcg_layers`, `road_network_pcg_layer_save(net_id, layer
   JSON, layer_id)`, `road_network_pcg_layer_delete`: one doc per layer (`net.<nid>.pcg.<layer>`).
+- **Saved presets** (a person's or an AI's own, kept with the plugin's data and usable on any world):
+  `road_network_presets()` lists the built-in ones and the saved ones. `road_network_preset_save(name, net_id |
+  layers, options, note)` makes or changes one: from a world's layers as they are now (`net_id`), or from a JSON
+  list of layers; `options` keeps world options with it (for example `{"block_m": 80, "wobble": 0}`).
+  `road_network_pcg_preset(net_id, preset="<name>", replace=true)` applies it; its `options` come back so the
+  next `road_network_generate` can use them. `road_network_preset_delete(preset, confirm=true)` removes one.
+  The Layers section of the panel lists them too (Use, delete, save this world's layers as one).
+- A park block (`kind` park) is trees only: no layer builds on its road frontage either.
 - A layer: `kind` scatter (Surface Sampler, `density` per 100 m2) | along_roads | buildings (Spline Sampler on
   the road actors, `spacing_m`, both sides at `setback_m`, facing the road); `where` outside | everywhere |
   cities | downtown | normal | housing (rings from each city's districts); `avoid_roads`, `avoid` = earlier
