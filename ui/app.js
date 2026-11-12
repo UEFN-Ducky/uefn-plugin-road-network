@@ -299,6 +299,12 @@ renderer.domElement.addEventListener("pointerdown", (e) => {
     const hit = cityUnder(e);  // a city to move once the pointer really moves (a plain click selects it)
     if (hit) { drag.cityCand = hit; renderer.domElement.style.cursor = "grab"; }
   }
+  if (e.button === 0 && state.tool === "move" && !e.shiftKey) {  // Move tool: a road under the pointer, else the city
+    const pt = roadPointUnder(e), hit = pt ? null : cityUnder(e);
+    if (pt) drag.ptCand = pt;
+    else if (hit) drag.cityCand = hit;
+    if (pt || hit) renderer.domElement.style.cursor = "grab";
+  }
 });
 renderer.domElement.addEventListener("pointermove", (e) => {
   if (!drag) { hoverCursor(e); return; }
@@ -307,6 +313,7 @@ renderer.domElement.addEventListener("pointermove", (e) => {
   if (locked || Math.abs(e.clientX - drag.x0) + Math.abs(e.clientY - drag.y0) > 5) drag.moved = true;
   if (drag.cityCand && drag.moved && !drag.city) startCityDrag(drag.cityCand);
   if (drag.city) { dragCity(e); return; }  // moving a city: it follows the pointer, the camera stays
+  if (drag.ptCand && drag.moved) { dragRoadPoint(e); return; }  // moving one part of a road
   if (drag.drawing) {  // drawing an area: a point every few pixels, no orbit
     if (Math.abs(dx) + Math.abs(dy) > 6) { drag.x = e.clientX; drag.y = e.clientY; addAreaPoint(e); }
     return;
@@ -334,6 +341,7 @@ renderer.domElement.addEventListener("pointerup", (e) => {
   if (fly.on) { fly.on = false; fly.keys.clear(); fly.shift = false; renderZoom(); }
   if (drag?.drawing) { drag = null; finishArea(); return; }
   if (drag?.city) { const d = drag; drag = null; dropCity(d.city); return; }
+  if (drag?.ptCand) { const d = drag; drag = null; if (d.ptTo) dropRoadPoint(d); return; }
   if (drag && !drag.moved && drag.button === 0) {
     if (state.tool === "pin") placePin(e);
     else if (state.tool === "addcity") addCityAt(e);
@@ -656,8 +664,8 @@ function drawCityMark() {
 const WALK_OF = { 875: 350, 1400: 350, 650: 350, 2000: 350 };  // citygen.WALK by half width: how much of a road's half is sidewalk
 function junctionTris(c, list, paint, byColor) {
   const TAU = Math.PI * 2, DEG = Math.PI / 180;
-  const arms = list.map((m) => ({ a: (Math.atan2(m[2] - c[2], m[1] - c[1]) + TAU) % TAU, W: Math.max(272.5, m[6] || 500) }))
-    .sort((p, q) => p.a - q.a);
+  const arms = list.map((m) => ({ a: (Math.atan2(m[2] - c[2], m[1] - c[1]) + TAU) % TAU, W: Math.max(272.5, m[6] || 500),
+    D: Math.hypot(m[1] - c[1], m[2] - c[2]) })).sort((p, q) => p.a - q.a);
   const n = arms.length;
   if (n < 2) return;
   const W = arms.map((r) => r.W), K = W.map((w) => Math.max(0, Math.min(w - 150, WALK_OF[Math.round(w)] || 0)));
@@ -669,7 +677,9 @@ function junctionTris(c, list, paint, byColor) {
     need[k] = Math.max(need[k], v);
     need[(k + 1) % n] = Math.max(need[(k + 1) % n], v);
   });
-  const d = need.map((x) => Math.max(700, Math.min(3000, x)));  // each arm's mouth: where its road ends
+  // each arm's mouth is where its road really ends (the mouth point): the deck reaches exactly that far, so a
+  // road never stops short of its junction. (The mesh builder moves the mouths to `need` when it builds.)
+  const d = need.map((x, k) => arms[k].D > 100 ? arms[k].D : Math.max(700, Math.min(3000, x)));
   const pt = (k, along, side) => [U[k][0] * along + N[k][0] * side, U[k][1] * along + N[k][1] * side];
   const meet = (k, j, wk, wj) => {
     const p1 = [N[k][0] * wk, N[k][1] * wk], p2 = [-N[j][0] * wj, -N[j][1] * wj];
@@ -2402,6 +2412,7 @@ function renderTools() {
   $("tools").replaceChildren(
     tool("select", "pointer", "Pointer: click to select, drag a city to move it", "V"),
     tool("hand", "hand", "Hand: drag to pan the view", "H"),
+    tool("move", "route", "Move: press on a road and drag that part of it, or drag a city; the ground is cut again under it", "M"),
     h("span", { class: "rn-sep" }),
     tool("pin", "pin", "Pin a spot, then tell an AI what to do there", "P"),
     tool("area", "pen", "Draw round an area, then tell an AI what to do there", "A"),
@@ -2462,7 +2473,7 @@ window.addEventListener("keydown", (e) => {
     if (FLY_KEYS[k]) { fly.keys.add(k); e.preventDefault(); }
     return;
   }
-  const tools = { v: "select", h: "hand", p: "pin", a: "area", c: "addcity" };
+  const tools = { v: "select", h: "hand", m: "move", p: "pin", a: "area", c: "addcity" };
   if (tools[k] && (k !== "c" || currentNet()?.generated)) setTool(tools[k]);
   else if (k === "f") frame();
   else if (k === "t") topView();
@@ -2678,6 +2689,54 @@ async function dropCity(m) {
   needsDraw = true;
   if (Math.hypot(m.to[0] - m.c.x, m.to[1] - m.c.y) < 1000) { drawCityMark(); return; }  // barely moved: nothing to do
   await saveCity(m.c, { x: Math.round(m.to[0]), y: Math.round(m.to[1]) });
+}
+// Move tool: press on a road and drag. The nearest spline point of that road goes with the pointer (a junction
+// takes its mouths with it); on the drop the point is saved, the roads are read again and the ground and the
+// city are fitted to the road's new line. Generating the world again lays the roads out afresh.
+function roadPointUnder(e) {
+  const v = groundAt(e);
+  if (!v || !state.geo) return null;
+  const [x, y] = toUE(v);
+  let best = null;
+  for (const [aslug, actor] of Object.entries(state.geo.actors || {})) {
+    for (const p of actor.pts) {
+      const d = Math.hypot(p[1] - x, p[2] - y);
+      if (d < Math.max(1200, (p[6] || 500) + 400, orbit.dist * 2) && (!best || d < best.d)) best = { aslug, p, d };
+    }
+  }
+  return best;
+}
+function dragRoadPoint(e) {
+  const v = groundAt(e);
+  if (!v) return;
+  drag.ptTo = toUE(v);
+  const p = drag.ptCand.p, s = Math.max(4, orbit.dist / 80), c = col("accent");
+  clear(marks);
+  const dot = new THREE.Mesh(new THREE.SphereGeometry(s, 16, 12), new THREE.MeshBasicMaterial({ color: c, depthTest: false }));
+  dot.position.copy(toV(drag.ptTo[0], drag.ptTo[1], drag.ptTo[2] + 200));
+  marks.add(dot, new THREE.Line(new THREE.BufferGeometry().setFromPoints([toV(p[1], p[2], p[3] + 200), dot.position]),
+    new THREE.LineBasicMaterial({ color: c, depthTest: false })));
+  renderer.domElement.style.cursor = "grabbing";
+  needsDraw = true;
+}
+async function dropRoadPoint(d) {
+  clear(marks);
+  needsDraw = true;
+  const { aslug, p } = d.ptCand, [x, y] = d.ptTo, t = state.geo?.terrain || {};
+  const dx = x - p[1], dy = y - p[2];
+  if (Math.hypot(dx, dy) < 200) return;  // barely moved
+  const lift = (qx, qy, qz) => (sampleZ(t, qx + dx, qy + dy) ?? qz) + (qz - (sampleZ(t, qx, qy) ?? qz));  // keeps its height over the ground
+  const actor = state.geo.actors[aslug], byId = new Map(actor.pts.map((q) => [q[0], q]));
+  // a junction moves whole: its mouths (the points its mesh-less links reach) go with it
+  const mouths = p[7] ? actor.segs.filter((s) => !s[5] && (s[1] === p[0] || s[2] === p[0])).map((s) => byId.get(s[1] === p[0] ? s[2] : s[1])).filter(Boolean) : [];
+  busy("Moving the road…");
+  for (const q of [p, ...mouths]) {
+    const out = await rpc("move_point", { net_id: state.net, actor: aslug, index: q[0], x: q[1] + dx, y: q[2] + dy, z: lift(q[1], q[2], q[3]) });
+    if (out.ok === false) { busy(""); return showError(out.error); }
+  }
+  busy("");
+  await loadGeometry(true);
+  schedulePcgPreview(0);  // the ground is cut again along the new line, and the buildings keep clear of it
 }
 function hoverCursor(e) {  // the Pointer tool shows a grab hand over a city
   if (state.tool !== "select" || !state.cities.length) return;

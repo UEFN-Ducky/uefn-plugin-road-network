@@ -13,9 +13,10 @@ const toV = (x, y, z) => ({ x, y, z });
 const junctionTris = new Function("MAT", "toV", `${src.slice(from, to)}; return junctionTris;`)(MAT, toV);
 
 const tris = (arr) => { const out = []; for (let i = 0; i < arr.length; i += 9) out.push([0, 3, 6].map((k) => arr.slice(i + k, i + k + 3))); return out; };
-const arm = (deg, half) => [0, Math.cos(deg * Math.PI / 180) * 5000, Math.sin(deg * Math.PI / 180) * 5000, 0, 0, 0, half];
+// an arm is its mouth point: [i, x, y, z, , , half width]; the deck reaches exactly to it
+const arm = (deg, half, dist = 1175) => [0, Math.cos(deg * Math.PI / 180) * dist, Math.sin(deg * Math.PI / 180) * dist, 0, 0, 0, half];
 
-// two streets with 3.5 m sidewalks crossing: mouths at 875 / tan(45) + 300 = 1175, as the mesh
+// two streets with 3.5 m sidewalks crossing, mouths where the mesh puts them: 875 / tan(45) + 300 = 1175
 const by = {};
 junctionTris([0, 0, 0, 0], [0, 90, 180, 270].map((d) => arm(d, 875)), true, by);
 const walk = tris(by.sidewalk), deck = tris(by.asphalt), paint = tris(by.fg);
@@ -28,10 +29,14 @@ assert.ok(paint.length > 0 && paint.flat().every(([x, y]) => Math.min(Math.abs(x
 
 // a boulevard and a lane with no sidewalks: no paving, each mouth as wide as its own road
 const bare = {};
-junctionTris([0, 0, 0, 0], [arm(0, 1650), arm(90, 525), arm(180, 1650), arm(270, 525)], true, bare);
+junctionTris([0, 0, 0, 0], [arm(0, 1650, 1950), arm(90, 525, 1950), arm(180, 1650, 1950), arm(270, 525, 1950)], true, bare);
 assert.equal(bare.sidewalk, undefined, "roads with no sidewalk: a junction with none");
 const east = tris(bare.asphalt).flat().filter(([x, y]) => x > 800 && Math.abs(Math.abs(y) - 1650) < 1);
 assert.ok(east.length, "the boulevard's mouth is boulevard wide");
+// a road that ends 15 m out (before any push) is met there: the deck never stops short of it
+const far = {};
+junctionTris([0, 0, 0, 0], [0, 90, 180, 270].map((d) => arm(d, 875, 1500)), true, far);
+assert.ok(Math.abs(Math.max(...tris(far.asphalt).flat().map(([x]) => x)) - 1500) < 1, "the deck reaches the road's end");
 
 // an elbow and an airport junction get no paint
 const elbow = {};
