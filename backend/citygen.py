@@ -24,7 +24,11 @@ ROAD_TYPES = {
     "2L": ("SM_Road_TwoLane_Straight10m", 525.0, 2, False, "two-way street, no sidewalk"),
     "2S": ("SM_Road_TwoLaneSidewalk_Straight10m", 875.0, 2, True, "two-way street with sidewalks"),
     "4L": ("SM_Road_FourLane_Straight10m", 1400.0, 4, True, "four-lane avenue with sidewalks"),
-    "6L": ("SM_Road_Freeway_Lane20m", 1650.0, 6, False, "six-lane boulevard / freeway"),
+    "6L": ("SM_Road_Freeway_Lane20m", 1650.0, 6, False, "six-lane freeway (no sidewalks: never a city street)"),
+    # the city versions of the lane and the boulevard: the same decks with a kerb and a 3.5 m sidewalk each side,
+    # in the one mesh (model them from the piece manifest; a city never uses a street without sidewalks)
+    "1S": ("SM_Road_OneLaneSidewalk_Straight10m", 650.0, 1, True, "one-way street with sidewalks"),
+    "6S": ("SM_Road_BoulevardSidewalk_Straight20m", 2000.0, 6, True, "six-lane boulevard with sidewalks"),
     "BR": ("SM_Road_Bridge_Straight20m", 925.0, 2, False, "bridge deck"),
     "BRR": ("SM_Road_Bridge_Ramp40m", 925.0, 2, False, "bridge ramp"),
     "ED": ("Elevated/SM_Elev_Deck20m", 1650.0, 4, False, "elevated deck"),
@@ -56,7 +60,9 @@ ROAD_MESH = {k: v[0] for k, v in ROAD_TYPES.items()}
 HALF = {k: v[1] for k, v in ROAD_TYPES.items()}
 # A street's sidewalks are part of its road mesh: this much of each side's half width (cm) is kerb + sidewalk.
 # A junction is built with the same sidewalks round its corners, in its one mesh (road_io._junction_geometry).
-WALK = {"2S": 350.0, "4L": 350.0}
+WALK = {"2S": 350.0, "4L": 350.0, "1S": 350.0, "6S": 350.0}
+# inside a city every street has sidewalks: a district set to a bare road type gets its sidewalk version
+CITY_STREET = {"2L": "2S", "1W": "1S", "6L": "6S"}
 
 
 def walk_of(half: float) -> float:
@@ -108,7 +114,7 @@ CHOICES = {
 }
 # steepest grade per road (rise / run): arterials and highways 4 %, collectors 5-6 %, local streets 8 %,
 # dirt 10 % (CityEngine-style targets for a game, not legal limits). Steeper ground is cut and filled.
-GRADE = {"6L": 0.04, "4L": 0.05, "2S": 0.06, "2L": 0.08, "1W": 0.08, "DT": 0.10,
+GRADE = {"6L": 0.04, "6S": 0.04, "1S": 0.08, "4L": 0.05, "2S": 0.06, "2L": 0.08, "1W": 0.08, "DT": 0.10,
          "SW": 0.08, "WK": 0.08, "DW": 0.15, "PR": 0.10, "DD": 0.15, "FR": 0.08,
          "CN": 0.01, "DK": 0.01,  # canals and dry docks: nearly level (locks are not modelled)
          "RW": 0.01, "RS": 0.015, "TW": 0.015}  # runways and taxiways: FAA-like longitudinal grades
@@ -1001,6 +1007,8 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
         edges = [e for e in edges if not fw.street_blocked(nodes[e[0]], nodes[e[1]], HALF.get(e[2], 500.0))]
         used = {n for e in edges for n in e[:2]}
         nodes = {n: p for n, p in nodes.items() if n in used}
+    for e in edges:  # every city street carries its sidewalks in its own mesh
+        e[2] = CITY_STREET.get(e[2], e[2])
     return nodes, edges
 
 
@@ -1010,7 +1018,7 @@ def _dist_seg(p, a, b):
     return math.hypot(p[0] - a[0] - t * (b[0] - a[0]), p[1] - a[1] - t * (b[1] - a[1]))
 
 
-WATER_SPAN = {"6L": 300000.0, "FR": 300000.0, "4L": 150000.0, "2S": 60000.0, "2L": 20000.0,
+WATER_SPAN = {"6L": 300000.0, "6S": 300000.0, "FR": 300000.0, "4L": 150000.0, "2S": 60000.0, "2L": 20000.0,
               "ED": 300000.0, "ER": 300000.0, "BR": 300000.0, "BRR": 300000.0}  # longest water a road of
 # this kind bridges (avenues cross a lake, local streets a river); a wider crossing is not built
 SHORT_SPAN = 6000.0  # any street (not dirt) bridges a creek this narrow
@@ -1155,7 +1163,7 @@ def over_water(nodes: dict, edges: list, wet, span: dict | None = None, bridges:
             nb = ("shore", a, b, 1)
         if s_b - s_a < 3000 or (s_a > 0 and s_b < cum and s_a >= s_b):
             continue  # nothing left on land
-        limit = max(span.get(kind, 0.0), SHORT_SPAN if kind not in ("DT", "1W") else 0.0)
+        limit = max(span.get(kind, 0.0), SHORT_SPAN if kind not in ("DT", "1W", "1S") else 0.0)
         if runs and max(r1 - r0 for r0, r1 in runs) > limit:
             continue  # too wide for this road: a side street stops at the shore (its neighbours still reach it)
         for key, s in ((na, s_a), (nb, s_b)):
@@ -1951,7 +1959,7 @@ def _demo() -> None:
     assert o["block_m"] == 250 and o["highway"] == "4L" and o["detail"] == 3 and o["interchange"] == "stack"
     # road types per district: a six-lane core with one-way side streets, dirt suburbs
     kinds = {e[2] for e in city_graph(cities[0], {"core_roads": "6L", "one_way_core": "yes", "suburb_roads": "DT"})[1]}
-    assert {"6L", "1W", "DT"} <= kinds, kinds
+    assert {"6S", "1S", "DT"} <= kinds and not kinds & set(CITY_STREET), ("city streets all have sidewalks", kinds)
     # a highway bridges over a street it crosses: ramp up, deck, ramp down; bridges never shape the ground
     via, n = overpass_via([[0, 0], [200000, 0]], [([100000, -5000], [100000, 5000])], "4L")
     assert n == 1 and [v[3] for v in via if len(v) > 3] == ["BRR", "BR", "BRR", "4L"] and max(v[2] for v in via) == BRIDGE_LIFT_CM

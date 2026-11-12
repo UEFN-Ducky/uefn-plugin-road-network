@@ -93,6 +93,13 @@ situation and what to do. Keep it to what you couldn't have known.
   whole folder: kit_materials loading WorldGen/Kit's 256 leftover materials took UEFN past 100 GB and crashed it.
 - FBX from BuildingKit.blend: rotate −90° about Z, forward X / up Z, FBX_SCALE_NONE, and save the imported
   materials at once (a crash before the save leaves every slot empty).
+- What to build comes from the plugin, never from the chat: `road_network_build_brief(net_id)` lists every mesh
+  the world uses with its `specs` (size, `bounds_cm` it must measure after import, `sidewalk_cm`, slots), the
+  `rules` (one mesh per road with its kerbs and sidewalks, axes, pivot, import check), the `junctions` by type
+  (City Builder builds those itself) and `road_fit`. Every city street has sidewalks in its own mesh: a district
+  set to 2L / 1W / 6L is built as 2S / 1S / 6S (`citygen.CITY_STREET`).
+- The ground is the plugin's: roads cut in first, lots levelled round them, re-cut on every change.
+  `road_network_ground_fit(net_id)` must show 0 buried / floating buildings and lists the street points still off.
 - Before any push: `road_network_pcg_exact(net_id, x, y, radius_m)` is what the push will place there (each
   piece's real box, the ground as the landscape has it). `ground_fit.buried` / `floating` must be 0 and `unknown`
   empty. The panel's "Real pieces here" draws the same thing. A world laid over another's landscape is fitted to

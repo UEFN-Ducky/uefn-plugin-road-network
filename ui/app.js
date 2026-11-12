@@ -87,6 +87,8 @@ const ctl = {};  // control handles by key, so loading a world can set them
 
 // road families by mesh name: half width (cm), colour variable, legend label
 const FAMILY = [
+  [/BoulevardSidewalk/, 2000, "accent", "Boulevard + pavement"],
+  [/OneLaneSidewalk/, 650, "green", "One-way + pavement"],
   [/Freeway/, 1650, "accent", "Freeway"],
   [/FourLane/, 1400, "blue", "Four-lane"],
   [/TwoLaneSidewalk/, 875, "green", "Two-lane + pavement"],
@@ -174,7 +176,7 @@ const swatch = (c) => {
 const MAT = { asphalt: "mix:bg:fg:0.16", sidewalk: "mix:fg-dim:fg:0.35", pavers: "mix:fg-dim:amber:0.3",
   drive: "mix:bg:fg:0.26", deck: "mix:fg-dim:blue:0.2" };
 // the asphalt part of a road whose mesh carries its own sidewalks (2S 8.75 m -> 5.25 m, 4L 14 m -> 10.5 m)
-const ASPHALT_HALF = { 875: 525, 1400: 1050 };
+const ASPHALT_HALF = { 875: 525, 1400: 1050, 650: 300, 2000: 1650 };
 function roadMaterial(mesh) {
   if (/Path_Sidewalk/.test(mesh)) return [MAT.sidewalk, "Sidewalk"];
   if (/Path_Walkway/.test(mesh)) return [MAT.pavers, "Walkway"];
@@ -651,7 +653,7 @@ function drawCityMark() {
 // road_io._junction_geometry for our flat kit, drawn here exactly as the mesh is built (keep the two in step):
 // the deck out to every arm's mouth, rounded corners between arms, a stop line and a zebra crossing on each
 // arm of a 3+ way junction, and the sidewalk corners that join the arms' own sidewalks.
-const WALK_OF = { 875: 350, 1400: 350 };  // citygen.WALK by half width: how much of a road's half is sidewalk
+const WALK_OF = { 875: 350, 1400: 350, 650: 350, 2000: 350 };  // citygen.WALK by half width: how much of a road's half is sidewalk
 function junctionTris(c, list, paint, byColor) {
   const TAU = Math.PI * 2, DEG = Math.PI / 180;
   const arms = list.map((m) => ({ a: (Math.atan2(m[2] - c[2], m[1] - c[1]) + TAU) % TAU, W: Math.max(272.5, m[6] || 500) }))

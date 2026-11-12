@@ -28,6 +28,12 @@ CONVENTIONS = {
     "collision": "simple boxes / convex hulls (UCX_) for walls and floors; none on leaves and bushes.",
     "export": "FBX, apply transforms, forward +X, up +Z, one mesh per file named exactly as listed.",
     "import": "UEFN Content Browser -> the listed folder under <project>/WorldGen/; the name must match.",
+    "import_check": "After import a mesh must measure its `bounds_cm` (min x, y, z, max x, y, z), not just its size: "
+                    "a wall runs 0..512 on +X with its thickness on +Y, a roof slab covers 0..512 on +X and +Y. If Y "
+                    "comes in mirrored (bounds on -Y instead), mirror Y in the export and import again: placement is "
+                    "never changed to suit a wrong mesh.",
+    "ground": "City Builder cuts the terrain itself (roads first, then every lot level) and writes it as the heightmap: "
+              "road_network_ground_fit must show 0 buried / floating buildings and names the street points still off.",
 }
 WANTED = [  # not in the project yet: model them, then put them on a layer (meshes) or replace the stand-in
     ("SM_Bld_School", "building", "school", "2-3 storey school, L or courtyard plan, big windows, entrance canopy"),
@@ -68,7 +74,7 @@ def manifest(root: str = "/<project>") -> dict:
     pieces = []
     for name, (folder, *_b) in kb.KIT.items():
         pieces.append({"name": name, "folder": f"WorldGen/{folder}", "path": kb.path(name, root),
-                       "size_cm": _size(name), "used_by": sorted(users.get(name, {"kit"})),
+                       "size_cm": _size(name), "bounds_cm": list(kb.KIT[name][1:]), "used_by": sorted(users.get(name, {"kit"})),
                        "made_by": "City Builder (GeometryScript stand-in: a Blender model with this name and size "
                                   "replaces it)" if folder == "Kit/Street" else "Blender / imported kit"})
     for code, (mesh, half, lanes, walk, what) in cg.ROAD_TYPES.items():
@@ -76,6 +82,10 @@ def manifest(root: str = "/<project>") -> dict:
         pieces.append({"name": mesh.rsplit("/", 1)[-1], "folder": "WorldGen/Roads" + ("/Elevated" if "/" in mesh else ""),
                        "size_cm": [length, round(half * 2), 30], "used_by": [f"road {code}: {what}"],
                        "sidewalk_cm": cg.WALK.get(code, 0),
+                       # the carriageway is the middle; each side's outer sidewalk_cm is kerb + sidewalk, 15 cm up
+                       "carriageway_cm": round((half - cg.WALK.get(code, 0)) * 2),
+                       "where": "city streets" if code in cg.WALK else "city streets become " + cg.CITY_STREET[code]
+                                if code in cg.CITY_STREET else "outside the street grid",
                        "made_by": "City Builder (street kit; a Blender model with this name replaces it)"
                                   if code in ("SW", "WK", "DW") else "Blender road kit",
                        "spec": f"{lanes} lanes{', kerb + sidewalk both sides' if walk else ''}; deck top at z 0, "
@@ -83,7 +93,8 @@ def manifest(root: str = "/<project>") -> dict:
                                f"enough length loops (every 100 cm)"})
     for name in grammar.modules():  # the BuildingKit modules a `build: modular` layer stacks by grammar
         pieces.append({"name": name, "folder": f"WorldGen/{grammar.FOLDER}", "path": f"{root}/WorldGen/{grammar.FOLDER}/{name}.{name}",
-                       "size_cm": [512, 512, 20] if name == grammar.SHARED["roof"] else [512, 30, round(grammar.STOREY_CM)],
+                       "size_cm": [grammar.BOUNDS[name][k + 3] - grammar.BOUNDS[name][k] for k in range(3)],
+                       "bounds_cm": list(grammar.BOUNDS[name]),
                        "used_by": ["modular buildings (grammar.py)"],
                        "made_by": "BuildingKit.blend (Blender, metres: export x100). Walls run +X from the pivot, "
                                   "outside on -Y, one storey tall"})

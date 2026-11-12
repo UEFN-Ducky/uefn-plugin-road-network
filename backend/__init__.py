@@ -1016,7 +1016,9 @@ def register(api) -> None:
         doc = data.get(f"net.{nid}")
         doc["generated"] = {"seed": int(seed), "size_km": size / 100000, "relief_m": float(relief_m),
                             "ground_from": slug(ground_from), "folder": folder, "options": opts,
-                            "cities": len(towns), "center": [center_x, center_y], "keep": keep}
+                            "cities": len(towns), "center": [center_x, center_y], "keep": keep,
+                            # a world that has its own heightmap keeps it: the ground stays cut to the city
+                            "heightmap": bool(((before or {}).get("generated") or {}).get("heightmap"))}
         doc.pop("heightmap", None)  # written on demand (road_network_heightmap): keeps live preview fast
         doc["actors"] = sorted(actors)
         doc["updated"] = time.time()
@@ -2549,6 +2551,17 @@ def register(api) -> None:
             needs.append({"mesh": name, "path": path, "uses": len(rows), "for": "PCG city", "source": src})
         # doors: every door module the building grammar placed is a door spot; each becomes an openable Scene Graph
         # entity placed by PCG (cg.RULES), so the brief names them and how many
+        # the exact piece to build for every mesh named above: size, bounds, sidewalk, slots (the piece manifest)
+        spec_of = {p["name"]: {k: p[k] for k in ("size_cm", "bounds_cm", "sidewalk_cm", "carriageway_cm", "where", "spec",
+                                                 "made_by", "folder") if p.get(k) is not None}
+                   for p in pieces.manifest(root)["pieces"]}
+        # every junction of the world by its number of arms: City Builder builds each as ONE mesh (never Blender)
+        junctions: dict = {}
+        for aslug in actor_docs(nid):
+            _, pts, segs = load_actor(nid, aslug)
+            for _node, arms, _angles in st.pending_nodes(pts, segs, True):
+                kind = {2: "elbow (2 arms)", 3: "T (3 arms)", 4: "cross (4 arms)"}.get(len(arms), f"{len(arms)} arms")
+                junctions[kind] = junctions.get(kind, 0) + 1
         doors = {path.rsplit(".", 1)[-1]: len(rows) for path, rows in groups.items()
                  if re.match(r"SM_BK_.*(Door|Entrance|Garage)", path.rsplit(".", 1)[-1])}
         # collision: what each PCG layer is set to (cg.RULES: everything solid collides, simple by default)
@@ -2657,6 +2670,16 @@ def register(api) -> None:
                 "needs_top": [{k: n[k] for k in ("mesh", "uses", "for", "source")}
                               for n in sorted(needs, key=lambda n: -n["uses"])[:40]],
                 "needs_total": len(needs),
+                # what to BUILD, exactly: one entry per mesh this world uses (size, bounds after import, sidewalk)
+                "specs": {n["mesh"]: spec_of[n["mesh"]] for n in needs if n["mesh"] in spec_of},
+                "no_spec": sorted(n["mesh"] for n in needs if n["mesh"] not in spec_of),
+                "rules": {k: pieces.CONVENTIONS[k] for k in ("roads", "axes", "pivot", "materials", "collision", "export",
+                                                          "import_check", "ground")},
+                "junctions": {"by_type": junctions, "total": sum(junctions.values()),
+                              "do": "Nothing to model: road_network_build_pieces builds every junction as one mesh fitted "
+                                    "to its arms (deck, stop lines, zebra crossings, kerbs, and sidewalk corners joining "
+                                    "the arms' own sidewalks), slots Asphalt / Paint / Sidewalk."},
+                "road_fit": (fit_summary() or {}).get("roads"),
                 "missing": {"street_kit": street_missing, "art": art_missing,
                             "paths": [n["path"] for n in missing][:200],
                             "unknown": None if uefn.get("online") else "call again with check=true while UEFN is open"},

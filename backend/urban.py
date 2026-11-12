@@ -188,7 +188,7 @@ ARCHETYPES = {
     "jail": [("parking", -0.48, 0.48, 0.02, 0.18), ("building", -0.4, 0.4, 0.24, 0.96)],
     "garage": [("garage", -0.45, 0.45, 0.05, 0.95)],
 }
-SPEED = {"6L": 1667, "ED": 2222, "ER": 1389, "4L": 1389, "2S": 1111, "FR": 1111, "2L": 972, "1W": 833, "DT": 694,
+SPEED = {"6L": 1667, "6S": 1667, "1S": 833, "ED": 2222, "ER": 1389, "4L": 1389, "2S": 1111, "FR": 1111, "2L": 972, "1W": 833, "DT": 694,
          "BR": 1389, "BRR": 1389, "PR": 556}  # cm/s (60, 80, 50, 50, 40, 40, 35, 30, 25 km/h ...)
 NO_WALK = ("6L", "ED", "ER")
 MIN_SITE_M2 = 2500.0  # a site may be smaller than its archetype wants (city blocks are ~85 m), never below this
