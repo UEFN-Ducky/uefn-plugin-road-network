@@ -401,8 +401,12 @@ def build(ap: dict, ground, city_nodes: dict | None = None, wet=None) -> dict:
             roads_e.append([dep[0], dep[1], "2S"])
         roads_e.append([arr[0], arr[1], "4L"])
         back = [node(("loop", k), u, tf - 16000, roads_n) for k, u in enumerate((-w / 2 - 3000, w / 2 + 3000))]
-        roads_e += [[arr[0], back[0], "4L"], [arr[1], back[1], "4L"], [back[0], back[1], "4L"],
-                    [dep[0], back[0], "ER"], [dep[1], back[1], "ER"]]
+        # the departures ramps come straight down to their own junctions on the back road, 30 m inside the arrivals
+        # roads (both ran to the same corner: the ramp's last 50 m lay in the arrivals road)
+        foot = [node(("foot", k), u, tf - 16000, roads_n) for k, u in enumerate((-w / 2, w / 2))]
+        roads_e += [[arr[0], back[0], "4L"], [arr[1], back[1], "4L"],
+                    [back[0], foot[0], "4L"], [foot[0], foot[1], "4L"], [foot[1], back[1], "4L"],
+                    [dep[0], foot[0], "ER"], [dep[1], foot[1], "ER"]]
         access_from = back[0]
         if spec["terminal"] != "fbo":
             building(-w / 4, tf - 9000, 9000, 6000, "parking_garage", "parking garage")

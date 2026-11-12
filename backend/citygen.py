@@ -1078,6 +1078,30 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
             for v in e[3]:
                 if len(v) > 3 and v[3]:
                     v[3] = deck if v[3] in ("BR", "ED", "BW") else ramp if v[3] == "BRR" else e[2]
+    # no street laid along another: two that run the same way, share no junction and lie closer than 0.6 of their
+    # half widths together are one road drawn twice (a bridge beside the shore street it left): the narrower goes
+    geo = [(nodes[e[0]][:2], nodes[e[1]][:2], HALF.get(e[2], 500.0)) for e in edges]
+    cell, near, lost = 20000.0, {}, set()
+    for k, (p, q, _h) in enumerate(geo):
+        near.setdefault((int((p[0] + q[0]) / 2 // cell), int((p[1] + q[1]) / 2 // cell)), []).append(k)
+    for k, (p, q, h) in enumerate(geo):
+        mx, my, ux, uy = (p[0] + q[0]) / 2, (p[1] + q[1]) / 2, q[0] - p[0], q[1] - p[1]
+        ul = math.hypot(ux, uy)
+        for j in (j for gx in (-1, 0, 1) for gy in (-1, 0, 1) for j in near.get((int(mx // cell) + gx, int(my // cell) + gy), ())):
+            if j == k or k in lost or j in lost or ul < 300 or {edges[k][0], edges[k][1]} & {edges[j][0], edges[j][1]}:
+                continue
+            p2, q2, h2 = geo[j]
+            vx, vy = q2[0] - p2[0], q2[1] - p2[1]
+            vl = math.hypot(vx, vy)
+            if vl < 300 or abs(ux * vx + uy * vy) / (ul * vl) < 0.94:
+                continue
+            t = max(0.0, min(1.0, ((mx - p2[0]) * vx + (my - p2[1]) * vy) / (vl * vl)))
+            if math.hypot(mx - p2[0] - vx * t, my - p2[1] - vy * t) < 0.6 * (h + h2):
+                lost.add(k if (h, ul) <= (h2, vl) else j)
+    if lost:
+        edges = [e for k, e in enumerate(edges) if k not in lost]
+        used = {n for e in edges for n in e[:2]}
+        nodes = {n: p for n, p in nodes.items() if n in used}
     return nodes, edges
 
 
@@ -2080,6 +2104,7 @@ WELD_REACH_CM = 2600.0  # an open end this close (in plan) to another road is me
 WELD_GRADE = 0.08  # the end's own road eases to the new height at most this steeply
 WELD_SNAP_CM = 6000.0  # an end that stops short of every road by less than this is brought up to the nearest one
 FREEWAY_LINK_CM = 15000.0  # a freeway that ends this close to a road runs on to it (an urban freeway ending in a field)
+FREEWAY_REACH_CM = 150000.0  # ... or runs on up to 1.5 km to the nearest road ahead of it
 FREEWAY_MESHES = {ROAD_MESH[k].split("/")[-1] for k in ("6L", "ED")}
 RAMP_MESHES = {ROAD_MESH[k].split("/")[-1] for k in ("ER", "FR")}  # their ends get a connector piece
 # a connector's half width at the ramp's end (road_profiles.connector: the gore widens to 10 m, the flare to 10.5 m)
@@ -2087,6 +2112,7 @@ CONNECTOR_HALF = {"SM_Road_RampGore30m": 1000.0, "SM_Road_RampFlare15m": 1050.0}
 FLARE_CM = 1500.0  # the flare runs this far on past the ramp's end, to the street's kerb line
 
 
+DECK_DIP_CM = 1000.0  # how far a freeway deck may come down to meet ramps too short to climb to it
 SETTLE_GRADE = 0.15  # steeper than anything planned (an overpass's approach climbs at up to ~13 %): only faults
 
 
@@ -2106,11 +2132,45 @@ def settle_grades(a: dict, grade: float = SETTLE_GRADE, rounds: int = 400) -> in
             if not s["mesh"]:
                 fixed.add(i)
     fixed |= {i for i, n in count.items() if n == 1}
-    runs = [(s["a"], s["b"], grade * math.hypot(by[s["b"]]["x"] - by[s["a"]]["x"], by[s["b"]]["y"] - by[s["a"]]["y"]))
-            for s in segs if s["mesh"]]
+    # A ramp's merge end rides with the freeway deck beside it instead of being nailed to it: where the ramp is too
+    # short for the climb (a viaduct 30 m over the street its ramps leave from, 150 m of ramp: 21 %), the deck
+    # itself comes down toward the interchange, by at most DECK_DIP_CM and never steeper than it was laid or 6 %.
+    decks = [s for s in segs if s["mesh"].split("/")[-1] in FREEWAY_MESHES]
+    ties = []
+    for p in a["points"]:
+        if p.get("mesh") != "SM_Road_RampGore30m":
+            continue
+        best = None
+        for s in decks:
+            u, v = by[s["a"]], by[s["b"]]
+            wx, wy = v["x"] - u["x"], v["y"] - u["y"]
+            t = max(0.0, min(1.0, ((p["x"] - u["x"]) * wx + (p["y"] - u["y"]) * wy) / (wx * wx + wy * wy or 1.0)))
+            d = math.hypot(p["x"] - u["x"] - wx * t, p["y"] - u["y"] - wy * t)
+            if d < 3500 and (best is None or d < best[0]):
+                best = (d, u["i"], v["i"], t)
+        if best:
+            ties.append((p["i"], *best[1:]))
+            fixed.discard(p["i"])
+    floor = {i: by[i]["z"] - DECK_DIP_CM for s in decks for i in (s["a"], s["b"])}
+    runs = []
+    for s in segs:
+        if s["mesh"]:
+            run = math.hypot(by[s["b"]]["x"] - by[s["a"]]["x"], by[s["b"]]["y"] - by[s["a"]]["y"])
+            lim = max(abs(by[s["b"]]["z"] - by[s["a"]]["z"]), 0.06 * run) if s in decks else grade * run
+            runs.append((s["a"], s["b"], min(lim, grade * run)))
     moved: set = set()
     for _ in range(rounds):
         worst = 0.0
+        for i, ui, vi, t in ties:
+            diff = by[i]["z"] - (by[ui]["z"] * (1 - t) + by[vi]["z"] * t)
+            if abs(diff) < 1:
+                continue
+            wu, wv = (0.0 if ui in fixed else 1 - t), (0.0 if vi in fixed else t)
+            lam = diff / (1 + wu * wu + wv * wv)
+            by[i]["z"] -= lam
+            by[ui]["z"] = max(floor[ui], by[ui]["z"] + lam * wu)
+            by[vi]["z"] = max(floor[vi], by[vi]["z"] + lam * wv)
+            moved.update((i, ui, vi))
         for i, j, lim in runs:
             dz = by[j]["z"] - by[i]["z"]
             over = abs(dz) - lim
@@ -2191,6 +2251,7 @@ def weld_ends(actors: dict) -> int:
                 continue  # only a road's own open end (one with its connector is welded again: its road may move)
             own = half_of.get(ss[0]["mesh"].split("/")[-1], 650.0)
             mine = own_run(touch, by, i)
+            o0 = by[ss[0]["b"] if ss[0]["a"] == i else ss[0]["a"]]
             best, near, link = None, None, None  # best: in reach, nearest the end's level; near / link: closest beyond
             for lab2, u, v, mesh in every:
                 if lab2 == label and u["i"] in mine and v["i"] in mine:
@@ -2206,23 +2267,31 @@ def weld_ends(actors: dict) -> int:
                 elif d <= WELD_SNAP_CM and (near is None or d < near[0]):
                     near = hit
                 # (another actor's road only: past own_run's 80 m a freeway's own deck passed as the road to link
-                # to, and it was folded back over itself for 20 m)
-                elif d <= FREEWAY_LINK_CM and lab2 != label and (link is None or d < link[0]):
+                # to, and it was folded back over itself for 20 m. Beyond FREEWAY_LINK_CM only a road ahead of it,
+                # within 60 degrees of the way it was going)
+                elif d <= FREEWAY_REACH_CM and lab2 != label and (link is None or d < link[0]) and (
+                        d <= FREEWAY_LINK_CM or (nx - p["x"]) * (p["x"] - o0["x"]) + (ny - p["y"]) * (p["y"] - o0["y"])
+                        > 0.5 * d * math.hypot(p["x"] - o0["x"], p["y"] - o0["y"])):
                     link = hit
             hit = best or near
             if not hit:
                 if link and ss[0]["mesh"].split("/")[-1] in FREEWAY_MESHES:
-                    # a freeway that stops short in the fields runs on to the road it meets (the next weld puts
-                    # its new end inside that road, at its height)
+                    # a freeway that stops short in the fields runs on to the road it meets, a piece every 20 m,
+                    # coming down evenly to that road's height (the next weld puts its new end inside that road)
                     d, nx, ny, level, half, *_r = link
+                    n = max(1, round((d - 2000) / 2000))
                     nid = 1 + max([q["i"] for q in a["points"]] + [s["i"] for s in a["segments"]])
-                    q = {**p, "i": nid, "x": nx + (p["x"] - nx) / d * 2000, "y": ny + (p["y"] - ny) / d * 2000, "z": level,
-                         "lines": list(p.get("lines") or [])}
-                    s = {**ss[0], "i": nid + 1, "a": i, "b": nid, "lines": list(ss[0].get("lines") or [])}
-                    a["points"].append(q)
-                    a["segments"].append(s)
-                    by[nid] = q
-                    st.retangent(by, s)
+                    prev = i
+                    for k in range(1, n + 1):
+                        f = k / n * (d - 2000) / d
+                        q = {**p, "i": nid, "x": p["x"] + (nx - p["x"]) * f, "y": p["y"] + (ny - p["y"]) * f,
+                             "z": p["z"] + (level - p["z"]) * k / n, "lines": list(p.get("lines") or [])}
+                        s = {**ss[0], "i": nid + 1, "a": prev, "b": nid, "lines": list(ss[0].get("lines") or [])}
+                        a["points"].append(q)
+                        a["segments"].append(s)
+                        by[nid] = q
+                        st.retangent(by, s)
+                        prev, nid = nid, nid + 2
                     moved += 1
                 continue
             d, nx, ny, level, half, onto, ux, uy = hit
@@ -2237,9 +2306,10 @@ def weld_ends(actors: dict) -> int:
                             continue
                         wx, wy = v["x"] - u["x"], v["y"] - u["y"]
                         t = max(0.0, min(1.0, ((o["x"] - u["x"]) * wx + (o["y"] - u["y"]) * wy) / (wx * wx + wy * wy or 1.0)))
-                        # (its middle on the road itself: a loop's last piece brushing the kerb is its merge)
-                        if math.hypot(o["x"] - u["x"] - wx * t, o["y"] - u["y"] - wy * t) < half and \
-                                abs(u["z"] + (v["z"] - u["z"]) * t - o["z"]) < 300:
+                        # (half its width in the road, up to a storey above or below: a piece brushing the kerb is
+                        # its merge)
+                        if math.hypot(o["x"] - u["x"] - wx * t, o["y"] - u["y"] - wy * t) < half + own * 0.5 and \
+                                abs(u["z"] + (v["z"] - u["z"]) * t - o["z"]) < 600:
                             return True
                     return False
                 end, seg, gone = p, ss[0], 0
