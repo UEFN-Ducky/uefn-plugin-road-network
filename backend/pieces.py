@@ -30,8 +30,12 @@ CONVENTIONS = {
                "about every 3.5 m and a coping on each parapet), an SM_Kit_BridgeAbutment where each end meets the "
                "road on the ground (wall under the deck's end, bearing shelf, a wing wall each side), SM_Kit_ApproachWall blocks under every stretch too low for piers (the ramp's own side walls, from 1 m in the ground up into the slab), pier bents every 30 m (SM_Kit_BridgePier columns from the ground or lake "
                "bed to SM_Kit_PierCap under the deck; two columns under a deck 16 m or wider) and, over wide water, "
-               "SM_Kit_BridgePylon towers on the deck's centre line. To make them real, model these pieces at their "
-               "bounds_cm: column and cap stretch on Z / Y, so keep their detail at the ends.",
+               "two towers astride the deck: a leg outside each edge (SM_Kit_BridgePier stretched from the bed to 60 or "
+               "90 m over the road), three beams across (SM_Kit_PierCap: under the deck, over the traffic, at the top) "
+               "and stay cables from each leg's top down to the deck's edge (SM_Kit_BridgeStay: a bar from 1 m up over "
+               "its origin down to 1 m out along +X, stretched on X and Z to each cable); the deck the cables carry has "
+               "no piers. To make them real, model these pieces at their bounds_cm: column and cap stretch on Z / Y, "
+               "so keep their detail at the ends.",
     "materials": "one slot per surface, named after what it is so City Builder's world-PBR instances map it: "
                  "Glass, Brick, Concrete, Stone, Trim, Roof, Metal, Frame, Wood, Siding, Gold, Neon, Floor, Foliage. "
                  "Glass slots become see-through M_City_Glass.",

@@ -1004,12 +1004,11 @@ def register(api) -> None:
         stats_out = {label: store_actor(nid, label, a, name)["stats"] for label, a in actors.items()}
         # terrain is a big blob (a 160 grid is ~200 KB): one doc, never edited by hand, so it never conflicts
         data.put(f"net.{nid}.scan", {"name": f"{name} / terrain", "props": [], "terrain": ter})
-        # the world's water: its bodies and every bridge the roads needed (type, span, clearance, pylons)
+        # the world's water: its bodies and every bridge the roads needed (type, span, clearance, where its
+        # towers stand: cg.bridge_towers builds them on the deck as it lies when the city is laid out)
         data.put(f"net.{nid}.water", {"name": f"{name} / water", "sea": water["sea"], "bodies": water["bodies"],
                                        "shorelines_m": sum(s["length_m"] for s in water["shores"]),
-                                       "bridges": bridges,
-                                       "towers": waterfront.towers(bridges, lambda x, y: st.sample_grid(ter, x, y),
-                                                                   water["sea"])})
+                                       "bridges": bridges})
         freeways = {t["name"]: cg.freeway_report(t, opts) for t in towns}
         summary = [{"label": label, "city": a["city"], "type": a["type"], "heading": a["heading"],
                     "center": a["center"], "grading_m": a.get("grading_m"), "facilities": got["facilities"],
@@ -1650,8 +1649,8 @@ def register(api) -> None:
                 g["count"] = g["shown"] = len(g["points"])
             placed.update(groves)
             pl.clear_of(placed, pl.road_samples(fast, 400.0))
-            # waterfront structures (piers, marinas, quays, beaches, ports, stilt / floating homes) + bridge pylons
-            placed.update(waterfront.layers(cities, (data.get(f"net.{nid}.water") or {}).get("towers")))
+            # waterfront structures (piers, marinas, quays, beaches, ports, stilt / floating homes)
+            placed.update(waterfront.layers(cities))
             # airports: aircraft, jet bridges, hangars, tower, lights, aprons, fuel farm
             placed.update(airport.layers([r for c in cities for r in (c.get("private") or {}).get("airport") or []]))
             # every generated world: a building the ground would bury is lifted onto it, here, before any push
@@ -1735,13 +1734,22 @@ def register(api) -> None:
             decks = {str(k): {"points": p, "segments": s} for k, (p, s) in enumerate(actors)}
             stands_on = (fit or {}).get("ground") or (lambda x, y: ground(x, y) or 0.0)
             cols, caps = cg.bridge_piers(decks, stands_on)
+            # ... a cable-stayed or suspension bridge on its two towers, each astride the deck with its stay cables;
+            # the deck those cables carry needs no piers
+            towers = cg.bridge_towers(decks, (data.get(f"net.{nid}.water") or {}).get("bridges") or [], stands_on,
+                                      terrain.get("sea"))
+            held = cg.under_cables(towers["spans"])
+            cols, caps = [r for r in cols if not held(r[0], r[1])], [r for r in caps if not held(r[0], r[1])]
             ends = cg.bridge_abutments(decks)
             # ... and where a deck or ramp is too low for piers it stands on its own approach wall, never on air
             fills = cg.deck_fills(decks, stands_on, terrain.get("sea"))
             for name, mesh, rows, box in (("Bridge piers", "SM_Kit_BridgePier", cols, [2.0, 2.0, 1.0]),
                                           ("Pier caps", "SM_Kit_PierCap", caps, [2.0, 1.0, 1.2]),
                                           ("Bridge abutments", "SM_Kit_BridgeAbutment", ends, [1.0, 1.0, 2.5]),
-                                          ("Approach walls", "SM_Kit_ApproachWall", fills, [1.0, 1.0, 1.0])):
+                                          ("Approach walls", "SM_Kit_ApproachWall", fills, [1.0, 1.0, 1.0]),
+                                          ("Bridge towers", "SM_Kit_BridgePier", towers["legs"], [2.0, 2.0, 1.0]),
+                                          ("Tower beams", "SM_Kit_PierCap", towers["beams"], [2.0, 1.0, 1.2]),
+                                          ("Bridge cables", "SM_Kit_BridgeStay", towers["stays"], [1.0, 0.12, 1.0])):
                 placed[name] = {"kind": "site", "role": "bridge", "mesh": mesh, "box_m": box, "tint": "fg-dim",
                                 "count": len(rows), "shown": len(rows), "points": rows}
             _PREVIEW_CACHE.update(key=key, out=placed, fit=fit, ter=fit_ter)

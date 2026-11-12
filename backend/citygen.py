@@ -182,7 +182,9 @@ RULES = [
     "taxiway graph; nothing tall near a runway or in its approach; no homes in the noise zone (industry instead); "
     "cargo trucks on their own road, never on the passenger curb.",
     "Bridges are typed by the water they span: canal arches (3 m clearance), beam (7.5 m), navigable girder "
-    "(15 m), cable-stayed (30 m) and suspension (45 m) with pylons; ramps keep the road's grade.",
+    "(15 m), cable-stayed (30 m) and suspension (45 m); ramps keep the road's grade. A cable-stayed or suspension "
+    "bridge has two towers standing astride its deck (a leg outside each edge, beams across, never a column in "
+    "the roadway) and stay cables from each leg down to the deck's edge; the deck they carry has no piers.",
     "One editor call does little (one mesh build, a few junctions, one tile): UEFN frees windows only per frame.",
     "Every door a player can walk through opens: house, garage, shop, office, revolving, grand, industrial and roller "
     "doors are Scene Graph entities, never fixed meshes. One Entity Prefab per door kind (the door leaf + a component "
@@ -1576,6 +1578,117 @@ def bridge_piers(actors: dict, ground) -> tuple:
                         cols.append([round(x - uy * o), round(y + ux * o), round(f), round(yaw, 1), 1.0, 1.0,
                                      round((top - CAP_CM - f) / 100, 2)])
     return cols, caps
+
+
+TOWER_OVER_CM = {"cable-stayed bridge": 6000.0, "suspension bridge": 9000.0}  # a tower's top over its deck
+TOWER_LEG_CM = (400.0, 300.0)  # a tower leg: along the deck, across it
+TOWER_CLEAR_CM = 150.0  # open air between the deck's edge and a leg
+STAY_EVERY_CM = 2500.0  # a stay cable about every 25 m of deck
+STAY_REACH = 0.19  # each fan reaches this share of the span from its tower: towers at 0.3 and 0.7 all but meet
+STAY_WIDE = 2.5  # a stay's Y scale: the 12 cm bar becomes a 30 cm cable
+
+
+def _decks(actors: dict) -> list:
+    """Every bridge and viaduct segment: (ax, ay, az, bx, by, bz, half width, road surface to its underside)."""
+    out = []
+    for a in actors.values():
+        by = {p["i"]: p for p in a["points"]}
+        for s in a["segments"]:
+            mesh = (s.get("mesh") or "").split("/")[-1]
+            pa, pb = by.get(s["a"]), by.get(s["b"])
+            if mesh in STRUCTURES and pa and pb:
+                half = HALF.get(next((k for k, m in ROAD_MESH.items() if m.split("/")[-1] == mesh), ""), 800.0)
+                out.append((pa["x"], pa["y"], pa["z"], pb["x"], pb["y"], pb["z"], half,
+                            DECK_DEPTH_CM + (GIRDER_CM if "Bridge" in mesh else 0.0)))
+    return out
+
+
+def _deck_at(decks: list, x: float, y: float, within: float = 1500.0):
+    """The deck over a spot (or within `within` cm beside it): (x, y on its centre line, z, half width, ux, uy,
+    depth to its underside), or None."""
+    best = None
+    for ax, ay, az, bx, by, bz, half, deep in decks:
+        L2 = (bx - ax) ** 2 + (by - ay) ** 2
+        if L2 < 1:
+            continue
+        t = max(0.0, min(1.0, ((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / L2))
+        px, py = ax + (bx - ax) * t, ay + (by - ay) * t
+        d = math.hypot(x - px, y - py)
+        if d <= within and (best is None or d < best[0]):
+            L = math.sqrt(L2)
+            best = (d, px, py, az + (bz - az) * t, half, (bx - ax) / L, (by - ay) / L, deep)
+    return best[1:] if best else None
+
+
+def bridge_towers(actors: dict, bridges: list, ground, sea=None) -> dict:
+    """Real towers for the cable-stayed and suspension bridges (`bridges`: over_water's records, each with its two
+    tower spots on the deck). A tower stands ASTRIDE the deck, never in it: a leg outside each edge, from the
+    ground or the bed to 60 / 90 m over the road, joined by a beam under the deck (the deck rests on it), one
+    high over the road and one at the top. From each leg's top a fan of stay cables runs down to that edge of
+    the deck, both ways along it. Site rows [x, y, z, yaw, sx, sy, sz]:
+      legs   SM_Kit_BridgePier (200 x 200 x 100 cm at scale 1)
+      beams  SM_Kit_PierCap (200 x 100 x 120 cm)
+      stays  SM_Kit_BridgeStay: a bar from 1 m up over its origin down to 1 m out along +X, so sx = how far out
+             the cable lands (m) and sz = how high over the deck it starts (m); z is the deck's surface there
+      spans  (x, y, ux, uy, reach, half) per tower: the deck its cables carry (under_cables: no pier there)."""
+    out = {"legs": [], "beams": [], "stays": [], "spans": []}
+    decks = _decks(actors)
+    la, lc = TOWER_LEG_CM
+    for b in bridges or []:
+        over = TOWER_OVER_CM.get(b.get("type"))
+        if not over or not b.get("towers"):
+            continue
+        span = float(b.get("span_m") or 0) * 100
+        near = [d for d in decks if min(math.hypot(d[0] - b["x"], d[1] - b["y"]),
+                                        math.hypot(d[3] - b["x"], d[4] - b["y"])) < span + 20000]
+        reach = STAY_REACH * span
+        n = max(3, min(8, round(reach / STAY_EVERY_CM)))
+        for spot in b["towers"]:
+            at = _deck_at(near, spot[0], spot[1])
+            if not at:
+                continue  # the deck is not there any more (the road was changed by hand): no tower in open water
+            tx, ty, z, half, ux, uy, deep = at
+            nx, ny = -uy, ux
+            yaw = round(math.degrees(math.atan2(uy, ux)), 1)
+            top = z + over
+            off = half + TOWER_CLEAR_CM + lc / 2
+            feet = []
+            for side in (1, -1):
+                lx, ly = tx + nx * off * side, ty + ny * off * side
+                foot = ground(lx, ly)
+                if foot is None:
+                    foot = (sea if sea is not None else z) - 500.0
+                feet.append((side, lx, ly))
+                out["legs"].append([round(lx), round(ly), round(foot), yaw, la / 200, lc / 200, round((top - foot) / 100, 2)])
+            for bz, tall in ((z - deep - 250.0, 250.0), (z + over * 0.55, 250.0), (top - 300.0, 300.0)):
+                out["beams"].append([round(tx), round(ty), round(bz), yaw, round(la * 0.8 / 200, 2),
+                                     round((2 * off + lc) / 100, 2), round(tall / 120, 2)])
+            for side, lx, ly in feet:
+                for way in (1, -1):
+                    for k in range(1, n + 1):
+                        d = reach * k / n
+                        deck = _deck_at(near, tx + ux * d * way, ty + uy * d * way, 600.0)
+                        if not deck:
+                            continue  # past the deck's end: no cable into the air
+                        ax, ay = deck[0] + nx * (half - 40.0) * side, deck[1] + ny * (half - 40.0) * side
+                        up = top - 200.0 - (n - k) * 220.0 - deck[2]  # the longest cable leaves from the very top
+                        run = math.hypot(ax - lx, ay - ly)
+                        if up < 500 or run < 300:
+                            continue
+                        out["stays"].append([round(lx), round(ly), round(deck[2]), round(math.degrees(math.atan2(ay - ly, ax - lx)), 2),
+                                             round(run / 100, 2), STAY_WIDE, round(up / 100, 2)])
+            out["spans"].append((tx, ty, ux, uy, reach, half))
+    return out
+
+
+def under_cables(spans: list):
+    """(x, y) -> True under a stretch of deck that hangs from a tower's cables: no pier bent stands there."""
+    def held(x: float, y: float) -> bool:
+        for tx, ty, ux, uy, reach, half in spans:
+            if abs((x - tx) * ux + (y - ty) * uy) <= reach + 300 and abs(-(x - tx) * uy + (y - ty) * ux) <= half + 300:
+                return True
+        return False
+    return held
 
 
 def bridge_abutments(actors: dict) -> list:
@@ -3005,6 +3118,29 @@ def _demo() -> None:
                                 "segments": [_segment(2, 0, 1, "ED", "/G", lifted=True), _segment(5, 3, 4, "2L", "/G")]}},
                          lambda x, y: 0.0)[1]
     assert len(under) == 3 and all(abs(c[0] - 1500) > 525 for c in under), ("no pier in the street under the deck", under)
+    # a cable-stayed bridge: each tower stands astride the deck (a leg outside each edge, nothing in the roadway),
+    # beams join its legs, and its stays run from a leg's top down to that edge of the deck
+    long_deck = {"x": {"points": [_point(k, k * 6000, 0, 3000, 0, 1650, lifted=True) for k in range(11)],
+                       "segments": [_segment(20 + k, k, k + 1, "ED", "/G", lifted=True) for k in range(10)]}}
+    stayed = [{"type": "cable-stayed bridge", "x": 30000, "y": 0, "span_m": 600, "towers": [[18000, 40], [42000, -30]]}]
+    tw = bridge_towers(long_deck, stayed, lambda x, y: -800.0, 0.0)
+    half = HALF["ED"]
+    assert len(tw["legs"]) == 4 and all(abs(r[1]) >= half + TOWER_CLEAR_CM for r in tw["legs"]), ("no leg in the roadway", tw["legs"])
+    assert all(r[2] == -800 and abs(r[2] + r[6] * 100 - (3000 + 6000)) < 2 for r in tw["legs"]), "from the bed to 60 m over the deck"
+    assert len(tw["beams"]) == 6 and all(r[5] * 100 > 2 * half + 300 and r[1] == 0 for r in tw["beams"]), tw["beams"]
+    assert min(r[2] + r[6] * 120 for r in tw["beams"]) <= 3000 - DECK_DEPTH_CM and \
+        sorted(r[2] for r in tw["beams"])[2] > 3000 + 1500, "one beam under the deck, the others well over the traffic"
+    assert len(tw["stays"]) == 2 * 2 * 2 * 5, len(tw["stays"])
+    for x, y, z, yaw, sx, _sy, sz in tw["stays"]:
+        ex, ey = x + math.cos(math.radians(yaw)) * sx * 100, y + math.sin(math.radians(yaw)) * sx * 100
+        assert any(abs(x - r[0]) < 2 and abs(y - r[1]) < 2 for r in tw["legs"]), "a stay leaves from a leg"
+        assert z == 3000 and abs(abs(ey) - (half - 40)) < 3 and 0 < ex < 60000 and y * ey > 0, ("and lands on its edge of the deck", ex, ey)
+        assert 3000 + sz * 100 <= 3000 + 6000 and sz > 30
+    held = under_cables(tw["spans"])
+    assert held(18000, 0) and held(25000, 900) and not held(1000, 0) and not held(18000, 5000)
+    assert [c for c in bridge_piers(long_deck, lambda x, y: -800.0)[1] if not held(c[0], c[1])], "the approaches keep their piers"
+    assert not bridge_towers(long_deck, [{**stayed[0], "type": "girder bridge (navigable)"}], lambda x, y: -800.0)["legs"]
+    assert not bridge_towers(long_deck, [{**stayed[0], "towers": [[18000, 9000]]}], lambda x, y: -800.0)["legs"], "no deck there: no tower"
     # a slip ramp sliding into a street at a shallow angle: the pieces lying inside the street go
     slip = {"T Roads": {"points": [_point(0, 0, 0, 0, 0, 525), _point(1, 20000, 0, 0, 0, 525)], "segments": [_segment(2, 0, 1, "2L", "/G")]},
             "T Freeways": {"points": [_point(k, 2000 + 2000 * k, y, 0, 0, 650, lifted=True) for k, y in enumerate((5000, 3000, 2000, 1200, 400, 200))],

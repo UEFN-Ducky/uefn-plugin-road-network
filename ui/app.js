@@ -1100,6 +1100,11 @@ function drawPcg(legend, only) {  // only: just these layers (the city coming in
       const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: col(tint), roughness: 0.9 }), pts.length);
       const zx = state.view.zx || 1;
       pts.forEach(([x, y, z, yaw, sx, sy, sz], i) => {
+        if (layer.mesh === STAY) {
+          stayBar(dummy, x, y, z + 60, yaw, sx, sz);
+          dummy.updateMatrix();
+          return mesh.setMatrixAt(i, dummy.matrix);
+        }
         const a = yaw * Math.PI / 180, side = stall ? by * sy * 50 : 0;  // the line down one long side of the stall
         // (roads are drawn 60 cm up so they never sink into the ground: a piece lying on one goes up with it, and
         // so does the approach wall a low deck stands on, or a slot of daylight shows under the deck)
@@ -1150,6 +1155,17 @@ function drawPcg(legend, only) {  // only: just these layers (the city coming in
 // its real position, turn and stretch, on the ground sampled as the landscape has it. A roof beside its
 // building or a hill through a floor shows here, before anything goes to UEFN.
 const inExact = (x, y) => !!state.exact && Math.abs(x - state.exact.x) <= state.exact.r && Math.abs(y - state.exact.y) <= state.exact.r;
+// A bridge's stay cable as its piece makes it (road_io SM_Kit_BridgeStay; keep the two in step): a bar from sz m
+// over its origin down to sx m out along its yaw, so from a tower leg's top to the edge of the deck
+const STAY = "SM_Kit_BridgeStay", UP = new THREE.Vector3(0, 1, 0);
+function stayBar(dummy, x, y, z, yaw, sx, sz) {
+  const a = yaw * Math.PI / 180;
+  const top = toV(x, y, z + sz * 100), foot = toV(x + Math.cos(a) * sx * 100, y + Math.sin(a) * sx * 100, z);
+  const run = foot.sub(top), len = run.length();
+  dummy.position.copy(top).addScaledVector(run, 0.5);
+  dummy.quaternion.setFromUnitVectors(UP, run.normalize());
+  dummy.scale.set(0.35, len, 0.35);
+}
 const EXACT_TINT = [[/Floor|Roof|Slab|Parking|Apron/, "mix:fg-dim:bg:0.35"], [/Glass|Curtain|Storefront|Window|Lobby|Band/, "mix:blue:fg:0.55"],
   [/Awning|Door|Entrance|Gate|Garage|SallyPort/, "amber"], [/Facade|Parapet|Corner|Column|Pillar/, "fg-dim"]];
 async function loadExact(keep) {
@@ -1176,6 +1192,13 @@ function drawExact(legend) {
     for (const row of ex.rows[k]) {
       const [x, y, z, yaw, sx, sy, sz] = row;
       owner.push([k, row]);
+      if (name === STAY) {
+        stayBar(dummy, x, y, z, yaw, sx, sz);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+        mesh.setColorAt(i++, tint);
+        continue;
+      }
       const r = yaw * Math.PI / 180, c = Math.cos(r), s = Math.sin(r);
       const cx = (x0 + x1) / 2 * sx, cy = (y0 + y1) / 2 * sy;  // the box's middle in the piece's own frame
       dummy.position.copy(toV(x + cx * c - cy * s, y + cx * s + cy * c, z + (z0 + z1) / 2 * sz));

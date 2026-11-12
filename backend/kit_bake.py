@@ -150,7 +150,8 @@ KIT = {
     "SM_Kit_BoatLaunch": ("Kit/Street", -50, -50, 0, 50, 50, 20),
     "SM_Kit_StiltHouse": ("Kit/Street", -500, -400, 0, 500, 400, 600),
     "SM_Kit_FloatHome": ("Kit/Street", -500, -350, 0, 500, 350, 500),
-    "SM_Kit_BridgePylon": ("Kit/Street", -300, -300, 0, 300, 300, 10000),
+    # a stay cable: a bar from 1 m up over its origin down to 1 m out along +X (citygen.bridge_towers)
+    "SM_Kit_BridgeStay": ("Kit/Street", 0, -6, 0, 100, 6, 100),
     # bridge piers (citygen.bridge_piers): a column stretched up from the ground to its cap, the cap across the deck
     "SM_Kit_BridgePier": ("Kit/Street", -100, -100, 0, 100, 100, 100),
     "SM_Kit_PierCap": ("Kit/Street", -100, -50, 0, 100, 50, 120),

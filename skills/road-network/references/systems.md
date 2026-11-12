@@ -322,7 +322,9 @@ layer's spacing; that spacing only applies to scattered lots.
   the 3 m channel bed so the landscape spline lowers the ground). Cross streets run over it on canal arches.
   Walkways line both quays, and no lot sits in a canal.
 - **Bridges:** typed by the water they span. Canal arch 3 m, beam 7.5 m, navigable girder 15 m, cable-stayed 30 m,
-  suspension 45 m clearance, with pylons. Ramps are long enough for 6 %.
+  suspension 45 m clearance. Ramps are long enough for 6 %. A cable-stayed or suspension bridge stands on two
+  towers astride its deck (`citygen.bridge_towers`: a leg outside each edge, three beams across, never a column
+  in the roadway) with stay cables from each leg's top to the deck's edge; the deck they carry has no pier bents.
 - **`road_network_waterfront(net_id, city)`** returns waterbodies, bridges, shoreline by use, developments and
   the validator result.
 

@@ -64,7 +64,6 @@ KINDS = {
     "launch": ("SM_Kit_BoatLaunch", [1, 1, 0.2], "mix:fg-dim:bg:0.3", "Boat launches"),
     "stilt_house": ("SM_Kit_StiltHouse", [10, 8, 6], "mix:fg-dim:amber:0.45", "Stilt houses"),
     "float_home": ("SM_Kit_FloatHome", [10, 7, 5], "mix:fg:amber:0.3", "Floating homes"),
-    "pylon": ("SM_Kit_BridgePylon", [6, 6, 100], "fg-dim", "Bridge towers"),
     # shipyards (shipyard.py)
     "ship_hull": ("SM_Kit_ShipHull", [100, 20, 24], "mix:red:fg-dim:0.55", "Ships"),
     "goliath": ("SM_Kit_GoliathCrane", [20, 70, 80], "mix:red:amber:0.3", "Goliath gantry cranes"),
@@ -610,14 +609,12 @@ def validate(out: _Out, segments: list) -> dict:
             "piles": len(piles)}
 
 
-def layers(cities: list, extra: list | None = None) -> dict:
-    """Built-in PCG site layers for every city's waterfront rows (+ world rows such as bridge towers)."""
+def layers(cities: list) -> dict:
+    """Built-in PCG site layers for every city's waterfront rows."""
     by: dict = {}
     for c in cities:
         for r in ((c.get("private") or {}).get("water") or []):
             by.setdefault(r[7], []).append(r[:7])
-    for r in extra or []:
-        by.setdefault(r[7], []).append(r[:7])
     out = {}
     for kind, rows in by.items():
         mesh, box, tint, name = KINDS[kind]
@@ -637,22 +634,6 @@ def bridge_kind(span_cm: float, kind: str) -> tuple:
     if span_cm <= 150000:
         return "cable-stayed bridge", 3000.0
     return "suspension bridge", 4500.0
-
-
-def towers(bridges: list, ground, sea) -> list:
-    """Pylons for cable-stayed and suspension bridges, from the bed to 60 / 90 m over the deck:
-    rows [x, y, z, yaw, 1, 1, sz, 'pylon'] (the pylon mesh is 100 m tall at scale 1)."""
-    rows = []
-    for b in bridges:
-        if b["type"] not in ("cable-stayed bridge", "suspension bridge"):
-            continue
-        h = 6000 if b["type"].startswith("cable") else 9000
-        for x, y in b["towers"]:
-            bed = ground(x, y)
-            bed = (sea or 0.0) - 500 if bed is None else bed
-            top = max(bed, (sea or bed)) + 150 + b["deck_z_rel"] + h
-            rows.append([round(x), round(y), round(bed), b["yaw"], 1, 1, round((top - bed) / 10000, 3), "pylon"])
-    return rows
 
 
 def _demo() -> None:

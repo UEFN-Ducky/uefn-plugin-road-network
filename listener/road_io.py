@@ -771,9 +771,10 @@ _STREET_KIT = {
     "SM_Kit_FloatHome": (["Panel", "Light"], [("box", 0, (0, 0, 0), (0, 0, 0), (900, 600, 300)),
                                               ("box", 1, (460, 0, 60), (0, 0, 0), (10, 500, 200)),
                                               ("box", 0, (0, 0, 300), (0, 0, 0), (1000, 700, 40))]),
-    "SM_Kit_BridgePylon": (["Plinth"], [("box", 0, (0, -200, 0), (0, 0, 0), (300, 150, 10000)),
-                                       ("box", 0, (0, 200, 0), (0, 0, 0), (300, 150, 10000)),
-                                       ("box", 0, (0, 0, 9000), (0, 0, 0), (300, 550, 300))]),
+    # a stay cable (citygen.bridge_towers): one bar from 1 m up over the origin down to 1 m out along +X, so the
+    # row's X scale is how far out it lands and its Z scale how high it starts. Thin on X (it thickens with both
+    # scales: about 20 to 50 cm on a real cable); a bridge tower's legs and beams are the pier and cap pieces
+    "SM_Kit_BridgeStay": (["Steel"], [("box", 0, (100, 0, 0), (0, 45, 0), (0.6, 12, 141.42))]),
     # bridge piers: a 2 x 2 m column 1 m tall (stretched to its height) and a cap beam 1 m across (stretched to the
     # deck's width), both in concrete; placed by citygen.bridge_piers every 30 m under every deck
     "SM_Kit_BridgePier": (["Plinth"], [("box", 0, (0, 0, 0), (0, 0, 0), (200, 200, 100))]),
