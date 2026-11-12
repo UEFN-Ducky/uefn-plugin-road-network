@@ -932,12 +932,14 @@ def _self_gb() -> float:
     try:
         c = _C()
         c.cb = ctypes.sizeof(c)
-        k32 = ctypes.WinDLL("kernel32")
-        k32.GetCurrentProcess.restype = wintypes.HANDLE
-        ctypes.WinDLL("psapi").GetProcessMemoryInfo(k32.GetCurrentProcess(), ctypes.byref(c), c.cb)
+        k32, psapi = ctypes.WinDLL("kernel32"), ctypes.WinDLL("psapi")
+        k32.GetCurrentProcess.restype = wintypes.HANDLE  # the pseudo-handle -1: needs argtypes below
+        psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD]
+        if not psapi.GetProcessMemoryInfo(k32.GetCurrentProcess(), ctypes.byref(c), c.cb):
+            return 0.0
         return c.PrivateUsage / 2 ** 30
-    except (OSError, AttributeError):
-        return 0.0
+    except (OSError, AttributeError, ctypes.ArgumentError):
+        return 0.0  # no reading: the slice still runs, only the in-call stop is off
 
 
 def _kit_meshes(folder: str) -> list:

@@ -1439,15 +1439,17 @@ def register(api) -> None:
         if not root:
             return {"ok": False, "error": "Couldn't find the project's WorldGen folder (import the roads first)."}
         street = street_kit_build(root) if street_kit else None
-        # 10 meshes per call: each call is one editor frame UEFN frees after, and the memory guard
-        # (uefn_memory.metered) refuses the next slice if one grew it by GBs. One call for the whole kit
-        # took UEFN past 100 GB and crashed it.
+        # Slices of 5 meshes, each its own editor call. Loading a kit mesh compiles its materials' shaders (up to
+        # ~4 GB each, freed a little later): the listener stops a slice once UEFN grew 3 GB, and we wait for it
+        # to settle before the next. One call for the whole kit took UEFN past 100 GB and crashed it.
         folders = ["City", "Kit", "Kit/Street", "Kit/Facility", "BuildingKit"]
         out = {"ok": True, "instances": 0, "created": 0, "meshes": 0, "overrides": {}}
         offset = 0
         while offset is not None:
-            r = listener("road_network_kit_materials",
-                         {"root": root, "folders": folders, "offset": offset, "limit": 10}, timeout=300)
+            base = uefn_memory.uefn_gb()
+            r = listener("road_network_kit_materials", {"root": root, "folders": folders, "offset": offset,
+                                                        "limit": 5, "max_grow_gb": 3.0}, timeout=300)
+            uefn_memory.settle(base)
             if not r.get("ok"):
                 return {**r, "street_kit": street}
             out["overrides"].update(r.get("overrides") or {})

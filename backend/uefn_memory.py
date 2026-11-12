@@ -122,6 +122,19 @@ def metered(cmd: str, call):
             _state["trip"] = {"cmd": cmd, "grew": grew, "before": before}
 
 
+def settle(base, slack: float = 1.5, timeout: float = 120.0, poll: float = 2.0):
+    """Wait until UEFN is back within `slack` GB of `base` (its memory before a slice). Loading kit meshes
+    compiles their materials' shaders: a few GB that UEFN frees on its own a little later. Big jobs run
+    slice -> settle -> slice, so those spikes never stack (stacked, they took UEFN past 100 GB). Returns
+    the last reading (None when UEFN can't be read; then it doesn't wait)."""
+    now = uefn_gb()
+    end = time.time() + timeout
+    while now is not None and base is not None and now > base + slack and time.time() < end:
+        time.sleep(poll)
+        now = uefn_gb()
+    return now
+
+
 def report(last: int = 60) -> dict:
     rows = LOG[-last:]
     worst = sorted((r for r in LOG if r["grew_gb"] is not None), key=lambda r: -r["grew_gb"])[:10]
@@ -140,6 +153,10 @@ def _demo() -> None:
     _state["trip"] = {"cmd": "road_network_street_kit", "grew": 9.0, "before": 20.0}
     assert "street_kit" in check(29.0, 64.0), "a big jump blocks the next call"
     assert check(22.0, 64.0) == "" and _state["trip"] is None, "settled back: the guard clears"
+    t = time.time()
+    settle(None, timeout=5)
+    settle(10_000.0, timeout=5)
+    assert time.time() - t < 2, "no base, or already under it: settle doesn't wait"
     print("uefn memory ok", uefn_gb(), "GB now")
 
 
