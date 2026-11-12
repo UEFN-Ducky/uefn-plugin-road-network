@@ -878,6 +878,38 @@ def aprons(placed: dict) -> dict:
                                 "meshes": [], "row": "x, y, z, yaw, sx, sy, sz"}}
 
 
+def interchange_groves(fast: list, ground, sea=None, radius: float = 16000.0, count: int = 90) -> dict:
+    """Trees in and round every interchange: the land inside the loops and between the ramps is right of way, so
+    no lot is cut there and it stood bare. fast: the freeway / highway actors [(points, segments)]; an interchange
+    is where their ramp connectors (gores, flares) cluster. `count` trees in a disc of `radius` round each, the
+    same every time; the caller takes out the ones on a road (clear_of). Never houses: nobody lives in a loop."""
+    import random
+    ends = [(p["x"], p["y"]) for pts, _segs in fast for p in pts if str(p.get("mesh") or "").startswith("SM_Road_Ramp")]
+    groups: list = []
+    for e in ends:  # greedy clusters, 300 m: one interchange's ramp ends
+        g = next((g for g in groups if math.dist(g[0], e) < 30000), None)
+        if g:
+            g.append(e)
+        else:
+            groups.append([e])
+    rows = []
+    for g in groups:
+        if len(g) < 3:
+            continue  # a lone ramp end is no interchange
+        cx, cy = sum(p[0] for p in g) / len(g), sum(p[1] for p in g) / len(g)
+        rnd = random.Random(f"grove:{round(cx)}:{round(cy)}")
+        for k in range(count):
+            a, d = rnd.uniform(0, 2 * math.pi), radius * math.sqrt(rnd.random())
+            x, y = cx + math.cos(a) * d, cy + math.sin(a) * d
+            z = ground(x, y)
+            if z is not None and (sea is None or z > sea + 50):
+                rows.append([round(x), round(y), round(z), round(rnd.uniform(0, 360)), round(rnd.uniform(0.8, 1.3), 2)])
+    if not rows:
+        return {}
+    return {"Interchange trees": {"kind": "scatter", "role": "tree", "count": len(rows), "shown": len(rows), "points": rows,
+                                  "radius_cm": 250, "meshes": [], "build": "", "row": "x, y, z, yaw, scale"}}
+
+
 def off_roads(streets: list, samples: list, margin: float = 1000.0) -> list:
     """Private streets stopped short of every freeway, ramp and highway (road_samples of those actors): each
     polyline is walked every 5 m and cut where it comes within margin of one, the pieces under 15 m dropped.
@@ -1439,6 +1471,11 @@ def _demo() -> None:
     # a dropped kerb at the street end of a house's drive, half the sidewalk past the lot line
     ap = aprons({"H": {"kind": "buildings", "points": [[0, 0, 0, 0, 1, 8, 0, 12, 12, 0, [[DRIVE_M, [600, 0, 0, 1600, 0, 0]]]]]}})
     assert ap["Driveway aprons"]["points"] == [[1775, 0, 0, 0.0, 3.5, DRIVE_M + 1.0, 1.0]], ap
+    # trees fill an interchange (four ramp ends round a point), none for a lone ramp end
+    ramp_end = lambda x, y: {"x": x, "y": y, "mesh": "SM_Road_RampFlare15m"}
+    grove = interchange_groves([([ramp_end(0, 0), ramp_end(9000, 0), ramp_end(0, 9000), ramp_end(9000, 9000), ramp_end(90000, 0)], [])],
+                               lambda x, y: 0.0)["Interchange trees"]
+    assert grove["count"] == 90 and all(math.dist(p[:2], (4500, 4500)) <= 16000 for p in grove["points"]), grove["count"]
     # a private street stops each side of a ramp it would cross (ramp half width 500 at x 5000)
     cut = off_roads([[[0, 0], [10000, 0]]], [(5000, 0, 500, 0, 1)])
     assert len(cut) == 2 and cut[0][-1][0] <= 3100 and cut[1][0][0] >= 6900 and cut[1][-1] == [10000, 0], cut

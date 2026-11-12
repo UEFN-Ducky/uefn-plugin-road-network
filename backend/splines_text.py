@@ -146,6 +146,9 @@ def move_point(points: list, segments: list, index: int, x: float, y: float, z: 
     return p
 
 
+SPIKE_GRADE = 0.18  # no street piece steeper than this, whatever max_cut says
+
+
 def drape(points: list, segments: list, ground: dict, iters: int = 4, pin_joints: bool = True,
           max_grade: dict | None = None, max_cut: float | None = None) -> dict:
     """Set every live (Raise/Lower) point onto the ground, smoothed along the roads.
@@ -202,7 +205,7 @@ def drape(points: list, segments: list, ground: dict, iters: int = 4, pin_joints
                 nz[i] = 0.5 * z[i] + 0.5 * sum(z[n] for n in adj[i]) / len(adj[i])
         z = nz
         pin_groups()
-    if max_grade:
+    def grade_pass(least: float = 0.0):
         for _ in range(60):
             moved = 0.0
             for s in segments:
@@ -210,10 +213,12 @@ def drape(points: list, segments: list, ground: dict, iters: int = 4, pin_joints
                 if a not in live or b not in live or a not in max_grade or b not in max_grade:
                     continue
                 run = math.hypot(by_i[a]["x"] - by_i[b]["x"], by_i[a]["y"] - by_i[b]["y"])
-                over = abs(z[b] - z[a]) - min(max_grade[a], max_grade[b]) * run
+                over = abs(z[b] - z[a]) - max(least, min(max_grade[a], max_grade[b])) * run
                 if over <= 1.0:
                     continue
-                free = [i for i in (a, b) if i not in fixed]
+                # (in the last, anti-wall pass two points both held at a bridge's ends share the step too: three of
+                # them 15 m apart on a lake's bank stood 7 m apart in height, a 55 % boulevard)
+                free = [i for i in (a, b) if i not in fixed] or ([a, b] if least else [])
                 if not free:
                     continue
                 step = over / len(free)
@@ -223,11 +228,17 @@ def drape(points: list, segments: list, ground: dict, iters: int = 4, pin_joints
             pin_groups()
             if moved < 1.0:
                 break
+    if max_grade:
+        grade_pass()
     if max_cut:  # a road is never cut or filled deeper than this: across a valley it takes a steeper grade instead
         for i in live - fixed:
             g = float(ground[i])
             z[i] = min(max(z[i], g - max_cut), g + max_cut)
         pin_groups()
+        if max_grade:
+            # ... steeper, never a wall: that clamp alone left single points 7 m off both their neighbours (a junction
+            # at a lake's edge, 55 % streets, Nov 12 2026). Past SPIKE_GRADE the cut or fill goes deeper instead
+            grade_pass(SPIKE_GRADE)
     shifts = []
     old = {i: (by_i[i]["x"], by_i[i]["y"], by_i[i]["z"]) for i in by_i}
     for i in live:

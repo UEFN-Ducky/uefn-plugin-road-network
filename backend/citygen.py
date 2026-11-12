@@ -89,6 +89,10 @@ CHOICES = {
     "suburb_roads": (("2L", "2S", "1W", "DT"), "2S"),  # the default street carries its sidewalks in its own mesh
     "highway": (("4L", "6L", "2L"), "4L"),
     "interchange": (("direct", "diamond", "trumpet", "cloverleaf", "stack"), "direct"),
+    # Interchanges belong inside a city, on its freeway. A highway from another city runs straight into that
+    # freeway's open end (or, in a town without one, into its gate street). 'yes' brings back the old stand-alone
+    # interchange in the fields at each city's edge (the `interchange` kind above), which read as broken.
+    "gate_interchanges": (("no", "yes"), "no"),
     "one_way_core": (("no", "yes"), "no"),  # core side streets as alternating one-way lanes
     "overpasses": (("yes", "no"), "yes"),  # highways bridge over the streets they cross
     # outside the core every other local street line is left out: ~200 m super-blocks that subdivisions and
@@ -1798,7 +1802,23 @@ def build_actor(nodes: dict, edges: list, ground, folder: str, pieces: dict | No
     for s in segs:
         st.retangent(by_i, s)
     st.drape(pts, segs, {p["i"]: p["z"] for p in pts}, iters=4, max_grade=glim, max_cut=MAX_CUT_CM)
+    # a one-point bridge between two junctions a few metres apart (over_water's 'ramps meet mid-span') stood on the
+    # highest ground within 15 m, 7 m over both its ends: a 55 % hump. It rises HUMP_GRADE from its lower end, no more
+    for chain in chains:
+        for a, m, b in zip(chain, chain[1:], chain[2:]):
+            pa, pm, pb = by_i[a], by_i[m], by_i[b]
+            if not pm["raise"] and pa["raise"] and pb["raise"] and \
+                    max(math.hypot(q["x"] - pm["x"], q["y"] - pm["y"]) for q in (pa, pb)) < 3000:
+                cap = min(q["z"] + HUMP_GRADE * math.hypot(q["x"] - pm["x"], q["y"] - pm["y"]) for q in (pa, pb))
+                if pm["z"] > cap:
+                    pm["z"] = cap
+                    for s in segs:
+                        if m in (s["a"], s["b"]):
+                            st.retangent(by_i, s)
     return {"points": pts, "segments": segs}
+
+
+HUMP_GRADE = 0.12  # a one-point bridge's rise from its ends
 
 
 def detach(actor: dict) -> None:
@@ -1959,9 +1979,33 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
     rnd = random.Random(seed)
     hw_nodes, hw_edges, pieces = {}, [], {}
     streets = [(n[a][:2], n[b][:2]) for n, e in graphs for a, b, *_ in e]
+    gates = o["gate_interchanges"] == "yes"
+    tips = []  # per city: its freeways' open ends [x, y, the way it was heading there (unit), in the water]
+    for c in cities:
+        runs = [ln["points"] for ln in freeway_plan(c, o).lines if ln["cls"] == "freeway" and len(ln["points"]) > 1]
+        every_tip = [(p, q) for ps in runs for p, q in ((ps[0], ps[1]), (ps[-1], ps[-2]))]
+        mine = []
+        for p, q in every_tip:
+            L = math.dist(p[:2], q[:2]) or 1.0
+            if sum(1 for u, _v in every_tip if math.dist(u[:2], p[:2]) < 200) == 1 and not in_keep(keep, p[0], p[1], 6000):
+                mine.append([p[0], p[1], (p[0] - q[0]) / L, (p[1] - q[1]) / L, bool(wet and wet(p[0], p[1]))])
+        tips.append(mine)
     for a, b in links(cities):
-        ends = []
+        ends, leads = [], []
         for me, other in ((a, b), (b, a)):
+            cx, cy, ox, oy = cities[me]["x"], cities[me]["y"], cities[other]["x"], cities[other]["y"]
+            D = math.hypot(ox - cx, oy - cy) or 1.0
+            # (an end on the city's far side would send the highway back across the city: only ends within about
+            # 100 degrees of the way to the other city)
+            toward = [] if gates else [t for t in tips[me] if not t[4] and (t[0] - cx) * (ox - cx) + (t[1] - cy) * (oy - cy)
+                                       > -0.2 * D * math.hypot(t[0] - cx, t[1] - cy)]
+            if toward:  # the highway IS the city's freeway from here on: it starts where that ends, heading the same way
+                tip = min(toward, key=lambda t: math.hypot(t[0] - ox, t[1] - oy))
+                tips[me].remove(tip)
+                ends.append([tip[0], tip[1]])
+                leads.append(tip)
+                continue
+            leads.append(None)
             nodes, edges = graphs[me]
             g = gate(nodes, cities[me], (cities[other]["x"], cities[other]["y"]))
             gx, gy = nodes[g]
@@ -1989,9 +2033,25 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
             dense = dense[1:]
             if any(in_keep(keep, *v, 6000) for v in dense):
                 via = [push_out(keep, v[0], v[1], 8000) for v in dense][::2]
+        for k, tip in enumerate(leads):  # the freeway's own heading carries on 200 m, then swings to the other END
+            leads[k] = []  # (not the other city's centre: its gate may lie 700 m to one side, and the road doubled back)
+            if tip:
+                tx, ty = ends[1 - k][0] - tip[0], ends[1 - k][1] - tip[1]
+                tl = math.hypot(tx, ty) or 1.0
+                cos = (tip[2] * tx + tip[3] * ty) / tl
+                if cos > -0.3:
+                    leads[k] = [[tip[0] + tip[2] * 20000, tip[1] + tip[3] * 20000]]
+                    if cos < 0.8:  # (halfway between its heading and the way on from that first point: two even bends)
+                        tx, ty = ends[1 - k][0] - leads[k][0][0], ends[1 - k][1] - leads[k][0][1]
+                        tl = math.hypot(tx, ty) or 1.0
+                        bx, by = tip[2] + tx / tl, tip[3] + ty / tl
+                        bl = math.hypot(bx, by) or 1.0
+                        leads[k].append([leads[k][0][0] + bx / bl * 30000, leads[k][0][1] + by / bl * 30000])
+        via = [v for v in via if all(math.dist(v[:2], e) > 60000 for e, ld in zip(ends, leads) if ld)]
+        via = leads[0] + via + leads[1][::-1]
         if o["overpasses"] == "yes":
             via, _ = overpass_via([ends[0]] + via + [ends[1]], streets, o["highway"])
-        if o["interchange"] == "stack" and L > 70000:  # rise onto an elevated deck into each gate
+        if gates and o["interchange"] == "stack" and L > 70000:  # rise onto an elevated deck into each gate
             line = [ends[0]] + [v[:2] for v in via] + [ends[1]]
             heads = []
             for end, nxt in ((ends[0], line[1]), (ends[1], line[-2])):
@@ -2004,7 +2064,7 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
             far = [heads[1](22000, 0.0, "ER"), heads[1](14000, 600.0, "ED"), heads[1](6000, 600.0, "ER"),
                    heads[1](1500, 0.0, hw)]
             via = near + [v for v in via if math.dist(v[:2], ends[0]) > 26000 and math.dist(v[:2], ends[1]) > 26000] + far
-        if o["interchange"] in ("cloverleaf", "trumpet", "diamond") and L > 90000:
+        if gates and o["interchange"] in ("cloverleaf", "trumpet", "diamond") and L > 90000:
             # real ramps and a bridge at each city end, all from our ramp / bridge / road pieces
             line = [ends[0]] + [v[:2] for v in via] + [ends[1]]
             heads = []
@@ -2085,18 +2145,32 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
         hw_nodes, hw_edges = over_water(hw_nodes, hw_edges, wet, long, bridges)
     if hw_edges:
         out["Highways"] = build_actor(hw_nodes, hw_edges, ground, folder, pieces)
+    edge = {"box": cities[0].get("map") if cities else None, "ground": ground, "wet": wet}
     for _ in range(8):  # again while anything moved: an end may land on a road whose own end just moved
-        if not weld_ends(out):
+        if not weld_ends(out, edge):
             break
     for _ in range(3):  # the welds' height changes, spread along the whole ramp (through its forks too) ...
         for label, a in out.items():
             if label.endswith(("Freeways", "Highways")):
                 settle_grades(a)
-        if not weld_ends(out):  # ... and any end whose road that moved, put back on it
+        if not weld_ends(out, edge):  # ... and any end whose road that moved, put back on it
             break
     for _ in range(4):  # (a ramp cut back in the last of those passes still has its new end to land)
-        if not weld_ends(out):
+        if not weld_ends(out, edge):
             break
+    for label, a in out.items():  # a last piece under half a metre long (an end welded onto the point before it) goes
+        if label.endswith(("Freeways", "Highways")):
+            by = {p["i"]: p for p in a["points"]}
+            deg: dict = {}
+            for s in a["segments"]:
+                for i in (s["a"], s["b"]):
+                    deg[i] = deg.get(i, 0) + 1
+            for s in list(a["segments"]):
+                pa, pb = by.get(s["a"]), by.get(s["b"])
+                tip = next((q for q in (pa, pb) if q and deg.get(q["i"]) == 1 and not q["mesh"]), None)
+                if pa and pb and tip and math.dist((pa["x"], pa["y"], pa["z"]), (pb["x"], pb["y"], pb["z"])) < 50:
+                    a["segments"].remove(s)
+                    a["points"].remove(tip)
     return out
 
 
@@ -2104,6 +2178,7 @@ WELD_REACH_CM = 2600.0  # an open end this close (in plan) to another road is me
 WELD_GRADE = 0.08  # the end's own road eases to the new height at most this steeply
 WELD_SNAP_CM = 6000.0  # an end that stops short of every road by less than this is brought up to the nearest one
 FREEWAY_LINK_CM = 15000.0  # a freeway that ends this close to a road runs on to it (an urban freeway ending in a field)
+FREEWAY_OUT_CM = 400000.0  # a freeway end no highway took runs on to the map's edge when that is this close
 FREEWAY_REACH_CM = 150000.0  # ... or runs on up to 1.5 km to the nearest road ahead of it
 FREEWAY_MESHES = {ROAD_MESH[k].split("/")[-1] for k in ("6L", "ED")}
 RAMP_MESHES = {ROAD_MESH[k].split("/")[-1] for k in ("ER", "FR")}  # their ends get a connector piece
@@ -2223,7 +2298,7 @@ def own_run(touch: dict, by: dict, i, limit: float = 8000.0) -> set:
     return run
 
 
-def weld_ends(actors: dict) -> int:
+def weld_ends(actors: dict, edge: dict | None = None) -> int:
     """Every open end of a freeway, ramp, frontage road or highway lands on the road it reaches, at that road's
     height. Each actor is laid and graded on its own, so a ramp planned onto a street came out metres above or
     below it: here the end takes the height of the road under it (the one nearest its own level), and its own
@@ -2293,6 +2368,29 @@ def weld_ends(actors: dict) -> int:
                         st.retangent(by, s)
                         prev, nid = nid, nid + 2
                     moved += 1
+                elif edge and edge.get("box") and ss[0]["mesh"].split("/")[-1] in FREEWAY_MESHES:
+                    # no road to reach at all: the freeway runs straight on out of the world, as far as the map's
+                    # edge, at the height over the ground it ended at (over dry land only: no bridge is laid here)
+                    box, gnd, wet = edge["box"], edge["ground"], edge.get("wet")
+                    L0 = math.hypot(p["x"] - o0["x"], p["y"] - o0["y"]) or 1.0
+                    ex, ey = (p["x"] - o0["x"]) / L0, (p["y"] - o0["y"]) / L0
+                    d = min((box[2] - p["x"]) / ex if ex > 1e-6 else (box[0] - p["x"]) / ex if ex < -1e-6 else 1e18,
+                            (box[3] - p["y"]) / ey if ey > 1e-6 else (box[1] - p["y"]) / ey if ey < -1e-6 else 1e18)
+                    n = max(1, round(d / 2000))
+                    line = [(p["x"] + ex * d * k / n, p["y"] + ey * d * k / n) for k in range(1, n + 1)]
+                    if 2000 < d <= FREEWAY_OUT_CM and not (wet and any(wet(x, y) for x, y in line)):
+                        up = p["z"] - (gnd(p["x"], p["y"]) or 0.0)
+                        nid = 1 + max([q["i"] for q in a["points"]] + [s["i"] for s in a["segments"]])
+                        prev = i
+                        for x, y in line:
+                            q = {**p, "i": nid, "x": x, "y": y, "z": (gnd(x, y) or 0.0) + up, "lines": list(p.get("lines") or [])}
+                            s = {**ss[0], "i": nid + 1, "a": prev, "b": nid, "lines": list(ss[0].get("lines") or [])}
+                            a["points"].append(q)
+                            a["segments"].append(s)
+                            by[nid] = q
+                            st.retangent(by, s)
+                            prev, nid = nid, nid + 2
+                        moved += 1
                 continue
             d, nx, ny, level, half, onto, ux, uy = hit
             if ss[0]["mesh"].split("/")[-1] in RAMP_MESHES and onto not in FREEWAY_MESHES | STRUCTURES:
@@ -2529,13 +2627,13 @@ def _demo() -> None:
     # interchanges: a stack rises onto elevated decks, a trumpet puts the loop piece on each highway end
     far = [{"name": "P", "x": -150000, "y": 0, "radius": 30000, "style": "grid", "seed": 3},
            {"name": "Q", "x": 150000, "y": 0, "radius": 30000, "style": "grid", "seed": 4}]
-    stack = generate(far, lambda x, y: 0.0, "/Game/X/Roads", seed=3, opts={"interchange": "stack"})["Highways"]
+    stack = generate(far, lambda x, y: 0.0, "/Game/X/Roads", seed=3, opts={"interchange": "stack", "gate_interchanges": "yes"})["Highways"]
     assert {"SM_Elev_Deck20m", "SM_Elev_Ramp20m"} <= {s["mesh"] for s in stack["segments"]}
     assert "/Game/X/Roads/Elevated/SM_Elev_Deck20m" in st.serialize(stack["points"], stack["segments"])
     # real interchanges, built from our pieces: a bridge over a cross road and loop / slip ramps at each end
     made = {}
     for kind in ("cloverleaf", "trumpet", "diamond"):
-        world = generate(far, lambda x, y: 0.0, "/Game/X/Roads", seed=3, opts={"interchange": kind, "highway": "6L"})
+        world = generate(far, lambda x, y: 0.0, "/Game/X/Roads", seed=3, opts={"interchange": kind, "highway": "6L", "gate_interchanges": "yes"})
         hw = world["Highways"]
         meshes = [s["mesh"] for s in hw["segments"]]
         made[kind] = hw
@@ -2552,7 +2650,7 @@ def _demo() -> None:
             assert any(s["mesh"] == "SM_Road_FourLane_Straight10m" for s in city["segments"]), (kind, c["name"])
     # several highways in one world (each one's interchange adds city streets before the next is routed)
     three = far + [{"name": "R", "x": 0, "y": 250000, "radius": 30000, "style": "mixed", "seed": 5}]
-    multi = generate(three, lambda x, y: 0.0, "/Game/X/Roads", seed=3, opts={"interchange": "cloverleaf", "highway": "6L"})
+    multi = generate(three, lambda x, y: 0.0, "/Game/X/Roads", seed=3, opts={"interchange": "cloverleaf", "highway": "6L", "gate_interchanges": "yes"})
     assert weld_ends(multi) == 0, "every ramp and highway end already sits on the road it reaches"
     ends = [p["mesh"] for a in multi.values() for p in a["points"] if p["mesh"].startswith("SM_Road_Ramp")]
     assert {"SM_Road_RampFlare15m", "SM_Road_RampGore30m"} <= set(ends), ("ramp ends get their connectors", set(ends))

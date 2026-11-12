@@ -1473,6 +1473,15 @@ def register(api) -> None:
             # nothing on or under a freeway, a ramp or a highway (lots are cut before those are laid)
             fast = [load_actor(nid, a)[1:] for a, h in actor_docs(nid).items()
                     if str(h.get("label") or "").endswith(("Freeways", "Highways"))]
+            # the land inside an interchange's loops is planted, never built on: trees there, off every road
+            groves = pl.interchange_groves(fast, ground, terrain.get("sea"))
+            pl.clear_of(groves, pl.road_samples(actors, 400.0), 400.0)
+            blds = [(p[0], p[1], 50.0 * max(p[7], p[8]) + 400) for v in placed.values() if v.get("kind") == "buildings"
+                    for p in v.get("points") or [] if len(p) > 8]
+            for g in groves.values():  # and none in a building at the interchange's edge
+                g["points"] = [t for t in g["points"] if not any(abs(t[0] - x) < r and abs(t[1] - y) < r for x, y, r in blds)]
+                g["count"] = g["shown"] = len(g["points"])
+            placed.update(groves)
             pl.clear_of(placed, pl.road_samples(fast, 400.0))
             # waterfront structures (piers, marinas, quays, beaches, ports, stilt / floating homes) + bridge pylons
             placed.update(waterfront.layers(cities, (data.get(f"net.{nid}.water") or {}).get("towers")))
@@ -1727,12 +1736,15 @@ def register(api) -> None:
                         vl = math.hypot(vx, vy)
                         if vl < 300 or abs(ux * vx + uy * vy) / (ul * vl) < 0.94:
                             continue
-                        t = max(0.0, min(1.0, ((mx - c["x"]) * vx + (my - c["y"]) * vy) / (vl * vl)))
+                        t = ((mx - c["x"]) * vx + (my - c["y"]) * vy) / (vl * vl)
+                        if not 0.0 <= t <= 1.0:
+                            continue  # beyond its end: the next piece of the same line, not one laid along it
                         off = math.hypot(mx - c["x"] - vx * t, my - c["y"] - vy * t)
                         if off < 0.6 * (half_of.get(m1, 500.0) + half_of.get(m2, 500.0)):
                             dz = mz - (c["z"] + (d["z"] - c["z"]) * t)
                             lap.append(("in" if abs(dz) < 300 else "over", round(off), round(mx), round(my), round(dz),
-                                        f"{l1} {m1}", f"{l2} {m2}"))
+                                        f"{l1} {m1}", f"{l2} {m2}",
+                                        [[q["i"], round(q["x"]), round(q["y"]), round(q["z"])] for q in (a, b, c, d)]))
         # a freeway or ramp nobody could drive: a piece steeper than 15 %, shorter than 3 m, or a bend sharper than
         # 60 degrees at one point (an end pulled onto its road with too little ramp left to get there)
         shape = []
@@ -1766,7 +1778,8 @@ def register(api) -> None:
             pairs[key] = pairs.get(key, 0) + 1
         return {"laid_along": {"in": sum(1 for r in lap if r[0] == "in"), "over": sum(1 for r in lap if r[0] == "over"),
                                "by_actors": pairs, "worst": sorted(lap, key=lambda r: (r[0] != "in", r[1]))[:12],
-                               "row": "in | over, cm between their middles, x, y, cm above the other, piece, piece"},
+                               "row": "in | over, cm between their middles, x, y, cm above the other, piece, piece, "
+                                      "the two pieces' end points [index, x, y, z]"},
                 "shape": {k: sum(1 for r in shape if r[0] == k) for k in ("steep", "short", "kinked")},
                 "shape_worst": sorted((r for r in shape if r[0] == "steep"), key=lambda r: -r[1])[:10]
                 + sorted((r for r in shape if r[0] != "steep"), key=lambda r: -r[1])[:6],
