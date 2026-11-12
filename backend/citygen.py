@@ -485,6 +485,8 @@ def grade_to_roads(ter: dict, actors: dict, locked: set | None = None) -> dict:
                         continue
                     new = (w, -d, pa["z"] + (pb["z"] - pa["z"]) * t, w, d <= deck and "Water_" not in mesh)
                     cur = best.get((j, i))
+                    # (measured on a 277 km world: letting the nearest point decide between pieces of one road put
+                    # the ground over 3x more street points; the lower deck always, for one road or two)
                     if cur is None:
                         take = True
                     elif fine and new[4] and cur[4] and abs(new[2] - cur[2]) > 30:

@@ -1496,38 +1496,80 @@ def register(api) -> None:
 
     def road_fit(ground, actors: list, terrain: dict) -> dict:
         """Every street point against the ground the buildings were fitted to: how many the ground covers (over)
-        or leaves in the air (under) by more than 30 cm. Bridges, viaducts, decks 20 m up and points over water
-        stand free."""
+        or leaves in the air (under) by more than 30 cm, and why. Bridges, viaducts, decks 20 m up and points
+        over water stand free. A point off beside the water or beside a road at another height is a place the
+        landscape cannot follow both (a wall or a bridge stands there); `unexplained` are the real misses."""
         n = over = under = 0
         worst = 0.0
         sea, raw = terrain.get("sea"), st.grid_sampler(terrain)
         bad: dict = {}
         worst_rows: list = []
+        every: list = []  # every meshed segment, structures too: (ax, ay, az, bx, by, bz)
+        grades: list = []  # every street segment's slope: a street steeper than 15 % is a kink the ground can't follow
+        checks: list = []
         for pts, segs in actors:
             by = {p["i"]: p for p in pts}
             ids: dict = {}
             for s in segs:
                 mesh = (s.get("mesh") or "").split("/")[-1]
-                if mesh and mesh not in cg.STRUCTURES and "Water_" not in mesh:
+                a, b = by.get(s["a"]), by.get(s["b"])
+                if not mesh or not a or not b:
+                    continue
+                every.append((a["x"], a["y"], a["z"], b["x"], b["y"], b["z"]))
+                if mesh not in cg.STRUCTURES and "Water_" not in mesh:
+                    run = math.hypot(b["x"] - a["x"], b["y"] - a["y"])
+                    if run > 300:
+                        grades.append((abs(b["z"] - a["z"]) / run, round(a["x"]), round(a["y"]), round(run), mesh))
                     ids.setdefault(s["a"], mesh)
                     ids.setdefault(s["b"], mesh)
-            for i, mesh in ids.items():
-                p = by.get(i)
-                gap = ground(p["x"], p["y"]) - p["z"] if p else -1e9
-                if gap < -2000 or (sea is not None and (raw(p["x"], p["y"]) or 0.0) < sea):
-                    continue
-                n += 1
-                over += gap > 30
-                under += gap < -30
-                worst = max(worst, abs(gap))
-                if abs(gap) > 30:
-                    bad[mesh] = bad.get(mesh, 0) + 1
-                    worst_rows.append((round(gap), round(p["x"]), round(p["y"]), round(p["z"]), mesh))
+            checks += [(by[i], mesh) for i, mesh in ids.items()]
+        ring = [(math.cos(k * math.pi / 4) * r, math.sin(k * math.pi / 4) * r) for r in (1500.0, 3000.0) for k in range(8)]
+
+        def why(x, y, z):
+            if sea is not None and any((raw(x + dx, y + dy) or 0.0) < sea for dx, dy in ring):
+                return "at the water's edge"
+            for ax, ay, az, bx, by_, bz in every:
+                ux, uy = bx - ax, by_ - ay
+                t = max(0.0, min(1.0, ((x - ax) * ux + (y - ay) * uy) / (ux * ux + uy * uy or 1.0)))
+                if math.hypot(x - ax - ux * t, y - ay - uy * t) < 4000 and abs(az + (bz - az) * t - z) > 150:
+                    return "beside or across a road at another height"
+            return "unexplained"
+        reasons: dict = {}
+        for p, mesh in checks:
+            gap = ground(p["x"], p["y"]) - p["z"]
+            if gap < -2000 or (sea is not None and (raw(p["x"], p["y"]) or 0.0) < sea):
+                continue
+            n += 1
+            over += gap > 30
+            under += gap < -30
+            worst = max(worst, abs(gap))
+            if abs(gap) > 30:
+                bad[mesh] = bad.get(mesh, 0) + 1
+                r = why(p["x"], p["y"], p["z"])
+                reasons[r] = reasons.get(r, 0) + 1
+                worst_rows.append((round(gap), round(p["x"]), round(p["y"]), round(p["z"]), mesh, r))
         worst_rows.sort(key=lambda r: -abs(r[0]))
+        loose = [r for r in worst_rows if r[5] == "unexplained"]
+        # a junction's mesh is flat at its node: every arm must arrive at that height, or the road steps at its mouth
+        steps = []
+        for pts, segs in actors:
+            by = {p["i"]: p for p in pts}
+            for node, arms, _a in st.pending_nodes(pts, segs, True):
+                if node in by:
+                    steps.append(max([abs(by[m]["z"] - by[node]["z"]) for m in arms if m in by] or [0.0]))
+        junction_steps = {"checked": len(steps), "stepped": sum(1 for s in steps if s > 10), "over_50cm": sum(1 for s in steps if s > 50),
+                          "worst_cm": round(max(steps or [0.0]))}
         return {"checked": n, "ground_over_road": over, "road_in_air": under, "worst_cm": round(worst), "by_mesh": bad,
+                "why": reasons, "unexplained": len(loose), "junction_steps": junction_steps,
+                "steep": {"segments": len(grades), "over_15pct": sum(1 for g in grades if g[0] > 0.15),
+                          "over_30pct": sum(1 for g in grades if g[0] > 0.30),
+                          "worst": [(round(g[0] * 100), *g[1:]) for g in sorted(grades, reverse=True)[:6]],
+                          "row": "grade %, x, y, run cm, mesh"},
+                "unexplained_over": sum(1 for r in loose if r[0] > 0), "unexplained_worst_cm": abs(loose[0][0]) if loose else 0,
                 "over_1m": sum(1 for r in worst_rows if r[0] > 100), "in_air_1m": sum(1 for r in worst_rows if r[0] < -100),
-                "worst_over": [r for r in worst_rows if r[0] > 0][:8], "worst_in_air": [r for r in worst_rows if r[0] < 0][:8],
-                "row": "ground minus road cm, x, y, road z, mesh"}
+                "worst_unexplained": loose[:10],
+                "worst_over": [r for r in worst_rows if r[0] > 0][:6], "worst_in_air": [r for r in worst_rows if r[0] < 0][:6],
+                "row": "ground minus road cm, x, y, road z, mesh, why"}
 
     def ground_fit(net_id: str = "", heights: bool = True) -> dict:
         """The ground as the city leaves it: every lot cut level, every road cut and filled in, on a grid the
