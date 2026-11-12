@@ -1385,9 +1385,10 @@ def leave_out_deep(placed: dict, max_m: float = FOUND_MAX_M) -> tuple:
     the cut ground): nobody builds where the land drops more than a storey under the floor, and a wall that tall
     reads as a cliff of concrete. Parks stay (planted ground, no slab), and so does a site the planner chose: a
     city keeps its one hospital even on a steep lot.
-    Returns (footprints taken out [(x, y, yaw, width_m, depth_m)] for plant_lots, planned sites kept though deep)."""
-    gone, kept_sites = [], 0
-    for v in placed.values():
+    Returns (footprints taken out [(x, y, yaw, width_m, depth_m)] for plant_lots, planned sites kept though deep,
+    {layer: how many it lost})."""
+    gone, kept_sites, lost = [], 0, {}
+    for name, v in placed.items():
         if v.get("kind") != "buildings" or v.get("role") == "park":
             continue
         keep = []
@@ -1400,9 +1401,10 @@ def leave_out_deep(placed: dict, max_m: float = FOUND_MAX_M) -> tuple:
                     continue
             keep.append(p)
         if len(keep) != len(v["points"]):
-            v["count"] = max(0, v.get("count", len(v["points"])) - (len(v["points"]) - len(keep)))
+            lost[name] = len(v["points"]) - len(keep)
+            v["count"] = max(0, v.get("count", len(v["points"])) - lost[name])
             v["points"], v["shown"] = keep, len(keep)
-    return gone, kept_sites
+    return gone, kept_sites, lost
 
 
 def plant_lots(placed: dict, lots: list, sample_z, sea=None) -> int:
@@ -1542,8 +1544,9 @@ def _demo() -> None:
                 [0, 0, 0, 0, 1, 7, 0, 16, 24, 4.5, [], []], [5000, 0, 0, 0, 1, 7, 0, 12, 12, 4.0, [], []],
                 [9000, 0, 0, 0, 1, 7, 0, 12, 12, 9.0, [], [], "hospital"]]},
             "Parks": {"kind": "buildings", "role": "park", "count": 1, "shown": 1, "points": [[0, 9000, 0, 0, 1, 0, 0, 40, 40, 12.0, [], []]]}}
-    out_lots, sites = leave_out_deep(deep)
-    assert out_lots == [(0, 0, 0, 16, 24)] and sites == 1 and deep["Houses"]["count"] == 2 and len(deep["Parks"]["points"]) == 1
+    out_lots, sites, lost = leave_out_deep(deep)
+    assert out_lots == [(0, 0, 0, 16, 24)] and sites == 1 and lost == {"Houses": 1} and deep["Houses"]["count"] == 2
+    assert len(deep["Parks"]["points"]) == 1
     assert plant_lots(deep, out_lots, lambda x, y: 50.0) == 6 and deep["Infill trees"]["count"] == 6
     assert all(abs(t[0]) <= 1350 and abs(t[1]) <= 950 and t[2] == 50 for t in deep["Infill trees"]["points"])
     assert plant_lots(deep, out_lots, lambda x, y: -50.0, sea=0.0) == 0, "no tree in the water"

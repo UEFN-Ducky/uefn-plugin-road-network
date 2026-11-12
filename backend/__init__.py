@@ -1526,10 +1526,12 @@ def register(api) -> None:
             # Nothing is built where the land falls more than pl.FOUND_MAX_M away under it: those buildings go, the
             # ground is cut again without their pads (which moves their neighbours' a little, so a few rounds) and
             # their lots are planted. Then the kerbs and fences that were theirs go too.
-            lots, sites = [], 0
+            lots, sites, lost = [], 0, {}
             for last in (False, False, False, True) if fit else ():
-                gone, sites = pl.leave_out_deep(placed)
+                gone, sites, went = pl.leave_out_deep(placed)
                 lots += gone
+                for name, n in went.items():
+                    lost[name] = lost.get(name, 0) + n
                 if not gone:
                     break
                 if last:  # the fourth round's few go without another cut: their pads stay as level ground
@@ -1537,7 +1539,8 @@ def register(api) -> None:
                 else:
                     fit_ter, fit = cut_and_fit()
             if fit:
-                fit["left_out"] = {"deeper_than_m": pl.FOUND_MAX_M, "buildings": len(lots), "planned_sites_kept": sites}
+                fit["left_out"] = {"deeper_than_m": pl.FOUND_MAX_M, "buildings": len(lots), "planned_sites_kept": sites,
+                                   "by_layer": lost}
             if lots:
                 fit["left_out"]["trees"] = pl.plant_lots(placed, lots, fit["ground"], terrain.get("sea"))
                 if "Driveway aprons" in placed:
