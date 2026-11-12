@@ -156,9 +156,14 @@ def landscape_tabs(user32, left: int, top: int):
     return x0, x1, max(0, min(2, int((centre - x0) / ((x1 - x0) / 3))))
 
 
+def panel_width(tabs) -> int:
+    """The Landscape panel's width: its tab strip is centred in it, so the panel ends at strip start + strip end."""
+    return tabs[0] + tabs[1]
+
+
 def splines_spot(tabs) -> tuple:
-    """Window-relative centre of the Splines button for a panel whose tab strip ends at tabs[1]."""
-    cols = max(1, int((tabs[1] - 13) // TOOL_DX))
+    """Window-relative centre of the Splines button for a panel whose tab strip runs tabs[0]..tabs[1]."""
+    cols = max(1, int((panel_width(tabs) - 13) // TOOL_DX))
     return TOOL_X0 + TOOL_DX * (SPLINES_INDEX % cols), TOOL_Y0 + TOOL_DY * (SPLINES_INDEX // cols)
 
 
@@ -224,7 +229,7 @@ def _paste(user32, toggle_splines: bool) -> dict:
     tabs = landscape_tabs(user32, left, top)
     if tabs is None or tabs[2] != 0:  # last look before Ctrl+V: only ever paste on the Manage tab
         return {"ok": False, "error": "The Landscape panel isn't on Manage; nothing was pasted."}
-    vx, vy = tabs[1] + VIEWPORT_PAST_PANEL[0], VIEWPORT_PAST_PANEL[1]  # the viewport starts where the panel ends
+    vx, vy = panel_width(tabs) + VIEWPORT_PAST_PANEL[0], VIEWPORT_PAST_PANEL[1]  # the viewport starts where the panel ends
     user32.SetCursorPos(left + vx - 10, top + vy)
     time.sleep(0.15)
     user32.SetCursorPos(left + vx, top + vy)
@@ -238,4 +243,5 @@ if __name__ == "__main__":
     assert splines_spot((10, 150, 0)) == (88, 309), splines_spot((10, 150, 0))
     assert splines_spot((10, 460, 0)) == (388, 180)
     assert splines_spot((10, 380, 0)) == (38, 223)
+    assert splines_spot((155, 345, 0)) == (388, 180), "a 500 px panel with its tabs centred: all 8 in row 1"
     print("uefn_input ok")
