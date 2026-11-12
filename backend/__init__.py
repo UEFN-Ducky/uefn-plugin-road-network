@@ -1702,7 +1702,38 @@ def register(api) -> None:
                     if abs(h[0] - h[1]) > 100:
                         jumps.append((round(abs(h[0] - h[1]) * 2), round(p["x"]), round(p["y"]), label,
                                       ss[0]["mesh"].split("/")[-1], ss[1]["mesh"].split("/")[-1]))
-        return {"ends": ends, "at_map_edge": edge, "far": sum(1 for b in bad if b[0] == "far"),
+        # a freeway or ramp nobody could drive: a piece steeper than 15 %, shorter than 3 m, or a bend sharper than
+        # 60 degrees at one point (an end pulled onto its road with too little ramp left to get there)
+        shape = []
+        for label, by, segs in roads:
+            if not label.endswith(("Freeways", "Highways")):
+                continue
+            at = {}
+            for s in segs:
+                a, b = by.get(s["a"]), by.get(s["b"])
+                if not s.get("mesh") or not a or not b:
+                    continue
+                run = math.hypot(b["x"] - a["x"], b["y"] - a["y"])
+                grade = abs(b["z"] - a["z"]) / max(run, 1.0)
+                mesh = s["mesh"].split("/")[-1]
+                if grade > cg.SETTLE_GRADE + 0.005 or run < 300:
+                    shape.append(("steep" if grade > cg.SETTLE_GRADE + 0.005 else "short", round(grade * 100), round(a["x"]), round(a["y"]),
+                                  round(a["z"]), round(b["z"]), round(run), label, mesh, a.get("mesh") or b.get("mesh") or ""))
+                for p, q in ((a, b), (b, a)):
+                    at.setdefault(p["i"], []).append((q, run, mesh))
+            for i, legs in at.items():
+                if len(legs) == 2 and min(legs[0][1], legs[1][1]) > 1:
+                    p, (q0, r0, mesh), (q1, r1, _m) = by[i], *legs
+                    cos = ((p["x"] - q0["x"]) * (q1["x"] - p["x"]) + (p["y"] - q0["y"]) * (q1["y"] - p["y"])) / (r0 * r1)
+                    turn = math.degrees(math.acos(max(-1.0, min(1.0, cos))))
+                    if turn > 60:  # (a loop ramp turns ~50 degrees a point by design: the spline rounds it)
+                        shape.append(("kinked", round(turn), round(p["x"]), round(p["y"]), round(p["z"]), round(p["z"]),
+                                      round(min(r0, r1)), label, mesh, p.get("mesh") or ""))
+        return {"shape": {k: sum(1 for r in shape if r[0] == k) for k in ("steep", "short", "kinked")},
+                "shape_worst": sorted((r for r in shape if r[0] == "steep"), key=lambda r: -r[1])[:10]
+                + sorted((r for r in shape if r[0] != "steep"), key=lambda r: -r[1])[:6],
+                "shape_row": "steep (grade %) | short | kinked (degrees), x, y, z, z at the other end, run cm, actor, mesh, connector",
+                "ends": ends, "at_map_edge": edge, "far": sum(1 for b in bad if b[0] == "far"),
                 "width_jumps": len(jumps), "width_jump_at": sorted(jumps, reverse=True)[:8],
                 "width_row": "cm wider, x, y, actor, mesh, mesh",
                 "stepped": sum(1 for b in bad if b[0] == "stepped"), "worst": sorted(bad, key=lambda b: -abs(b[4]))[:12],

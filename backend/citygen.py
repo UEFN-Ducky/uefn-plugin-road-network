@@ -2064,6 +2064,12 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
     for _ in range(8):  # again while anything moved: an end may land on a road whose own end just moved
         if not weld_ends(out):
             break
+    for _ in range(3):  # the welds' height changes, spread along the whole ramp (through its forks too) ...
+        for label, a in out.items():
+            if label.endswith(("Freeways", "Highways")):
+                settle_grades(a)
+        if not weld_ends(out):  # ... and any end whose road that moved, put back on it
+            break
     return out
 
 
@@ -2076,6 +2082,52 @@ RAMP_MESHES = {ROAD_MESH[k].split("/")[-1] for k in ("ER", "FR")}  # their ends 
 # a connector's half width at the ramp's end (road_profiles.connector: the gore widens to 10 m, the flare to 10.5 m)
 CONNECTOR_HALF = {"SM_Road_RampGore30m": 1000.0, "SM_Road_RampFlare15m": 1050.0}
 FLARE_CM = 1500.0  # the flare runs this far on past the ramp's end, to the street's kerb line
+
+
+SETTLE_GRADE = 0.15  # steeper than anything planned (an overpass's approach climbs at up to ~13 %): only faults
+
+
+def settle_grades(a: dict, grade: float = SETTLE_GRADE, rounds: int = 400) -> int:
+    """No piece of a freeway or ramp steeper than `grade`: wherever one is, its two ends move toward each other's
+    height, again and again, so a step is shared out along the road and on through its forks (weld_ends eased an
+    end's road only as far as the first fork: a ramp 30 m under the deck it joins climbed it in its last 10 m,
+    Nov 12 2026). Welded ends (they carry their connector), open ends and junction mouths stay where they are;
+    between two of those too close for the grade, the slope comes out even. Returns the points moved."""
+    by = {p["i"]: p for p in a["points"]}
+    segs = [s for s in a["segments"] if s["a"] in by and s["b"] in by]
+    count: dict = {}
+    fixed = {p["i"] for p in a["points"] if p.get("mesh")}
+    for s in segs:
+        for i in (s["a"], s["b"]):
+            count[i] = count.get(i, 0) + 1
+            if not s["mesh"]:
+                fixed.add(i)
+    fixed |= {i for i, n in count.items() if n == 1}
+    runs = [(s["a"], s["b"], grade * math.hypot(by[s["b"]]["x"] - by[s["a"]]["x"], by[s["b"]]["y"] - by[s["a"]]["y"]))
+            for s in segs if s["mesh"]]
+    moved: set = set()
+    for _ in range(rounds):
+        worst = 0.0
+        for i, j, lim in runs:
+            dz = by[j]["z"] - by[i]["z"]
+            over = abs(dz) - lim
+            free = (i not in fixed) + (j not in fixed)
+            if over <= 0 or not free:
+                continue
+            worst = max(worst, over)
+            step = math.copysign(over / free, dz)
+            if i not in fixed:
+                by[i]["z"] += step
+                moved.add(i)
+            if j not in fixed:
+                by[j]["z"] -= step
+                moved.add(j)
+        if worst < 2:
+            break
+    for s in segs:
+        if s["a"] in moved or s["b"] in moved:
+            st.retangent(by, s)
+    return len(moved)
 
 
 def _connector(p: dict, yaw: float, seg: dict, name: str) -> None:
@@ -2150,7 +2202,9 @@ def weld_ends(actors: dict) -> int:
                         best = hit
                 elif d <= WELD_SNAP_CM and (near is None or d < near[0]):
                     near = hit
-                elif d <= FREEWAY_LINK_CM and (link is None or d < link[0]):
+                # (another actor's road only: past own_run's 80 m a freeway's own deck passed as the road to link
+                # to, and it was folded back over itself for 20 m)
+                elif d <= FREEWAY_LINK_CM and lab2 != label and (link is None or d < link[0]):
                     link = hit
             hit = best or near
             if not hit:
@@ -2444,6 +2498,18 @@ def _demo() -> None:
                                 "segments": [_segment(2, 0, 1, "ED", "/G", lifted=True), _segment(5, 3, 4, "2L", "/G")]}},
                          lambda x, y: 0.0)[1]
     assert len(under) == 3 and all(abs(c[0] - 1500) > 525 for c in under), ("no pier in the street under the deck", under)
+    # a ramp welded 30 m up with a fork 10 m back: the climb is shared out along both branches, none left a cliff
+    yp = [_point(0, 0, 0, 3000, 0, 650, lifted=True), _point(1, 1000, 0, 0, 0, 650, lifted=True)] + \
+        [_point(2 + k, 3000 + 2000 * k, sd * 500 * (k + 1), 0, 0, 650, lifted=True) for sd in (1, -1) for k in range(30)][:60]
+    for n, p in enumerate(yp):
+        p["i"] = n
+    yp[0]["mesh"] = "SM_Road_RampGore30m"
+    ys = [_segment(100, 0, 1, "ER", "/G", lifted=True)] + [_segment(101 + n, 1 if n in (2, 32) else n - 1, n, "ER", "/G", lifted=True) for n in range(2, 62)]
+    ya = {"points": yp, "segments": ys}
+    assert settle_grades(ya) > 10
+    yb = {p["i"]: p for p in yp}
+    steep = max(abs(yb[s["a"]]["z"] - yb[s["b"]]["z"]) / math.hypot(yb[s["a"]]["x"] - yb[s["b"]]["x"], yb[s["a"]]["y"] - yb[s["b"]]["y"]) for s in ys)
+    assert steep < SETTLE_GRADE + 0.005 and yp[0]["z"] == 3000 and yp[31]["z"] == 0 and yp[61]["z"] == 0, (steep, yp[1]["z"])
     ab = bridge_abutments({"x": {"points": [_point(0, 0, 0, 0, 0, 525), _point(1, 5000, 0, 100, 0, 925, lifted=True), _point(2, 9000, 0, 900, 0, 925, lifted=True)],
                                  "segments": [_segment(3, 0, 1, "2S", "/G"), _segment(4, 1, 2, "BR", "/G", lifted=True)]}})
     assert ab == [[5000, 0, 100 - 150 - 250, 0.0, 1.0, 19.5, 1.0]], ("one abutment, where the street becomes the bridge", ab)
