@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import json
 
-MAX_POINTS = 6000  # instances per batch: bounds what one editor call holds before UEFN can free it
-MAX_TILES = 8  # sparse tiles ride together up to this many
+# Measured on a 438-tile city: a batch of 8 tiles grew UEFN by 0.3 GB at most, so batches are three times that
+# now. Still bounded: one call for a whole city is what took UEFN past 100 GB.
+MAX_POINTS = 20000  # instances per batch: bounds what one editor call holds before UEFN can free it
+MAX_TILES = 24  # sparse tiles ride together up to this many
 CHUNK = 1500  # points per Create Points node: keeps each node's settings a sensible size
 
 _SCRIPT = '''import json
@@ -116,8 +118,9 @@ def _demo() -> None:
                 "graph_folder": "/G", "description": "it's a \"tile\"", "label": "City " + key, "centre": [0, 0],
                 "half": 25000.0, "meshes": [{"mesh": "/K/SM_A.SM_A", "title": "SM_A", "selector": {"meshes": ["/K/SM_A.SM_A"]},
                                              "rows": [[i, 2, 3, 90.0, 1, 1, 1] for i in range(n)]}]}
-    assert [len(b) for b in batches([job(str(i), 10) for i in range(20)])] == [8, 8, 4]
-    assert [len(b) for b in batches([job("a", 5000), job("b", 5000), job("c", 9000), job("d", 1)])] == [1, 1, 1, 1]
+    assert [len(b) for b in batches([job(str(i), 10) for i in range(20)], 6000, 8)] == [8, 8, 4]
+    assert [len(b) for b in batches([job("a", 5000), job("b", 5000), job("c", 9000), job("d", 1)], 6000, 8)] == [1, 1, 1, 1]
+    assert [len(b) for b in batches([job(str(i), 10) for i in range(50)])] == [24, 24, 2]
     calls = []
 
     async def execute_tool(name, args):

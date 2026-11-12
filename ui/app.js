@@ -1836,7 +1836,13 @@ window.addEventListener("message", (ev) => {
   }
   if (e.type === "road_network_changed" && (!e.id || e.id === state.net)) {
     if (e.what === "progress") {  // generate's stages: the loading card follows them
-      if (loading.title) busy(loading.title, { text: e.text, step: (e.step || 0) + 1, of: (e.of || 1) + 1 });
+      if (e.done) {  // a background job (a city push started by an agent) finished: its own card goes away
+        if (loading.job) { loading.job = false; busy(""); reloadSoon("layers"); }
+      } else if (e.title && (!loading.title || loading.job)) {
+        // a job nobody started from this panel still shows its bar here: never a silent half hour
+        loading.job = true;
+        busy(e.title, { text: e.text, step: e.step || 0, of: e.of || 0 });
+      } else if (loading.title) busy(loading.title, { text: e.text, step: (e.step || 0) + 1, of: (e.of || 1) + 1 });
     } else if (e.what === "city") {
       // a city was added or removed: the regenerate that follows reloads everything
     } else if (state.generating || edits.running) {

@@ -626,7 +626,10 @@ def register(api) -> None:
             for k in range(0, len(todo), JUNCTIONS_PER_CALL):
                 batch = todo[k:k + JUNCTIONS_PER_CALL]
                 out = listener("road_network_build_junctions", {"folder": folder, "pieces": [
-                    {"name": f"{prefix}{node}", "arms": angles, "half": half(arms)}
+                    {"name": f"{prefix}{node}", "arms": angles, "half": half(arms),
+                     # each mouth as wide as its own road; runways and taxiways get no crossings painted
+                     "halves": [by_i[m]["w"] for m in arms] if gen else None,
+                     "paint": not (aslug.endswith("airport"))}
                     for node, arms, angles in batch]}, timeout=600)
                 for node, arms, _ in batch:
                     dists = (out.get("mouths") or {}).get(f"{prefix}{node}")
@@ -1702,6 +1705,7 @@ def register(api) -> None:
                 last["stop"] = True
             return {"ok": True, "running": True, "stopping": last["stop"], "done": last["done"],
                     "total": last["total"], "seconds": round(time.time() - last["started"]),
+                    "minutes_left": round(last.get("eta_s", 0) / 60, 1),
                     "uefn_gb": uefn_memory.uefn_gb()}
         if stop:
             return {"ok": True, "running": False, "last_build": (last or {}).get("result")}
@@ -1752,7 +1756,7 @@ def register(api) -> None:
                 # (minutes); a build that only needs meshes it already has overrides for skips that.
                 cache = data.get(f"net.{nid}.mats") or {}
                 need = {m for k in build for m in new[k]["meshes"] if m.startswith(f"{root}/WorldGen/")}
-                if not force and need and need <= set(cache.get("overrides") or {}):
+                if need and need <= set(cache.get("overrides") or {}):  # force rebuilds tiles, not materials
                     mats = cache
                 else:
                     mats = kit_materials(nid)
@@ -1771,20 +1775,52 @@ def register(api) -> None:
                 return {"ok": False, "error": f"These layer meshes aren't in the project: {own_report['missing'][:10]}. "
                                               f"Fix the layer's meshes (Content Browser path) and push again."}
             legacy_removed = legacy_pcg_cleanup(nid, root, name, tag) if not state["tiles"] else []
+            # collision: every placed mesh blocks players except leaves and flat paint (kit_bake.NO_COLLISION).
+            # A mesh with no collision shapes of its own gets complex-as-simple, or its instances block nothing.
+            used = sorted({m for k in build for m in new[k]["meshes"]})
+            solid = [m for m in used if kit_bake.blocks(m)]
+            made_exact = []
+            for k in range(0, len(solid), 20):
+                for m in listener_long("road_network_collision_ready", {"meshes": solid[k:k + 20]}).get("need") or []:
+                    epic("EditorToolset.StaticMeshToolset", "SetCollisionComplexity",
+                         {"mesh": {"refPath": m}, "complexity": "CTF_UseComplexAsSimple"})
+                    made_exact.append(m.split(".")[0])
+            for k in range(0, len(made_exact), SAVE_BATCH):
+                listener_long("road_network_save_assets", {"paths": made_exact[k:k + SAVE_BATCH]})
+            collision = {"blocking_meshes": len(solid), "made_exact": [m.rsplit("/", 1)[-1] for m in made_exact],
+                         "no_collision": [m.rsplit(".", 1)[-1] for m in used if not kit_bake.blocks(m)],
+                         "note": "Every placed mesh blocks players except no_collision (leaves, flat paint). made_exact "
+                                 "had no collision shapes, so they collide by their own triangles now. Playtest it."}
+
+            # Deleting a graph asset costs UEFN ~6 s, and a rebuilt tile had to delete its old one first: that was
+            # most of a build. A build that redoes every tile writes into a fresh folder instead and the old
+            # folder goes in ONE delete at the end; only a partial build still frees names tile by tile.
+            full = bool(build) and not same
+            if full:
+                state["gen"] = int(state.get("gen") or 0) + 1
+                state["folder"] = f"CityPCG_G{state['gen']}"
+            folder_name = state.get("folder") or "CityPCG"
+            old_folders = {(t.get("graph_path") or "").rsplit("/", 1)[0] for t in state["tiles"].values()}
+            old_folders |= {f"{root}/WorldGen/CityPCG"}
 
             def tile_job(key: str, tile: dict | None) -> dict:
                 old = state["tiles"].get(key) or {}
-                graph_path = f"{root}/WorldGen/CityPCG/PCG_{tag}_T{key.replace('-', 'm')}"
+                graph_path = f"{root}/WorldGen/{folder_name}/PCG_{tag}_T{key.replace('-', 'm')}"
                 meshes = []
                 for mesh, rows in sorted((tile or {}).get("meshes", {}).items()):
-                    selector = {"meshes": [mesh]}
+                    # PCG's spawner places instances with NO collision unless told: say it per mesh
+                    # (both fields: the profile name alone left the instances at No Collision)
+                    solid_ = kit_bake.blocks(mesh)
+                    desc = {"bodyInstance": {"collisionProfileName": "BlockAll" if solid_ else "NoCollision",
+                                             "collisionEnabled": "QueryAndPhysics" if solid_ else "NoCollision"}}
                     over = ((mats or {}).get("overrides") or {}).get(mesh)
                     if over and any(over):  # textured MIs as overrides: the kit mesh itself is never edited
-                        selector["templateDescriptor"] = {"descriptor": {"overrideMaterials": [m or None for m in over]}}
+                        desc["overrideMaterials"] = [m or None for m in over]
+                    selector = {"meshes": [mesh], "templateDescriptor": {"descriptor": desc}}
                     meshes.append({"mesh": mesh, "title": mesh.rsplit(".", 1)[1], "selector": selector, "rows": rows})
                 size = (tile or {}).get("size", kit_bake.TILE_CM)
                 return {"key": key, "meshes": meshes, "graph_path": graph_path, "find": f"City Builder {name}",
-                        "drop_graphs": sorted({g for g in (old.get("graph_path"), graph_path) if g}),
+                        "drop_graphs": [] if full else sorted({g for g in (old.get("graph_path"), graph_path) if g}),
                         "graph_name": graph_path.rsplit("/", 1)[1], "graph_folder": graph_path.rsplit("/", 1)[0],
                         "description": f"City Builder world {name}, tile {key}: the previewed lots in this "
                                        f"{round(size / 100)} m square on our own kit. Rebuilt by road_network_pcg_build.",
@@ -1827,6 +1863,11 @@ def register(api) -> None:
                             done.append(j["key"])
                     data.put(f"net.{nid}.pcg", state)  # after every batch: a stop keeps what was built
                     job["done"] = len(done) + len(gone)
+                    left = (time.time() - job["started"]) / max(1, job["done"]) * (job["total"] - job["done"])
+                    job["eta_s"] = round(left)
+                    push({"what": "progress", "id": nid, "title": "Pushing the city to UEFN", "step": job["done"],
+                          "of": job["total"], "text": f"{job['done']} of {job['total']} tiles, about "
+                                                      f"{max(1, round(left / 60))} min left"})
                     if failed:
                         raise ValueError(failed)
                     uefn_memory.settle(base, slack=2.0, timeout=60)
@@ -1834,10 +1875,21 @@ def register(api) -> None:
                 return {"ok": False, "error": f"Stopped after {len(done)} of {len(build)} tiles: {exc}",
                         "built": done, "note": "Build again: finished tiles are kept and skipped.",
                         "memory": uefn_memory.report(5)}
-            return {"ok": True, "id": nid, "built_tiles": done, "removed_tiles": gone, "unchanged_tiles": len(same),
+            # graph folders no tile uses any more: one delete each (never anything outside WorldGen/CityPCG*)
+            in_use = {(t.get("graph_path") or "").rsplit("/", 1)[0] for t in state["tiles"].values()}
+            cleaned = []
+            for f in sorted(old_folders - in_use):
+                if f.startswith(f"{root}/WorldGen/CityPCG"):
+                    try:
+                        if epic("EditorToolset.AssetToolset", "Exists", {"path": f}).get("returnValue"):
+                            epic("EditorToolset.AssetToolset", "Delete", {"path": f}, timeout=900)
+                            cleaned.append(f.rsplit("/", 1)[1])
+                    except (ConnectionError, RuntimeError, TimeoutError, ValueError):
+                        pass  # left for the next build's clean-up: the city itself is built
+            return {"ok": True, "id": nid, "built_tiles": done, "old_graph_folders_removed": cleaned, "removed_tiles": gone, "unchanged_tiles": len(same),
                     "legacy_removed": legacy_removed, "nodes": nodes, "meshes": len(groups), "built": baked,
                     "no_kit_piece": missing, "messages": messages[:20], "memory": uefn_memory.report(5)["worst"],
-                    "seconds": round(time.time() - job["started"]),
+                    "collision": collision, "seconds": round(time.time() - job["started"]),
                     "own_meshes": {"count": len(own), "materials_fixed": own_report["fixed"],
                                    "materials_locked": own_report["locked"]},
                     "note": "One volume per tile (400 m city tiles, 1.6 km nature tiles), Generate On Demand (the "
@@ -1851,6 +1903,7 @@ def register(api) -> None:
                 job["result"] = {"ok": False, "error": f"The build stopped: {exc}"[:400]}
             finally:
                 job["running"] = False
+                push({"what": "progress", "id": nid, "done": True})
 
         thread = threading.Thread(target=runner, name=f"city-builder-pcg-{nid}", daemon=True)
         thread.start()

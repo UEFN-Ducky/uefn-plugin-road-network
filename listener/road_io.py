@@ -165,19 +165,27 @@ _OWN_DECK_Z = 2.0
 _OWN_UV_CM = 400.0
 
 
-def _junction_geometry(arm_deg: list, half: float = _R1_W, flat: bool = False) -> tuple:
-    """Plain-asphalt junction for arms at these world angles (degrees), as wide as the roads it joins
-    (half: road half width, cm). flat: our own kit's flat deck and planar UVs; otherwise the Fortnite
-    Road1 crown and its texture strip. Returns (verts, uvs, tris, mouth distance per arm in the given order)."""
-    k_w = max(0.5, float(half) / _R1_W)
-    _R1_W_ = _R1_W * k_w
-    profile = [(s * k_w, _OWN_DECK_Z if flat else z) for s, z in _R1_PROFILE]
+_PAINT_Z = 1.0  # painted lines sit this far above the junction deck
+_STOP_LINE = (70.0, 40.0)  # a stop line runs from this far to this far inside an arm's mouth
+_ZEBRA = (420.0, 120.0, 50.0, 110.0)  # crosswalk bars: from / to inside the mouth, bar width, pitch
+
+
+def _junction_geometry(arm_deg: list, half: float = _R1_W, flat: bool = False, halves: list | None = None,
+                       paint: bool = True) -> tuple:
+    """Junction for arms at these world angles (degrees). Each arm's mouth is as wide as ITS road (halves:
+    half width per arm, cm; else `half` for all): a lane meeting a boulevard gets a lane-wide mouth, never
+    the boulevard's. flat: our own kit's flat deck and planar UVs; otherwise the Fortnite Road1 crown and its
+    texture strip. On a flat 3+ way junction every arm also gets a stop line and a zebra crossing (paint).
+    Returns (verts, uvs, tris, mouth distance per arm in the given order, (paint verts, uvs, tris))."""
+    widths = [max(0.5 * _R1_W, float(h)) for h in (halves if halves and len(halves) == len(arm_deg) else [half] * len(arm_deg))]
     edge_z = _OWN_DECK_Z if flat else -2.0
 
     def uv(x, y, u_strip):
         return (x / _OWN_UV_CM, y / _OWN_UV_CM) if flat else (u_strip, x / 1024.0)
     order = sorted(range(len(arm_deg)), key=lambda k: arm_deg[k] % 360.0)
     ang = [math.radians(arm_deg[k] % 360.0) for k in order]
+    W = [widths[k] for k in order]
+    profiles = [[(s * w / _R1_W, _OWN_DECK_Z if flat else z) for s, z in _R1_PROFILE] for w in W]
     n = len(ang)
     U = [(math.cos(a), math.sin(a)) for a in ang]
     N = [(-math.sin(a), math.cos(a)) for a in ang]
@@ -185,7 +193,7 @@ def _junction_geometry(arm_deg: list, half: float = _R1_W, flat: bool = False) -
     need = [0.0] * n
     for k in range(n):
         g = gap[k]
-        c = _R1_W_ / math.tan(g / 2) + 300.0 if g < math.radians(179) else 0.0
+        c = max(W[k], W[(k + 1) % n]) / math.tan(g / 2) + 300.0 if g < math.radians(179) else 0.0
         need[k] = max(need[k], c)
         need[(k + 1) % n] = max(need[(k + 1) % n], c)
     d = [max(700.0, min(3000.0, x)) for x in need]
@@ -193,29 +201,34 @@ def _junction_geometry(arm_deg: list, half: float = _R1_W, flat: bool = False) -
     def pt(k, along, side):
         return (U[k][0] * along + N[k][0] * side, U[k][1] * along + N[k][1] * side)
 
+    def edges_meet(k, j):
+        # where arm k's left edge (N_k*W_k + U_k*s) meets arm j's right edge (-N_j*W_j + U_j*t), or None
+        p1, p2 = (N[k][0] * W[k], N[k][1] * W[k]), (-N[j][0] * W[j], -N[j][1] * W[j])
+        den = U[k][0] * U[j][1] - U[k][1] * U[j][0]
+        if abs(den) < 1e-6:
+            return None
+        s_ = ((p2[0] - p1[0]) * U[j][1] - (p2[1] - p1[1]) * U[j][0]) / den
+        return p1[0] + U[k][0] * s_, p1[1] + U[k][1] * s_
+
     ring = []  # (x, y, z, is_fillet_chain)
     chains = []
     for k in range(n):
-        for s, z in profile:
+        for s, z in profiles[k]:
             x, y = pt(k, d[k], s)
             ring.append((x, y, z))
         j = (k + 1) % n
-        L, R = pt(k, d[k], _R1_W_), pt(j, d[j], -_R1_W_)
+        L, R = pt(k, d[k], W[k]), pt(j, d[j], -W[j])
         g = gap[k]
         square = False
+        mid = ((L[0] + R[0]) / 2, (L[1] + R[1]) / 2)
         if g < math.radians(179):
-            c = _R1_W_ / math.tan(g / 2)
-            C = pt(k, c, _R1_W_)
+            C = edges_meet(k, j) or mid  # the corner between two roads of their own widths
         elif g > math.radians(181) and n == 2:
             # the outside of an elbow: the two road edges run on to meet in a SQUARE corner
-            # (edge k: N_k*W + U_k*s; edge j: -N_j*W + U_j*t)
-            p1, p2 = (N[k][0] * _R1_W_, N[k][1] * _R1_W_), (-N[j][0] * _R1_W_, -N[j][1] * _R1_W_)
-            den = U[k][0] * U[j][1] - U[k][1] * U[j][0]
-            s_ = ((p2[0] - p1[0]) * U[j][1] - (p2[1] - p1[1]) * U[j][0]) / den if abs(den) > 1e-6 else 0.0
-            C = (p1[0] + U[k][0] * s_, p1[1] + U[k][1] * s_)
+            C = edges_meet(k, j) or mid
             square = True
         else:
-            C = ((L[0] + R[0]) / 2, (L[1] + R[1]) / 2)
+            C = mid
         chain = [L]
         for t in (1 / 6, 2 / 6, 3 / 6, 4 / 6, 5 / 6):
             if square:  # straight in to the corner and straight out: no rounding
@@ -262,7 +275,27 @@ def _junction_geometry(arm_deg: list, half: float = _R1_W, flat: bool = False) -
     mouth = [0.0] * n
     for idx, k in enumerate(order):
         mouth[k] = d[idx]
-    return verts, uvs, tris, mouth
+    pv, pu, ptri = [], [], []
+    if paint and flat and n >= 3:
+        z = _OWN_DECK_Z + _PAINT_Z
+
+        def bar(k, a0, a1, s0, s1):
+            base = len(pv)
+            for along, side in ((a0, s0), (a1, s0), (a1, s1), (a0, s1)):
+                x, y = pt(k, along, side)
+                pv.append((x, y, z))
+                pu.append(uv(x, y, _U_ASPHALT))
+            ptri.extend([(base, base + 2, base + 1), (base, base + 3, base + 2)])  # facing up, like the deck
+        for k in range(n):
+            w = W[k] - 60.0
+            if w < 150.0:
+                continue  # a footpath-wide arm: nothing to paint
+            bar(k, d[k] - _STOP_LINE[0], d[k] - _STOP_LINE[1], -w, w)
+            s = -w
+            while s + _ZEBRA[2] <= w:
+                bar(k, d[k] - _ZEBRA[0], d[k] - _ZEBRA[1], s, s + _ZEBRA[2])
+                s += _ZEBRA[3]
+    return verts, uvs, tris, mouth, (pv, pu, ptri)
 
 
 @register("road_network_build_junctions")
@@ -275,13 +308,17 @@ def road_network_build_junctions(folder: str = "", pieces: list | None = None) -
     own = folder.split("/WorldGen/Roads")[0] + "/WorldGen/Roads/M_Asphalt" if "/WorldGen/Roads" in folder else ""
     flat = bool(own) and unreal.EditorAssetLibrary.does_asset_exist(own)
     mat = unreal.load_asset(own if flat else _R1_MATERIAL)
+    white = own.replace("M_Asphalt", "M_PaintW")
+    line_mat = unreal.load_asset(white) if flat and unreal.EditorAssetLibrary.does_asset_exist(white) else None
     out, errors = {}, []
     for piece in pieces or []:
         name, arms = str(piece.get("name") or ""), list(piece.get("arms") or [])
         if not name or len(arms) < 2:
             errors.append(f"{name or '?'}: needs a name and 2+ arms")
             continue
-        verts, uvs, tris, mouth = _junction_geometry(arms, float(piece.get("half") or _R1_W), flat)
+        verts, uvs, tris, mouth, lines = _junction_geometry(
+            arms, float(piece.get("half") or _R1_W), flat, piece.get("halves"),
+            bool(piece.get("paint", True)) and line_mat is not None)
         buf = unreal.GeometryScriptSimpleMeshBuffers()
         buf.vertices = [unreal.Vector(*v) for v in verts]
         buf.uv0 = [unreal.Vector2D(*u) for u in uvs]
@@ -289,6 +326,12 @@ def road_network_build_junctions(folder: str = "", pieces: list | None = None) -
         dm = unreal.DynamicMesh()
         unreal.GeometryScript_Materials.enable_material_i_ds(dm)
         unreal.GeometryScript_MeshEdits.append_buffers_to_mesh(dm, buf, 0)
+        if lines[2]:  # stop lines and crossings: a second material slot on the same mesh
+            lb = unreal.GeometryScriptSimpleMeshBuffers()
+            lb.vertices = [unreal.Vector(*v) for v in lines[0]]
+            lb.uv0 = [unreal.Vector2D(*u) for u in lines[1]]
+            lb.triangles = [unreal.IntVector(*t) for t in lines[2]]
+            unreal.GeometryScript_MeshEdits.append_buffers_to_mesh(dm, lb, 1)
         unreal.GeometryScript_Normals.compute_split_normals(dm, unreal.GeometryScriptSplitNormalsOptions(),
                                                            unreal.GeometryScriptCalculateNormalsOptions())
         path = f"{folder}/{name}"
@@ -299,8 +342,8 @@ def road_network_build_junctions(folder: str = "", pieces: list | None = None) -
             sm = res[0] if isinstance(res, tuple) else res
         opts = unreal.GeometryScriptCopyMeshToAssetOptionsV2()
         opts.replace_materials = True
-        opts.new_materials = [mat]
-        opts.new_material_slot_names = ["Asphalt" if flat else "Road1"]
+        opts.new_materials = [mat, line_mat] if lines[2] else [mat]
+        opts.new_material_slot_names = (["Asphalt", "Paint"] if lines[2] else ["Asphalt" if flat else "Road1"])
         lod = unreal.GeometryScriptMeshWriteLOD()
         unreal.GeometryScript_AssetUtils.copy_mesh_to_static_mesh_v2(dm, sm, opts, lod)
         out[name] = mouth
@@ -875,6 +918,23 @@ def road_network_street_kit(root: str = "", rebuild: bool = False, plan: bool = 
         _save_batch(assets)
     return {"ok": not errors, "made": [m.get_name() for m in made], "errors": errors,
             "paths": [a.get_path_name().split(".")[0] for a in assets]}
+
+
+@register("road_network_collision_ready")
+def road_network_collision_ready(meshes: list | None = None) -> dict:
+    """Which of these meshes can't stop a player yet: no simple collision shapes (an FBX with no UCX boxes) and
+    not complex-as-simple either. Read-only; the backend switches those to complex-as-simple (their own
+    triangles collide) through Epic's StaticMeshToolset. Returns `need` and `missing` (object paths)."""
+    need, missing = [], []
+    for path in meshes or []:
+        sm = unreal.load_asset(path.split(".")[0])
+        body = sm.get_editor_property("body_setup") if isinstance(sm, unreal.StaticMesh) else None
+        if body is None:
+            missing.append(path)
+        elif unreal.EditorStaticMeshLibrary.get_simple_collision_count(sm) <= 0 and body.get_editor_property(
+                "collision_trace_flag") != unreal.CollisionTraceFlag.CTF_USE_COMPLEX_AS_SIMPLE:
+            need.append(path)
+    return {"ok": True, "need": need, "missing": missing}
 
 
 @register("road_network_ism_ready")

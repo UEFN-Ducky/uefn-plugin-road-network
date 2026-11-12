@@ -391,6 +391,15 @@ def bake(previewed: dict, root: str, interiors: bool = True) -> tuple:
 TILE_CM = 40000  # PCG tile: 400 m squares, one graph + volume each, rebuilt only when its content changes
 NATURE_TILE_CM = 160000  # nature is sparse: 1.6 km tiles
 NATURE = ("SM_V4_Tree", "SM_Kit_Bush", "SM_Kit_Rock", "SM_Kit_Boulder")
+# Everything the city places blocks players, except leaves and flat paint (a painted stall or pitch is walked on)
+NO_COLLISION = ("SM_Kit_Bush", "SM_Kit_ParkingStall", "SM_Kit_SportsField", "SM_Air_Threshold", "SM_Kit_TreePit",
+                "SM_Kit_Wetland", "SM_Kit_Pond")
+RECIPE = "collision-1"  # how a tile is built: a change here rebuilds every tile on the next push
+
+
+def blocks(mesh: str) -> bool:
+    """Does this kit mesh stop a player?"""
+    return not any(n in mesh for n in NO_COLLISION)
 
 
 def tiles(groups: dict) -> dict:
@@ -409,7 +418,7 @@ def tiles(groups: dict) -> dict:
                                                    "centre": ((tx + 0.5) * size, (ty + 0.5) * size)})
             t["meshes"].setdefault(mesh, []).append(r)
     for t in out.values():
-        t["hash"] = hashlib.sha1(json.dumps(t["meshes"], sort_keys=True).encode()).hexdigest()
+        t["hash"] = hashlib.sha1((RECIPE + json.dumps(t["meshes"], sort_keys=True)).encode()).hexdigest()
     return out
 
 
@@ -785,6 +794,7 @@ def _demo() -> None:
     wild = tiles({path("SM_V4_TreeRound", "/R"): [[10, 10, 0, 0, 1, 1, 1], [150000, 10, 0, 0, 1, 1, 1]],
                   path("SM_Kit_Plinth", "/R"): [[10, 10, 0, 0, 1, 1, 1]]})
     assert set(wild) == {"n0_0", "0_0"} and wild["n0_0"]["size"] == NATURE_TILE_CM, "trees in their own big tile"
+    assert blocks(path("SM_City_HS_House2", "/R")) and blocks(path("SM_V4_TreePine", "/R")) and not blocks(path("SM_Kit_Bush", "/R"))
     # street trees stand in a pit, forest trees do not
     gp = bake({"Street trees": {"kind": "along_roads", "role": "street_tree", "points": [[5, 6, 7, 30, 1.0]]},
                "Trees": {"kind": "foliage", "role": "tree", "points": [[9, 9, 0, 0, 1.0]]}}, "/R")[0]
