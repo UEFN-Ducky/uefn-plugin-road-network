@@ -1027,7 +1027,7 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
         nodes = {n: p for n, p in nodes.items() if n in used}
         wet = water_of(city, o, wet)
     if wet:  # streets cross water on bridges (one edge bank to bank), the rest stop at the shore
-        nodes, edges = over_water(*cross_water(nodes, edges, wet), wet, bridges=bridges)
+        nodes, edges = over_water(*cross_water(nodes, edges, wet), wet, bridges=bridges, stubs=False)
     # freeways last: every street that water, canals, an airport or a shipyard took is gone by now, so an
     # interchange whose cross road is gone is dropped before any street is cut for its ramps
     fw = freeway_plan(city, o)
@@ -1204,12 +1204,14 @@ def wet_from(ter: dict):
     return lambda x, y: (st.sample_grid(ter, x, y) if st.sample_grid(ter, x, y) is not None else sea + 1) < sea
 
 
-def over_water(nodes: dict, edges: list, wet, span: dict | None = None, bridges: list | None = None) -> tuple:
+def over_water(nodes: dict, edges: list, wet, span: dict | None = None, bridges: list | None = None,
+               stubs: bool = True) -> tuple:
     """Roads know where the water is. An edge that runs over water becomes a bridge (ramp up 40 m, deck
     BRIDGE_LIFT_CM over the water, ramp down) when its kind may span that far (WATER_SPAN; any paved street
     over a creek <= SHORT_SPAN) and it is not already high enough there; otherwise it is removed (a side street
     stops at the shore). An end in the water is cut back to the shore (new node ('shore', a, b, 0|1)).
-    span: {kind: cm} overrides (highways pass a long one)."""
+    span: {kind: cm} overrides (highways pass a long one). stubs=False (city streets): a street whose end is in
+    the water goes altogether, back to its last junction, instead of running down the bank as a dead end."""
     if not wet:
         return nodes, edges
     span = {**WATER_SPAN, **(span or {})}
@@ -1260,6 +1262,8 @@ def over_water(nodes: dict, edges: list, wet, span: dict | None = None, bridges:
             nb = ("shore", a, b, 1)
         if s_b - s_a < 3000 or (s_a > 0 and s_b < cum and s_a >= s_b):
             continue  # nothing left on land
+        if not stubs and (na != a or nb != b):
+            continue  # a city street never runs out to the water's edge and stops: it ends at the cross street before
         limit = max(span.get(kind, 0.0), SHORT_SPAN if kind not in ("DT", "1W", "1S") else 0.0)
         if runs and max(r1 - r0 for r0, r1 in runs) > limit:
             continue  # too wide for this road: a side street stops at the shore (its neighbours still reach it)
@@ -1657,6 +1661,16 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
         out["parking"] += got["parking"]
         out["stalls"] += got["stalls"]
         out["grounds"], out["plan"] = got["grounds"], got["plan"]
+        if fw.lines and out["plan"]:
+            # a site the planner merged from lots each clear of the freeway can still have its middle in the
+            # freeway's corridor (a power plant did): that site is not built, its grounds go with it
+            lost = [f for f in out["plan"]["facilities"] if fw.blocked(f["x"], f["y"])]
+            if lost:
+                out["plan"]["facilities"] = [f for f in out["plan"]["facilities"] if f not in lost]
+                for f in lost:
+                    out["plan"]["counts"][f["type"]] = out["plan"]["counts"].get(f["type"], 1) - 1
+                out["lots"] = [r for r in out["lots"] if not (len(r) > 8 and r[8] is True and fw.blocked(r[0], r[1]))]
+                out["grounds"] = [g for g in out["grounds"] if not fw.blocked(g[0], g[1])]
     return out
 
 
@@ -2100,7 +2114,7 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
         gone = {n for n, p in nodes.items() if in_keep(keep, p[0], p[1], 2000)}
         edges[:] = [e for e in edges if e[0] not in gone and e[1] not in gone]
     if wet or any(canal_lines(c, o) for c in cities):  # cross roads added after city_graph bridge or stop too
-        graphs = [over_water(n, e, water_of(c, o, wet), bridges=bridges) for c, (n, e) in zip(cities, graphs)]
+        graphs = [over_water(n, e, water_of(c, o, wet), bridges=bridges, stubs=False) for c, (n, e) in zip(cities, graphs)]
     out = {f"{c['name']} Roads": build_actor(n, e, ground, folder) for c, (n, e) in zip(cities, graphs)}
     for ap in airports or []:  # airports: the airside graph (runways + taxiways) and the landside roads
         from . import airport
