@@ -1571,6 +1571,57 @@ def register(api) -> None:
                 "worst_over": [r for r in worst_rows if r[0] > 0][:6], "worst_in_air": [r for r in worst_rows if r[0] < 0][:6],
                 "row": "ground minus road cm, x, y, road z, mesh, why"}
 
+    def loose_ends(nid: str, terrain: dict) -> dict:
+        """Every open end of a freeway, ramp or highway as it was BUILT (the spline points, not the plan): it must
+        land on another road, at that road's height. far = no road within 26 m; stepped = a road is there but more
+        than 1 m above or below it. An end at the map's edge is the road leaving the world."""
+        roads = []
+        for aslug, head in actor_docs(nid).items():
+            label = str(head.get("label") or "")
+            if " before kit" in label or label.endswith((" Paths", " Access")):
+                continue
+            _, pts, segs = load_actor(nid, aslug)
+            roads.append((label, {p["i"]: p for p in pts}, segs))
+        every = [(label, by[s["a"]], by[s["b"]]) for label, by, segs in roads for s in segs
+                 if s.get("mesh") and s["a"] in by and s["b"] in by]
+        (x0, y0), (x1, y1) = terrain.get("min") or (-1e12, -1e12), terrain.get("max") or (1e12, 1e12)
+        ends = edge = 0
+        bad = []
+        for label, by, segs in roads:
+            if not label.endswith(("Freeways", "Highways")):
+                continue
+            touch: dict = {}
+            for s in segs:
+                for i in (s["a"], s["b"]):
+                    touch.setdefault(i, []).append(s)
+            for i, ss in touch.items():
+                p = by.get(i)
+                if not p or len(ss) != 1 or not ss[0].get("mesh") or p.get("mesh"):
+                    continue
+                ends += 1
+                if min(p["x"] - x0, x1 - p["x"], p["y"] - y0, y1 - p["y"]) < 20000:
+                    edge += 1
+                    continue
+                near, level = 1e12, None  # nearest road in plan, and the smallest step among the roads in reach
+                for lab2, a, b in every:
+                    if lab2 == label and i in (a["i"], b["i"]):
+                        continue
+                    ux, uy = b["x"] - a["x"], b["y"] - a["y"]
+                    t = max(0.0, min(1.0, ((p["x"] - a["x"]) * ux + (p["y"] - a["y"]) * uy) / (ux * ux + uy * uy or 1.0)))
+                    d = math.hypot(p["x"] - a["x"] - ux * t, p["y"] - a["y"] - uy * t)
+                    near = min(near, d)
+                    if d <= 2600:
+                        dz = a["z"] + (b["z"] - a["z"]) * t - p["z"]
+                        level = dz if level is None or abs(dz) < abs(level) else level
+                mesh = ss[0]["mesh"].split("/")[-1]
+                if level is None:
+                    bad.append(("far", round(p["x"]), round(p["y"]), round(p["z"]), round(near), label, mesh))
+                elif abs(level) > 100:
+                    bad.append(("stepped", round(p["x"]), round(p["y"]), round(p["z"]), round(level), label, mesh))
+        return {"ends": ends, "at_map_edge": edge, "far": sum(1 for b in bad if b[0] == "far"),
+                "stepped": sum(1 for b in bad if b[0] == "stepped"), "worst": sorted(bad, key=lambda b: -abs(b[4]))[:12],
+                "row": "far | stepped, x, y, z, cm to the nearest road | cm above (+) or below (-) it, actor, mesh"}
+
     def ground_fit(net_id: str = "", heights: bool = True) -> dict:
         """The ground as the city leaves it: every lot cut level, every road cut and filled in, on a grid the
         panel draws ({grid, heights[j][i] at cell centres, cm}), with the building and road fit. It follows the
@@ -1581,6 +1632,8 @@ def register(api) -> None:
             return got
         ter = (data.get(f"net.{nid}.scan") or {}).get("terrain") or {}
         out = {"ok": True, "id": nid, "grid": 0, "ground_fit": fit_summary()}
+        if not heights:
+            out["ramp_ends"] = loose_ends(nid, ter)
         fine = _PREVIEW_CACHE.get("ter") or {}
         if not heights or fine.get("grid") != cg.HEIGHTMAP_RES or not ter.get("heights"):
             return out  # no ground of its own yet (laid over another world's landscape, no heightmap made)

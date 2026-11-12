@@ -1823,7 +1823,79 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
         hw_nodes, hw_edges = over_water(hw_nodes, hw_edges, wet, long, bridges)
     if hw_edges:
         out["Highways"] = build_actor(hw_nodes, hw_edges, ground, folder, pieces)
+    weld_ends(out)
+    weld_ends(out)  # again: an end may land on a road whose own end moved in the first pass
     return out
+
+
+WELD_REACH_CM = 2600.0  # an open end this close (in plan) to another road is meant to join it
+WELD_GRADE = 0.08  # the end's own road eases to the new height at most this steeply
+WELD_SNAP_CM = 6000.0  # an end that stops short of every road by less than this is brought up to the nearest one
+
+
+def weld_ends(actors: dict) -> int:
+    """Every open end of a freeway, ramp, frontage road or highway lands on the road it reaches, at that road's
+    height. Each actor is laid and graded on its own, so a ramp planned onto a street came out metres above or
+    below it: here the end takes the height of the road under it (the one nearest its own level), and its own
+    road eases back from there at WELD_GRADE. Junctions and their mouths never move. Returns the ends moved."""
+    every = []
+    for label, a in actors.items():
+        if label.endswith((" Docks", " Canals", " Paths", " Access")):
+            continue
+        by = {p["i"]: p for p in a["points"]}
+        every += [(label, by[s["a"]], by[s["b"]], s["mesh"].split("/")[-1])
+                  for s in a["segments"] if s["mesh"] and s["a"] in by and s["b"] in by]
+    half_of = {m.split("/")[-1]: HALF[k] for k, m in ROAD_MESH.items()}
+    moved = 0
+    for label, a in actors.items():
+        if not label.endswith(("Freeways", "Highways")):
+            continue
+        by = {p["i"]: p for p in a["points"]}
+        touch: dict = {}
+        for s in a["segments"]:
+            for i in (s["a"], s["b"]):
+                touch.setdefault(i, []).append(s)
+        for i, ss in touch.items():
+            p = by.get(i)
+            if not p or len(ss) != 1 or not ss[0]["mesh"] or p["mesh"]:
+                continue  # only a road's own open end
+            level, near = None, None
+            for lab2, u, v, mesh in every:
+                if lab2 == label and i in (u["i"], v["i"]):
+                    continue
+                ux, uy = v["x"] - u["x"], v["y"] - u["y"]
+                t = max(0.0, min(1.0, ((p["x"] - u["x"]) * ux + (p["y"] - u["y"]) * uy) / (ux * ux + uy * uy or 1.0)))
+                nx, ny, z = u["x"] + ux * t, u["y"] + uy * t, u["z"] + (v["z"] - u["z"]) * t
+                d = math.hypot(p["x"] - nx, p["y"] - ny)
+                if d <= WELD_REACH_CM:
+                    if level is None or abs(z - p["z"]) < abs(level - p["z"]):
+                        level = z
+                elif d <= WELD_SNAP_CM and (near is None or d < near[0]):
+                    near = (d, nx, ny, z, half_of.get(mesh, 800.0))
+            if level is None and near:  # it stops short of the road it was laid toward: up to that road's edge
+                d, nx, ny, level, half = near
+                p["x"], p["y"] = nx + (p["x"] - nx) / d * half, ny + (p["y"] - ny) / d * half
+            elif level is None or abs(level - p["z"]) <= 30:
+                continue
+            p["z"] = level
+            moved += 1
+            touched, prev, cur = {i}, None, i
+            for _ in range(80):  # ease the road back from its end
+                nxt = [n for n in (s["b"] if s["a"] == cur else s["a"] for s in touch[cur] if s["mesh"]) if n != prev]
+                q = by.get(nxt[0]) if len(nxt) == 1 else None
+                if not q or q["mesh"] or any(not s["mesh"] for s in touch[q["i"]]):
+                    break  # a fork, a piece, or a junction's mouth: that stays where it is
+                lim = WELD_GRADE * math.hypot(q["x"] - by[cur]["x"], q["y"] - by[cur]["y"])
+                z = max(by[cur]["z"] - lim, min(by[cur]["z"] + lim, q["z"]))
+                if abs(z - q["z"]) < 1:
+                    break
+                q["z"] = z
+                touched.add(q["i"])
+                prev, cur = cur, q["i"]
+            for s in a["segments"]:
+                if s["a"] in touched or s["b"] in touched:
+                    st.retangent(by, s)
+    return moved
 
 
 def _demo() -> None:
@@ -2000,6 +2072,9 @@ def _demo() -> None:
     # several highways in one world (each one's interchange adds city streets before the next is routed)
     three = far + [{"name": "R", "x": 0, "y": 250000, "radius": 30000, "style": "mixed", "seed": 5}]
     multi = generate(three, lambda x, y: 0.0, "/Game/X/Roads", seed=3, opts={"interchange": "cloverleaf", "highway": "6L"})
+    assert weld_ends(multi) == 0, "every ramp and highway end already sits on the road it reaches"
+    hilly = generate(three, lambda x, y: 800.0 * math.sin(x / 9000.0) + 600.0 * math.cos(y / 7000.0), "/Game/X/Roads", seed=3)
+    assert weld_ends(hilly) == 0, "on hills too: generate welds the ends itself"
     assert all(not any(st.problems(a["points"], a["segments"]).values()) for a in multi.values())
     # every ramp touches its roads: a loop starts on the highway's edge, ends on the cross road's edge
     _, inodes, _, cross = interchange("cloverleaf", [0, 0], [100000, 0], ("t",), "6L")
