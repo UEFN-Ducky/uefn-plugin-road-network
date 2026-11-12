@@ -1296,6 +1296,8 @@ PIER_EVERY_CM = 3000.0  # a pier bent under a deck every 30 m
 PIER_MIN_CM = 300.0  # no pier where the deck is lower than this over the ground (an approach on its fill)
 DECK_DEPTH_CM = 150.0  # road surface to the deck's underside: the pier cap sits under that
 CAP_CM = 120.0  # the cap beam's depth
+GIRDER_CM = 120.0  # a bridge's girders under its slab (road_profiles); the pier cap carries them
+ABUTMENT_CM = 250.0  # an abutment's wall, from the deck's underside down into the bank
 
 
 def bridge_piers(actors: dict, ground) -> tuple:
@@ -1341,7 +1343,8 @@ def bridge_piers(actors: dict, ground) -> tuple:
             for k in range(n):
                 t = (k + 0.5) / n
                 x, y = pa["x"] + (pb["x"] - pa["x"]) * t, pa["y"] + (pb["y"] - pa["y"]) * t
-                top = pa["z"] + (pb["z"] - pa["z"]) * t - DECK_DEPTH_CM  # the deck's underside
+                # the deck's underside, or its girders' on a bridge
+                top = pa["z"] + (pb["z"] - pa["z"]) * t - DECK_DEPTH_CM - (GIRDER_CM if "Bridge" in mesh else 0.0)
                 legs = [0.0] if half < 800 else [-half * 0.55, half * 0.55]
                 feet = [ground(x - uy * o, y + ux * o) or 0.0 for o in legs]
                 if top - CAP_CM - min(feet) < PIER_MIN_CM:
@@ -1354,6 +1357,31 @@ def bridge_piers(actors: dict, ground) -> tuple:
                         cols.append([round(x - uy * o), round(y + ux * o), round(f), round(yaw, 1), 1.0, 1.0,
                                      round((top - CAP_CM - f) / 100, 2)])
     return cols, caps
+
+
+def bridge_abutments(actors: dict) -> list:
+    """Where a bridge, viaduct or ramp meets the road on the ground: an abutment under the deck's end, its wall
+    across the deck's width and a wing wall back along each side of the approach. Site rows
+    [x, y, z, yaw, 1, width_m, 1] for SM_Kit_BridgeAbutment (1 m wide at scale 1, ABUTMENT_CM tall, its wall's
+    face at x 0 looking along +X under the deck)."""
+    rows = []
+    for a in actors.values():
+        by = {p["i"]: p for p in a["points"]}
+        at: dict = {}
+        for s in a["segments"]:
+            mesh = (s.get("mesh") or "").split("/")[-1]
+            for i, j in ((s["a"], s["b"]), (s["b"], s["a"])):
+                if mesh and i in by and j in by:
+                    at.setdefault(i, []).append((mesh, by[j]))
+        for i, legs in at.items():
+            decks = [(m, q) for m, q in legs if m in STRUCTURES]
+            if not decks or len(decks) == len(legs):
+                continue  # no deck here, or the deck runs on
+            p, (mesh, q) = by[i], decks[0]
+            half = HALF.get(next((k for k, m in ROAD_MESH.items() if m.split("/")[-1] == mesh), ""), 800.0)
+            rows.append([round(p["x"]), round(p["y"]), round(p["z"] - DECK_DEPTH_CM - ABUTMENT_CM),
+                         round(math.degrees(math.atan2(q["y"] - p["y"], q["x"] - p["x"])), 1), 1.0, round(half * 2 / 100 + 1.0, 2), 1.0])
+    return rows
 
 
 def structure_kinds(kind: str) -> tuple:
@@ -2416,6 +2444,9 @@ def _demo() -> None:
                                 "segments": [_segment(2, 0, 1, "ED", "/G", lifted=True), _segment(5, 3, 4, "2L", "/G")]}},
                          lambda x, y: 0.0)[1]
     assert len(under) == 3 and all(abs(c[0] - 1500) > 525 for c in under), ("no pier in the street under the deck", under)
+    ab = bridge_abutments({"x": {"points": [_point(0, 0, 0, 0, 0, 525), _point(1, 5000, 0, 100, 0, 925, lifted=True), _point(2, 9000, 0, 900, 0, 925, lifted=True)],
+                                 "segments": [_segment(3, 0, 1, "2S", "/G"), _segment(4, 1, 2, "BR", "/G", lifted=True)]}})
+    assert ab == [[5000, 0, 100 - 150 - 250, 0.0, 1.0, 19.5, 1.0]], ("one abutment, where the street becomes the bridge", ab)
     assert not bridge_piers({"x": {"points": [_point(0, 0, 0, 200, 0, 650, lifted=True), _point(1, 6000, 0, 200, 0, 650, lifted=True)],
                                    "segments": [_segment(2, 0, 1, "ER", "/G", lifted=True)]}}, lambda x, y: 0.0)[0], "a deck on its fill"
     hilly = generate(three, lambda x, y: 800.0 * math.sin(x / 9000.0) + 600.0 * math.cos(y / 7000.0), "/Game/X/Roads", seed=3)

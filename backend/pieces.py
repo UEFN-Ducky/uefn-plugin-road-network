@@ -26,7 +26,9 @@ CONVENTIONS = {
              "builds itself when the project has no model; a hand-made model follows it part for part.",
     "bridges": "A bridge is three things, all placed by City Builder: the deck (the road's own deck piece, SM_Elev_Deck20m "
                "for 4+ lanes, SM_Road_Bridge_Straight20m for streets; low poly: a 1.5 m slab with a concrete barrier "
-               "on each edge, top at z 0), pier bents every 30 m (SM_Kit_BridgePier columns from the ground or lake "
+               "on each edge, top at z 0; the SM_Road_Bridge* pieces also carry I-girders 1.2 m deep under the slab "
+               "about every 3.5 m and a coping on each parapet), an SM_Kit_BridgeAbutment where each end meets the "
+               "road on the ground (wall under the deck's end, bearing shelf, a wing wall each side), pier bents every 30 m (SM_Kit_BridgePier columns from the ground or lake "
                "bed to SM_Kit_PierCap under the deck; two columns under a deck 16 m or wider) and, over wide water, "
                "SM_Kit_BridgePylon towers on the deck's centre line. To make them real, model these pieces at their "
                "bounds_cm: column and cap stretch on Z / Y, so keep their detail at the ends.",

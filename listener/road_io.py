@@ -784,6 +784,12 @@ _STREET_KIT = {
     # deck's width), both in concrete; placed by citygen.bridge_piers every 30 m under every deck
     "SM_Kit_BridgePier": (["Plinth"], [("box", 0, (0, 0, 0), (0, 0, 0), (200, 200, 100))]),
     "SM_Kit_PierCap": (["Plinth"], [("box", 0, (0, 0, 0), (0, 0, 0), (200, 100, 120))]),
+    # a bridge's abutment (citygen.bridge_abutments), 1 m wide and stretched on Y to the deck: the wall under the
+    # deck's end (its face at x 0), the bearing shelf the girders sit on, a wing wall back along each side
+    "SM_Kit_BridgeAbutment": (["Plinth"], [("box", 0, (-50, 0, 0), (0, 0, 0), (100, 100, 250)),
+                                           ("box", 0, (30, 0, 0), (0, 0, 0), (60, 100, 130)),
+                                           ("box", 0, (-250, 48.5, 0), (0, 0, 0), (400, 3, 250)),
+                                           ("box", 0, (-250, -48.5, 0), (0, 0, 0), (400, 3, 250))]),
     # shipyards (backend/shipyard.py)
     "SM_Kit_ShipHull": (["Steel", "Hull"], [("box", 0, (0, 0, 0), (0, 0, 0), (9000, 1900, 1400)),
                                            ("box", 0, (4700, 0, 300), (0, 0, 45), (900, 900, 1100)),

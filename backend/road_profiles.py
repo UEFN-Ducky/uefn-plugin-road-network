@@ -45,6 +45,9 @@ def shape(name: str, y0: float, y1: float, z0: float, z1: float) -> list:
         if (y0 + y1) / 2 < 0:
             return [(y0, z0), (y1, z0), (y1, z1 - 4), (y1 - 4, z1), (y0, z1)]
         return [(y0, z0), (y1, z0), (y1, z1), (y0 + 4, z1), (y0, z1 - 4)]
+    if name == "girder":  # an I-beam: bottom flange, web, its top in the slab
+        m = (y0 + y1) / 2
+        return [(y0, z0), (y1, z0), (y1, z0 + 18), (m + 10, z0 + 34), (m + 10, z1), (m - 10, z1), (m - 10, z0 + 34), (y0, z0 + 18)]
     if name == "deck":  # the slab's underside tapers in to its beams
         t = min(150.0, w * 0.15)
         return [(y0 + t, z0), (y1 - t, z0), (y1, z1 - min(40.0, h * 0.3)), (y1, z1), (y0, z1), (y0, z1 - min(40.0, h * 0.3))]
@@ -76,6 +79,16 @@ def profile(code: str) -> dict | None:
     if structure:
         parts[0] = ("deck", "Plinth", -half, half, base, -20.0)
         parts.insert(1, ("road", "Asphalt", -c, c, -20.0, 0.0))
+    if structure and "Bridge" in mesh:
+        # a bridge, not a viaduct's slab: girders under the deck about every 3.5 m (the pier caps and abutments
+        # carry them, citygen.GIRDER_CM) and a coping stone along the top of each parapet
+        n = max(2, round(2 * half / 350))
+        for i in range(n):
+            y = -half + 2 * half * (i + 0.5) / n
+            parts.append(("girder", "Plinth", y - 35.0, y + 35.0, base - cg.GIRDER_CM, base))
+        top = (KERB_CM if walk else 0.0) + PARAPET_CM
+        for sd in (-1, 1):
+            parts.append(("coping", "Plinth", *sorted((sd * (half - 48), sd * half)), top, top + 8.0))
     if code in MEDIAN:
         parts.append(("median", "Plinth", -30.0, 30.0, 0.0, 85.0))
     paint = []

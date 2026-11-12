@@ -487,11 +487,13 @@ def register(api) -> None:
 
     def road_joins(nid: str) -> dict:
         """Every ramp end's merge lane or street mouth (ramp_joins), worked out again only when a road changed."""
-        heads = {a: h for a, h in actor_docs(nid).items()
-                 if " before kit" not in str(h.get("label") or "") and not str(h.get("label") or "").endswith((" Paths", " Access"))}
-        key = (nid, tuple(sorted((a, h.get("sha")) for a, h in heads.items())))
+        docs = {a: h for a, h in actor_docs(nid).items() if " before kit" not in str(h.get("label") or "")}
+        heads = {a: h for a, h in docs.items() if not str(h.get("label") or "").endswith((" Paths", " Access"))}
+        private = [a for a, h in docs.items() if str(h.get("label") or "").endswith(" Access")]  # roads too, only narrower
+        key = (nid, tuple(sorted((a, h.get("sha")) for a, h in docs.items())))
         if _JOINS.get("key") != key:
-            _JOINS.update(key=key, out=ramp_joins.joins({a: load_actor(nid, a)[1:] for a in heads}))
+            _JOINS.update(key=key, out=ramp_joins.joins({a: load_actor(nid, a)[1:] for a in heads},
+                                                        {a: load_actor(nid, a)[1:] for a in private}))
         return _JOINS["out"]
 
     def move_point(net_id: str = "", actor: str = "", index: int = -1, x: float = 0.0, y: float = 0.0, z: float = 0.0) -> dict:
@@ -1523,8 +1525,10 @@ def register(api) -> None:
             # on (the cut ground once there is one) or the lake bed
             cols, caps = cg.bridge_piers({str(k): {"points": p, "segments": s} for k, (p, s) in enumerate(actors)},
                                          (fit or {}).get("ground") or (lambda x, y: ground(x, y) or 0.0))
+            ends = cg.bridge_abutments({str(k): {"points": p, "segments": s} for k, (p, s) in enumerate(actors)})
             for name, mesh, rows, box in (("Bridge piers", "SM_Kit_BridgePier", cols, [2.0, 2.0, 1.0]),
-                                          ("Pier caps", "SM_Kit_PierCap", caps, [2.0, 1.0, 1.2])):
+                                          ("Pier caps", "SM_Kit_PierCap", caps, [2.0, 1.0, 1.2]),
+                                          ("Bridge abutments", "SM_Kit_BridgeAbutment", ends, [1.0, 1.0, 2.5])):
                 placed[name] = {"kind": "site", "role": "bridge", "mesh": mesh, "box_m": box, "tint": "fg-dim",
                                 "count": len(rows), "shown": len(rows), "points": rows}
             _PREVIEW_CACHE.update(key=key, out=placed, fit=fit, ter=fit_ter)

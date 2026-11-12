@@ -155,6 +155,7 @@ KIT = {
     # bridge piers (citygen.bridge_piers): a column stretched up from the ground to its cap, the cap across the deck
     "SM_Kit_BridgePier": ("Kit/Street", -100, -100, 0, 100, 100, 100),
     "SM_Kit_PierCap": ("Kit/Street", -100, -50, 0, 100, 50, 120),
+    "SM_Kit_BridgeAbutment": ("Kit/Street", -450, -50, 0, 60, 50, 250),
     # shipyards (shipyard.py)
     "SM_Kit_ShipHull": ("Kit/Street", -5000, -1000, 0, 5000, 1000, 2400),
     "SM_Kit_GoliathCrane": ("Kit/Street", -1000, -3500, 0, 1000, 3500, 8000),

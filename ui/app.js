@@ -249,9 +249,9 @@ function joinSkips(joins) {
   // worlds grow past a few hundred ramps
   const gaps = joins.gores.flatMap((g) => g.rows.map((r) => [r[0], r[1]]));
   const parapet = (x, y) => gaps.some((g) => (x - g[0]) ** 2 + (y - g[1]) ** 2 < 420 ** 2);
-  const sidewalk = (x, y) => joins.flares.some(([ex0, ey0, ux, uy, tx, ty, D, r, walk]) => {
+  const sidewalk = (x, y) => joins.flares.some(([ex0, ey0, ux, uy, tx, ty, D, r, walk, , , A = 650]) => {
     const lx = (x - ex0) * ux + (y - ey0) * uy, ly = (x - ex0) * tx + (y - ey0) * ty;
-    return walk > 0 && lx >= D - walk - 60 && lx <= D + 60 && Math.abs(ly) < 650 + r + 200;
+    return walk > 0 && lx >= D - walk - 60 && lx <= D + 60 && Math.abs(ly) < A + r + 200;
   });
   return (part, mesh) => part === "parapet" && /Freeway_Lane|Elev_Deck/.test(mesh) ? parapet : part === "sidewalk" ? sidewalk : null;
 }
@@ -278,8 +278,8 @@ function drawJoins(joins, put) {
       if (Math.min(a[4], b[4]) > 250) quad(paint, P(a, k0 + 15, 1.5), P(a, k0, 1.5), P(b, k0, 1.5), P(b, k0 + 15, 1.5));
     }
   }
-  for (const [ex0, ey0, ux, uy, tx, ty, D, r, walk, z0, z1] of joins.flares) {
-    const A = 650, W = (x, y, dz = 0) => toV(ex0 + ux * x + tx * y, ey0 + uy * x + ty * y, z0 + (z1 - z0) * Math.max(0, Math.min(1, x / D)) + LIFT + dz);
+  for (const [ex0, ey0, ux, uy, tx, ty, D, r, walk, z0, z1, A = 650] of joins.flares) {  // A: a ramp's half width, or a private street's
+    const W = (x, y, dz = 0) => toV(ex0 + ux * x + tx * y, ey0 + uy * x + ty * y, z0 + (z1 - z0) * Math.max(0, Math.min(1, x / D)) + LIFT + dz);
     const asphalt = put(MAT.asphalt), walkOut = put(MAT.sidewalk);
     quad(asphalt, W(0, -A), W(D, -A), W(D, A), W(0, A));
     quad(put(MAT.paint), W(D - 160, -A + 60, 1.5), W(D - 120, -A + 60, 1.5), W(D - 120, A - 60, 1.5), W(D - 160, A - 60, 1.5));  // stop line
