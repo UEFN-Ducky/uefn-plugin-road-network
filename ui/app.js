@@ -287,7 +287,11 @@ renderer.domElement.addEventListener("contextmenu", (e) => e.preventDefault());
 renderer.domElement.addEventListener("pointerdown", (e) => {
   drag = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, button: e.button, moved: false };
   renderer.domElement.setPointerCapture(e.pointerId);
-  if (e.button === 2) { fly.on = true; fly.keys.clear(); showFlySpeed(); }
+  if (e.button === 2) {  // flying: the pointer hides and stays put, as in a game
+    fly.on = true; fly.keys.clear(); showFlySpeed();
+    renderer.domElement.style.cursor = "none";
+    try { renderer.domElement.requestPointerLock?.()?.catch?.(() => {}); } catch { /* no pointer lock here: the hidden cursor is enough */ }
+  }
   if (e.button === 0 && state.tool === "area") { drag.drawing = true; note.points = []; addAreaPoint(e); }
   if (e.button === 0 && state.tool === "select" && !e.shiftKey) {
     const hit = cityUnder(e);  // a city to move once the pointer really moves (a plain click selects it)
@@ -296,8 +300,9 @@ renderer.domElement.addEventListener("pointerdown", (e) => {
 });
 renderer.domElement.addEventListener("pointermove", (e) => {
   if (!drag) { hoverCursor(e); return; }
-  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-  if (Math.abs(e.clientX - drag.x0) + Math.abs(e.clientY - drag.y0) > 5) drag.moved = true;
+  const locked = document.pointerLockElement === renderer.domElement;  // a locked pointer reports its travel only
+  const dx = locked ? e.movementX : e.clientX - drag.x, dy = locked ? e.movementY : e.clientY - drag.y;
+  if (locked || Math.abs(e.clientX - drag.x0) + Math.abs(e.clientY - drag.y0) > 5) drag.moved = true;
   if (drag.cityCand && drag.moved && !drag.city) startCityDrag(drag.cityCand);
   if (drag.city) { dragCity(e); return; }  // moving a city: it follows the pointer, the camera stays
   if (drag.drawing) {  // drawing an area: a point every few pixels, no orbit
@@ -323,6 +328,7 @@ renderer.domElement.addEventListener("pointermove", (e) => {
 });
 renderer.domElement.addEventListener("pointerup", (e) => {
   renderer.domElement.style.cursor = "";
+  if (document.pointerLockElement) document.exitPointerLock();
   if (fly.on) { fly.on = false; fly.keys.clear(); fly.shift = false; renderZoom(); }
   if (drag?.drawing) { drag = null; finishArea(); return; }
   if (drag?.city) { const d = drag; drag = null; dropCity(d.city); return; }
@@ -502,19 +508,7 @@ function buildScene() {
     for (const [j, list] of arms) {
       const c = pts.get(j);
       if ((c[6] || 0) > 8000) continue;  // broken data: drawn as the red disc below
-      const widest = Math.max(...list.map((m) => m[6] || 500));
-      const dirs = list.map((m) => { const dx = m[1] - c[1], dy = m[2] - c[2], l = Math.hypot(dx, dy) || 1; return [dx / l, dy / l, m]; });
-      for (const [ux, uy, m] of dirs) {
-        const from = [c[1] - ux * widest, c[2] - uy * widest, c[3]];
-        (byColor[MAT.asphalt] ||= []).push(...ribbon([from, [m[1], m[2], m[3]]], ASPHALT_HALF[m[6]] || m[6] || 500, 65));
-      }
-      dirs.sort((a, b) => Math.atan2(a[1], a[0]) - Math.atan2(b[1], b[0]));
-      dirs.forEach(([ux, uy, m], k) => {  // the sidewalk corner between this arm and the next
-        const [vx, vy, n] = dirs[(k + 1) % dirs.length];
-        const ha = (m[6] || 500) + 190, hb = (n[6] || 500) + 190;
-        const cx = c[1] + ux * hb + vx * ha, cy = c[2] + uy * hb + vy * ha;
-        (byColor[MAT.sidewalk] ||= []).push(...ribbon([[cx - ux * 190, cy - uy * 190, c[3]], [cx + ux * 190, cy + uy * 190, c[3]]], 190, 75));
-      });
+      junctionTris(c, list, !/airport$/.test(aslug), byColor);  // the mesh the junction gets, not a stand-in
       legend["Road"] = MAT.asphalt;
       legend["Sidewalk"] = MAT.sidewalk;
     }
@@ -649,6 +643,74 @@ function drawCityMark() {
   cityMark.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
     new THREE.LineBasicMaterial({ color: col("accent"), depthTest: false, transparent: true, opacity: 0.9 })));
 }
+// road_io._junction_geometry for our flat kit, drawn here exactly as the mesh is built (keep the two in step):
+// the deck out to every arm's mouth, rounded corners between arms, a stop line and a zebra crossing on each
+// arm of a 3+ way junction, and the sidewalk corners that join the arms' own sidewalks.
+const WALK_OF = { 875: 350, 1400: 350 };  // citygen.WALK by half width: how much of a road's half is sidewalk
+function junctionTris(c, list, paint, byColor) {
+  const TAU = Math.PI * 2, DEG = Math.PI / 180;
+  const arms = list.map((m) => ({ a: (Math.atan2(m[2] - c[2], m[1] - c[1]) + TAU) % TAU, W: Math.max(272.5, m[6] || 500) }))
+    .sort((p, q) => p.a - q.a);
+  const n = arms.length;
+  if (n < 2) return;
+  const W = arms.map((r) => r.W), K = W.map((w) => Math.max(0, Math.min(w - 150, WALK_OF[Math.round(w)] || 0)));
+  const U = arms.map((r) => [Math.cos(r.a), Math.sin(r.a)]), N = U.map(([x, y]) => [-y, x]);
+  const gap = arms.map((r, k) => ((arms[(k + 1) % n].a - r.a + TAU) % TAU) || TAU);
+  const need = new Array(n).fill(0);
+  gap.forEach((g, k) => {
+    const v = g < 179 * DEG ? Math.max(W[k], W[(k + 1) % n]) / Math.tan(g / 2) + 300 : 0;
+    need[k] = Math.max(need[k], v);
+    need[(k + 1) % n] = Math.max(need[(k + 1) % n], v);
+  });
+  const d = need.map((x) => Math.max(700, Math.min(3000, x)));  // each arm's mouth: where its road ends
+  const pt = (k, along, side) => [U[k][0] * along + N[k][0] * side, U[k][1] * along + N[k][1] * side];
+  const meet = (k, j, wk, wj) => {
+    const p1 = [N[k][0] * wk, N[k][1] * wk], p2 = [-N[j][0] * wj, -N[j][1] * wj];
+    const den = U[k][0] * U[j][1] - U[k][1] * U[j][0];
+    if (Math.abs(den) < 1e-6) return null;
+    const s = ((p2[0] - p1[0]) * U[j][1] - (p2[1] - p1[1]) * U[j][0]) / den;
+    return [p1[0] + U[k][0] * s, p1[1] + U[k][1] * s];
+  };
+  const corner = (k, j, wk, wj) => {  // arm k's left edge round to arm j's right edge: 7 points
+    const L = pt(k, d[k], wk), R = pt(j, d[j], -wj), g = gap[k], mid = [(L[0] + R[0]) / 2, (L[1] + R[1]) / 2];
+    const square = g > 181 * DEG && n === 2;
+    const C = (g < 179 * DEG || square) ? meet(k, j, wk, wj) || mid : mid;
+    const chain = [L];
+    for (let i = 1; i <= 5; i++) {
+      const t = i / 6;
+      if (square) {
+        const u = Math.min(1, 2 * t), v = Math.max(0, 2 * t - 1);
+        chain.push([L[0] + (C[0] - L[0]) * u + (R[0] - C[0]) * v, L[1] + (C[1] - L[1]) * u + (R[1] - C[1]) * v]);
+      } else {
+        const a = (1 - t) ** 2, b = 2 * (1 - t) * t, cc = t * t;
+        chain.push([a * L[0] + b * C[0] + cc * R[0], a * L[1] + b * C[1] + cc * R[1]]);
+      }
+    }
+    chain.push(R);
+    return chain;
+  };
+  const put = (key, z, ...ps) => {
+    const arr = byColor[key] ||= [];
+    for (const p of ps) { const v = toV(c[1] + p[0], c[2] + p[1], c[3] + z); arr.push(v.x, v.y, v.z); }
+  };
+  const quad = (key, z, a, b, e, f) => put(key, z, a, b, e, a, e, f);
+  const DECK = 65, WALK = 75, PAINT = 68;  // lifts over the ground, as the roads' own deck and sidewalks
+  for (let k = 0; k < n; k++) {
+    const j = (k + 1) % n, outer = corner(k, j, W[k], W[j]);
+    put(MAT.asphalt, DECK, [0, 0], pt(k, d[k], -W[k]), pt(k, d[k], W[k]));
+    for (let i = 0; i + 1 < outer.length; i++) put(MAT.asphalt, DECK, [0, 0], outer[i], outer[i + 1]);
+    if (K[k] > 0 || K[j] > 0) {
+      const inner = corner(k, j, W[k] - K[k], W[j] - K[j]);
+      for (let i = 0; i + 1 < outer.length; i++) quad(MAT.sidewalk, WALK, inner[i], inner[i + 1], outer[i + 1], outer[i]);
+    }
+    const w = W[k] - K[k] - 60;
+    if (paint && n >= 3 && w >= 150) {
+      const bar = (a0, a1, s0, s1) => quad("fg", PAINT, pt(k, a0, s0), pt(k, a1, s0), pt(k, a1, s1), pt(k, a0, s1));
+      bar(d[k] - 70, d[k] - 40, -w, w);  // stop line
+      for (let s = -w; s + 50 <= w; s += 110) bar(d[k] - 420, d[k] - 120, s, s + 50);  // zebra
+    }
+  }
+}
 // citygen.outline(): a city's edge in a direction as a factor of its radius (keep the two in step)
 function cityOutline(c, angleDeg) {
   const s = Math.trunc(c.seed || 1), a = angleDeg * Math.PI / 180;
@@ -703,7 +765,7 @@ function formParts(form, w, d, h) {
     default: return [box(0, 0, 0, d, w, h)];
   }
 }
-function drawBuildings(layer, colour) {
+function drawBuildings(layer, colour, name) {
   const zx = state.view.zx || 1;
   const forms = layer.forms || [];
   const boxes = [], cyls = [];
@@ -725,7 +787,7 @@ function drawBuildings(layer, colour) {
       // part.sx runs along the facing (fx), part.sy across it: after this rotation the facing is the box's z
       dummy.scale.set(part.sy, Math.max(0.2, part.sz) * zx, part.sx);
       dummy.updateMatrix();
-      (part.c ? cyls : boxes).push([dummy.matrix.clone(), tint]);
+      (part.c ? cyls : boxes).push([dummy.matrix.clone(), tint, p]);
     }
   }
   const mat = new THREE.MeshStandardMaterial({ roughness: glass ? 0.35 : 0.7, metalness: glass ? 0.35 : 0.05 });
@@ -733,6 +795,12 @@ function drawBuildings(layer, colour) {
     if (!list.length) continue;
     const mesh = new THREE.InstancedMesh(geo, mat, list.length);
     list.forEach(([mtx, tint], i) => { mesh.setMatrixAt(i, mtx); mesh.setColorAt(i, tint); });
+    mesh.userData.info = (i) => {
+      const p = list[i][2];
+      return layerInfo(name, layer, p, [["Form", forms[p[6]] || "box"], ["Lot", `${p[7] || "?"} m wide × ${p[8] || "?"} m deep, ${p[5] || "?"} m tall`],
+        ["Built as", layer.build === "modular" ? "kit modules stacked by the grammar" : "one kit building stretched to the lot"],
+        ["Its real pieces", "press Real pieces here on the Layers tab"]]);
+    };
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     groups.pcg.add(mesh);
@@ -787,7 +855,7 @@ function drawPcg(legend) {
   const dummy = new THREE.Object3D();
   Object.entries(layers).forEach(([name, layer], k) => {
     const pts = layer.points || [];
-    if (!pts.length) return;
+    if (!pts.length || layer.role === "sidewalk_corner") return;  // corners are part of each junction's mesh now
     const colour = ROLE_COLOR[layer.role] || PCG_COLORS[k % PCG_COLORS.length];
     if (layer.kind === "site") {  // a neighbourhood's pieces, pre-scaled: [x, y, z, yaw, sx, sy, sz] x box_m
       const [bx, by, bz] = layer.box_m || [1, 1, 1];
@@ -804,6 +872,7 @@ function drawPcg(legend) {
         mesh.setMatrixAt(i, dummy.matrix);
       });
       mesh.receiveShadow = true;
+      mesh.userData.info = (i) => layerInfo(name, layer, pts[i]);
       groups.pcg.add(mesh);
       legend[`${name} · ${layer.count.toLocaleString()}`] = tint;
       return;
@@ -826,7 +895,7 @@ function drawPcg(legend) {
       return;
     }
     const building = layer.kind === "buildings";
-    if (building) { drawBuildings(layer, colour); legend[`${name} · ${layer.count.toLocaleString()}`] = colour; }
+    if (building) { drawBuildings(layer, colour, name); legend[`${name} · ${layer.count.toLocaleString()}`] = colour; }
     const [geo, lift] = building ? [null, 0] : pcgShape(name, layer.kind);
     if (!building) {
       // trees and bushes in leaf greens, not the UI's signal green; each one a little different
@@ -834,6 +903,7 @@ function drawPcg(legend) {
       const base = leafy ? tone("green", 0.45, layer.role === "bush" ? 0.4 : 0.33).lerp(tone("amber", 0.4, 0.34), layer.role === "bush" ? 0.25 : 0.12)
         : col(colour);
       const mesh = new THREE.InstancedMesh(geo, new THREE.MeshStandardMaterial({ roughness: 0.85 }), pts.length);
+      mesh.userData.info = (i) => layerInfo(name, layer, pts[i]);
       pts.forEach(([x, y, z, yaw, s], i) => {
         dummy.position.copy(toV(x, y, z));
         dummy.rotation.set(0, -yaw * Math.PI / 180, 0);
@@ -874,9 +944,13 @@ function drawExact(legend) {
   const zx = state.view.zx || 1, dummy = new THREE.Object3D();
   const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ roughness: 0.8 }), Math.max(1, ex.pieces));
   let i = 0;
+  const owner = [];  // instance -> [mesh index, its row], for a click
+  mesh.userData.info = (n) => pieceInfo(ex, owner[n][0], owner[n][1]);
   ex.meshes.forEach(([name, x0, y0, z0, x1, y1, z1], k) => {
     const tint = col((EXACT_TINT.find(([re]) => re.test(name)) || [0, "mix:fg:bg:0.25"])[1]);
-    for (const [x, y, z, yaw, sx, sy, sz] of ex.rows[k]) {
+    for (const row of ex.rows[k]) {
+      const [x, y, z, yaw, sx, sy, sz] = row;
+      owner.push([k, row]);
       const r = yaw * Math.PI / 180, c = Math.cos(r), s = Math.sin(r);
       const cx = (x0 + x1) / 2 * sx, cy = (y0 + y1) / 2 * sy;  // the box's middle in the piece's own frame
       dummy.position.copy(toV(x + cx * c - cy * s, y + cx * s + cy * c, z + (z0 + z1) / 2 * sz));
@@ -1027,12 +1101,44 @@ function pick(e) {
   ray.setFromCamera(m, camera);
   ray.params.Points.threshold = orbit.dist / 400;
   const hits = ray.intersectObjects([...groups.points.children, ...groups.pieces.children], false);
-  if (!hits.length) return false;
+  if (!hits.length) return inspectAt();
   const hit = hits[0];
   if (hit.object.isPoints) select(hit.object.userData.actor, hit.object.userData.pts[hit.index]);
   else select(hit.object.userData.actor, hit.object.userData.point);
   openTab("edit");
   return true;
+}
+// Click a building, prop or piece: what it is, which layer placed it, which mesh it uses and where it stands.
+const xyz = (x, y, z) => `${Math.round(x)}, ${Math.round(y)}, ${Math.round(z)} cm`;
+function layerInfo(name, layer, p, more = []) {
+  return { title: name, rows: [["Layer", name], ["Kind", layer.role || layer.kind || "prop"],
+    ["Mesh", layer.mesh || (layer.meshes || []).map((m) => m.name || m.path || m).join(", ") || "picked from the kit by its kind"],
+    ...more, ["Where", xyz(p[0], p[1], p[2])], ["In this layer", (layer.count || 0).toLocaleString()]] };
+}
+function pieceInfo(ex, k, row) {
+  const [name, x0, y0, z0, x1, y1, z1] = ex.meshes[k], [x, y, z, yaw, sx, sy, sz] = row;
+  const from = name.startsWith("SM_BK_") ? "BuildingKit.blend module (WorldGen/BuildingKit), stacked by the grammar"
+    : name.startsWith("SM_City_") ? "whole kit building (WorldGen/City), stretched to its lot" : "City Builder kit (WorldGen/Kit)";
+  return { title: name, rows: [["Piece", name], ["Comes from", from],
+    ["Size", `${Math.round((x1 - x0) * sx)} × ${Math.round((y1 - y0) * sy)} × ${Math.round((z1 - z0) * sz)} cm`],
+    ["Stretch", `${sx} × ${sy} × ${sz}`], ["Turn", `${yaw}°`], ["Where", xyz(x, y, z)],
+    ["Same piece in view", ex.rows[k].length.toLocaleString()], ["All pieces in view", ex.pieces.toLocaleString()]] };
+}
+function showInspect(info) {
+  let el = $("inspect");
+  if (!el) {
+    el = h("div", { class: "rn-help", id: "inspect", role: "status" });
+    el.style.bottom = "112px";
+    el.style.width = "340px";
+    $("view").parentElement.appendChild(el);
+  }
+  el.hidden = !info;
+  if (info) el.replaceChildren(h("b", {}, info.title), h("div", { class: "rn-kv" }, ...info.rows.flatMap(([k, v]) => [h("span", {}, k), h("span", {}, String(v))])));
+}
+function inspectAt() {  // the ray is already set by pick()
+  const hit = ray.intersectObjects(groups.pcg.children, false).find((x) => x.object.userData.info && x.instanceId != null);
+  showInspect(hit ? hit.object.userData.info(hit.instanceId) : null);
+  return !!hit;
 }
 function select(aslug, p) {
   state.sel = { actor: aslug, p };
@@ -2329,7 +2435,7 @@ function setTool(id) {
 }
 window.addEventListener("keydown", (e) => {
   if (e.target.closest?.("input, textarea, [contenteditable]")) return;  // typing, not shortcuts
-  if (e.key === "Escape") { if (cancelCityDrag()) return; if (state.tool !== "select") setTool("select"); $("toolHelp")?.setAttribute("hidden", ""); return; }
+  if (e.key === "Escape") { showInspect(null); if (cancelCityDrag()) return; if (state.tool !== "select") setTool("select"); $("toolHelp")?.setAttribute("hidden", ""); return; }
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   const k = e.key.toLowerCase();
   if (fly.on) {  // flying: W A S D Q E move, never switch tools
