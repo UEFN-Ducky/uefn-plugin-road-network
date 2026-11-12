@@ -88,6 +88,7 @@ const ctl = {};  // control handles by key, so loading a world can set them
 // road families by mesh name: half width (cm), colour variable, legend label
 const FAMILY = [
   [/BoulevardSidewalk/, 2000, "accent", "Boulevard + pavement"],
+  [/BridgeSidewalk/, 2000, "red", "Boulevard bridge"],
   [/OneLaneSidewalk/, 650, "green", "One-way + pavement"],
   [/Freeway/, 1650, "accent", "Freeway"],
   [/FourLane/, 1400, "blue", "Four-lane"],

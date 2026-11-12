@@ -31,6 +31,9 @@ ROAD_TYPES = {
     "6S": ("SM_Road_BoulevardSidewalk_Straight20m", 2000.0, 6, True, "six-lane boulevard with sidewalks"),
     "BR": ("SM_Road_Bridge_Straight20m", 925.0, 2, False, "bridge deck"),
     "BRR": ("SM_Road_Bridge_Ramp40m", 925.0, 2, False, "bridge ramp"),
+    # a boulevard's bridge: the wide deck with its 3.5 m sidewalks and a barrier on each edge, so the street keeps
+    # its width and its pavements across the water (the plain deck dropped them, stepping 7 m at each end)
+    "BW": ("SM_Road_BridgeSidewalk_Straight20m", 2000.0, 6, True, "boulevard bridge deck with sidewalks"),
     "ED": ("Elevated/SM_Elev_Deck20m", 1650.0, 4, False, "elevated deck"),
     "ER": ("Elevated/SM_Elev_Ramp20m", 650.0, 1, False, "elevated ramp"),
     "FR": ("SM_Road_TwoLane_Straight10m", 525.0, 2, False, "frontage road beside a freeway"),
@@ -60,7 +63,7 @@ ROAD_MESH = {k: v[0] for k, v in ROAD_TYPES.items()}
 HALF = {k: v[1] for k, v in ROAD_TYPES.items()}
 # A street's sidewalks are part of its road mesh: this much of each side's half width (cm) is kerb + sidewalk.
 # A junction is built with the same sidewalks round its corners, in its one mesh (road_io._junction_geometry).
-WALK = {"2S": 350.0, "4L": 350.0, "1S": 350.0, "6S": 350.0}
+WALK = {"2S": 350.0, "4L": 350.0, "1S": 350.0, "6S": 350.0, "BW": 350.0}
 # inside a city every street has sidewalks: a district set to a bare road type gets its sidewalk version
 CITY_STREET = {"2L": "2S", "1W": "1S", "6L": "6S"}
 
@@ -410,7 +413,7 @@ def graded(ter: dict, pads: list, blend: float = PAD_BLEND_CM):
 
 DECK_CLEAR_CM = 200.0  # the ground stays this far under a deck's top (its slab and beams), at least
 ROAD_BLEND_CM = 3000.0  # generated ground meets a road at its kerb and blends back to the hills over this
-STRUCTURES = {ROAD_MESH[k].split("/")[-1] for k in ("BR", "BRR", "ED", "ER")}  # bridges and viaducts stand free
+STRUCTURES = {ROAD_MESH[k].split("/")[-1] for k in ("BR", "BRR", "BW", "ED", "ER")}  # bridges and viaducts stand free
 
 
 def cut_pads(ter: dict, pads: list, locked=(), blend: float = 0.0) -> dict:
@@ -1337,6 +1340,8 @@ def structure_kinds(kind: str) -> tuple:
     a ramp stays a ramp."""
     if kind == "ER":
         return "ER", "ER"
+    if kind == "6S":
+        return "BW", "BW"
     return ("ED", "ED") if HALF.get(kind, 0.0) >= 1400.0 else ("BR", "BRR")
 
 
@@ -2176,6 +2181,7 @@ def _demo() -> None:
     assert [v[3] for v in overpass_via([[0, 0], [200000, 0]], [([100000, -5000], [100000, 5000])], "2L")[0] if len(v) > 3] == \
         ["BRR", "BR", "BRR", "2L"], "a street takes the two-lane bridge"
     assert all(HALF[structure_kinds(k)[0]] >= HALF[k] - 351 for k in ("2L", "2S", "4L", "6L", "6S")), "no bridge narrower than its carriageway"
+    assert HALF[structure_kinds("6S")[0]] == HALF["6S"] and WALK[structure_kinds("6S")[0]] == WALK["6S"], "a boulevard keeps its sidewalks across"
     br = build_actor({"a": [0, 0], "b": [200000, 0]}, [["a", "b", "4L", via]], lambda x, y: 0.0, "/Game/X/Roads")
     meshes = [s["mesh"] for s in br["segments"]]
     assert meshes.count("SM_Elev_Deck20m") == 3, meshes
