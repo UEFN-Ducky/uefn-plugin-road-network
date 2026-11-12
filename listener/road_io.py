@@ -826,7 +826,7 @@ def road_network_street_kit(root: str = "", rebuild: bool = False, plan: bool = 
     if not todo:
         return {"ok": True, "made": [], "paths": [], "errors": [], "note": "every street kit piece is already there"}
     master = _world_pbr_master(mat_folder, root)
-    need = {m for mats, _ in todo.values() for m in mats}
+    need = {m for mats, *_ in todo.values() for m in mats}  # some pieces carry a 3rd value: their folder
     looks = {k: _mi(mat_folder, f"MI_Street_{k}", master, root, look, unreal.LinearColor(*tint, 1))
              for k, (look, tint) in _STREET_LOOKS.items() if k in need}
     gp = unreal.GeometryScript_Primitives

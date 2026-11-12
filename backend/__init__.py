@@ -115,6 +115,26 @@ def register(api) -> None:
         # every editor call is metered: UEFN's memory before/after, refused when the last call blew up
         return uefn_memory.metered(command, lambda: api.listener(command, params or {}, timeout=timeout))
 
+    def listener_long(command: str, params: dict | None = None, timeout: float = 300) -> dict:
+        """A slow editor call (a mesh build, a heavy slice). Ducky's bridge stops waiting after ~30 s but UEFN
+        finishes the call anyway; then wait for UEFN to answer again (it runs one command at a time) instead of
+        failing the whole job. Returns {"ok": True, "late": True} when the reply itself was lost."""
+        try:
+            return listener(command, params, timeout=timeout)
+        except Exception as err:  # noqa: BLE001 - the bridge reports a lost reply in several wordings
+            text = str(err).lower()
+            if not any(w in text for w in ("timed out", "timeout", "not running")):
+                raise
+        end = time.time() + timeout
+        while time.time() < end:
+            time.sleep(5)
+            try:
+                api.listener("road_network_count", {"label": ""}, timeout=20)  # answers once UEFN is free
+                return {"ok": True, "late": True}
+            except Exception:  # noqa: BLE001 - still busy
+                continue
+        raise TimeoutError(f"UEFN is still busy with {command} after {round(timeout)} s.")
+
     def epic(toolset: str, tool: str, arguments: dict):
         # Same route as Ducky's own Epic callers: the pool keeps the nested arguments intact
         # (api.call_tool's dispatcher drops them for unreal__call_tool).
@@ -1450,9 +1470,12 @@ def register(api) -> None:
         offset = 0
         while offset is not None:
             base = uefn_memory.uefn_gb()
-            r = listener("road_network_kit_materials", {"root": root, "folders": folders, "offset": offset,
-                                                        "limit": 5, "max_grow_gb": 3.0}, timeout=300)
+            args = {"root": root, "folders": folders, "offset": offset, "limit": 5, "max_grow_gb": 3.0}
+            r = listener_long("road_network_kit_materials", args)
             uefn_memory.settle(base)
+            if r.get("late"):  # the reply (and its overrides) was lost: the same slice again is quick now
+                r = listener_long("road_network_kit_materials", args)
+                uefn_memory.settle(base)
             if not r.get("ok"):
                 return {**r, "street_kit": street}
             out["overrides"].update(r.get("overrides") or {})
@@ -1471,13 +1494,17 @@ def register(api) -> None:
         crashed it on the D3D12 descriptor limit."""
         todo = listener("road_network_street_kit", {"root": root, "rebuild": rebuild, "plan": True}).get("todo") or []
         made, errors = [], []
+        late = False
         for name in todo:
-            got = listener("road_network_street_kit", {"root": root, "rebuild": rebuild, "only": [name], "save": False},
-                           timeout=300)
+            got = listener_long("road_network_street_kit",
+                                {"root": root, "rebuild": rebuild, "only": [name], "save": False})
+            late = late or bool(got.get("late"))
             made += got.get("paths") or []
             errors += got.get("errors") or []
         if made:
-            listener("road_network_save_assets", {"paths": made}, timeout=300)
+            listener_long("road_network_save_assets", {"paths": made})
+        if late:  # a lost reply lost that piece's paths too: save whatever content is still unsaved
+            listener_long("save_all_dirty", {"content": True, "maps": False})
         return {"ok": not errors, "made": [p.rsplit("/", 1)[-1] for p in made], "errors": errors}
 
     BAKE_CHUNK = 1500  # points per Create Points node: keeps each node's settings a sensible size
