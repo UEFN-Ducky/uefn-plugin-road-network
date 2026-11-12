@@ -1025,14 +1025,16 @@ function drawPcg(legend) {
     const colour = ROLE_COLOR[layer.role] || PCG_COLORS[k % PCG_COLORS.length];
     if (layer.kind === "site") {  // a neighbourhood's pieces, pre-scaled: [x, y, z, yaw, sx, sy, sz] x box_m
       const [bx, by, bz] = layer.box_m || [1, 1, 1];
-      const tint = layer.tint || (layer.mesh === "SM_Kit_ParkingStall" ? "mix:fg:bg:0.05" : layer.mesh === "SM_City_CT_MidRise" ? "fg-dim" : MAT.drive);
+      const stall = layer.mesh === "SM_Kit_ParkingStall";  // a painted line on the car park's asphalt, not a white slab
+      const tint = layer.tint || (stall ? MAT.paint : layer.mesh === "SM_City_CT_MidRise" ? "fg-dim" : MAT.drive);
       const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: col(tint), roughness: 0.9 }), pts.length);
       const zx = state.view.zx || 1;
       pts.forEach(([x, y, z, yaw, sx, sy, sz], i) => {
-        dummy.position.copy(toV(x, y, z + 20));
+        const a = yaw * Math.PI / 180, side = stall ? by * sy * 50 : 0;  // the line down one long side of the stall
+        dummy.position.copy(toV(x - Math.sin(a) * side, y + Math.cos(a) * side, z + 20));
         dummy.position.y += bz * sz * zx / 2;
         dummy.rotation.set(0, -yaw * Math.PI / 180, 0);
-        dummy.scale.set(by * sy, Math.max(0.05, bz * sz) * zx, bx * sx);
+        dummy.scale.set(stall ? 0.12 : by * sy, Math.max(0.05, bz * sz) * zx, bx * sx);
         if (inExact(x, y)) dummy.scale.setScalar(0);
         dummy.updateMatrix();
         mesh.setMatrixAt(i, dummy.matrix);

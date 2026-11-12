@@ -1467,6 +1467,10 @@ def register(api) -> None:
                                     "points": walls, "meshes": [],
                                     "row": "x, y, base z, yaw, 1, length_m, height_m"}
             placed.update(pl.site_layers(cities, ground))  # complexes' parking, stalls, turnarounds, garages
+            # nothing on or under a freeway, a ramp or a highway (lots are cut before those are laid)
+            fast = [load_actor(nid, a)[1:] for a, h in actor_docs(nid).items()
+                    if str(h.get("label") or "").endswith(("Freeways", "Highways"))]
+            pl.clear_of(placed, pl.road_samples(fast, 400.0))
             # waterfront structures (piers, marinas, quays, beaches, ports, stilt / floating homes) + bridge pylons
             placed.update(waterfront.layers(cities, (data.get(f"net.{nid}.water") or {}).get("towers")))
             # airports: aircraft, jet bridges, hangars, tower, lights, aprons, fuel farm
@@ -1488,6 +1492,11 @@ def register(api) -> None:
             fit = fit_buildings(placed, fit_ter, cut, fit_ter is not terrain) if gen and terrain.get("heights") else None
             if fit:
                 fit["roads"] = road_fit(fit["ground"], actors, terrain)
+                for v in placed.values():  # the developments' pieces stand on the cut ground too (stalls on their slab)
+                    if v.get("kind") == "site" and v.get("role") == "site":
+                        up = 9 if v.get("mesh") == "SM_Kit_ParkingStall" else 0
+                        for p in v["points"]:
+                            p[2] = round(fit["ground"](p[0], p[1]) + up)
                 if fit_ter is not terrain:
                     # retaining walls only where the cut ground still steps beside a road (it is graded to the
                     # roads now, so most of the walls the raw hills asked for are gone and none stands in a slope)

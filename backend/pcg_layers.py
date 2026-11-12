@@ -844,6 +844,47 @@ def road_samples(actors: list, step: float = 500.0) -> list:
     return out
 
 
+def clear_of(placed: dict, samples: list, margin: float = 200.0) -> int:
+    """Nothing stands on or under a freeway, a ramp or a highway: every placed thing whose footprint reaches a
+    road sample (road_samples of those actors) is taken out. Lots are cut from the city's blocks before the
+    highways and their interchanges are laid, so towers stood on ramps (Nov 12 2026). Bridge parts stay.
+    Returns how many were removed."""
+    cell = 3000.0
+    grid: dict = {}
+    for x, y, half, _dx, _dy in samples:
+        grid.setdefault((int(x // cell), int(y // cell)), []).append((x, y, half))
+    if not grid:
+        return 0
+
+    def hit(x, y, r):
+        n = int((r + 2500) // cell) + 1
+        cx, cy = int(x // cell), int(y // cell)
+        return any((x - sx) ** 2 + (y - sy) ** 2 < (r + half + margin) ** 2
+                   for gx in range(cx - n, cx + n + 1) for gy in range(cy - n, cy + n + 1) for sx, sy, half in grid.get((gx, gy), ()))
+    gone = 0
+    for name, layer in placed.items():
+        if layer.get("role") in ("bridge", "road_wall") or name.startswith(("Bridge", "Pier")):
+            continue
+        box = layer.get("box_m")
+        keep = []
+        for p in layer.get("points") or []:
+            if layer.get("kind") == "buildings" and len(p) > 8:
+                r = 50.0 * max(p[7], p[8]) * 0.8  # width_m, depth_m
+            elif box and len(p) > 5:
+                r = 50.0 * max(box[0] * p[4], box[1] * p[5]) * 0.8
+            else:
+                r = float(layer.get("radius_cm") or 150.0) * 0.5
+            if not hit(p[0], p[1], r):
+                keep.append(p)
+        lost = len(layer.get("points") or []) - len(keep)
+        if lost:
+            gone += lost
+            layer["points"] = keep
+            layer["shown"] = len(keep)
+            layer["count"] = max(len(keep), int(layer.get("count", len(keep))) - lost)
+    return gone
+
+
 def inside(poly: list, x: float, y: float) -> bool:
     """Point in polygon (even-odd ray cast)."""
     hit = False
@@ -1197,6 +1238,13 @@ def pads(previewed: dict, margin_cm: float = 400.0) -> list:
     """Every previewed lot as a level pad for the heightmap: (x, y, cos, sin, half width, half depth, z)."""
     out = []
     for v in previewed.values():
+        if v.get("kind") == "site" and v.get("role") == "site" and list((v.get("box_m") or [0, 0])[:2]) == [1, 1]:
+            # a development's slab (car park, apron, field, pool, yard): level under it too, or it lies half
+            # buried on a slope with its stalls draped over the hill beside it
+            for p in v["points"]:
+                a = math.radians(p[3])
+                out.append((p[0], p[1], math.cos(a), math.sin(a), p[5] * 50 + margin_cm / 2, p[4] * 50 + margin_cm / 2, p[2]))
+            continue
         if v.get("kind") != "buildings":
             continue
         for p in v["points"]:
@@ -1334,6 +1382,11 @@ def _demo() -> None:
         front = (row[0] + math.cos(f) * (600 + row[8] * 50), row[1] + math.sin(f) * (600 + row[8] * 50))
         assert any(math.dist(front, (frx, fry)) < 30 and abs((row[3] - lyaw + 180) % 360 - 180) < 1
                    for lyaw, frx, fry in by_front.values()), row[:4]
+    # nothing stands on a freeway or a ramp: a tower on it goes, its neighbour 60 m off stays, bridge parts stay
+    on = {"T": {"kind": "buildings", "role": "office", "count": 2, "points": [[0, 500, 0, 0, 1, 40, 0, 30.0, 30.0], [0, 6000, 0, 0, 1, 40, 0, 30.0, 30.0]]},
+          "Bridge piers": {"kind": "site", "role": "bridge", "box_m": [2, 2, 1], "points": [[0, 0, 0, 0, 1, 1, 5]]}}
+    assert clear_of(on, [(x, 0.0, 650.0, 1.0, 0.0) for x in range(-2000, 2001, 400)]) == 1
+    assert [p[1] for p in on["T"]["points"]] == [6000] and on["T"]["count"] == 1 and len(on["Bridge piers"]["points"]) == 1
     print("pcg layers ok", len(full), "layers,", len(out["nodes"]), "nodes", len(out["edges"]), "wires,",
           {n: v["count"] for n, v in pv.items() if v["count"]})
 if __name__ == "__main__":
