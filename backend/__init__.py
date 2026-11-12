@@ -748,10 +748,12 @@ def register(api) -> None:
             return m.group(1) + "/Kit"
         for s in segs:
             for ln in s["lines"]:
-                m = re.search(r"'(/[^']+?/WorldGen/Roads)/SM_Road_", ln)
+                # any piece straight in the roads folder: an airport has only SM_Air_ runways, docks SM_Water_
+                m = re.search(r"'(/[^']+?/WorldGen/Roads)/SM_[A-Za-z]+_", ln)
                 if m:
                     return m.group(1) + "/Junctions/Kit"
-        return ""
+        folder = road_folder()  # nothing to read it off: the world's own roads folder
+        return folder + "/Junctions/Kit" if folder else ""
 
     def road_folder() -> str:
         """The project's own road meshes folder: a generated world's own, else read off any stored network's
@@ -1156,11 +1158,12 @@ def register(api) -> None:
         doc = data.get(f"net.{nid}") if nid else None
         if not doc or not doc.get("generated"):
             return {"ok": False, "error": f"{net_id!r} is not a generated world."}
-        if doc["generated"].get("ground_from"):
-            return {"ok": False, "error": "This world uses an existing terrain, so it has no heightmap of its own."}
-        ter = (data.get(f"net.{nid}.scan") or {}).get("terrain") or {}
+        # a world laid over an existing terrain rebuilds that terrain from its ground scan (the landscape it
+        # was scanned from can be gone from the level: then the roads would have nothing to sit on)
+        src = slug(doc["generated"].get("ground_from") or "") or nid
+        ter = (data.get(f"net.{src}.scan") or {}).get("terrain") or {}
         if not ter.get("heights"):
-            return {"ok": False, "error": "This world has no stored terrain. Generate it again."}
+            return {"ok": False, "error": f"{src!r} has no stored ground scan. Generate the world again."}
         hm = write_heightmap(nid, ter)  # always from the stored terrain, so every PC gets the same file
         return {"ok": True, "id": nid, **hm, "ground_fit": fit_summary(),
                 "how": f"Landscape mode > Manage > New > Import from File: pick the PNG, resolution {hm['resolution']}, "
