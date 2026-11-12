@@ -2070,6 +2070,9 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
                 settle_grades(a)
         if not weld_ends(out):  # ... and any end whose road that moved, put back on it
             break
+    for _ in range(4):  # (a ramp cut back in the last of those passes still has its new end to land)
+        if not weld_ends(out):
+            break
     return out
 
 
@@ -2223,6 +2226,35 @@ def weld_ends(actors: dict) -> int:
                     moved += 1
                 continue
             d, nx, ny, level, half, onto, ux, uy = hit
+            if ss[0]["mesh"].split("/")[-1] in RAMP_MESHES and onto not in FREEWAY_MESHES | STRUCTURES:
+                # (a street only: beside a freeway the ramp's last pieces are its merge lane)
+                # a ramp that comes in at a shallow angle ran on INSIDE the road it joins for its last pieces (a slip
+                # ramp along a frontage road, 100 m of deck lying in the street): while the point before the end is
+                # in that road too, the end goes; the ramp stops where it first touches
+                def inside(o):
+                    for lab2, u, v, mesh in every:
+                        if mesh != onto or (lab2 == label and u["i"] in mine and v["i"] in mine):
+                            continue
+                        wx, wy = v["x"] - u["x"], v["y"] - u["y"]
+                        t = max(0.0, min(1.0, ((o["x"] - u["x"]) * wx + (o["y"] - u["y"]) * wy) / (wx * wx + wy * wy or 1.0)))
+                        # (its middle on the road itself: a loop's last piece brushing the kerb is its merge)
+                        if math.hypot(o["x"] - u["x"] - wx * t, o["y"] - u["y"] - wy * t) < half and \
+                                abs(u["z"] + (v["z"] - u["z"]) * t - o["z"]) < 300:
+                            return True
+                    return False
+                end, seg, gone = p, ss[0], 0
+                while gone < 40:  # (all of them in this pass: the next welds the new end)
+                    o = by[seg["b"] if seg["a"] == end["i"] else seg["a"]]
+                    if len(touch.get(o["i"], ())) != 2 or o["mesh"] or not inside(o) or \
+                            seg not in a["segments"] or end not in a["points"]:  # (gone already, from its other end)
+                        break
+                    a["points"].remove(end)
+                    a["segments"].remove(seg)
+                    gone += 1
+                    end, seg = o, next(s for s in touch[o["i"]] if s is not seg)
+                if gone:
+                    moved += 1
+                    continue
             # where the end sits: inside the road it joins, its edge on that road's edge (never beside it with grass
             # between, Nov 12 2026). A ramp end gets its own piece: running along the road (a merge or a diverge)
             # it stops beside it and its gore widens out to the road's edge line; meeting it head on (a loop's foot,
@@ -2498,6 +2530,15 @@ def _demo() -> None:
                                 "segments": [_segment(2, 0, 1, "ED", "/G", lifted=True), _segment(5, 3, 4, "2L", "/G")]}},
                          lambda x, y: 0.0)[1]
     assert len(under) == 3 and all(abs(c[0] - 1500) > 525 for c in under), ("no pier in the street under the deck", under)
+    # a slip ramp sliding into a street at a shallow angle: the pieces lying inside the street go
+    slip = {"T Roads": {"points": [_point(0, 0, 0, 0, 0, 525), _point(1, 20000, 0, 0, 0, 525)], "segments": [_segment(2, 0, 1, "2L", "/G")]},
+            "T Freeways": {"points": [_point(k, 2000 + 2000 * k, y, 0, 0, 650, lifted=True) for k, y in enumerate((5000, 3000, 2000, 1200, 400, 200))],
+                           "segments": [_segment(10 + k, k, k + 1, "ER", "/G", lifted=True) for k in range(5)]}}
+    for _ in range(8):
+        if not weld_ends(slip):
+            break
+    assert len(slip["T Freeways"]["points"]) == 5 and all(abs(p["y"]) > 1000 for p in slip["T Freeways"]["points"]), \
+        [(p["x"], p["y"]) for p in slip["T Freeways"]["points"]]
     # a ramp welded 30 m up with a fork 10 m back: the climb is shared out along both branches, none left a cliff
     yp = [_point(0, 0, 0, 3000, 0, 650, lifted=True), _point(1, 1000, 0, 0, 0, 650, lifted=True)] + \
         [_point(2 + k, 3000 + 2000 * k, sd * 500 * (k + 1), 0, 0, 650, lifted=True) for sd in (1, -1) for k in range(30)][:60]

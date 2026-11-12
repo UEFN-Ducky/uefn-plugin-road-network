@@ -1702,6 +1702,37 @@ def register(api) -> None:
                     if abs(h[0] - h[1]) > 100:
                         jumps.append((round(abs(h[0] - h[1]) * 2), round(p["x"]), round(p["y"]), label,
                                       ss[0]["mesh"].split("/")[-1], ss[1]["mesh"].split("/")[-1]))
+        # one road laid along another: two pieces that run the same way with their middles closer than 0.6 of
+        # their half widths together and share no point. 'in' = at the same level (one inside the other),
+        # 'over' = a deck lengthwise over a road on the ground
+        flat = [(label, by[s["a"]], by[s["b"]], s["mesh"].split("/")[-1]) for label, by, segs in roads for s in segs
+                if s.get("mesh") and s["a"] in by and s["b"] in by]
+        cells: dict = {}
+        for k, (_l, a, b, _m) in enumerate(flat):
+            cells.setdefault((int((a["x"] + b["x"]) / 2 // 6000), int((a["y"] + b["y"]) / 2 // 6000)), []).append(k)
+        lap = []
+        for k, (l1, a, b, m1) in enumerate(flat):
+            mx, my, mz = (a["x"] + b["x"]) / 2, (a["y"] + b["y"]) / 2, (a["z"] + b["z"]) / 2
+            ux, uy = b["x"] - a["x"], b["y"] - a["y"]
+            ul = math.hypot(ux, uy)
+            if ul < 300:
+                continue
+            for gx in range(int(mx // 6000) - 1, int(mx // 6000) + 2):
+                for gy in range(int(my // 6000) - 1, int(my // 6000) + 2):
+                    for j in cells.get((gx, gy), ()):
+                        l2, c, d, m2 = flat[j]
+                        if j <= k or (l1 == l2 and {a["i"], b["i"]} & {c["i"], d["i"]}):
+                            continue
+                        vx, vy = d["x"] - c["x"], d["y"] - c["y"]
+                        vl = math.hypot(vx, vy)
+                        if vl < 300 or abs(ux * vx + uy * vy) / (ul * vl) < 0.94:
+                            continue
+                        t = max(0.0, min(1.0, ((mx - c["x"]) * vx + (my - c["y"]) * vy) / (vl * vl)))
+                        off = math.hypot(mx - c["x"] - vx * t, my - c["y"] - vy * t)
+                        if off < 0.6 * (half_of.get(m1, 500.0) + half_of.get(m2, 500.0)):
+                            dz = mz - (c["z"] + (d["z"] - c["z"]) * t)
+                            lap.append(("in" if abs(dz) < 300 else "over", round(off), round(mx), round(my), round(dz),
+                                        f"{l1} {m1}", f"{l2} {m2}"))
         # a freeway or ramp nobody could drive: a piece steeper than 15 %, shorter than 3 m, or a bend sharper than
         # 60 degrees at one point (an end pulled onto its road with too little ramp left to get there)
         shape = []
@@ -1729,7 +1760,14 @@ def register(api) -> None:
                     if turn > 60:  # (a loop ramp turns ~50 degrees a point by design: the spline rounds it)
                         shape.append(("kinked", round(turn), round(p["x"]), round(p["y"]), round(p["z"]), round(p["z"]),
                                       round(min(r0, r1)), label, mesh, p.get("mesh") or ""))
-        return {"shape": {k: sum(1 for r in shape if r[0] == k) for k in ("steep", "short", "kinked")},
+        pairs: dict = {}
+        for r in lap:
+            key = f"{r[0]}: {r[5].rsplit(' ', 1)[0].split()[-1]} / {r[6].rsplit(' ', 1)[0].split()[-1]}"
+            pairs[key] = pairs.get(key, 0) + 1
+        return {"laid_along": {"in": sum(1 for r in lap if r[0] == "in"), "over": sum(1 for r in lap if r[0] == "over"),
+                               "by_actors": pairs, "worst": sorted(lap, key=lambda r: (r[0] != "in", r[1]))[:12],
+                               "row": "in | over, cm between their middles, x, y, cm above the other, piece, piece"},
+                "shape": {k: sum(1 for r in shape if r[0] == k) for k in ("steep", "short", "kinked")},
                 "shape_worst": sorted((r for r in shape if r[0] == "steep"), key=lambda r: -r[1])[:10]
                 + sorted((r for r in shape if r[0] != "steep"), key=lambda r: -r[1])[:6],
                 "shape_row": "steep (grade %) | short | kinked (degrees), x, y, z, z at the other end, run cm, actor, mesh, connector",
