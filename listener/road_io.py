@@ -168,16 +168,21 @@ _OWN_UV_CM = 400.0
 _PAINT_Z = 1.0  # painted lines sit this far above the junction deck
 _STOP_LINE = (70.0, 40.0)  # a stop line runs from this far to this far inside an arm's mouth
 _ZEBRA = (420.0, 120.0, 50.0, 110.0)  # crosswalk bars: from / to inside the mouth, bar width, pitch
+_KERB_Z = 15.0  # a junction's sidewalk stands this far above its deck: the road meshes' kerb height
 
 
 def _junction_geometry(arm_deg: list, half: float = _R1_W, flat: bool = False, halves: list | None = None,
-                       paint: bool = True) -> tuple:
+                       paint: bool = True, walks: list | None = None) -> tuple:
     """Junction for arms at these world angles (degrees). Each arm's mouth is as wide as ITS road (halves:
     half width per arm, cm; else `half` for all): a lane meeting a boulevard gets a lane-wide mouth, never
     the boulevard's. flat: our own kit's flat deck and planar UVs; otherwise the Fortnite Road1 crown and its
     texture strip. On a flat 3+ way junction every arm also gets a stop line and a zebra crossing (paint).
-    Returns (verts, uvs, tris, mouth distance per arm in the given order, (paint verts, uvs, tris))."""
+    walks: per arm, how much of its half width is sidewalk (cm; 0 = none). The junction then carries its own
+    kerbs and sidewalk corners in the same mesh (a third buffer), joining each arm's sidewalks round the corner.
+    Returns (verts, uvs, tris, mouth distance per arm in the given order, (paint verts, uvs, tris),
+    (sidewalk verts, uvs, tris))."""
     widths = [max(0.5 * _R1_W, float(h)) for h in (halves if halves and len(halves) == len(arm_deg) else [half] * len(arm_deg))]
+    walk_in = walks if flat and walks and len(walks) == len(arm_deg) else [0.0] * len(arm_deg)
     edge_z = _OWN_DECK_Z if flat else -2.0
 
     def uv(x, y, u_strip):
@@ -185,6 +190,7 @@ def _junction_geometry(arm_deg: list, half: float = _R1_W, flat: bool = False, h
     order = sorted(range(len(arm_deg)), key=lambda k: arm_deg[k] % 360.0)
     ang = [math.radians(arm_deg[k] % 360.0) for k in order]
     W = [widths[k] for k in order]
+    K = [max(0.0, min(W[i] - 150.0, float(walk_in[k] or 0.0))) for i, k in enumerate(order)]  # sidewalk per arm
     profiles = [[(s * w / _R1_W, _OWN_DECK_Z if flat else z) for s, z in _R1_PROFILE] for w in W]
     n = len(ang)
     U = [(math.cos(a), math.sin(a)) for a in ang]
@@ -201,31 +207,26 @@ def _junction_geometry(arm_deg: list, half: float = _R1_W, flat: bool = False, h
     def pt(k, along, side):
         return (U[k][0] * along + N[k][0] * side, U[k][1] * along + N[k][1] * side)
 
-    def edges_meet(k, j):
-        # where arm k's left edge (N_k*W_k + U_k*s) meets arm j's right edge (-N_j*W_j + U_j*t), or None
-        p1, p2 = (N[k][0] * W[k], N[k][1] * W[k]), (-N[j][0] * W[j], -N[j][1] * W[j])
+    def edges_meet(k, j, wk, wj):
+        # where arm k's left edge (N_k*wk + U_k*s) meets arm j's right edge (-N_j*wj + U_j*t), or None
+        p1, p2 = (N[k][0] * wk, N[k][1] * wk), (-N[j][0] * wj, -N[j][1] * wj)
         den = U[k][0] * U[j][1] - U[k][1] * U[j][0]
         if abs(den) < 1e-6:
             return None
         s_ = ((p2[0] - p1[0]) * U[j][1] - (p2[1] - p1[1]) * U[j][0]) / den
         return p1[0] + U[k][0] * s_, p1[1] + U[k][1] * s_
 
-    ring = []  # (x, y, z, is_fillet_chain)
-    chains = []
-    for k in range(n):
-        for s, z in profiles[k]:
-            x, y = pt(k, d[k], s)
-            ring.append((x, y, z))
-        j = (k + 1) % n
-        L, R = pt(k, d[k], W[k]), pt(j, d[j], -W[j])
+    def corner(k, j, wk, wj):
+        # the edge from arm k's left side (wk from its centre line) round to arm j's right side (wj): 7 points
+        L, R = pt(k, d[k], wk), pt(j, d[j], -wj)
         g = gap[k]
         square = False
         mid = ((L[0] + R[0]) / 2, (L[1] + R[1]) / 2)
         if g < math.radians(179):
-            C = edges_meet(k, j) or mid  # the corner between two roads of their own widths
+            C = edges_meet(k, j, wk, wj) or mid  # the corner between two roads of their own widths
         elif g > math.radians(181) and n == 2:
             # the outside of an elbow: the two road edges run on to meet in a SQUARE corner
-            C = edges_meet(k, j) or mid
+            C = edges_meet(k, j, wk, wj) or mid
             square = True
         else:
             C = mid
@@ -239,8 +240,18 @@ def _junction_geometry(arm_deg: list, half: float = _R1_W, flat: bool = False, h
                 a, b, cc = (1 - t) ** 2, 2 * (1 - t) * t, t * t
                 q = (a * L[0] + b * C[0] + cc * R[0], a * L[1] + b * C[1] + cc * R[1])
             chain.append(q)
-            ring.append((q[0], q[1], edge_z))
         chain.append(R)
+        return chain
+
+    ring = []  # (x, y, z, is_fillet_chain)
+    chains = []
+    for k in range(n):
+        for s, z in profiles[k]:
+            x, y = pt(k, d[k], s)
+            ring.append((x, y, z))
+        j = (k + 1) % n
+        chain = corner(k, j, W[k], W[j])
+        ring.extend((q[0], q[1], edge_z) for q in chain[1:-1])
         chains.append((chain, k, j))
     verts, uvs, tris = [(0.0, 0.0, _OWN_DECK_Z if flat else 16.0)], [uv(0.0, 0.0, _U_ASPHALT)], []
     for x, y, z in ring:
@@ -287,7 +298,7 @@ def _junction_geometry(arm_deg: list, half: float = _R1_W, flat: bool = False, h
                 pu.append(uv(x, y, _U_ASPHALT))
             ptri.extend([(base, base + 2, base + 1), (base, base + 3, base + 2)])  # facing up, like the deck
         for k in range(n):
-            w = W[k] - 60.0
+            w = W[k] - K[k] - 60.0  # the carriageway only: never across the sidewalk
             if w < 150.0:
                 continue  # a footpath-wide arm: nothing to paint
             bar(k, d[k] - _STOP_LINE[0], d[k] - _STOP_LINE[1], -w, w)
@@ -295,7 +306,29 @@ def _junction_geometry(arm_deg: list, half: float = _R1_W, flat: bool = False, h
             while s + _ZEBRA[2] <= w:
                 bar(k, d[k] - _ZEBRA[0], d[k] - _ZEBRA[1], s, s + _ZEBRA[2])
                 s += _ZEBRA[3]
-    return verts, uvs, tris, mouth, (pv, pu, ptri)
+    sv, su, stri = [], [], []
+    z0, z1 = _OWN_DECK_Z, _OWN_DECK_Z + _KERB_Z
+
+    def quad(p, top):
+        (ax, ay, _), (bx, by, _), (cx, cy, _) = p[0], p[1], p[2]
+        up = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax) <= 0  # UE: clockwise seen from above faces up
+        for flip in ([not up] if top else [False, True]):  # a kerb face: both sides, on vertices of their own
+            base = len(sv)
+            for x, y, z in p:
+                sv.append((x, y, z))
+                su.append(uv(x, y, _U_SHOULDER))
+            stri.extend([(base, base + 2, base + 1), (base, base + 3, base + 2)] if flip
+                        else [(base, base + 1, base + 2), (base, base + 2, base + 3)])
+    for chain, k, j in chains:
+        if K[k] <= 0 and K[j] <= 0:
+            continue
+        inner = corner(k, j, W[k] - K[k], W[j] - K[j])
+        for i in range(len(chain) - 1):
+            a, b, c, e = inner[i], inner[i + 1], chain[i + 1], chain[i]
+            quad([(a[0], a[1], z1), (b[0], b[1], z1), (c[0], c[1], z1), (e[0], e[1], z1)], True)  # the paving
+            quad([(a[0], a[1], z0), (b[0], b[1], z0), (b[0], b[1], z1), (a[0], a[1], z1)], False)  # the kerb
+            quad([(e[0], e[1], z0), (c[0], c[1], z0), (c[0], c[1], z1), (e[0], e[1], z1)], False)  # its back edge
+    return verts, uvs, tris, mouth, (pv, pu, ptri), (sv, su, stri)
 
 
 @register("road_network_build_junctions")
@@ -310,15 +343,19 @@ def road_network_build_junctions(folder: str = "", pieces: list | None = None) -
     mat = unreal.load_asset(own if flat else _R1_MATERIAL)
     white = own.replace("M_Asphalt", "M_PaintW")
     line_mat = unreal.load_asset(white) if flat and unreal.EditorAssetLibrary.does_asset_exist(white) else None
+    # the kit's own sidewalk material, so a junction's corners match the sidewalks of the roads that meet there
+    walk_path = next((p for p in (own.replace("M_Asphalt", n) for n in ("M_Sidewalk", "M_Concrete", "M_Curb"))
+                      if flat and unreal.EditorAssetLibrary.does_asset_exist(p)), "")
+    walk_mat = unreal.load_asset(walk_path) if walk_path else line_mat
     out, errors = {}, []
     for piece in pieces or []:
         name, arms = str(piece.get("name") or ""), list(piece.get("arms") or [])
         if not name or len(arms) < 2:
             errors.append(f"{name or '?'}: needs a name and 2+ arms")
             continue
-        verts, uvs, tris, mouth, lines = _junction_geometry(
+        verts, uvs, tris, mouth, lines, walk = _junction_geometry(
             arms, float(piece.get("half") or _R1_W), flat, piece.get("halves"),
-            bool(piece.get("paint", True)) and line_mat is not None)
+            bool(piece.get("paint", True)) and line_mat is not None, piece.get("walks") if walk_mat else None)
         buf = unreal.GeometryScriptSimpleMeshBuffers()
         buf.vertices = [unreal.Vector(*v) for v in verts]
         buf.uv0 = [unreal.Vector2D(*u) for u in uvs]
@@ -332,6 +369,12 @@ def road_network_build_junctions(folder: str = "", pieces: list | None = None) -
             lb.uv0 = [unreal.Vector2D(*u) for u in lines[1]]
             lb.triangles = [unreal.IntVector(*t) for t in lines[2]]
             unreal.GeometryScript_MeshEdits.append_buffers_to_mesh(dm, lb, 1)
+        if walk[2]:  # kerbs and sidewalk corners: one mesh with the deck, its own slot
+            wb = unreal.GeometryScriptSimpleMeshBuffers()
+            wb.vertices = [unreal.Vector(*v) for v in walk[0]]
+            wb.uv0 = [unreal.Vector2D(*u) for u in walk[1]]
+            wb.triangles = [unreal.IntVector(*t) for t in walk[2]]
+            unreal.GeometryScript_MeshEdits.append_buffers_to_mesh(dm, wb, 2 if lines[2] else 1)
         unreal.GeometryScript_Normals.compute_split_normals(dm, unreal.GeometryScriptSplitNormalsOptions(),
                                                            unreal.GeometryScriptCalculateNormalsOptions())
         path = f"{folder}/{name}"
@@ -342,8 +385,9 @@ def road_network_build_junctions(folder: str = "", pieces: list | None = None) -
             sm = res[0] if isinstance(res, tuple) else res
         opts = unreal.GeometryScriptCopyMeshToAssetOptionsV2()
         opts.replace_materials = True
-        opts.new_materials = [mat, line_mat] if lines[2] else [mat]
-        opts.new_material_slot_names = (["Asphalt", "Paint"] if lines[2] else ["Asphalt" if flat else "Road1"])
+        opts.new_materials = [mat] + ([line_mat] if lines[2] else []) + ([walk_mat] if walk[2] else [])
+        opts.new_material_slot_names = (["Asphalt" if flat else "Road1"] + (["Paint"] if lines[2] else [])
+                                        + (["Sidewalk"] if walk[2] else []))
         lod = unreal.GeometryScriptMeshWriteLOD()
         unreal.GeometryScript_AssetUtils.copy_mesh_to_static_mesh_v2(dm, sm, opts, lod)
         out[name] = mouth

@@ -380,6 +380,8 @@ def bake(previewed: dict, root: str, interiors: bool = True) -> tuple:
                     _interior(groups, root, profile_parts(parts), INTERIOR[role], x, y, z, yaw, sx, sy, sz)
                 _ground_pieces(groups, root, p, x, y, z, yaw, w, d)
             baked[name] = len(pts)
+        elif role == "sidewalk_corner":
+            baked[name] = 0  # every junction's mesh carries its own sidewalk corners: no loose pads on top of them
         elif role in PROPS:
             opts = PROPS[role]
             for p in pts:

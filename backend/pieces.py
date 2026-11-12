@@ -17,6 +17,10 @@ CONVENTIONS = {
     "axes": "Z up. +X is the FRONT: the facade with the door faces the street along +X. Y is the width.",
     "pivot": "bottom centre of the footprint (x 0, y 0, z 0 on the ground / floor line); roads: the deck "
              "centre line at z 0, running along +X (they bend as spline meshes).",
+    "roads": "ONE mesh per road type: the deck, both kerbs and both sidewalks are the same mesh (slots Asphalt, Curb, "
+             "Sidewalk), never separate sidewalk pieces. The sidewalk is the outer `sidewalk_cm` of each side, 15 cm "
+             "above the deck. Junctions are built by City Builder as one mesh too: deck, stop lines, crossings, kerbs "
+             "and the sidewalk corners that join the arms' sidewalks.",
     "materials": "one slot per surface, named after what it is so City Builder's world-PBR instances map it: "
                  "Glass, Brick, Concrete, Stone, Trim, Roof, Metal, Frame, Wood, Siding, Gold, Neon, Floor, Foliage. "
                  "Glass slots become see-through M_City_Glass.",
@@ -71,6 +75,7 @@ def manifest(root: str = "/<project>") -> dict:
         length = 2000 if "20m" in mesh else 4000 if "40m" in mesh else 1000
         pieces.append({"name": mesh.rsplit("/", 1)[-1], "folder": "WorldGen/Roads" + ("/Elevated" if "/" in mesh else ""),
                        "size_cm": [length, round(half * 2), 30], "used_by": [f"road {code}: {what}"],
+                       "sidewalk_cm": cg.WALK.get(code, 0),
                        "made_by": "City Builder (street kit; a Blender model with this name replaces it)"
                                   if code in ("SW", "WK", "DW") else "Blender road kit",
                        "spec": f"{lanes} lanes{', kerb + sidewalk both sides' if walk else ''}; deck top at z 0, "
@@ -83,7 +88,9 @@ def manifest(root: str = "/<project>") -> dict:
                        "made_by": "BuildingKit.blend (Blender, metres: export x100). Walls run +X from the pivot, "
                                   "outside on -Y, one storey tall"})
     pieces.append({"name": "SM_JK_<world>_<actor>_<node>", "folder": "WorldGen/Roads/Junctions/Kit", "size_cm": None,
-                   "used_by": ["every junction"], "made_by": "City Builder builds each one to fit its arms (no Blender)"})
+                   "used_by": ["every junction"],
+                   "made_by": "City Builder builds each one to fit its arms (no Blender): one mesh with the deck, "
+                              "painted stop lines and crossings, kerbs and sidewalk corners (slots Asphalt, Paint, Sidewalk)"})
     want = []
     for name, kind, role, what in WANTED:
         spec = {"name": name, "kind": kind, "spec": what, "folder": "WorldGen/Kit" if kind == "building" else "WorldGen/Kit/Street"}

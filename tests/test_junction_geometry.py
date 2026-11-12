@@ -12,13 +12,14 @@ tree = ast.parse(src.read_text(encoding="utf-8"))
 keep = [n for n in tree.body
         if (isinstance(n, ast.FunctionDef) and n.name == "_junction_geometry")
         or (isinstance(n, ast.Assign) and all(isinstance(t, (ast.Name, ast.Tuple)) for t in n.targets)
-            and ast.unparse(n.targets[0]).lstrip("(").startswith(("_R1_", "_U_", "_OWN_", "_PAINT_", "_STOP_", "_ZEBRA")))]
+            and ast.unparse(n.targets[0]).lstrip("(").startswith(("_R1_", "_U_", "_OWN_", "_PAINT_", "_STOP_", "_ZEBRA", "_KERB_")))]
 ns = {"math": math}
 exec(compile(ast.Module(keep, []), str(src), "exec"), ns)
 geo = ns["_junction_geometry"]
 
 # a + crossing of a six-lane boulevard (east-west) and a lane (north-south)
-verts, uvs, tris, mouth, (pv, pu, pt) = geo([0, 90, 180, 270], flat=True, halves=[1650, 525, 1650, 525])
+verts, uvs, tris, mouth, (pv, pu, pt), bare = geo([0, 90, 180, 270], flat=True, halves=[1650, 525, 1650, 525])
+assert bare == ([], [], []), "roads with no sidewalk: a junction with none"
 assert len(mouth) == 4 and all(700 <= m <= 3000 for m in mouth), mouth
 
 
@@ -41,4 +42,15 @@ v2 = geo([0, 90, 180], half=525, flat=True)[0]
 assert any(abs(x - 525) < 1 and abs(y - 525) < 1 for x, y, _ in v2) is False, "the corner is rounded, not a vertex"
 # an elbow and an airport junction get no paint
 assert geo([0, 90], half=525, flat=True)[4][2] == [] and geo([0, 90, 180], half=900, flat=True, paint=False)[4][2] == []
+# two streets with 3.5 m sidewalks: the junction carries its four sidewalk corners and kerbs in the same mesh
+_, _, _, m4, (qv, _, _), (sv, su, st_) = geo([0, 90, 180, 270], flat=True, halves=[875] * 4, walks=[350] * 4)
+tops = [t for t in st_ if all(abs(sv[i][2] - 17.0) < 1e-6 for i in t)]
+assert len(tops) == 4 * 6 * 2 and len(su) == len(sv), (len(tops), "6 paving quads a corner, a kerb height up")
+for a, b, c in tops:
+    (x0, y0, _), (x1, y1, _), (x2, y2, _) = sv[a], sv[b], sv[c]
+    assert (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0) <= 1e-6, "paving faces up"
+# the paving starts at each mouth exactly where the road's own sidewalk runs: 5.25 m to 8.75 m from the centre line
+at_mouth = sorted({round(abs(y)) for x, y, z in sv if abs(x - m4[0]) < 1 and abs(z - 17.0) < 1e-6})
+assert at_mouth == [525, 875], at_mouth
+assert max(abs(y) for x, y, _ in qv if abs(x) > 600) <= 525 - 60 + 1, "crossings stay on the carriageway"
 print("junction geometry ok:", len(verts), "deck verts,", len(pv) // 4, "painted bars, mouths", [round(m) for m in mouth])

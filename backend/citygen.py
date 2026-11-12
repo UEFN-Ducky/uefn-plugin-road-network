@@ -54,6 +54,23 @@ NO_SIDEWALK = ("6L", "1W", "2L")  # city roads whose mesh has no sidewalk: the s
 # (dirt roads stay bare); with these every city street has a pavement from kerb to lot line, never grass
 ROAD_MESH = {k: v[0] for k, v in ROAD_TYPES.items()}
 HALF = {k: v[1] for k, v in ROAD_TYPES.items()}
+# A street's sidewalks are part of its road mesh: this much of each side's half width (cm) is kerb + sidewalk.
+# A junction is built with the same sidewalks round its corners, in its one mesh (road_io._junction_geometry).
+WALK = {"2S": 350.0, "4L": 350.0}
+
+
+def walk_of(half: float) -> float:
+    """The sidewalk width inside a road of this half width (0 = a road with none)."""
+    return next((w for k, w in WALK.items() if abs(HALF[k] - half) < 1), 0.0)
+
+
+def refine(ter: dict, grid: int) -> dict:
+    """The same terrain on a finer grid (bilinear), so roads can be cut into it a landscape pixel at a time."""
+    s = st.grid_sampler(ter)
+    (x0, y0), (x1, y1) = ter["min"], ter["max"]
+    cw, ch = (x1 - x0) / grid, (y1 - y0) / grid
+    return {**ter, "grid": grid, "heights": [[round(s(x0 + (i + 0.5) * cw, y0 + (j + 0.5) * ch) or 0.0, 1)
+                                              for i in range(grid)] for j in range(grid)]}
 LOOP_PIECE = "SM_Road_Loop_Big"  # trumpet loop (point piece)
 CLOVER_PIECE = "SM_Road_Freeway_Cloverleaf"  # in NeonSkyscrapers RoadKit: import it before using cloverleaf
 # per-district road choices (the panel's Roads tab)

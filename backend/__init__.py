@@ -629,6 +629,8 @@ def register(api) -> None:
                     {"name": f"{prefix}{node}", "arms": angles, "half": half(arms),
                      # each mouth as wide as its own road; runways and taxiways get no crossings painted
                      "halves": [by_i[m]["w"] for m in arms] if gen else None,
+                     # a street's sidewalks carry on round the junction, in the junction's own mesh
+                     "walks": [cg.walk_of(by_i[m]["w"]) for m in arms] if gen else None,
                      "paint": not (aslug.endswith("airport"))}
                     for node, arms, angles in batch]}, timeout=600)
                 for node, arms, _ in batch:
@@ -810,6 +812,7 @@ def register(api) -> None:
     def write_heightmap(nid: str, ter: dict) -> dict:
         # every previewed lot is cut into its level pad: only ever this new landscape, never the level's terrain
         got = pcg_preview(nid)
+        ter = _PREVIEW_CACHE.get("ter") or ter  # with the roads cut in: the ground the buildings were fitted to
         fit = _PREVIEW_CACHE.get("fit") or {}
         pads = fit.get("pads") if fit.get("pads") is not None else pl.pads(got.get("layers") or {}, cg.pad_margin(ter))
         png, settings = cg.heightmap_png(ter, pads=pads)
@@ -1449,8 +1452,14 @@ def register(api) -> None:
             placed.update(airport.layers([r for c in cities for r in (c.get("private") or {}).get("airport") or []]))
             # every generated world: a building the ground would bury is lifted onto it, here, before any push
             # (worlds over another's landscape were skipped once: their houses went in with the hill inside them)
-            fit = fit_buildings(placed, terrain, cut) if gen and terrain.get("heights") else None
-            _PREVIEW_CACHE.update(key=key, out=placed, fit=fit)
+            fit_ter = terrain
+            if gen.get("ground_from") and cut and terrain.get("heights"):
+                # this world's own heightmap of a landscape it was laid over: every road cut and filled into it a
+                # landscape pixel at a time, so the import is already graded (no saw-tooth along a street)
+                fit_ter = cg.grade_to_roads(cg.refine(terrain, cg.HEIGHTMAP_RES),
+                                            {str(k): {"points": p, "segments": s} for k, (p, s) in enumerate(actors)})
+            fit = fit_buildings(placed, fit_ter, cut) if gen and terrain.get("heights") else None
+            _PREVIEW_CACHE.update(key=key, out=placed, fit=fit, ter=fit_ter)
         out = _PREVIEW_CACHE["out"]
         if layer_id:  # one layer, or several "a,b,c" (the panel asks for small layers together: fewer calls)
             pick: dict = {}
