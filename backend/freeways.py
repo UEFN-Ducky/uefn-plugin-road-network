@@ -27,6 +27,10 @@ import math
 LEVEL_CM = 750.0
 CLEAR_CM = 700.0  # 5.5 m clearance + 1.5 m deck: any two roads crossing in plan need this much between them
 RAMP_HALF = 650.0  # a ramp: one lane + shoulders, the elevated ramp mesh's half width
+# where a ramp leaves or joins a freeway its centre runs this far past the freeway's edge: its gore piece
+# (road_profiles: 10 m half width at the ramp's end) then widens exactly to the freeway's edge line. Planned at
+# RAMP_HALF, every end was dragged 3 m sideways when welded and the ramp's last stretch bent into an S
+MERGE_CM = 950.0
 MAX_GRADE = {"freeway": 0.04, "loop": 0.06, "ramp": 0.06, "direct": 0.06, "frontage": 0.08}
 MIN_RADIUS = {"loop": 4500.0, "ramp": 15000.0, "direct": 12000.0, "frontage": 3000.0}  # cm, by ramp class
 LOOP_R = 5500.0
@@ -126,7 +130,7 @@ def loop(bld: Builder, f: Frame, i, j, hA, hB, z0, z1, R=LOOP_R, n=16, merge=Fal
     partial cloverleaf on a city street): half a circle round the far side, then straight back to the cross
     road, meeting it square at a junction like a real parclo loop (merging alongside a street left its end
     piece sticking out into the field, Nov 12 2026). Height z0 -> z1."""
-    ca, cb = i * (R + hB + RAMP_HALF), j * (R + hA + RAMP_HALF)
+    ca, cb = i * (R + hB + (MERGE_CM if merge else RAMP_HALF)), j * (R + hA + MERGE_CM)
     a0 = math.atan2(-j, 0.0)
     if merge:
         sweep = (math.atan2(0.0, -i) - a0) % (2 * math.pi)
@@ -166,7 +170,7 @@ def interchange(kind: str, f: Frame, hA: float, hB: float, liftA, liftB, tag: tu
     fa = frontage_a or DIAMOND_A + 4000
 
     def diamond_ramp(i, j):
-        p0, p3 = (i * DIAMOND_A, j * (hA + RAMP_HALF)), (i * (hB + 50), j * end_b)
+        p0, p3 = (i * DIAMOND_A, j * (hA + MERGE_CM)), (i * (hB + 50), j * end_b)
         ramp(bld, f, p0, (-i, 0.0), p3, (-i, 0.0), liftA(p0[0]), liftB(p3[1]))
 
     if kind in ("diamond", "diamond_frontage"):
@@ -175,7 +179,7 @@ def interchange(kind: str, f: Frame, hA: float, hB: float, liftA, liftB, tag: tu
                 diamond_ramp(i, j)
             else:  # the ramp meets the frontage road's inner edge; the frontage runs on to the cross road
                 fb = j * fb_at
-                p0, p3 = (i * DIAMOND_A, j * (hA + RAMP_HALF)), (i * DIAMOND_A * 0.2, fb - j * (525 + RAMP_HALF))
+                p0, p3 = (i * DIAMOND_A, j * (hA + MERGE_CM)), (i * DIAMOND_A * 0.2, fb - j * (525 + RAMP_HALF))
                 ramp(bld, f, p0, (-i, 0.0), p3, (-i, 0.0), liftA(p0[0]), 0.0)
                 pts = [(*f.w(i * (hB + 50), fb), 0.0), (*f.w(i * fa, fb), 0.0)]
                 bld.edge(pts, "FR", "frontage")
@@ -189,18 +193,18 @@ def interchange(kind: str, f: Frame, hA: float, hB: float, liftA, liftB, tag: tu
         for i, j in quads:
             loop(bld, f, i, j, hA, hB, liftA(i * (LOOP_R + hB)), liftB(j * (LOOP_R + hA)), merge=True)
             far = 38000.0  # far enough out that the right-turn connector sweeps round outside the loop
-            p0, p3 = (i * (far + hB), j * (hA + RAMP_HALF)), (i * (hB + RAMP_HALF), j * (far + hA))
+            p0, p3 = (i * (far + hB), j * (hA + MERGE_CM)), (i * (hB + MERGE_CM), j * (far + hA))
             ramp(bld, f, p0, (-i, 0.0), p3, (0.0, j), liftA(p0[0]), liftB(p3[1]), cls="direct")
     elif kind == "trumpet":
         loop(bld, f, 1, 1, hA, hB, liftA(LOOP_R + hB), liftB(LOOP_R + hA), merge=True)
-        p0, p3 = (-(hB + 30000), hA + RAMP_HALF), (-(hB + RAMP_HALF), hA + 30000)
+        p0, p3 = (-(hB + 30000), hA + MERGE_CM), (-(hB + MERGE_CM), hA + 30000)
         ramp(bld, f, p0, (1.0, 0.0), p3, (0.0, 1.0), liftA(p0[0]), liftB(p3[1]), cls="direct")
     elif kind == "stack":
         for i, j in quads:  # right turns: the outer quarter, at the freeways' own level
-            p0, p3 = (i * STACK_A, j * (hA + RAMP_HALF)), (i * (hB + RAMP_HALF), j * STACK_A)
+            p0, p3 = (i * STACK_A, j * (hA + MERGE_CM)), (i * (hB + MERGE_CM), j * STACK_A)
             ramp(bld, f, p0, (-i, 0.0), p3, (0.0, j), liftA(p0[0]), liftB(p3[1]), cls="direct")
         for i, j in quads:  # left turns: over both freeways, two flyover levels so crossing flyovers clear
-            p0, p3 = (i * STACK_FLY, -j * (hA + RAMP_HALF)), (-i * (hB + RAMP_HALF), j * STACK_FLY)
+            p0, p3 = (i * STACK_FLY, -j * (hA + MERGE_CM)), (-i * (hB + MERGE_CM), j * STACK_FLY)
             level = (3 if i * j > 0 else 4) * LEVEL_CM
             ramp(bld, f, p0, (-i, 0.0), p3, (0.0, j), liftA(p0[0]), liftB(p3[1]), cls="direct", peak=level, n=28,
                  handle=0.65, core=STACK_CORE)
@@ -493,7 +497,7 @@ def validate(lines: list, ends: list | None = None) -> dict:
                 if pts is ln["points"]:
                     continue
                 for p, q in zip(pts, pts[1:]):
-                    if _dist_seg(end, p, q) <= half + RAMP_HALF + 300:
+                    if _dist_seg(end, p, q) <= half + MERGE_CM + 300:
                         ok = True
                         break
                 if ok:
