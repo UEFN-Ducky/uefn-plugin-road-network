@@ -435,7 +435,10 @@ def build(ap: dict, ground, city_nodes: dict | None = None, wet=None) -> dict:
         if hit:
             end = tag + (name, "city")
             roads_n[end] = list(hit[1][:2])
-            roads_e.append([start, end, "4L"])
+            via = []
+            if name == "access" and access_from is not None:  # out past the car park's side, never through its stalls
+                via = [[round(c) for c in f.w(-w / 2 - 3000, tf - 30000)]]
+            roads_e.append([start, end, "4L", via] if via else [start, end, "4L"])
             links.append({"road": name, "to_city_node": list(hit[1][:2]),
                           "length_m": round(math.dist((sx, sy), hit[1][:2]) / 100)})
     report = validate(ap, f, spec, nodes, edges, rows, lots, plane_rows, (ap_v0, ap_v1), roads_n, roads_e, links,
@@ -551,7 +554,9 @@ def _demo() -> None:
             assert {"jet_bridge", "plane", "atc_tower", "radar", "hangar", "uld", "gse", "fuel_tank"} <= kinds, kinds
             assert {"transit", "warehouse", "fire_station", "parking_garage", "office"} <= roles, roles
             rn, re_ = got["landside"]
-            assert any(k == "ED" for *_x, k in re_), "departures on the upper level"
+            assert any(e[2] == "ED" for e in re_), "departures on the upper level"
+            acc = next(e for e in re_ if e[1][-2:] == ("access", "city"))
+            assert len(acc) > 3 and acc[3], "the access road goes out beside the car park, never through it"
             assert {l["road"] for l in got["links"]} == {"access", "cargo"}, got["links"]
         if want == "general_aviation":
             assert "small_plane" in kinds and "civic" in roles

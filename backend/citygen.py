@@ -412,6 +412,7 @@ def graded(ter: dict, pads: list, blend: float = PAD_BLEND_CM):
 
 
 DECK_CLEAR_CM = 200.0  # the ground stays this far under a deck's top (its slab and beams), at least
+ROAD_SINK_CM = 10.0  # the ground sits this far under a road's surface: the mesh always shows, never flickers with it
 ROAD_BLEND_CM = 3000.0  # generated ground meets a road at its kerb and blends back to the hills over this
 STRUCTURES = {ROAD_MESH[k].split("/")[-1] for k in ("BR", "BRR", "BW", "ED", "ER")}  # bridges and viaducts stand free
 
@@ -506,7 +507,7 @@ def grade_to_roads(ter: dict, actors: dict, locked: set | None = None) -> dict:
                     w = 1 - _smoothstep(half, reach, d)
                     if w <= 0:
                         continue
-                    new = (w, -d, pa["z"] + (pb["z"] - pa["z"]) * t, w, d <= deck and "Water_" not in mesh)
+                    new = (w, -d, pa["z"] + (pb["z"] - pa["z"]) * t - ROAD_SINK_CM, w, d <= deck and "Water_" not in mesh)
                     cur = best.get((j, i))
                     # (measured on a 277 km world: letting the nearest point decide between pieces of one road put
                     # the ground over 3x more street points; the lower deck always, for one road or two)
@@ -2025,13 +2026,15 @@ CONNECTOR_HALF = {"SM_Road_RampGore30m": 1000.0, "SM_Road_RampFlare15m": 1050.0}
 FLARE_CM = 1500.0  # the flare runs this far on past the ramp's end, to the street's kerb line
 
 
-def _connector(p: dict, prev: dict, seg: dict, name: str) -> None:
-    """Put connector `name` (road_profiles.CONNECTORS) on a ramp's end point p, turned along the ramp (from prev),
-    in the roads folder its own segment's mesh comes from."""
+def _connector(p: dict, yaw: float, seg: dict, name: str) -> None:
+    """Put connector `name` (road_profiles.CONNECTORS) on a ramp's end point p, turned to `yaw` (along the road a
+    gore joins, or straight at the street a flare meets: never the ramp's own last kink, which left pieces
+    sticking out into the field), in the roads folder its own segment's mesh comes from. The point's yaw is also
+    the spline's heading there, so the ramp bends into the piece."""
     import re
     m = re.search(r"StaticMesh'(.+?)/(?:Elevated/)?SM_[^/.']+\.", " ".join(seg.get("lines") or []))
     folder = m.group(1) if m else ""
-    p["yaw"] = math.degrees(math.atan2(p["y"] - prev["y"], p["x"] - prev["x"]))
+    p["yaw"] = yaw
     p["mesh"] = name
     p["lines"] = [l for l in p.get("lines") or [] if not l.startswith(("Mesh=", "MeshScale=", "SegmentMeshOffset="))] + \
         [f"Mesh=\"/Script/Engine.StaticMesh'{folder}/{name}.{name}'\"", "MeshScale=(X=1.000000,Y=1.000000,Z=1.000000)"]
@@ -2131,7 +2134,14 @@ def weld_ends(actors: dict) -> int:
             if slide:
                 p["x"], p["y"] = nx + (p["x"] - nx) / d * tgt, ny + (p["y"] - ny) / d * tgt
             if piece:
-                _connector(p, by[ss[0]["b"] if ss[0]["a"] == i else ss[0]["a"]], ss[0], piece)
+                if piece == "SM_Road_RampGore30m":  # along the road, the way the ramp was heading
+                    sgn = 1.0 if rx * ux + ry * uy >= 0 else -1.0
+                    yaw = math.degrees(math.atan2(sgn * uy, sgn * ux))
+                else:  # straight at the street
+                    yaw = math.degrees(math.atan2(ny - p["y"], nx - p["x"])) if d > 1 else \
+                        math.degrees(math.atan2(ry, rx))
+                _connector(p, yaw, ss[0], piece)
+                st.retangent(by, ss[0])
             if not slide and abs(level - p["z"]) <= 30:
                 continue
             p["z"] = level

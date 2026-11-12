@@ -1559,7 +1559,7 @@ def register(api) -> None:
             return "unexplained"
         reasons: dict = {}
         for p, mesh in checks:
-            gap = ground(p["x"], p["y"]) - p["z"]
+            gap = ground(p["x"], p["y"]) - p["z"] + cg.ROAD_SINK_CM  # measured from where the ground should be
             if gap < -2000 or (sea is not None and (raw(p["x"], p["y"]) or 0.0) < sea):
                 continue
             n += 1
