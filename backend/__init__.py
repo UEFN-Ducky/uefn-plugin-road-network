@@ -1470,6 +1470,8 @@ def register(api) -> None:
                                     "row": "x, y, base z, yaw, 1, length_m, height_m"}
             placed.update(pl.site_layers(cities, ground))  # complexes' parking, stalls, turnarounds, garages
             placed.update(pl.aprons(placed))  # a dropped kerb where each driveway meets its street
+            # fences only round houses that were built, through no building, across no street, never crossing
+            pl.fit_fences(placed, pl.road_samples(actors, 400.0) + pl.street_samples(cities))
             # nothing on or under a freeway, a ramp or a highway (lots are cut before those are laid)
             fast = [load_actor(nid, a)[1:] for a, h in actor_docs(nid).items()
                     if str(h.get("label") or "").endswith(("Freeways", "Highways"))]

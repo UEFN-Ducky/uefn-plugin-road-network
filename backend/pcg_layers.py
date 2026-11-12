@@ -1027,6 +1027,95 @@ def _in_where(where: str, cities: list, x: float, y: float) -> bool:
     return _where_test(where, cities)(x, y)
 
 
+def _rects_hit(a: tuple, b: tuple, margin: float = 0.0) -> bool:
+    """Do two turned rectangles (x, y, cos, sin of the way they face, half width across, half depth along) come
+    within `margin` of each other? Separating axes: exact, where a circle test let long houses overlap end on."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    for ax, ay in ((a[2], a[3]), (-a[3], a[2]), (b[2], b[3]), (-b[3], b[2])):
+        reach = sum(r[5] * abs(ax * r[2] + ay * r[3]) + r[4] * abs(-ax * r[3] + ay * r[2]) for r in (a, b))
+        if abs(dx * ax + dy * ay) > reach + margin:
+            return False
+    return True
+
+
+class _Rects:
+    """Every building placed so far, as the rectangle it stands on: nothing is built on top of another."""
+
+    def __init__(self, cell: float = 4000.0):
+        self.cell, self.grid, self.reach = cell, {}, 0.0
+
+    def add(self, r: tuple) -> None:
+        self.grid.setdefault((int(r[0] // self.cell), int(r[1] // self.cell)), []).append(r)
+        self.reach = max(self.reach, math.hypot(r[4], r[5]))
+
+    def near(self, x: float, y: float, reach: float):
+        n = int((reach + self.reach) // self.cell) + 1
+        cx, cy = int(x // self.cell), int(y // self.cell)
+        return (r for gx in range(cx - n, cx + n + 1) for gy in range(cy - n, cy + n + 1) for r in self.grid.get((gx, gy), ()))
+
+    def hit(self, r: tuple, margin: float = 100.0) -> bool:
+        return any(_rects_hit(r, o, margin) for o in self.near(r[0], r[1], math.hypot(r[4], r[5]) + margin))
+
+
+def street_samples(cities: list, step: float = 400.0) -> list:
+    """(x, y, half width, dir x, dir y) along every private street (the cities' subdivision and complex streets):
+    they are roads too, and nothing is built on them."""
+    out = []
+    for c in cities:
+        for s in (c.get("private") or {}).get("streets") or []:
+            for p, q in zip(s, s[1:]):
+                L = math.dist(p[:2], q[:2])
+                if L < 1:
+                    continue
+                for k in range(max(1, int(L // step)) + 1):
+                    t = min(1.0, k * step / L)
+                    out.append((p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t, 400.0, (q[0] - p[0]) / L, (q[1] - p[1]) / L))
+    return out
+
+
+def fit_fences(placed: dict, samples: list) -> int:
+    """Yard fences that make sense only: one stays when a house stands on its lot (within 22 m), it runs through
+    no building, crosses no road or private street and no fence kept before it. Lots overlapped inside street
+    bends, and every lot's fences were drawn whether or not its house was. Returns how many went."""
+    layer = placed.get("Yard fences")
+    if not layer:
+        return 0
+    rects = _Rects()
+    for v in placed.values():
+        if v.get("kind") == "buildings":
+            for p in v.get("points") or []:
+                if len(p) > 8:
+                    rects.add((p[0], p[1], math.cos(math.radians(p[3])), math.sin(math.radians(p[3])), p[7] * 50, p[8] * 50))
+    roads = _Hash()
+    for x, y, half, _dx, _dy in samples:
+        roads.add(x, y, half, (x, y, half))
+
+    def cross(a, b, c, d):  # do segments a-b and c-d cross away from their ends?
+        den = (b[0] - a[0]) * (d[1] - c[1]) - (b[1] - a[1]) * (d[0] - c[0])
+        if abs(den) < 1e-9:
+            return False
+        t = ((c[0] - a[0]) * (d[1] - c[1]) - (c[1] - a[1]) * (d[0] - c[0])) / den
+        u = ((c[0] - a[0]) * (b[1] - a[1]) - (c[1] - a[1]) * (b[0] - a[0])) / den
+        return 0.06 < t < 0.94 and 0.06 < u < 0.94
+    kept, lines = [], _Rects()
+    for row in layer.get("points") or []:
+        x, y, yaw, h = row[0], row[1], math.radians(row[3]), row[4] * 50
+        c, s = math.cos(yaw), math.sin(yaw)
+        me = (x, y, c, s, 10.0, h)
+        a, b = (x - c * h, y - s * h), (x + c * h, y + s * h)
+        if not any(math.hypot(r[0] - x, r[1] - y) < 2200 for r in rects.near(x, y, 2200)) or rects.hit(me, 30.0):
+            continue
+        if any(roads.hit(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, 50.0) for t in (0.0, 0.25, 0.5, 0.75, 1.0)):
+            continue
+        if any(cross(a, b, (o[0] - o[2] * o[5], o[1] - o[3] * o[5]), (o[0] + o[2] * o[5], o[1] + o[3] * o[5])) for o in lines.near(x, y, h)):
+            continue
+        lines.add(me)
+        kept.append(row)
+    gone = len(layer.get("points") or []) - len(kept)
+    layer["points"], layer["count"], layer["shown"] = kept, len(kept), len(kept)
+    return gone
+
+
 def _lot_hits_road(road_hash: "_Hash", x: float, y: float, yaw: float, half_w: float, half_d: float) -> bool:
     """Does a lot (frontage 2*half_w along its street, depth 2*half_d, facing yaw) reach onto any road?"""
     fx, fy = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
@@ -1090,6 +1179,11 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
     road_hash = _Hash()
     for x, y, half, _, _ in roads:
         road_hash.add(x, y, half, (x, y, half))
+    priv_hash = _Hash()  # the subdivisions' and complexes' own streets: no building on those either
+    for x, y, half, _, _ in street_samples(cities):
+        priv_hash.add(x, y, half, (x, y, half))
+    built = _Rects()  # every building of every layer, as the rectangle it stands on
+    infill: list = []  # lots left empty because a building would stand on another or on a street: planted instead
     plan_roles = {row[7] for c in cities for row in c.get("lots") or [] if len(row) > 8 and row[8] is True}
     planned = lambda layer: layer["role"] in PLANNED_ROLES and layer["role"] in plan_roles
     kept: dict = {}
@@ -1222,6 +1316,17 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                 gap = max(r, spacing * 0.5) if along and spacing > 4 * r else r
             if layer["self_prune"] and gap and own.hit(x, y, gap):
                 continue
+            if layer["kind"] == "buildings":
+                # Never on another building, never on a street: its own rectangle against every one placed so far
+                # (lots overlap inside a street's bend, and big sites along a road knew nothing of private streets)
+                rw, rd = (bw, bd) if lot else (layer["width_m"] * (1 + layer["size_jitter"] * 0.5),
+                                               layer["depth_m"] * (1 + layer["size_jitter"] * 0.3))
+                rect = (x, y, math.cos(math.radians(yaw)), math.sin(math.radians(yaw)), rw * 50, rd * 50)
+                if _lot_hits_road(priv_hash, x, y, yaw, rw * 50, rd * 50) or built.hit(rect):
+                    if lot:
+                        infill.append([round(x), round(y), round(z), round((x * 7 + y * 13) % 360), round(0.9 + (len(infill) * 37 % 40) / 100, 2)])
+                    continue
+                built.add(rect)
             own.add(x, y, r)
             if along:
                 last_at[cand[4]] = cand[3]
@@ -1257,6 +1362,9 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                                   "forms": FORM_NAMES, "driveway": layer["driveway"], "walkway": layer["walkway"],
                                   "row": "x, y, pad z, yaw, scale, height_m, form, width_m, depth_m, foundation_m, "
                                          "paths [[width_m, [x, y, z, ...]]], walls [[x, y, yaw, length_m, height_m]], facility (planned sites)"} if layer["kind"] == "buildings" else {})}
+    if infill:  # a tree on every lot nothing could be built on
+        out["Infill trees"] = {"kind": "scatter", "role": "tree", "count": len(infill), "shown": len(infill), "points": infill,
+                               "radius_cm": 250, "meshes": [], "build": "", "row": "x, y, z, yaw, scale"}
     return out
 
 
@@ -1458,7 +1566,7 @@ def _demo() -> None:
     houses = clean({"name": "Houses", "kind": "buildings", "role": "house", "where": "cities", "width_m": 12,
                     "depth_m": 12, "setback_m": 6, "spacing_m": 20})
     hv = preview([houses], [town], {"min": [-50000, -50000], "max": [50000, 50000]}, [], lambda x, y: 0.0)["Houses"]
-    assert hv["count"] > 150, hv["count"]
+    assert hv["count"] > 120, hv["count"]  # (a house that would stand on its neighbour or a street is left out)
     by_front = {}
     for lot_row in town["lots"]:
         lx, ly, lyaw, lw, ld, frx, fry = lot_row[:7]
@@ -1471,6 +1579,16 @@ def _demo() -> None:
     # a dropped kerb at the street end of a house's drive, half the sidewalk past the lot line
     ap = aprons({"H": {"kind": "buildings", "points": [[0, 0, 0, 0, 1, 8, 0, 12, 12, 0, [[DRIVE_M, [600, 0, 0, 1600, 0, 0]]]]]}})
     assert ap["Driveway aprons"]["points"] == [[1775, 0, 0, 0.0, 3.5, DRIVE_M + 1.0, 1.0]], ap
+    # two houses end on, 4 m apart at their centres' line: the old circle test passed them, the rectangles do not
+    east = (0.0, 0.0, 1.0, 0.0, 600.0, 900.0)
+    assert _rects_hit(east, (1700.0, 0.0, 1.0, 0.0, 600.0, 900.0)) and not _rects_hit(east, (1900.0, 0.0, 1.0, 0.0, 600.0, 900.0))
+    assert not _rects_hit(east, (0.0, 1300.0, 1.0, 0.0, 600.0, 900.0)) and _rects_hit(east, (800.0, 1000.0, 0.7071, 0.7071, 600.0, 900.0))
+    # fences: one behind a house stays; one through the house, one with no house, one across a street and one
+    # crossing a kept fence all go
+    fl = {"H": {"kind": "buildings", "points": [[0, 0, 0, 0, 1, 8, 0, 12, 12, 0, []]]},
+          "Yard fences": {"kind": "site", "points": [[-1200, 0, 0, 90, 16, 1, 0.6], [0, 0, 0, 90, 16, 1, 0.6], [90000, 0, 0, 90, 16, 1, 0.6],
+                                                     [1500, 0, 0, 0, 16, 1, 0.6], [-1200, 0, 0, 0, 10, 1, 0.6]]}}
+    assert fit_fences(fl, [(1500.0, 0.0, 400.0, 0.0, 1.0)]) == 4 and fl["Yard fences"]["points"] == [[-1200, 0, 0, 90, 16, 1, 0.6]]
     # trees fill an interchange (four ramp ends round a point), none for a lone ramp end
     ramp_end = lambda x, y: {"x": x, "y": y, "mesh": "SM_Road_RampFlare15m"}
     grove = interchange_groves([([ramp_end(0, 0), ramp_end(9000, 0), ramp_end(0, 9000), ramp_end(9000, 9000), ramp_end(90000, 0)], [])],

@@ -118,8 +118,10 @@ def _lots_along(street, f: _Frame, lot_w, lot_d, streets, taken, role="house", r
             out.append([round(wx), round(wy), round(f.yaw(-nu, -nv), 1), round(w), round(lot_d),
                         round(frx), round(fry), role, False])
             if yard is not None and rnd:
-                yard["fences"].append((cu + nu * lot_d / 2, cv + nv * lot_d / 2, du, dv, w))  # the back lot line
-                yard["fences"].append((cu + du * w / 2 + nu * lot_d * 0.2, cv + dv * w / 2 + nv * lot_d * 0.2, nu, nv, lot_d * 0.6))
+                if rnd.random() < 0.55:  # not every yard is fenced: about half have a back fence, half of those a side one
+                    yard["fences"].append((cu + nu * lot_d / 2, cv + nv * lot_d / 2, du, dv, w))  # the back lot line
+                    if rnd.random() < 0.5:
+                        yard["fences"].append((cu + du * w / 2 + nu * lot_d * 0.2, cv + dv * w / 2 + nv * lot_d * 0.2, nu, nv, lot_d * 0.6))
                 roll = rnd.random()
                 if roll < 0.12:  # a pool behind the house
                     yard["pools"].append((cu + nu * lot_d * 0.3, cv + nv * lot_d * 0.3, du, dv))
@@ -338,7 +340,7 @@ def _demo() -> None:
             assert g["pads"], "turnaround bulb"
         if kind in ("grid", "loop", "organic", "cul_de_sac", "branch"):
             assert g["trees"] and len({r[3] for r in g["lots"]}) > 1, (kind, "yards have trees, lots differ in width")
-            assert len(g["fences"]) == 2 * sum(1 for r in g["lots"] if not r[8]) or kind == "cul_de_sac", (kind, "a back and a side fence a lot")
+            assert 0 < len(g["fences"]) < 2 * sum(1 for r in g["lots"] if not r[8]), (kind, "some yards fenced, not all")
         if kind == "branch":
             assert len(g["streets"]) == 3 and len(g["pads"]) == 2, "a spine with two cul-de-sacs"
         if kind == "garden":
