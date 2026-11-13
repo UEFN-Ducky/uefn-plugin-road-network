@@ -876,6 +876,10 @@ def register(api) -> None:
         head, pts, segs = load_actor(nid, aslug) if net else (None, [], [])
         if not head:
             return {"ok": False, "error": "Pick a network and one of its road actors."}
+        gen = net.get("generated") or {}
+        if gen.get("heightmap") and not gen.get("ground_from") and gen.get("heightmap_roads") != roads_digest(nid):
+            return {"ok": False, "error": "The roads changed after the heightmap was made, so they would not sit in their "
+                                          "cuts. Run road_network_heightmap, import that terrain, then push the roads."}
         if not confirm:
             return {"ok": False, "error": f"This replaces '{head['label']}' in the open UEFN level. Call again with confirm=true."}
         # Never writes the terrain: the splines keep their own Raise/Lower flags and the
@@ -1544,6 +1548,9 @@ def register(api) -> None:
             doc["generated"]["heightmap"] = True
             data.put(f"net.{nid}", doc)
         hm = write_heightmap(nid, ter)  # always from the stored terrain, so every PC gets the same file
+        # the roads this ground was cut for: a road pushed after they change would sit off its cut (reimport checks)
+        doc["generated"]["heightmap_roads"] = roads_digest(nid)
+        data.put(f"net.{nid}", doc)
         return {"ok": True, "id": nid, **hm, "ground_fit": fit_summary(),
                 "how": f"Landscape mode > Manage > New > Import from File: pick the PNG, resolution {hm['resolution']}, "
                        f"Location (the centre) {hm['location']}, Scale {hm['scale']}, components {hm['components']}. "
@@ -1814,6 +1821,11 @@ def register(api) -> None:
                         "street_tree": "Fortnite's tree props (actors): Neo park tree, small birch",
                         "tree": "in the cities Fortnite's tree props (actors): medium tree, birches, pines; the "
                                 "forest outside: own WorldGen/Kit V4 trees (instances)"})}
+
+    def roads_digest(nid: str) -> str:
+        # where every road point lies (meshes left out: build_pieces adds junction meshes without moving a road)
+        return hashlib.sha1(json.dumps([[(round(p["x"]), round(p["y"]), round(p["z"])) for p in pts]
+                                        for pts, _segs in world_actors(nid)]).encode()).hexdigest()
 
     def world_actors(nid: str) -> list:
         actors = []
