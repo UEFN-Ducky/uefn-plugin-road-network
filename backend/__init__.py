@@ -984,9 +984,10 @@ def register(api) -> None:
                         return m.group(1)
         return ""
 
-    def heightmap_path(nid: str) -> str:
-        # this PC's copy: rebuilt from the shared terrain every time it is asked for
-        return os.path.join(str(api.local_dir()), "heightmaps", f"{nid}.png")
+    def heightmap_path(nid: str, png: bytes) -> str:
+        # this PC's copy: rebuilt from the shared terrain every time it is asked for. Named by its content: UEFN
+        # keeps the pixels of a file it has read and picking the same name again imported the OLD terrain
+        return os.path.join(str(api.local_dir()), "heightmaps", f"{nid}_{hashlib.sha1(png).hexdigest()[:8]}.png")
 
     def write_heightmap(nid: str, ter: dict) -> dict:
         # every previewed lot is cut into its level pad: only ever this new landscape, never the level's terrain
@@ -995,8 +996,12 @@ def register(api) -> None:
         fit = _PREVIEW_CACHE.get("fit") or {}
         pads = fit.get("pads") if fit.get("pads") is not None else pl.pads(got.get("layers") or {}, cg.pad_margin(ter))
         png, settings = cg.heightmap_png(ter, pads=pads)
-        path = heightmap_path(nid)
+        path = heightmap_path(nid, png)
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        for old in os.listdir(os.path.dirname(path)):  # one file per world: the last one made
+            if (old == f"{nid}.png" or (old.startswith(f"{nid}_") and len(old) == len(nid) + 13)) \
+                    and os.path.join(os.path.dirname(path), old) != path:
+                os.remove(os.path.join(os.path.dirname(path), old))
         with open(path + ".tmp", "wb") as fh:
             fh.write(png)
         os.replace(path + ".tmp", path)
