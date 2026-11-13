@@ -256,6 +256,8 @@ picked from the city seed and weighted by its ring (`TYPES`): subdivisions `grid
 their private streets, facing them, role 'house'; apartment complexes `garden` (ring road, parking along it, two
 rows of buildings round a courtyard), `suburban` (buildings round a central lot), `urban` (two big blocks + a
 parking garage) - footprints with role 'apartment' placed at their exact size; or `parcels` (plain street lots).
+A `garden` or `suburban` complex has two or three drives in from the streets round it (`_gates`): on different
+sides where the block has streets there, each off-centre, never one gate in the middle of one side.
 Parking: lot -> 17.5 m modules (5.5 stalls + 6.5 aisle + 5.5 stalls) -> 2.6 m stalls. Three networks:
 public roads ('<City> Roads'), private access ('<City> Access': PR private streets, DW / DD driveways as cubic
 Beziers garage -> kerb, double for wide houses), pedestrians ('<City> Paths': sidewalks, walkways). Built-in

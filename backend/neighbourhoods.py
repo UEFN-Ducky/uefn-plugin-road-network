@@ -197,6 +197,22 @@ def parking(f: _Frame, u0, u1, v0, v1, face: int = 1):
     return slab, stalls
 
 
+def _gates(rnd, sides: list, spans: dict, apart: float = 4000.0) -> list:
+    """Where a complex's drives meet the streets round it: two or three (side, how far along that side from its
+    middle), on different sides where the block has them, each off-centre (a fifth to three fifths of the way to
+    a corner) and never within `apart` of another. sides: the block's sides that have a street, the main one
+    first; spans: half the usable length of each."""
+    out = []
+    for k in range(rnd.choice((2, 2, 3))):
+        s = sides[k % len(sides)]
+        off = rnd.uniform(0.2, 0.6) * spans[s] * rnd.choice((-1, 1))
+        for o in (off, -off):
+            if not any(s == s2 and abs(o - o2) < apart for s2, o2 in out):
+                out.append((s, o))
+                break
+    return out
+
+
 def generate(poly: list, kind: str, rnd, lot_w=1600.0, lot_d=3000.0, joins: list | None = None,
              closed: list | None = None) -> dict:
     """One neighbourhood in a block (its inset polygon, world cm). Everything it lays out stays inside that
@@ -347,9 +363,16 @@ def generate(poly: list, kind: str, rnd, lot_w=1600.0, lot_d=3000.0, joins: list
                                 round(lot_d), round(frx), round(fry), "house", False])
     if kind in ("garden", "suburban", "urban"):
         g = 1000.0
+        open_sides = [s for s in ("v-", "u+", "u-", "v+") if s not in shut()] or ["v-"]
         if kind == "garden":  # ring road, parking along its inside, two rows of buildings round a courtyard
             ru, rv = L / 2 - g, W / 2 - g
-            streets = [[(0.0, edge), (0.0, -rv)], [(-ru, -rv), (ru, -rv), (ru, rv), (-ru, rv), (-ru, -rv)]]
+            # two or three drives in from the streets round it, on different sides and off-centre: a complex with
+            # one gate in the middle of one side is a diagram, not a place
+            gates = _gates(rnd, open_sides, {"v-": ru - 1500, "v+": ru - 1500, "u-": rv - 1500, "u+": rv - 1500})
+            meet = [(o, (1 if s[1] == "+" else -1) * rv) if s[0] == "v" else ((1 if s[1] == "+" else -1) * ru, o) for s, o in gates]
+            drives = [[(o, (1 if s[1] == "+" else -1) * (W / 2 + 900)), m] if s[0] == "v" else
+                      [((1 if s[1] == "+" else -1) * (L / 2 + 900), o), m] for (s, o), m in zip(gates, meet)]
+            streets = drives + [[(-ru, -rv), (ru, -rv), (ru, rv), (-ru, rv), (-ru, -rv)]]
             for side in (1, -1):
                 v0 = side * (rv - PRIVATE_HALF) - (STALL_D if side > 0 else 0)
                 slab, stalls = parking(f, -ru + 1500, ru - 1500, min(v0, v0 + STALL_D), max(v0, v0 + STALL_D), -side)
@@ -371,18 +394,26 @@ def generate(poly: list, kind: str, rnd, lot_w=1600.0, lot_d=3000.0, joins: list
                     (wx, wy), (frx, fry) = f.w(cu, 0.0), f.w(cu - side * bd / 2, 0.0)
                     out["lots"].append([round(wx), round(wy), round(f.yaw(-side, 0), 1), round(min(bw, 2 * ch)), round(bd),
                                         round(frx), round(fry), "apartment", True])
-            out["pads"].append([*map(round, f.w(0.0, -rv)), 900.0])  # the entrance: a roundabout with a planted middle
-            trees.append((0.0, -rv))
+            out["pads"].append([*map(round, f.w(*meet[0])), 900.0])  # the main entrance: a roundabout with a planted middle
+            trees.append(meet[0])
             cw = ru - 3800  # the courtyard: a planted green
             if cw > 500 and ch > 300:
                 trees += [(rnd.uniform(-cw, cw), rnd.uniform(-ch, ch)) for _ in range(max(4, int(cw * ch / 2.5e6)))]
-        elif kind == "suburban":  # buildings round a central parking lot, a drive in from the street
-            streets = [[(0.0, edge), (0.0, -W / 4)]]
-            depth = int((W / 2 - 600) // (2 * STALL_D + AISLE)) * (2 * STALL_D + AISLE)
-            slab, stalls = parking(f, -L / 2 + 3500, L / 2 - 3500, -W / 4, -W / 4 + max(2 * STALL_D + AISLE, depth))
+        elif kind == "suburban":  # buildings round a central parking lot, drives in from the streets
+            depth = max(2 * STALL_D + AISLE, int((W / 2 - 600) // (2 * STALL_D + AISLE)) * (2 * STALL_D + AISLE))
+            # two or three drives: from the front, off-centre, and from the ends of the car park (never through
+            # the buildings along the back)
+            gates = _gates(rnd, [s for s in open_sides if s != "v+"] or ["v-"],
+                           {"v-": L / 2 - 5000, "u-": depth / 2 - 700, "u+": depth / 2 - 700})
+            streets = [[(o, edge), (o, -W / 4)] if s == "v-" else
+                       [((1 if s[1] == "+" else -1) * (L / 2 + 900), -W / 4 + depth / 2 + o), ((1 if s[1] == "+" else -1) * (L / 2 - 3500), -W / 4 + depth / 2 + o)]
+                       for s, o in gates]
+            slab, stalls = parking(f, -L / 2 + 3500, L / 2 - 3500, -W / 4, -W / 4 + depth)
             out["parking"].append(slab)
             out["stalls"] += stalls
-            out["pads"].append([*map(round, f.w(0.0, -W / 4 - 800)), 800.0])  # a drop-off loop where the drive arrives
+            front = next((o for s, o in gates if s == "v-"), None)
+            if front is not None:
+                out["pads"].append([*map(round, f.w(front, -W / 4 - 800)), 800.0])  # a drop-off loop where the front drive arrives
             bw, bd = 4500.0, 1600.0
             n = max(1, int((L - 2000) // (bw + 1500)))
             for k in range(n):
@@ -494,6 +525,10 @@ def _demo() -> None:
             assert len(g["streets"]) == 3 and len(g["pads"]) == 2, "a spine with two cul-de-sacs"
         if kind == "garden":
             assert len(g["lots"]) >= 6 and g["pads"], "end buildings close the courtyard; a roundabout at the entrance"
+        if kind in ("garden", "suburban"):  # two or three ways in, none in the middle of its side, on more than one side
+            ways = [s[0] for s in g["streets"] if not (0 <= s[0][0] <= 18000 and 0 <= s[0][1] <= 16000)]
+            assert 2 <= len(ways) <= 3 and len({(p[0] in (-900, 18900), p[1] in (-900, 16900)) for p in ways}) > 1, (kind, ways)
+            assert not any(abs(p[0] - 9000) < 500 and p[1] in (-900, 16900) or abs(p[1] - 8000) < 500 and p[0] in (-900, 18900) for p in ways), (kind, ways)
         if kind in ("loop", "organic"):
             assert len({r[2] for r in g["lots"]}) > 3, (kind, "lots turn with the street")
         print(f"  {kind}: {len(g['streets'])} streets, {len(g['lots'])} lots, {len(g['stalls'])} stalls")
