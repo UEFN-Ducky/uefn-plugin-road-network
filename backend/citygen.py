@@ -4587,6 +4587,14 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
                 if pa and pb and tip and math.dist((pa["x"], pa["y"], pa["z"]), (pb["x"], pb["y"], pb["z"])) < 50:
                     a["segments"].remove(s)
                     a["points"].remove(tip)
+    # a point only where a road turns, meets another or carries a piece: straight from corner to corner (a point
+    # per 20 m, each on its own bump, made every road wave); then every welded end put back on the road it reaches
+    for label in list(out):
+        pts, segs = st.straighten(out[label]["points"], out[label]["segments"])
+        out[label] = {**out[label], "points": pts, "segments": segs}
+    for _ in range(8):
+        if not weld_ends(out, edge):
+            break
     return out
 
 
