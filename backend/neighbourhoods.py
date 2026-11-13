@@ -175,26 +175,37 @@ def _bezier(p0, p1, p2, p3, n=12):
     return out
 
 
-def parking(f: _Frame, u0, u1, v0, v1, face: int = 1):
+def parking(f: _Frame, u0, u1, v0, v1, face: int = 1, cross=()):
     """A surface lot: slab [x, y, yaw, sx, sy] (in metres) and its stall marks [x, y, yaw, 1, 1].
-    Aisles run along u; a 17.5 m module = stalls 5.5 + aisle 6.5 + stalls 5.5."""
+    Aisles run along u; a 17.5 m module = stalls 5.5 + aisle 6.5 + stalls 5.5.
+    cross: where a drive comes in across the rows (u along the slab): a cross aisle there, the slab's whole
+    depth, with no stall on it. A drive that arrived at a row of stalls had no way into the car park."""
     slab = [*map(round, f.w((u0 + u1) / 2, (v0 + v1) / 2)), round(f.yaw(1, 0), 1),
             round((u1 - u0) / 100, 2), round((v1 - v0) / 100, 2)]
     stalls = []
     module = 2 * STALL_D + AISLE
+    free = lambda u: not any(abs(u - c) < (AISLE + STALL_W) / 2 for c in cross)
     if v1 - v0 < module:  # a strip along a road: one row of stalls, nosing in from the road side
         for k in range(int((u1 - u0) // STALL_W)):
-            x, y = f.w(u0 + (k + 0.5) * STALL_W, (v0 + v1) / 2)
-            stalls.append([round(x), round(y), round(f.yaw(0, face), 1), 1, 1])
+            if free(u0 + (k + 0.5) * STALL_W):
+                x, y = f.w(u0 + (k + 0.5) * STALL_W, (v0 + v1) / 2)
+                stalls.append([round(x), round(y), round(f.yaw(0, face), 1), 1, 1])
         return slab, stalls
     v = v0
     while v + module <= v1 + 1:
         for row_v, face in ((v + STALL_D / 2, 1), (v + STALL_D + AISLE + STALL_D / 2, -1)):
             for k in range(int((u1 - u0) // STALL_W)):
-                x, y = f.w(u0 + (k + 0.5) * STALL_W, row_v)
-                stalls.append([round(x), round(y), round(f.yaw(0, face), 1), 1, 1])
+                if free(u0 + (k + 0.5) * STALL_W):
+                    x, y = f.w(u0 + (k + 0.5) * STALL_W, row_v)
+                    stalls.append([round(x), round(y), round(f.yaw(0, face), 1), 1, 1])
         v += module
     return slab, stalls
+
+
+def aisles(v0, v1) -> list:
+    """The centre line (v) of each aisle of a car park between v0 and v1: where a drive from its end comes in."""
+    module = 2 * STALL_D + AISLE
+    return [v0 + STALL_D + AISLE / 2 + k * module for k in range(int((v1 - v0 + 1) // module))]
 
 
 def _gates(rnd, sides: list, spans: dict, apart: float = 4000.0) -> list:
@@ -284,7 +295,7 @@ def generate(poly: list, kind: str, rnd, lot_w=1600.0, lot_d=3000.0, joins: list
                 streets.append(_round([(u, v0), (u, (v0 + end) / 2), (u + lean, end)], n=4))
                 out["pads"].append([*map(round, f.w(u + lean, end)), BULB])
     if kind == "branch":  # an S through the block (two entrances) with a cul-de-sac off each bend
-        a = L / 5
+        a = L * rnd.uniform(0.15, 0.25)
         spine = [(-a, edge)] + _bezier((-a, -W / 2), (-a, W * 0.1), (a, -W * 0.1), (a, W / 2))[1:-1] + [(a, W / 2 + 900)]
         streets = [spine]
         for sd, v in ((-1, W * 0.2), (1, -W * 0.2)):
@@ -293,20 +304,28 @@ def generate(poly: list, kind: str, rnd, lot_w=1600.0, lot_d=3000.0, joins: list
             if abs(end - start[0]) > 2 * lot_w:
                 streets.append([start, (end, v)])
                 out["pads"].append([*map(round, f.w(end, v)), BULB])
-    if kind == "grid":  # two through streets; the long one sways gently instead of ruling a line
+    # (No street of a neighbourhood enters at the exact middle of a side, and a grid is not always a cross with
+    # four ways in: every block opening at the same four mid-points read as one stamp across the city.)
+    if kind == "grid":  # a long street that sways gently and a cross street, which half the time stops at it
         sway = min(W * 0.12, 1500.0) * rnd.choice((1, -1))
-        streets = [[(-L / 2 - 900, 0.0)] + _bezier((-L / 2, 0.0), (-L / 6, sway), (L / 6, -sway), (L / 2, 0.0))[1:-1] + [(L / 2 + 900, 0.0)],
-                   [(0.0, edge), (0.0, W / 2 + 900)]]
+        v0 = W * rnd.uniform(-0.08, 0.08)
+        u0 = L * rnd.uniform(0.1, 0.24) * rnd.choice((1, -1))
+        long_ = [(-L / 2 - 900, v0)] + _bezier((-L / 2, v0), (-L / 6, v0 + sway), (L / 6, v0 - sway), (L / 2, v0))[1:-1] + [(L / 2 + 900, v0)]
+        meet = min(long_, key=lambda p: abs(p[0] - u0))[1]
+        streets = [long_, [(u0, edge), (u0, W / 2 + 900 if rnd.random() < 0.5 else meet)]]
     elif kind == "loop":  # a U with swept corners
-        a, b = L / 4, W / 2 - lot_d - PRIVATE_HALF - WALK - 200
-        streets = [_round([(-a, edge), (-a, b), (a, b), (a, edge)])]
+        b = W / 2 - lot_d - PRIVATE_HALF - WALK - 200
+        a1, a2 = L * rnd.uniform(0.18, 0.3), L * rnd.uniform(0.18, 0.3)
+        streets = [_round([(-a1, edge), (-a1, b), (a2, b), (a2, edge)])]
     elif kind == "organic":
-        a, b = L / 4, W / 2 - lot_d - PRIVATE_HALF - WALK - 200
-        streets = [[(-a, edge)] + _bezier((-a, -W / 2), (-a * 1.6, b * 1.5), (a * 1.6, b * 1.5), (a, -W / 2))[1:-1] + [(a, edge)]]
+        b = W / 2 - lot_d - PRIVATE_HALF - WALK - 200
+        a1, a2 = L * rnd.uniform(0.18, 0.3), L * rnd.uniform(0.18, 0.3)
+        streets = [[(-a1, edge)] + _bezier((-a1, -W / 2), (-a1 * 1.6, b * 1.5), (a2 * 1.6, b * 1.5), (a2, -W / 2))[1:-1] + [(a2, edge)]]
     elif kind == "cul_de_sac":
         end = W / 2 - BULB - lot_d * 0.6
-        streets = [[(0.0, edge), (0.0, end)]]
-        out["pads"].append([*map(round, f.w(0.0, end)), BULB])
+        stem = L * rnd.uniform(0.06, 0.16) * rnd.choice((1, -1))
+        streets = [[(stem, edge), (stem, end)]]
+        out["pads"].append([*map(round, f.w(stem, end)), BULB])
     block = [f.local(x, y) for x, y in poly]  # (after a 'collector' has turned the frame its way)
     walls = [(f.local(*p), f.local(*q)) for p, q in closed or []]
     # (a street may run 9 m out of the block, across the sidewalk to the kerb: never where there is no street)
@@ -344,20 +363,20 @@ def generate(poly: list, kind: str, rnd, lot_w=1600.0, lot_d=3000.0, joins: list
     for s in streets:
         out["lots"] += _lots_along(s, f, lot_w, lot_d, streets, taken, rnd=rnd, yard=yard, block=block)
     if kind == "cul_de_sac":  # lots round the bulb, facing its centre
-        end = streets[0][-1][1]
+        stem, end = streets[0][-1]
         ring = BULB + WALK + lot_d / 2
         n = max(3, int(math.pi * ring / lot_w))
         for k in range(n):
             a = math.pi * (0.15 + 0.7 * k / max(1, n - 1)) - math.pi  # the far half, away from the stem
             a = -a
-            cu, cv = math.cos(a) * ring, end + math.sin(a) * ring
+            cu, cv = stem + math.cos(a) * ring, end + math.sin(a) * ring
             ca, sa = math.cos(a), math.sin(a)  # (the whole lot inside the block: the far ones reached over its edge)
             if abs(cu) > L / 2 - 100 or abs(cv) > W / 2 - 100 or any(math.hypot(cu - x, cv - y) < lot_w * 0.9 for x, y in taken) \
                     or not all(_inside(block, cu + ca * i * lot_d / 2 - sa * j * lot_w / 2, cv + sa * i * lot_d / 2 + ca * j * lot_w / 2)
                                for i in (1, -1) for j in (1, -1)):
                 continue
             taken.append((cu, cv))
-            fu, fv = math.cos(a) * (BULB + WALK), end + math.sin(a) * (BULB + WALK)
+            fu, fv = stem + math.cos(a) * (BULB + WALK), end + math.sin(a) * (BULB + WALK)
             (wx, wy), (frx, fry) = f.w(cu, cv), f.w(fu, fv)
             out["lots"].append([round(wx), round(wy), round(f.yaw(-math.cos(a), -math.sin(a)), 1), round(lot_w),
                                 round(lot_d), round(frx), round(fry), "house", False])
@@ -405,10 +424,17 @@ def generate(poly: list, kind: str, rnd, lot_w=1600.0, lot_d=3000.0, joins: list
             # the buildings along the back)
             gates = _gates(rnd, [s for s in open_sides if s != "v+"] or ["v-"],
                            {"v-": L / 2 - 5000, "u-": depth / 2 - 700, "u+": depth / 2 - 700})
-            streets = [[(o, edge), (o, -W / 4)] if s == "v-" else
-                       [((1 if s[1] == "+" else -1) * (L / 2 + 900), -W / 4 + depth / 2 + o), ((1 if s[1] == "+" else -1) * (L / 2 - 3500), -W / 4 + depth / 2 + o)]
-                       for s, o in gates]
-            slab, stalls = parking(f, -L / 2 + 3500, L / 2 - 3500, -W / 4, -W / 4 + depth)
+            # a drive from the front runs right through the car park as a cross aisle (no stalls on it); one from
+            # an end runs straight into the nearest aisle. The drive used to stop at a row of parked cars.
+            lanes, cross = aisles(-W / 4, -W / 4 + depth), []
+            for s, o in gates:
+                if s == "v-":
+                    streets.append([(o, edge), (o, -W / 4 + depth)])
+                    cross.append(o)
+                else:
+                    end_, lane = (1 if s[1] == "+" else -1), min(lanes, key=lambda v: abs(v - (-W / 4 + depth / 2 + o)))
+                    streets.append([(end_ * (L / 2 + 900), lane), (end_ * (L / 2 - 3500), lane)])
+            slab, stalls = parking(f, -L / 2 + 3500, L / 2 - 3500, -W / 4, -W / 4 + depth, cross=cross)
             out["parking"].append(slab)
             out["stalls"] += stalls
             front = next((o for s, o in gates if s == "v-"), None)
@@ -523,12 +549,29 @@ def _demo() -> None:
             assert 0 < len(g["fences"]) < 2 * sum(1 for r in g["lots"] if not r[8]), (kind, "some yards fenced, not all")
         if kind == "branch":
             assert len(g["streets"]) == 3 and len(g["pads"]) == 2, "a spine with two cul-de-sacs"
+        if kind in ("grid", "loop", "organic", "cul_de_sac", "branch"):  # no street enters at the middle of a side
+            ends = [p for s in g["streets"] for p in (s[0], s[-1]) if not (0 <= p[0] <= 18000 and 0 <= p[1] <= 16000)]
+            assert ends and not any(abs(p[0] - 9000) < 400 and p[1] in (-900, 16900) or abs(p[1] - 8000) < 400 and p[0] in (-900, 18900)
+                                    for p in ends), (kind, ends)
+            assert kind != "grid" or len(ends) in (3, 4), ends
+        if kind == "suburban":  # every drive reaches the car park's driving surface: an aisle, or a cross aisle with no stall on it
+            x0, y0, x1, y1 = (lambda s: (s[0] - s[3] * 50, s[1] - s[4] * 50, s[0] + s[3] * 50, s[1] + s[4] * 50))(g["parking"][0])
+            for s in g["streets"]:
+                (ax, ay), (bx, by) = s[0], s[-1]
+                assert x0 - 5 <= bx <= x1 + 5 and y0 - 5 <= by <= y1 + 5, ("a drive ends at the car park", s)
+                for st in g["stalls"]:  # no stall within a car's width of the drive's line, or of where it comes in
+                    if ax == bx:
+                        assert abs(st[0] - ax) > 300, ("a stall on the cross aisle", st, s)
+                    else:
+                        assert abs(st[1] - by) > 300, ("a drive that ends at a row of stalls", st, s)
         if kind == "garden":
             assert len(g["lots"]) >= 6 and g["pads"], "end buildings close the courtyard; a roundabout at the entrance"
         if kind in ("garden", "suburban"):  # two or three ways in, none in the middle of its side, on more than one side
             ways = [s[0] for s in g["streets"] if not (0 <= s[0][0] <= 18000 and 0 <= s[0][1] <= 16000)]
             assert 2 <= len(ways) <= 3 and len({(p[0] in (-900, 18900), p[1] in (-900, 16900)) for p in ways}) > 1, (kind, ways)
-            assert not any(abs(p[0] - 9000) < 500 and p[1] in (-900, 16900) or abs(p[1] - 8000) < 500 and p[0] in (-900, 18900) for p in ways), (kind, ways)
+            # (a suburban complex's end drives run into an aisle of its car park, wherever that aisle lies)
+            assert not any(abs(p[0] - 9000) < 500 and p[1] in (-900, 16900) or
+                           kind == "garden" and abs(p[1] - 8000) < 500 and p[0] in (-900, 18900) for p in ways), (kind, ways)
         if kind in ("loop", "organic"):
             assert len({r[2] for r in g["lots"]}) > 3, (kind, "lots turn with the street")
         print(f"  {kind}: {len(g['streets'])} streets, {len(g['lots'])} lots, {len(g['stalls'])} stalls")

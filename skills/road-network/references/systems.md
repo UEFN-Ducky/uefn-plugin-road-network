@@ -198,7 +198,12 @@ inside it - then preview and Push city). Colours in the preview are mixes of App
 turn, its picked block, what it has, districts, plan); the x closes it. Click again inside it to pick a block:
 the block is washed and outlined, its lots are outlined, and the right side says its zone and layout and lets
 the person change both. Pointer never moves a city. The **Edit city** tool (E) does: drag the city to move it,
-the white handle to turn it, a dot on its edge to pull the edge in or out. While a city is dragged it leaves its
+the white handle to turn it, a dot on its edge to pull the edge in or out. Its districts have dots of their
+own, each district in its colour: the red one in the middle moves the centre district (the tall middle of the
+city) to another spot inside the city, the red and the blue one on a ring make downtown and the normal city
+bigger or smaller, the green one swings the industrial side round. The **Lake** tool (L, worlds that make
+their own terrain): click along where a lake goes and double-click to finish; click a lake to change its width,
+drag its dots or delete it. Nothing is saved until the button is let go, and Escape cancels. While a city is dragged it leaves its
 place at once and a light copy of its buildings rides with the pointer; after the drop the copy stays until the
 rebuilt city starts to come in. A rebuilt city always comes in a few layers at a time, never all at once. The
 map has no distance fog.
@@ -244,6 +249,12 @@ Everything the panel does to one city is this tool, so an AI can do the same:
   treats that block as that zone, whatever ring it lies in. `green` (0 to 1) is the share of its lots planted
   with trees instead of built on. A list changes several blocks; all three empty returns a block to the city's
   own plan.
+- `core`: the city's centre district at another spot inside it, `[dx, dy]` in cm from the city's own centre
+  (`"reset"` puts it back). The city and its edge stay where they are; downtown, the normal ring and the
+  skyline's peak lie round the new spot (`citygen.zone_share` / `core_reach`: the share of the way from that
+  spot to the edge). It is kept within 60 % of the way to the edge (`CORE_MAX`).
+- District sizes are the city's own too: `features` takes `{"downtown": 0.3, "normal": 0.7}` (shares of its
+  radius, `CITY_SHARES`; null returns one to the world's). `industry_deg` points its industrial side.
 - `road_network_cities(net_id)` lists each city's `blocks`: `[x, y, kind, zone, polygon, green share]`.
 - Only that block is laid out again (it has a random of its own); the other blocks keep their lots. The planner
   may still move a service site if the block it had chosen lost its lots.
@@ -257,7 +268,15 @@ their private streets, facing them, role 'house'; apartment complexes `garden` (
 rows of buildings round a courtyard), `suburban` (buildings round a central lot), `urban` (two big blocks + a
 parking garage) - footprints with role 'apartment' placed at their exact size; or `parcels` (plain street lots).
 A `garden` or `suburban` complex has two or three drives in from the streets round it (`_gates`): on different
-sides where the block has streets there, each off-centre, never one gate in the middle of one side.
+sides where the block has streets there, each off-centre, never one gate in the middle of one side. No street
+of any neighbourhood enters at the exact middle of a side; a `grid` has three or four ways in (its cross street
+stops at the long one half the time).
+Car parks (`neighbourhoods.parking`): rows of stalls with aisles along the slab. A drive never ends at a row of
+stalls: from the front it runs right through as a cross aisle (`cross`, no stall on it), from an end it runs
+into an aisle (`aisles`). The planner's sites (`urban.develop`) get the same: a drive from the street into
+every car park of more than one row, two into a wide one, as private streets of the city.
+Placement (`pcg_layers.preview`, `held`): every planned car park, ground and planned building spot is known
+before any layer is placed, and a building along road frontage or on a free lot never stands on one.
 Parking: lot -> 17.5 m modules (5.5 stalls + 6.5 aisle + 5.5 stalls) -> 2.6 m stalls. Three networks:
 public roads ('<City> Roads'), private access ('<City> Access': PR private streets, DW / DD driveways as cubic
 Beziers garage -> kerb, double for wide houses), pedestrians ('<City> Paths': sidewalks, walkways). Built-in
@@ -268,9 +287,11 @@ Three layers on one road graph: regional (`Highways`, city to city), urban freew
 BEFORE the blocks) and local streets (`<City> Roads`). Per city, `freeways.plan`:
 - **Mainlines:** from 600 m radius a north-south freeway on the city grid, mid-block at the edge of downtown
   (never on a street); from 2 km radius an east-west one too, and a **directional stack** where they cross.
-- **Ends at the shore:** a freeway crosses a river or a bay to the land beyond, but with only open water ahead it
-  ends at the shore, back at grade (`freeways.shore_reach`, kept on the city as `fw_shore` by
-  `citygen.shore_plan` before the streets are laid). No stack is built where its place is in the water.
+- **Ends at the shore:** a freeway bridges a river (water up to 400 m across, `FW_WATER_MAX`). Wider water, a
+  lake or a bay, ends it at the near shore, back at grade, whether or not there is land beyond
+  (`freeways.shore_reach`, kept on the city as `fw_shore` by `citygen.shore_plan` before the streets are laid).
+  No interchange is built where a ramp or frontage road of it would stand in water (`fw_shore.wet_ic`), no
+  stack where any of its flyovers would, and no highway carries on from a freeway end that points at the water.
 - **Levels from clearance, not offsets:** `LEVEL_CM` 7.5 m (5.5 m vehicles + deck). Streets level 0, freeway
   viaduct level 1 over the whole city (streets keep running under it, ED deck mesh), back to grade outside it at 4 %.
   At a stack the north-south freeway is level 2 and the left-turn flyovers are levels 3 and 4.
@@ -539,6 +560,16 @@ The header badge
 (`road_network_sync`) says whether UEFN is behind this world: road actors changed or never pushed, and
 city tiles to build or remove. The next build in UEFN changes only those.
 
+## Lakes drawn by hand (`citygen.lake_list`, `_dig_lakes`; tool `road_network_lake`)
+A lake is a line with a width (`pts` along its middle in cm, `width_m` 60 to 1500; one point is a round pond),
+kept in the world's `generated.lakes` and dug into the world's OWN terrain every time it is generated, before
+anything is levelled on it: a bed inside (a beach at its edge, the world's `water_depth_m` in its middle) and
+banks outside no steeper than 1 in 3, so a lake on a hill lies in a valley. A world has one water line: its
+own (`sea_m`), or, with none, one just under its lowest ground, so nothing else floods. Every lake is dug down
+to it. The streets, bridges, waterfront and buildings of every city are then laid round the lake like round
+any water. Not on a world laid over a landscape scanned from UEFN: that ground is never changed. In UEFN the
+dug ground comes with the heightmap; the water itself is the island's water at the world's water level.
+
 ## City size, spacing and water
 - **World tab:** `City size` (option `city_size`, ×0.3–4) scales every city, and regenerating scales the ones you
   have. `Distance between cities` (`city_gap_m`) is the open country between two cities' edges; cities closer
@@ -738,6 +769,8 @@ as team docs (chunks of 1000).
   Road meshes come from the project's own `…/WorldGen/Roads` folder (found from any stored network).
 - `road_network_cities(net_id)`, `road_network_city_save(net_id, city, name?, style?, radius_m?, buildings?)`:
   each city's own settings and building sets (`{"downtown": [mesh paths], "normal": [...], "housing": [...]}`).
+- `road_network_lake(net_id, lake_id, points, width_m, remove)`: draw a lake, change one or take one away
+  (see Lakes drawn by hand); then generate again with cities empty.
 - `road_network_heightmap(net_id)`: PNG path and the Landscape import settings. The person imports
   it (Landscape > New > Import from File) as a NEW landscape; never write the existing terrain.
 - `road_network_import_all(net_id, confirm=true)`: one click: Build pieces (junctions as wide as
@@ -768,6 +801,14 @@ Example: Flower beds in the suburbs: `{"name": "Flower beds", "kind": "scatter",
 - **Forests grow on a city's leftover land** (`pcg_layers.open_land`). A foliage or scatter layer set to
   `outside` also places inside a planned city wherever nothing was planned: no lot within 4 m, no block with a
   layout of its own (a subdivision, a complex, a park), no planned ground or parking lot, no airfield.
+- **The city centre stands on concrete** (`pcg_layers.paved_lots`, built-in layer `Paved lots`, laid last on
+  the finished ground). Every lot downtown, every lot of the industrial zone and the lots of 30 % of the normal
+  city's blocks of plain lots (`PAVED_NORMAL`, each block by its own draw) is covered edge to edge with
+  concrete in slabs about 7 m across, each 6 cm over the highest ground under it and 2 m deep. On a slope the
+  slabs step down the hill like stacked boxes, each one's side the wall above the next; on level ground (a
+  building's own pad) they join into one. It levels nothing itself (`pad` False). Never a lot with a house, a
+  mansion or a park, nor a spot a plan drew a building at. A tree on a paved lot stays (a tree pit); on a car
+  park, an apron, a sports field or a pool it goes (`clear_buildings`).
 - **Nothing stands on a road** (`pcg_layers.clear_roads`, last of all). Every layer is placed by its own rule, and
   each rule knew some roads and not others. So everything placed is checked once more against every road
   surface (`surface_samples`: every road and street, a junction's arms, every private street):

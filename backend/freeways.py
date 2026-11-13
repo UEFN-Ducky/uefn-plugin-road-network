@@ -224,6 +224,7 @@ FW_HALF = 1650.0  # urban freeway: 3 lanes each way + shoulders (the ED deck / F
 MAP_EDGE = 5000.0  # nothing closer than 50 m to the map's edge
 IC_ROOM = 35000.0  # an interchange's ramps and frontage roads reach ~300 m from its centre
 CORRIDOR = 1500.0  # right of way past a road's edge: no building lot inside it
+FW_WATER_MAX = 40000.0  # a freeway bridges water up to 400 m across (a river); wider water ends it at the shore
 
 
 def _densify(pts, step=1500.0):
@@ -326,12 +327,15 @@ def reserved(city: dict):
 
 def shore_reach(city: dict, o: dict, wet, taken=None) -> dict | None:
     """How far each of the city's freeways may run from the middle of its line: {'ns': [back cm, ahead cm], 'ew':
-    [...], 'stack': is the stack's place free}; None with nothing in its way or no freeway. plan() ends the
-    freeway there, back at grade, as at the map's edge. Two things stop one:
-    - open water with no land beyond. It crosses a river or a bay to the far shore, but it never runs out over a
-      lake to end in the water (Kingsport's did: 1.35 km of viaduct to nowhere, Nov 12 2026).
+    [...], 'stack': is the stack's place free, 'wet_ic': {'ns': [n, ...], 'ew': [...]} the interchanges (plan()'s
+    own numbering along each freeway) that would stand with a ramp in the water}; None with nothing in its way
+    or no freeway. plan() ends the freeway there, back at grade, as at the map's edge. Two things stop one:
+    - water wider than FW_WATER_MAX. It bridges a river, but it never runs out over a lake or a bay, to the far
+      shore or to nowhere (Kingsport's ran 1.35 km to end in the water, Nov 12 2026; Northgate's 2.3 km across a
+      bay and Riverton's 1.6 km, with the stack's flyovers on piers in the water beside it: far too much bridge).
     - a neighbouring city's land (`taken(x, y)`): it ends before that city's edge and never runs through it
       (Northgate's ran on through Riverton and took most of its streets).
+    And no interchange is built where any of its ramps would stand in water: a freeway bridge is one deck.
     The lines here are plan()'s own: keep the two in step."""
     from . import citygen as cg
     R = city["radius"]
@@ -349,19 +353,36 @@ def shore_reach(city: dict, o: dict, wet, taken=None) -> dict | None:
         dx, dy = c * axis[0] - s * axis[1], s * axis[0] + c * axis[1]
         reach = []
         for sign in (-1.0, 1.0):
-            dry, t = 0.0, 0.0
+            dry, t, water = 0.0, 0.0, None  # (water: where the stretch of water it is over began)
             while t <= end:
                 x, y = px + dx * sign * t, py + dy * sign * t
                 if taken and taken(x, y):
                     break
-                if not wet or not wet(x, y):
-                    dry = t
+                if wet and wet(x, y):
+                    water = t if water is None else water
+                    if t - water > FW_WATER_MAX:
+                        break  # a lake, a bay: it ends on the shore before it
+                else:
+                    dry, water = t, None
                 t += 1000.0
             reach.append(round(end + 50000.0 if dry >= end - 1000.0 else dry))  # land right to its end: no limit
         out[name] = reach
+        # the interchanges along it, as plan() numbers them: none with a ramp or a frontage road in the water
+        step = by if name == "ns" else bx
+        soaked = []
+        for n in range(-int(R // step), int(R // step) + 1):
+            cx, cy = px + dx * n * step, py + dy * n * step
+            ring = [(0.0, 0.0)] + [(math.cos(k * math.pi / 4) * r, math.sin(k * math.pi / 4) * r) for r in (15000.0, 30000.0) for k in range(8)]
+            if wet and any(wet(cx + ax, cy + ay) for ax, ay in ring):
+                soaked.append(n)
+        out.setdefault("wet_ic", {})[name] = soaked
     sx, sy = W(off_x, -off_y)
-    out["stack"] = not any((wet and wet(sx + ax, sy + ay)) or (taken and taken(sx + ax, sy + ay))
-                           for ax, ay in ((0, 0), (40000, 0), (-40000, 0), (0, 40000), (0, -40000)))
+    # the stack's flyovers leave the freeways 1.15 km out and swing 500 m wide of them: all of it on dry land
+    spots = [(0.0, 0.0)] + [(c * a - s * b, s * a + c * b) for a, b in
+                            [(d * i, 0.0) for d in (20000.0, 40000.0, 60000.0, 85000.0, 115000.0) for i in (1, -1)]
+                            + [(0.0, d * i) for d in (20000.0, 40000.0, 60000.0, 85000.0, 115000.0) for i in (1, -1)]
+                            + [(d * i, d * j) for d in (25000.0, 45000.0) for i in (1, -1) for j in (1, -1)]]
+    out["stack"] = not any((wet and wet(sx + ax, sy + ay)) or (taken and taken(sx + ax, sy + ay)) for ax, ay in spots)
     return out
 
 
@@ -421,11 +442,17 @@ def plan(city: dict, o: dict) -> Plan:
             back, ahead = min(back, shore[0]), min(ahead, shore[1])
         reach_of[name] = (back, ahead)
         sides_of[name] = tuple(span if r >= end + 2000 else max(0.0, min(span, r - fade - 2000)) for r in (back, ahead))
+    # the stack is built only where both freeways really pass and all of it stands on free, dry land on the map
+    sx, sy = W(*stack_at)
+    near_edge = box and min(room(sx, sy, 1, 0), room(sx, sy, -1, 0), room(sx, sy, 0, 1), room(sx, sy, 0, -1)) < STACK_FLY + 20000
+    passes = lambda name, t: name in reach_of and -reach_of[name][0] + 4000 <= t <= reach_of[name][1] - 4000
+    stacked = bool(two and passes("ns", stack_at[1]) and passes("ew", stack_at[0]) and not (hard and hard(sx, sy))
+                   and not near_edge and (city.get("fw_shore") or {}).get("stack", True))
     for name, normal_axis, at, axis in mains:
         stack_along = stack_at[1] if name == "ns" else stack_at[0]
         upper = name == "ns"
         sides, (back, ahead) = sides_of[name], reach_of[name]
-        lf = lambda t, sa=stack_along, up=upper, sd=sides: lift(t, (t - sa) if up else None, sd)
+        lf = lambda t, sa=stack_along, up=upper and stacked, sd=sides: lift(t, (t - sa) if up else None, sd)
         first = int(-end // 2000) if back >= end + 2000 else -int(back // 2000)
         last = int(end // 2000) if ahead >= end + 2000 else int(ahead // 2000)
         ts = [k * 2000.0 for k in range(first, last + 1)]
@@ -448,15 +475,20 @@ def plan(city: dict, o: dict) -> Plan:
         out.add(bld, "6L", ("main", name))
         # service interchanges on the main roads this freeway crosses
         ax_w = (c * axis[0] - s * axis[1], s * axis[0] + c * axis[1])
-        done = [stack_along] if two else []
-        gap = STACK_GAP if two else 0.0
+        # (no stack built: no room kept for one. Riverton's stack would have stood in the water, and the freeway
+        # that was left had no interchange at all for 1.6 km either side of where it was not)
+        done = [stack_along] if stacked else []
+        gap = STACK_GAP if stacked else 0.0
         step, across = (by, bx) if name == "ns" else (bx, by)  # the grid along this freeway, and across it
         n_max = int(R // step)
+        soaked = set(((city.get("fw_shore") or {}).get("wet_ic") or {}).get(name) or ())
         for n in sorted(range(-n_max, n_max + 1), key=abs):
             t = n * step
             if n % o["collector_every"] and n:
                 continue  # only collectors and the main axis
-            if any(abs(t - d) < (gap if d == stack_along and two else IC_SPACING) for d in done):
+            if n in soaked:
+                continue  # a ramp of it would stand in the water (shore_reach)
+            if any(abs(t - d) < (gap if d == stack_along and stacked else IC_SPACING) for d in done):
                 continue
             if not -back + IC_ROOM <= t <= ahead - IC_ROOM:
                 continue  # its ramps would run past the map's edge
@@ -479,9 +511,7 @@ def plan(city: dict, o: dict) -> Plan:
             out.interchanges.append({"kind": kind, "at": [round(cx), round(cy)], "freeway": name, "cross_road": road,
                                      "b_axis": [round(-ax_w[1], 4), round(ax_w[0], 4)], "group": ("ic", name, n)})
             done.append(t)
-    sx, sy = W(*stack_at)
-    near_edge = box and min(room(sx, sy, 1, 0), room(sx, sy, -1, 0), room(sx, sy, 0, 1), room(sx, sy, 0, -1)) < STACK_FLY + 20000
-    if two and not (hard and hard(sx, sy)) and not near_edge and (city.get("fw_shore") or {}).get("stack", True):
+    if stacked:
         # (its flyovers reach 1.15 km out: all on the map, and on land)
         cx, cy = W(*stack_at)
         f = Frame(cx, cy, -s, c)  # a along the north-south freeway (upper), b along the east-west one

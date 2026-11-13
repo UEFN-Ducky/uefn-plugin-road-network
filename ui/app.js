@@ -438,11 +438,16 @@ renderer.domElement.addEventListener("pointerdown", (e) => {
     const hnd0 = handleUnder(e), hnd = hnd0 && heldElsewhere(hnd0.c) ? null : hnd0, hit = hnd0 ? null : cityUnder(e);
     if (hnd) {  // (as it stands now, for Escape)
       const c = hnd.c;
-      hnd.was = { turn_deg: c.turn_deg, spin: c.spin, shape: c.shape && [...c.shape], angle: c.districts?.industrial?.angle };
+      hnd.was = { turn_deg: c.turn_deg, spin: c.spin, shape: c.shape && [...c.shape], angle: c.districts?.industrial?.angle,
+        districts: c.districts && JSON.parse(JSON.stringify(c.districts)) };
       drag.handle = hnd;
     }
     else if (hit) { drag.cityCand = hit; drag.cityMove = true; }
     if (hnd || hit) renderer.domElement.style.cursor = "grab";
+  }
+  if (e.button === 0 && state.tool === "lake" && !e.shiftKey) {  // Lake tool: a point of the picked lake
+    const pt = lakePointUnder(e), l = pt && lakesOf().find((x) => x.id === pt.id);
+    if (l) { drag.lakePt = { lake: l, k: pt.k, was: [...l.pts[pt.k]] }; renderer.domElement.style.cursor = "grab"; }
   }
   if (e.button === 0 && state.tool === "move" && !e.shiftKey) {  // Move tool: a road under the pointer, else the city
     const pt = roadPointUnder(e), hit = pt ? null : cityUnder(e);
@@ -460,6 +465,7 @@ renderer.domElement.addEventListener("pointermove", (e) => {
   if (drag.cityCand && drag.cityMove && drag.moved && !drag.city) startCityDrag(drag.cityCand);
   if (drag.city) { dragCity(e); return; }  // moving a city: it follows the pointer, the camera stays
   if (drag.ptCand && drag.moved) { dragRoadPoint(e); return; }  // moving one part of a road
+  if (drag.lakePt) { if (drag.moved) dragLakePoint(e); return; }  // moving one point of a lake
   if (drag.drawing) {  // drawing an area: a point every few pixels, no orbit
     if (Math.abs(dx) + Math.abs(dy) > 6) { drag.x = e.clientX; drag.y = e.clientY; addAreaPoint(e); }
     return;
@@ -489,8 +495,10 @@ renderer.domElement.addEventListener("pointerup", (e) => {
   if (drag?.handle) { const d = drag; drag = null; dropHandle(d.handle); return; }
   if (drag?.city) { const d = drag; drag = null; dropCity(d.city); return; }
   if (drag?.ptCand) { const d = drag; drag = null; if (d.ptTo) dropRoadPoint(d); return; }
+  if (drag?.lakePt) { const d = drag; drag = null; if (d.lakePt.moved) dropLakePoint(d.lakePt); return; }
   if (drag && !drag.moved && drag.button === 0) {
     if (state.tool === "pin") placePin(e);
+    else if (state.tool === "lake") lakeClick(e);
     else if (state.tool === "addcity") addCityAt(e);
     else if (state.tool === "city") clickCity(drag.cityCand, e);
     else if (state.tool === "select" && !pick(e)) clickCity(drag.cityCand, e);
@@ -508,7 +516,9 @@ renderer.domElement.addEventListener("wheel", (e) => {
   placeCamera();
   renderZoom();
   if (state.tool === "city") drawCityMark();  // its handles keep their size on screen
+  if (state.tool === "lake") drawLakes();
 }, { passive: false });
+renderer.domElement.addEventListener("dblclick", () => { if (state.tool === "lake") finishLake(); });
 let needsDraw = true;
 let visible = true;
 function resize() {
@@ -818,11 +828,65 @@ function flyTo(target, dist, ms = 650) {
   requestAnimationFrame(step);
 }
 // the picked city on the map: its real edge, the block picked in it and, with the Edit city tool, its handles
-// (a dot on the edge at each of the outline's directions, and a white one out past the edge that turns it)
+// (a dot on the edge at each of the outline's directions, a white one out past the edge that turns it, and its
+// districts' own, each district in its colour: the middle one moves the centre district to another spot inside the
+// city, the one on a ring makes that district bigger or smaller, the one on the industrial side swings it round)
 const cityMark = new THREE.Group();
 scene.add(cityMark);
 const cityGhost = new THREE.Group();  // a city being moved: a light copy of its buildings (liftCity)
 scene.add(cityGhost);
+// Lakes drawn by hand (the Lake tool): each a line with a width, dug into the world's own terrain by the next
+// rebuild (citygen.lake_list / terrain). pick: the lake being changed; draft: the points of one being drawn.
+const lakeMark = new THREE.Group();
+scene.add(lakeMark);
+const lake = { pick: "", draft: [], width: 200 };
+const lakesOf = () => currentNet()?.generated?.lakes || [];
+const lakeWorld = () => !!currentNet()?.generated && !currentNet().generated.ground_from;  // (scanned ground is never dug)
+// a lake's shore: the line round its middle line, half its width away, round at both ends
+function lakeShore(pts, half) {
+  const arc = (c, a0, turn, n) => Array.from({ length: n + 1 }, (_, k) => [c[0] + Math.cos(a0 - turn * k / n) * half, c[1] + Math.sin(a0 - turn * k / n) * half]);
+  if (pts.length < 2) return arc(pts[0], 0, Math.PI * 2, 48);
+  const left = [], right = [];
+  pts.forEach((p, i) => {
+    const a = pts[Math.max(0, i - 1)], b = pts[Math.min(pts.length - 1, i + 1)], L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+    const nx = -(b[1] - a[1]) / L, ny = (b[0] - a[0]) / L;
+    left.push([p[0] + nx * half, p[1] + ny * half]);
+    right.push([p[0] - nx * half, p[1] - ny * half]);
+  });
+  const end = pts[pts.length - 1], l1 = left[left.length - 1], r0 = right[0];
+  return [...left, ...arc(end, Math.atan2(l1[1] - end[1], l1[0] - end[0]), Math.PI, 10), ...right.reverse(),
+    ...arc(pts[0], Math.atan2(r0[1] - pts[0][1], r0[0] - pts[0][0]), Math.PI, 10)];
+}
+function drawLakes() {
+  clear(lakeMark);
+  needsDraw = true;
+  if (state.tool !== "lake" || !state.geo) return;
+  const t = state.geo.terrain || {};
+  const up = (x, y, lift = 300) => toV(x, y, Math.max(sampleZ(t, x, y) ?? 0, t.sea ?? -1e9) + lift);
+  const line = (pts, colour, opacity) => new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts.map(([x, y]) => up(x, y))),
+    new THREE.LineBasicMaterial({ color: col(colour), depthTest: false, transparent: true, opacity }));
+  const size = Math.max(5, orbit.dist / 75);
+  const dot = (x, y, colour, data = {}) => {
+    const m = new THREE.Mesh(new THREE.SphereGeometry(size, 14, 10), new THREE.MeshBasicMaterial({ color: col(colour), depthTest: false }));
+    m.position.copy(up(x, y, 500));
+    m.renderOrder = 5;
+    m.userData = data;
+    lakeMark.add(m);
+  };
+  const shape = (pts, half, colour, opacity) => {  // its middle line and its shore
+    if (pts.length > 1) lakeMark.add(line(pts, colour, opacity));
+    lakeMark.add(line(lakeShore(pts, half), colour, opacity * 0.75));
+  };
+  for (const l of lakesOf()) {
+    const on = l.id === lake.pick;
+    shape(l.pts, l.width_m * 50, "blue", on ? 1 : 0.55);
+    if (on) l.pts.forEach(([x, y], k) => dot(x, y, "blue", { lakePt: { id: l.id, k } }));
+  }
+  if (lake.draft.length) {
+    shape(lake.draft, lake.width * 50, "accent", 1);
+    lake.draft.forEach(([x, y]) => dot(x, y, "accent"));
+  }
+}
 function drawCityMark() {
   clear(cityMark);
   const c = state.cities.find((x) => x.id === state.cityPick);
@@ -871,6 +935,20 @@ function drawCityMark() {
   const out = up(cx + Math.cos(a) * r, cy + Math.sin(a) * r, 500);
   cityMark.add(line([up(cx, cy, 500), out], "fg", 0.55));
   dot(out, "turn", 0, "fg");
+  if (c.dragTo) return;  // (being moved: its districts come with it when it lands)
+  const d = c.districts || {}, R = c.radius, core = cityCore(c) || [0, 0], base = c.turn_deg ?? 0;
+  const at = (share, deg, lift = 500) => { const [x, y] = ringPoint(c, share, deg); return up(x, y, lift); };
+  const down = (d.downtown?.radius || R * 0.4) / R, normal = (d.normal?.radius || R * 0.75) / R;
+  for (const [share, colour] of [[down, DISTRICT_COLOR.downtown], [normal, DISTRICT_COLOR.normal]]) {
+    cityMark.add(line(Array.from({ length: 121 }, (_, k) => at(share, k * 3, 350)), colour, 0.8));
+  }
+  dot(up(c.x + core[0], c.y + core[1], 500), "core", 0, DISTRICT_COLOR.downtown);
+  dot(at(down, base + 45), "downtown", 0, DISTRICT_COLOR.downtown);
+  dot(at(normal, base + 135), "normal", 0, DISTRICT_COLOR.normal);
+  if (d.industrial) {
+    const ia = d.industrial.angle * Math.PI / 180, ir = R * 0.88 * cityOutline(c, d.industrial.angle);
+    dot(up(c.x + Math.cos(ia) * ir, c.y + Math.sin(ia) * ir, 500), "industry", 0, DISTRICT_COLOR.industrial);
+  }
 }
 // road_io._junction_geometry for our flat kit, drawn here exactly as the mesh is built (keep the two in step):
 // the deck out to every arm's mouth, rounded corners between arms, a stop line and a zebra crossing on each
@@ -958,6 +1036,37 @@ function cityOutline(c, angleDeg) {
     f += amp * Math.sin(k * a + phase);
   }
   return 1 + f;
+}
+// A city's districts lie round its centre district, which can be moved off the city's own centre (districts.core,
+// cm from it). Keep in step with citygen.core_reach / zone_share: how far the city's edge is from that spot in each
+// of 360 directions, and the point `share` of the way from it to the edge.
+// (not the accent colour, which the city's own edge dots have: in most themes that is the amber of industry)
+const DISTRICT_COLOR = { downtown: "red", normal: "blue", housing: "muted", industrial: "green" };
+const cityCore = (c) => { const k = c.districts?.core; return k && (k[0] || k[1]) ? k : null; };
+function coreReach(c) {
+  const core = cityCore(c);
+  if (!core) return null;
+  const key = [c.x, c.y, c.radius, c.seed, c.spin, (c.shape || []).join(), core[0], core[1]].join("|");
+  if (c._reach?.key === key) return c._reach.list;
+  const px = c.x + core[0], py = c.y + core[1], R = c.radius, list = [];
+  const out = (x, y) => Math.hypot(x - c.x, y - c.y) > R * cityOutline(c, Math.atan2(y - c.y, x - c.x) * 180 / Math.PI);
+  for (let k = 0; k < 360; k++) {
+    const dx = Math.cos(k * Math.PI / 180), dy = Math.sin(k * Math.PI / 180), step = R / 40;
+    let t = 0;
+    while (t < 2.8 * R && !out(px + dx * (t + step), py + dy * (t + step))) t += step;
+    let lo = t, hi = t + step;
+    for (let i = 0; i < 16; i++) { const mid = (lo + hi) / 2; if (out(px + dx * mid, py + dy * mid)) hi = mid; else lo = mid; }
+    list.push((lo + hi) / 2);
+  }
+  c._reach = { key, list };
+  return list;
+}
+function ringPoint(c, share, deg) {
+  const a = deg * Math.PI / 180, reach = coreReach(c);
+  if (!reach) { const r = c.radius * share * cityOutline(c, deg); return [c.x + Math.cos(a) * r, c.y + Math.sin(a) * r]; }
+  const t = ((deg % 360) + 360) % 360, i = Math.floor(t) % 360, core = cityCore(c);
+  const r = (reach[i] + (reach[(i + 1) % 360] - reach[i]) * (t - Math.floor(t))) * share;
+  return [c.x + core[0] + Math.cos(a) * r, c.y + core[1] + Math.sin(a) * r];
 }
 // where each instance of an instanced mesh stands (x, y in world cm), so a city's own can be told apart
 const xyOf = (rows) => { const a = new Float32Array(rows.length * 2); rows.forEach((p, i) => { a[2 * i] = p[0]; a[2 * i + 1] = p[1]; }); return a; };
@@ -1324,14 +1433,13 @@ function drawDistricts() {
   const t = state.geo?.terrain || {};
   for (const c of state.cities) {
     const z = sampleZ(t, c.x, c.y);
-    for (const [ring, colour] of [["downtown", "accent"], ["normal", "fg-dim"], ["housing", "muted"]]) {
+    for (const [ring, colour] of Object.entries(DISTRICT_COLOR).filter(([k]) => k !== "industrial")) {
       const r = c.districts?.[ring]?.radius;
       if (!r) continue;
       const pts = [];
       for (let k = 0; k <= 96; k++) {
-        const a = k / 96 * Math.PI * 2;
-        const rr = r * cityOutline(c, a * 180 / Math.PI);  // the same irregular edge the generator uses
-        const x = c.x + Math.cos(a) * rr, y = c.y + Math.sin(a) * rr;
+        // the same irregular edge the generator uses, round the centre district where that was moved
+        const [x, y] = ringPoint(c, r / c.radius, k / 96 * 360);
         pts.push(toV(x, y, (sampleZ(t, x, y) ?? z ?? 0) + 250));
       }
       const geo = new THREE.BufferGeometry().setFromPoints(pts);
@@ -1348,7 +1456,7 @@ function drawDistricts() {
       for (let k = 24; k >= 0; k--) { const a = a0 + span * k / 24, f = cityOutline(c, a * 180 / Math.PI); pts.push([c.x + Math.cos(a) * down * f, c.y + Math.sin(a) * down * f]); }
       pts.push(pts[0]);
       const geo = new THREE.BufferGeometry().setFromPoints(pts.map(([x, y]) => toV(x, y, (sampleZ(t, x, y) ?? z ?? 0) + 300)));
-      const line = new THREE.Line(geo, new THREE.LineDashedMaterial({ color: col("amber"), dashSize: 24, gapSize: 10 }));
+      const line = new THREE.Line(geo, new THREE.LineDashedMaterial({ color: col(DISTRICT_COLOR.industrial), dashSize: 24, gapSize: 10 }));
       line.computeLineDistances();
       groups.districts.add(line);
     }
@@ -2402,6 +2510,9 @@ async function loadGeometry(keep, quiet = false) {
   buildScene();
   showError("");
   loadHistory();
+  if (lake.pick && !lakesOf().some((l) => l.id === lake.pick)) lake.pick = "";
+  drawLakes();
+  if (state.tool === "lake") lakeBanner();
 }
 // A whole city is several MB: the terrain comes first, then each actor in pages of PAGE points
 // and segments, so no single reply nears the panel bridge's 1 MB line.
@@ -3212,11 +3323,12 @@ function renderTools() {
   $("tools").replaceChildren(
     tool("select", "pointer", "Pointer: click a city, then one of its blocks; nothing moves", "V"),
     tool("hand", "hand", "Hand: drag to pan the view", "H"),
-    ...(currentNet()?.generated ? [tool("city", "city", "Edit city: drag it to move it, the white handle to turn it, the dots to shape its edge; click a block to change it", "E")] : []),
+    ...(currentNet()?.generated ? [tool("city", "city", "Edit city: drag it to move it, the white handle to turn it, the dots to shape its edge; the red, blue and green dots move and resize its districts; click a block to change it", "E")] : []),
     tool("move", "route", "Move road: press on a road and drag that part of it; the ground is cut again under it", "M"),
     h("span", { class: "rn-sep" }),
     tool("pin", "pin", "Pin a spot, then tell an AI what to do there", "P"),
     tool("area", "pen", "Draw round an area, then tell an AI what to do there", "A"),
+    ...(lakeWorld() ? [tool("lake", "lake", "Lake: click along where it goes, double-click to finish, and the ground is dug there; click a lake to change its width, drag its dots, or delete it", "L")] : []),
     ...(currentNet()?.generated ? [tool("addcity", "plus", "Add a city: click where it goes", "C")] : []),
     ...(hasNote ? [act("x", clearNote, "Remove the pin or area")] : []),
     h("span", { class: "rn-sep" }),
@@ -3251,10 +3363,12 @@ function toggleHelp() {
   const box = pop || h("div", { class: "rn-help", id: "toolHelp", role: "dialog", "aria-label": "Map controls" });
   box.replaceChildren(h("div", { class: "rn-help__title" }, "Map controls"),
     row("Click a city", "Pick it; then click a block of it"), row("Edit city (E)", "Drag to move, white handle turns, dots shape its edge"),
+    row("District dots", "Red middle: move the centre. Red / blue on a ring: its size. Green: industry's side"),
+    row("Lake (L)", "Click along it, double-click to finish. Click a lake: its width, its dots, delete"),
     row("Left drag", "Orbit (Pointer) / pan (Hand)"),
     row("Hold right mouse", "Fly: look around"), row("+ W A S D, Q / E", "Fly: move, down / up (Shift: faster)"),
     row("+ Wheel", "Fly: speed"), row("Shift / middle drag", "Pan"), row("Wheel", "Zoom"),
-    row("V H E M P A C", "Pointer, Hand, Edit city, Move road, Pin, Area, Add city"), row("F / T", "Fit / top view"),
+    row("V H E M P A L C", "Pointer, Hand, Edit city, Move road, Pin, Area, Lake, Add city"), row("F / T", "Fit / top view"),
     row("Ctrl+Z / Ctrl+Y", "Undo / redo your last change"),
     row("Esc", "While dragging: cancel, nothing changes. Else back to Pointer"));
   box.hidden = false;
@@ -3262,16 +3376,19 @@ function toggleHelp() {
 }
 function setTool(id) {
   state.tool = id;
-  $("view").classList.toggle("is-drawing", id === "pin" || id === "area" || id === "addcity");
+  $("view").classList.toggle("is-drawing", id === "pin" || id === "area" || id === "addcity" || id === "lake");
   $("view").classList.toggle("is-hand", id === "hand");
+  if (id !== "lake") { lake.draft = []; lake.pick = ""; }
   renderTools();
   renderWorldCity();
   drawCityMark();  // the Edit city tool shows the picked city's handles
+  drawLakes();  // the Lake tool shows every lake's line and shore
   needsDraw = true;
   const banner = $("banner");
+  if (id === "lake") return lakeBanner();
   if (id === "city") {
     const c = state.cities.find((x) => x.id === state.cityPick);
-    banner.replaceChildren(h("span", {}, c ? `Editing ${c.name}: drag it to move it, the white handle to turn it, the dots to shape its edge` : "Click a city to edit it"),
+    banner.replaceChildren(h("span", {}, c ? `Editing ${c.name}: drag it to move it, the white handle to turn it, the dots to shape its edge, the coloured dots to move and resize its districts` : "Click a city to edit it"),
       h("button", { type: "button", class: "rn-mini", onclick: () => setTool("select") }, "Done"));
     banner.hidden = false;
   } else if (id === "addcity") {  // placing a new city: click the map, or let City Builder find room
@@ -3285,7 +3402,15 @@ window.addEventListener("keydown", (e) => {
   if (e.target.closest?.("input, textarea, [contenteditable]")) return;  // typing, not shortcuts
   // Escape while something is held (a city, a handle, a road point, an area being drawn): it goes back to where
   // it was and nothing is changed. Nothing is ever saved before the button is let go.
-  if (e.key === "Escape") { if (cancelDrag()) return; showInspect(null); if (state.tool !== "select") setTool("select"); $("toolHelp")?.setAttribute("hidden", ""); return; }
+  if (e.key === "Escape") {
+    if (cancelDrag()) return;
+    if (state.tool === "lake" && (lake.draft.length || lake.pick)) { lake.draft = []; lake.pick = ""; drawLakes(); lakeBanner(); return; }  // the lake being drawn, or the pick
+    showInspect(null);
+    if (state.tool !== "select") setTool("select");
+    $("toolHelp")?.setAttribute("hidden", "");
+    return;
+  }
+  if (e.key === "Enter" && state.tool === "lake" && lake.draft.length) { finishLake(); return; }
   if ((e.ctrlKey || e.metaKey) && !e.altKey && ["z", "y"].includes(e.key.toLowerCase())) {
     e.preventDefault();
     stepHistory(e.key.toLowerCase() === "z" && !e.shiftKey);  // Ctrl+Z undo; Ctrl+Y or Ctrl+Shift+Z redo
@@ -3298,8 +3423,8 @@ window.addEventListener("keydown", (e) => {
     if (FLY_KEYS[k]) { fly.keys.add(k); e.preventDefault(); }
     return;
   }
-  const tools = { v: "select", h: "hand", e: "city", m: "move", p: "pin", a: "area", c: "addcity" };
-  if (tools[k] && ((k !== "c" && k !== "e") || currentNet()?.generated)) setTool(tools[k]);
+  const tools = { v: "select", h: "hand", e: "city", m: "move", p: "pin", a: "area", c: "addcity", l: "lake" };
+  if (tools[k] && ((k !== "c" && k !== "e") || currentNet()?.generated) && (k !== "l" || lakeWorld())) setTool(tools[k]);
   else if (k === "f") frame();
   else if (k === "t") topView();
   else if (k === "?") toggleHelp();
@@ -3480,6 +3605,93 @@ function clickCity(c, e) {
   drawCityMark();
   needsDraw = true;
 }
+// The Lake tool. A click on a lake picks it (its dots and its width show); a click anywhere else adds a point to
+// the lake being drawn, and a double-click or Enter finishes it. Nothing is dug until then, and nothing of a
+// picked lake changes until its dot or its slider is let go; Escape cancels either.
+function lakePointUnder(e) {
+  const r = renderer.domElement.getBoundingClientRect();
+  ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), camera);
+  return ray.intersectObjects(lakeMark.children.filter((o) => o.userData.lakePt), false)[0]?.object.userData.lakePt || null;
+}
+function lakeAt(x, y) {  // the lake whose water this spot is in
+  const far = (p, a, b) => {
+    const dx = b[0] - a[0], dy = b[1] - a[1], t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy || 1)));
+    return Math.hypot(p[0] - a[0] - dx * t, p[1] - a[1] - dy * t);
+  };
+  return lakesOf().find((l) => l.id && l.pts.some((p, i) => far([x, y], p, l.pts[Math.min(l.pts.length - 1, i + 1)]) < l.width_m * 50)) || null;
+}
+function lakeClick(e) {
+  const v = groundAt(e);
+  if (!v) return;
+  const [x, y] = toUE(v);
+  if (!lake.draft.length) {
+    const hit = lakeAt(x, y);
+    if (hit || lake.pick) {  // on a lake: it is picked; off it with one picked: that one is let go
+      lake.pick = hit && hit.id !== lake.pick ? hit.id : hit ? lake.pick : "";
+      drawLakes();
+      return lakeBanner();
+    }
+  }
+  lake.draft.push([x, y]);
+  drawLakes();
+  lakeBanner();
+}
+function saveLake(title, params) {  // saved and dug by the next rebuild (queueEdit), like a change to a city
+  drawLakes();
+  lakeBanner();
+  queueEdit(title, async () => {
+    const out = await rpc(params.remove ? "lake_delete" : "lake_save", { net_id: state.net, lake_id: params.lake_id || "",
+      ...(params.remove ? {} : { points: params.points ? JSON.stringify(params.points) : "", width_m: params.width_m || 0 }) });
+    if (out?.ok !== false && currentNet()?.generated) {
+      currentNet().generated.lakes = out.lakes;
+      if (!params.lake_id && state.tool === "lake") lake.pick = out.lake || "";
+    }
+    return out;
+  });
+}
+function finishLake() {
+  const pts = lake.draft.filter((p, i, all) => !i || Math.hypot(p[0] - all[i - 1][0], p[1] - all[i - 1][1]) > Math.max(500, orbit.dist));  // (a double-click's two clicks are one point)
+  lake.draft = [];
+  if (!pts.length || !currentNet()?.generated) { drawLakes(); return lakeBanner(); }
+  currentNet().generated.lakes = [...lakesOf(), { id: "", pts, width_m: lake.width }];  // shown at once; its name comes back with the save
+  saveLake("Digging the lake", { points: pts, width_m: lake.width });
+}
+function dragLakePoint(e) {
+  const v = groundAt(e);
+  if (!v) return;
+  const [x, y] = toUE(v), d = drag.lakePt;
+  d.lake.pts[d.k] = [x, y];
+  d.moved = true;
+  renderer.domElement.style.cursor = "grabbing";
+  drawLakes();
+}
+function dropLakePoint(d) {
+  saveLake("Reshaping the lake", { lake_id: d.lake.id, points: d.lake.pts });
+}
+function lakeBanner() {
+  const banner = $("banner");
+  if (state.tool !== "lake") return;
+  const done = h("button", { type: "button", class: "rn-mini", onclick: () => setTool("select") }, "Done");
+  const [lo, , hi] = [60, 200, 1500];  // citygen.LAKE_WIDTH_M
+  const width = (value, onChange) => slider({ label: "Width", min: lo, max: hi, step: 10, value, fmt: (v) => `${v} m`, onChange,
+    hint: "How wide the lake is. Nothing changes until you let go; Escape puts it back" }).el;
+  const l = lakesOf().find((x) => x.id === lake.pick);
+  if (l) {
+    banner.replaceChildren(h("span", {}, "Lake: drag its dots to reshape it"),
+      width(l.width_m, (v) => { if (v !== l.width_m) { l.width_m = v; saveLake("Changing the lake", { lake_id: l.id, width_m: v }); } }),
+      h("button", { type: "button", class: "rn-mini", title: "Take this lake away: the ground comes back",
+        onclick: () => { currentNet().generated.lakes = lakesOf().filter((x) => x !== l); lake.pick = ""; saveLake("Removing the lake", { lake_id: l.id, remove: true }); } },
+      icon("trash", 12), h("span", {}, "Delete")), done);
+  } else if (lake.draft.length) {
+    banner.replaceChildren(h("span", {}, `${lake.draft.length} point${lake.draft.length > 1 ? "s" : ""}: double-click or Enter to finish`),
+      width(lake.width, (v) => { lake.width = v; drawLakes(); }),
+      h("button", { type: "button", class: "rn-mini", onclick: finishLake }, "Finish"),
+      h("button", { type: "button", class: "rn-mini", onclick: () => { lake.draft = []; drawLakes(); lakeBanner(); }, "aria-label": "Cancel" }, icon("x", 12)));
+  } else {
+    banner.replaceChildren(h("span", {}, lakesOf().length ? "Click along where a new lake goes, or click a lake to change it" : "Click along where the lake goes; double-click the last point to finish"), done);
+  }
+  banner.hidden = false;
+}
 // Edit city: the handles on the picked city (drawCityMark). The white one turns the whole city round its centre;
 // a dot on its edge pulls the edge in or out there (as far as the generator allows, state.shapeRange).
 function handleUnder(e) {
@@ -3503,6 +3715,23 @@ function dragHandle(e) {
   const [x, y] = toUE(v), hnd = drag.handle, c = hnd.c;
   if (hnd.handle === "turn") {
     turnCity(c, Math.round((((Math.atan2(y - c.y, x - c.x) * 180 / Math.PI) % 360) + 360) % 360));
+  } else if (hnd.handle === "core") {
+    // the centre district, anywhere within 60 % of the way to the city's edge (citygen.CORE_MAX); back on the
+    // city's own centre when let go within 20 m of it
+    const dx = x - c.x, dy = y - c.y, dist = Math.hypot(dx, dy);
+    const k = dist > 0 ? Math.min(1, 0.6 * c.radius * cityOutline(c, Math.atan2(dy, dx) * 180 / Math.PI) / dist) : 1;
+    c.districts = { ...(c.districts || {}) };
+    if (dist < 2000) delete c.districts.core; else c.districts.core = [Math.round(dx * k), Math.round(dy * k)];
+  } else if (hnd.handle === "downtown" || hnd.handle === "normal") {
+    // a ring's size: how far the pointer is from the centre district, as a share of the way to the edge there
+    const core = cityCore(c) || [0, 0], px = x - c.x - core[0], py = y - c.y - core[1];
+    const [ex, ey] = ringPoint(c, 1, Math.atan2(py, px) * 180 / Math.PI);
+    const share = Math.hypot(px, py) / (Math.hypot(ex - c.x - core[0], ey - c.y - core[1]) || 1), d = c.districts, R = c.radius;
+    const [lo, hi] = hnd.handle === "downtown" ? [0.1, 0.8] : [Math.max(0.2, d.downtown.radius / R + 0.05), 0.95];
+    d[hnd.handle].radius = Math.round(R * Math.round(Math.max(lo, Math.min(hi, share)) * 100) / 100);
+    if (d.normal.radius < d.downtown.radius + R * 0.05) d.normal.radius = Math.round(Math.min(R * 0.95, d.downtown.radius + R * 0.05));
+  } else if (hnd.handle === "industry") {
+    c.districts.industrial.angle = Math.round((((Math.atan2(y - c.y, x - c.x) * 180 / Math.PI) % 360) + 360) % 360);
   } else {
     const n = state.shapePoints || 16, [lo, hi] = state.shapeRange || [0.74, 1.26];
     // the first pull: the edge it has now becomes the hand-drawn one, handle for handle
@@ -3517,8 +3746,14 @@ function dragHandle(e) {
 }
 function dropHandle(hnd) {
   if (!hnd.moved) return;
-  if (hnd.handle === "turn") saveCity(hnd.c, { turn_deg: hnd.c.turn_deg });
-  else saveCity(hnd.c, { shape: JSON.stringify(hnd.c.shape.map((v) => Math.round(v * 1000) / 1000)) });
+  const c = hnd.c, share = (ring) => Math.round(c.districts[ring].radius / c.radius * 1000) / 1000;
+  if (hnd.handle === "turn") saveCity(c, { turn_deg: c.turn_deg });
+  else if (hnd.handle === "core") saveCity(c, { core: cityCore(c) ? JSON.stringify(cityCore(c)) : "reset" });
+  else if (hnd.handle === "industry") saveCity(c, { industry_deg: c.districts.industrial.angle });
+  else if (hnd.handle === "downtown" || hnd.handle === "normal") {
+    const moved = hnd.was?.districts?.normal?.radius !== c.districts.normal.radius;  // (downtown pushes the next ring out)
+    saveCity(c, { features: JSON.stringify({ [hnd.handle]: share(hnd.handle), ...(moved ? { normal: share("normal") } : {}) }) });
+  } else saveCity(c, { shape: JSON.stringify(c.shape.map((v) => Math.round(v * 1000) / 1000)) });
 }
 // Moving a city: it leaves its place at once (its roads, buildings and props go) and a light copy of its buildings
 // rides with the pointer. After the drop the copy stays at the new place while the city is rebuilt there, and goes
@@ -3691,6 +3926,7 @@ function cancelDrag() {  // Esc: whatever is held goes back to where it was; tru
     if (moved && was) {
       Object.assign(c, { turn_deg: was.turn_deg, spin: was.spin });
       if (was.shape) c.shape = was.shape; else delete c.shape;
+      if (was.districts) c.districts = was.districts;
       if (c.districts?.industrial && was.angle != null) c.districts.industrial.angle = was.angle;
       if (state.view.districts) { clear(groups.districts); drawDistricts(); }
       renderWorldCity();
@@ -3698,6 +3934,14 @@ function cancelDrag() {  // Esc: whatever is held goes back to where it was; tru
     renderer.domElement.style.cursor = "";
     drawCityMark();
     needsDraw = true;
+    return true;
+  }
+  if (drag.lakePt) {  // moving a point of a lake
+    const { lake: l, k, was } = drag.lakePt;
+    drag = null;
+    l.pts[k] = was;
+    renderer.domElement.style.cursor = "";
+    drawLakes();
     return true;
   }
   if (drag.ptCand && drag.ptTo) {  // moving a road point

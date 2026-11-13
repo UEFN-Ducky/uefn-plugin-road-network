@@ -45,6 +45,7 @@ CHUNK = 1000
 
 
 STEPS = {  # what a step is called in the history, by the call that made it
+    "lake_save": "Draw or change a lake", "lake_delete": "Remove a lake", "lake": "Change a lake",
     "generate": "Regenerate the world", "city_add": "Add a city", "city_delete": "Remove {city}",
     "pipeline": "Run the pipeline again", "pcg_layer_save": "Change a layer", "pcg_layer_delete": "Remove a layer",
     "pcg_preset": "Add layers", "move_point": "Move a road", "delete": "Delete the world",
@@ -62,7 +63,9 @@ def step_label(name: str, k: dict) -> str:
     city = str(k.get("city") or "").replace("-", " ").title() or "a city"
     if name == "city_save":
         what = ("Move" if k.get("x") is not None else "Turn" if k.get("turn_deg") is not None else "Reshape" if k.get("shape")
-                else "Resize" if k.get("radius_m") else "Change a block of" if k.get("zones") else "Change")
+                else "Resize" if k.get("radius_m") else "Change a block of" if k.get("zones")
+                else "Move the centre of" if k.get("core") else "Turn the industry of" if k.get("industry_deg") is not None
+                else "Resize a district of" if any(s in str(k.get("features") or "") for s in cg.CITY_SHARES) else "Change")
         return f"{what} {city}"
     return (STEPS.get(name) or name.replace("_", " ").capitalize()).format(city=city)
 
@@ -81,7 +84,7 @@ def register(api) -> None:
         @functools.wraps(fn)
         def run(*a, **k):
             # (a city edit is followed by the rebuild it asked for: the two are one step, history.Recorder.step)
-            with data.step(step_label(name, k), opens=name in ("city_save", "city_add", "city_delete"),
+            with data.step(step_label(name, k), opens=name in ("city_save", "city_add", "city_delete", "lake_save", "lake_delete"),
                            joins=name in ("generate", "pipeline")):
                 return fn(*a, **k)
         return api.register_panel_rpc(name, run)
@@ -1070,6 +1073,7 @@ def register(api) -> None:
         # options left out keep this world's last values; so do its keep-out zones (options.keep)
         last = (data.get(f"net.{nid}") or {}).get("generated") or {}
         keep = cg.keep_zones(given.pop("keep") if "keep" in given else last.get("keep"))
+        lakes = cg.lake_list(given.pop("lakes") if "lakes" in given else last.get("lakes"))  # drawn by hand (lake_save)
         opts = cg.options({**last.get("options", {}), **given})
         folder = folder or road_folder()
         if not folder:
@@ -1106,7 +1110,8 @@ def register(api) -> None:
                       "seed": int(c.get("seed", seed + k))} for k, c in enumerate(given)]
         elif not text and old:  # regenerate the cities already there (their names, styles and buildings stay)
             towns = [{k: v for k, v in c.items() if k in ("name", "x", "y", "radius", "style", "seed", "features",
-                                                          "turn", "spin", "shape", "zones", "pinned")}
+                                                          "turn", "spin", "shape", "zones", "pinned", "core",
+                                                          "industry_deg")}
                      for c in old.values()]
             # City size changed since the last run: every city grows / shrinks by the same factor; then they are
             # pushed apart until the distance between cities holds
@@ -1130,7 +1135,7 @@ def register(api) -> None:
             push({"what": "progress", "id": nid, "step": step, "of": steps, "text": text})
         progress(0, "Reading the ground" if base else "Shaping the terrain")
         ter = base or cg.terrain(int(seed), size, max(0.0, float(relief_m)) * 100, towns, center=(center_x, center_y),
-                                 opts=opts, keep=keep)
+                                 opts=opts, keep=keep, lakes=lakes)
         sea_level = ter.get("sea")
         # the hills under each city, read before any street is laid: its streets follow them (cg.plan_hills)
         cg.plan_hills(towns, (lambda x, y, t=ter: st.sample_grid(t, x, y)) if ter.get("heights") else None, opts)
@@ -1219,7 +1224,7 @@ def register(api) -> None:
         doc = data.get(f"net.{nid}")
         doc["generated"] = {"seed": int(seed), "size_km": size / 100000, "relief_m": float(relief_m),
                             "ground_from": slug(ground_from), "folder": folder, "options": opts,
-                            "cities": len(towns), "center": [center_x, center_y], "keep": keep,
+                            "cities": len(towns), "center": [center_x, center_y], "keep": keep, "lakes": lakes,
                             # a world that has its own heightmap keeps it: the ground stays cut to the city
                             "heightmap": bool(((before or {}).get("generated") or {}).get("heightmap"))}
         doc.pop("heightmap", None)  # written on demand (road_network_heightmap): keeps live preview fast
@@ -1253,6 +1258,50 @@ def register(api) -> None:
                         "Roads follow this network's ground. Import into UEFN when it looks right."}
 
     @holds_the_world
+    def save_lake(net_id: str = "", lake_id: str = "", points: str = "", width_m: float = 0.0, remove: bool = False) -> dict:
+        """Draw a lake on a generated world, change one or take one away (generate again to dig it and rebuild
+        the cities round it). points: JSON [[x, y], ...] in cm along its middle (one point: a round pond);
+        width_m: how wide it is. lake_id: the lake to change (empty: a new one). The lake is dug into the world's
+        own terrain down to its water line."""
+        nid = slug(net_id)
+        doc = data.get(f"net.{nid}") if nid else None
+        gen = (doc or {}).get("generated")
+        if not gen:
+            return {"ok": False, "error": f"{net_id!r} is not a generated world."}
+        if gen.get("ground_from"):
+            return {"ok": False, "error": "This world lies on a landscape scanned from UEFN, and that ground is never "
+                                          "changed: a lake cannot be dug into it. Lakes are for worlds that make their own terrain."}
+        lakes = cg.lake_list(gen.get("lakes"))
+        mine = next((l for l in lakes if l["id"] == str(lake_id)), None) if lake_id else None
+        if lake_id and not mine:
+            return {"ok": False, "error": f"No lake {lake_id!r} on this world. It has: {', '.join(l['id'] for l in lakes) or 'none'}."}
+        if remove:
+            if not mine:
+                return {"ok": False, "error": "Give lake_id: the lake to take away."}
+            lakes = [l for l in lakes if l is not mine]
+        else:
+            row = dict(mine or {})
+            if str(points or "").strip():
+                try:
+                    row["pts"] = [[float(p[0]), float(p[1])] for p in json.loads(points)]
+                except (ValueError, TypeError, IndexError) as exc:
+                    return {"ok": False, "error": f"points is a JSON list of [x, y] in cm along the lake's middle: {exc}"}
+            if width_m:
+                row["width_m"] = float(width_m)
+            if not row.get("pts"):
+                return {"ok": False, "error": "Give points: where the lake lies, [[x, y], ...] in cm."}
+            half = float(gen.get("size_km") or 6.0) * 50000.0
+            cx, cy = (gen.get("center") or [0.0, 0.0])[:2]
+            if not any(abs(p[0] - cx) < half and abs(p[1] - cy) < half for p in row["pts"]):
+                return {"ok": False, "error": "That lake lies off the map."}
+            lakes = [row if l is mine else l for l in lakes] if mine else lakes + [row]
+        lakes = cg.lake_list(lakes)
+        doc["generated"] = {**gen, "lakes": lakes}
+        data.put(f"net.{nid}", doc)
+        push({"what": "network", "id": nid})
+        return {"ok": True, "id": nid, "lakes": lakes, "lake": None if remove else (mine or {}).get("id") or lakes[-1]["id"],
+                "width_m": list(cg.LAKE_WIDTH_M), "note": "Generate again (cities empty) to dig it and rebuild the cities round it."}
+
     def add_city(net_id: str = "", name: str = "", x: float | None = None, y: float | None = None,
                  radius_m: float = 0.0, style: str = "") -> dict:
         """Add a city to a generated world (generate again to build it): at x, y (cm) or, without them, a free
@@ -1340,10 +1389,13 @@ def register(api) -> None:
     @holds_the_world
     def save_city(net_id: str = "", city: str = "", name: str = "", style: str = "", radius_m: float = 0.0,
                   buildings: str = "", x: float | None = None, y: float | None = None, features: str = "",
-                  turn_deg: float | None = None, shape: str = "", zones: str = "") -> dict:
+                  turn_deg: float | None = None, shape: str = "", zones: str = "", core: str = "",
+                  industry_deg: float | None = None) -> dict:
         """Change one city's style, size, place (x, y: its new centre in cm), building sets
-        ({"downtown": [mesh paths], ...}), features ({"airports": "none", ...}: cg.FEATURES), the way it is turned
-        (turn_deg), its outline (shape) or the type of its blocks (zones)."""
+        ({"downtown": [mesh paths], ...}), features ({"airports": "none", ...}: cg.FEATURES, and its own district
+        sizes {"downtown": 0.3, "normal": 0.7}: cg.CITY_SHARES), the way it is turned (turn_deg), its outline
+        (shape), the type of its blocks (zones), where its centre district is (core) or the way its industrial
+        side points (industry_deg)."""
         nid, cslug = slug(net_id), slug(city)
         before = data.get(f"net.{nid}.city.{cslug}") if nid and cslug else None
         if not before:
@@ -1354,6 +1406,7 @@ def register(api) -> None:
         if style and style not in cg.STYLES:
             return {"ok": False, "error": f"style is one of {', '.join(cg.STYLES)}."}
         doc = dict(before)
+        world_opts = ((data.get(f"net.{nid}") or {}).get("generated") or {}).get("options") or {}
         if style:
             doc["style"] = style
         if x is not None and y is not None and str(x) != "" and str(y) != "":
@@ -1361,12 +1414,28 @@ def register(api) -> None:
             doc["pinned"] = True  # put there by hand: it stays, however close to another city (never pushed apart)
         if radius_m:
             doc["radius"] = max(150.0, float(radius_m)) * 100
-            doc["districts"] = cg.districts(doc)
         if turn_deg is not None and str(turn_deg) != "":
             # the whole city turns: its street grid, its outline and its industrial side
             doc["turn"] = round(float(turn_deg) % 360.0, 1)
             doc["spin"] = round(doc["turn"] - cg.seed_turn(doc), 3)
-            doc["districts"] = cg.districts(doc)
+        if core:
+            # the centre district (the tall middle, and the rings round it) at another spot inside the city: the
+            # city itself stays where it is
+            if str(core).strip().lower() in ("reset", "none", "[]"):
+                doc.pop("core", None)
+            else:
+                try:
+                    dx, dy = (float(v) for v in json.loads(core))
+                except (ValueError, TypeError) as exc:
+                    return {"ok": False, "error": f"core is a JSON pair [dx, dy]: cm from the city's own centre (or 'reset'): {exc}"}
+                at = cg.clamp_core(doc, dx, dy)
+                if at[0] or at[1]:
+                    doc["core"] = at
+                else:
+                    doc.pop("core", None)
+        if industry_deg is not None and str(industry_deg) != "":
+            # the direction given is where it points on the map now; kept from before the city's turn, so it turns with it
+            doc["industry_deg"] = round((float(industry_deg) - float(doc.get("spin") or 0.0)) % 360.0, 1)
         if shape:
             if str(shape).strip().lower() in ("reset", "none", "[]"):
                 doc.pop("shape", None)  # back to the outline its seed gives it
@@ -1416,12 +1485,25 @@ def register(api) -> None:
                 given = json.loads(features)
             except ValueError as exc:
                 return {"ok": False, "error": f"features is not valid JSON: {exc}"}
+            sizes = {}
+            for k in [k for k in given if k in cg.CITY_SHARES]:  # its own district sizes: shares of its radius
+                v = given.pop(k)
+                try:
+                    _d, lo, hi = cg.OPTIONS[k]
+                    sizes[k] = None if v is None else round(max(lo, min(hi, float(v))), 3)
+                except (TypeError, ValueError):
+                    return {"ok": False, "error": f"{k} is a share of the city's radius (a number), or null for the world's."}
             bad = [k for k, v in given.items() if k not in cg.FEATURES or (v is not None and v not in cg.CHOICES[k][0])]
             if bad:
                 return {"ok": False, "error": f"Unknown feature or value: {bad}. Features: " + ", ".join(
-                    f"{k} ({'/'.join(cg.CHOICES[k][0])})" for k in cg.FEATURES)}
-            merged = {**(doc.get("features") or {}), **given}
+                    f"{k} ({'/'.join(cg.CHOICES[k][0])})" for k in cg.FEATURES) + "; district sizes: downtown, normal (0 to 1)."}
+            merged = {**(doc.get("features") or {}), **given, **sizes}
             doc["features"] = {k: v for k, v in merged.items() if v is not None}  # null = back to the world's choice
+            if doc["features"].get("downtown") and doc["features"].get("normal"):  # the normal ring lies outside downtown
+                doc["features"]["normal"] = max(doc["features"]["normal"], round(doc["features"]["downtown"] + 0.05, 3))
+        if radius_m or core or features or (turn_deg is not None and str(turn_deg) != "") or \
+                (industry_deg is not None and str(industry_deg) != ""):
+            doc["districts"] = cg.districts(doc, world_opts)
         if buildings:
             try:
                 sets = json.loads(buildings)
@@ -1949,6 +2031,8 @@ def register(api) -> None:
             # on (the cut ground once there is one) or the lake bed
             decks = {str(k): {"points": p, "segments": s} for k, (p, s) in enumerate(actors)}
             stands_on = (fit or {}).get("ground") or (lambda x, y: ground(x, y) or 0.0)
+            # the city centre stands on concrete, not grass: laid last, on the ground as the lots left it
+            placed.update(pl.paved_lots(cities, placed, stands_on))
             cols, caps = cg.bridge_piers(decks, stands_on)
             # ... a cable-stayed or suspension bridge on its two towers, each astride the deck with its stay cables;
             # the deck those cables carry needs no piers
@@ -3175,7 +3259,8 @@ def register(api) -> None:
     def road_network_city_save(net_id: str = "", city: str = "", name: str = "", style: str = "",
                                radius_m: float = 0.0, buildings: str = "", x: float | None = None,
                                y: float | None = None, features: str = "", turn_deg: float | None = None,
-                               shape: str = "", zones: str = "") -> dict:
+                               shape: str = "", zones: str = "", core: str = "",
+                               industry_deg: float | None = None) -> dict:
         """Change one city of a generated world: rename it, its road style (mixed / grid / organic), its
         radius, move it (x, y: its new centre in cm, UE world), its own building sets (JSON {"downtown":
         [mesh paths], "normal": [...], "housing": [...]}), or what it has: features JSON, e.g.
@@ -3190,6 +3275,18 @@ def register(api) -> None:
         kind, zone, polygon, green share]) and the kinds and zones a block can take. Generate again
         with cities empty to rebuild its roads, freeways, airport, waterfront and everything on it."""
         return safe(save_city)(net_id, city, name, style, radius_m, buildings, x, y, features, turn_deg, shape, zones)
+
+    @tool(intent=GEN_INTENT, listener=False)
+    def road_network_lake(net_id: str = "", lake_id: str = "", points: str = "", width_m: float = 0.0,
+                          remove: bool = False) -> dict:
+        """Draw a lake on a generated world, change one, or take one away (remove=true). points: JSON [[x, y], ...]
+        in cm (UE world) along the lake's middle, as many as its shape needs (one point: a round pond); width_m:
+        how wide it is (60 to 1500, a new one 200). lake_id: the lake to change (empty: a new one; the world's
+        lakes are in road_network_describe / its generated settings). The lake is dug into the world's own terrain
+        down to its water line, with sloping banks; a world with no water gets a water line under its lowest
+        ground. Then generate again with cities empty: the streets, bridges, waterfront and buildings of every
+        city are rebuilt round it. Not for a world laid over a landscape scanned from UEFN."""
+        return safe(holds_the_world(save_lake))(net_id, lake_id, points, width_m, remove)
 
     @tool(intent=GEN_INTENT, listener=False)
     def road_network_heightmap(net_id: str = "") -> dict:
@@ -3231,9 +3328,11 @@ def register(api) -> None:
     panel_rpc("release", lambda net_id="", city="": safe(release)(net_id, city))
     panel_rpc("holds", lambda net_id="", teammates=None: safe(holds)(net_id, teammates))
     panel_rpc("city_save", lambda net_id="", city="", name="", style="", radius_m=0.0, buildings="",
-                           x=None, y=None, features="", turn_deg=None, shape="", zones="":
+                           x=None, y=None, features="", turn_deg=None, shape="", zones="", core="", industry_deg=None:
                            safe(save_city)(net_id, city, name, style, radius_m, buildings, x, y, features,
-                                           turn_deg, shape, zones))
+                                           turn_deg, shape, zones, core, industry_deg))
+    panel_rpc("lake_save", lambda net_id="", lake_id="", points="", width_m=0.0: safe(holds_the_world(save_lake))(net_id, lake_id, points, width_m))
+    panel_rpc("lake_delete", lambda net_id="", lake_id="": safe(holds_the_world(save_lake))(net_id, lake_id, "", 0.0, True))
     panel_rpc("heightmap", lambda net_id="": safe(heightmap)(net_id))
     panel_rpc("city_add", lambda net_id="", name="", x=None, y=None, radius_m=0.0, style="":
                            safe(add_city)(net_id, name, x, y, radius_m, style))

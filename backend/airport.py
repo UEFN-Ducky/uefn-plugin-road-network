@@ -98,14 +98,71 @@ class Frame:
         return math.degrees(math.atan2(self.uy * du + self.vy * dv, self.ux * du + self.vx * dv))
 
 
-def extent(spec) -> tuple:
-    """(u half length, v from, v to) of an airport's land."""
-    u = spec["L"] / 2 + RSA
-    v0 = -(spec["T"] + 3000 + spec["apron"] + (LANDSIDE if spec["terminal"] in ("linear", "pier") else 15000))
+def _front(spec) -> float:
+    """How far the terminal's street side lies in front of the apron band (build(): terminal_front)."""
+    if spec["terminal"] == "linear":
+        return 5000.0
     if spec["terminal"] == "pier":
-        v0 -= 8000
+        piers = 2 if spec["gates"] <= 30 else 3
+        return ((spec["gates"] // piers) // 2) * 6000 + 4000 + 7000.0
+    return 3000.0 if spec["terminal"] == "fbo" else 0.0
+
+
+def extent(spec) -> tuple:
+    """(u half length, v from, v to) of an airport's land: its runways and apron, and on the city side all of
+    its terminal, curb roads, car park and the access road's first bend (build() lays them to 30 m past the
+    car park's far edge, which is 280 m in front of the terminal). The car park lay half outside this once,
+    and a highway was routed through it."""
+    u = spec["L"] / 2 + RSA
+    landside = LANDSIDE + 2000.0 if spec["terminal"] in ("linear", "pier", "fbo") else 15000.0
+    v0 = -(spec["T"] + 3000 + spec["apron"] + _front(spec) + landside)
     v1 = spec["S"] * (spec["runways"] - 1) + OFA[spec["kind"]] + 2000
     return u, v0, v1
+
+
+def around(ap: dict, p, q, margin: float = 10000.0) -> list:
+    """The points a road from p to q passes to go round this airport's land, `margin` clear of it: none when
+    its straight line is clear already. Round ONE side of it, by its corners, the shorter way."""
+    import itertools
+    f = Frame(*ap["center"], ap["heading"])
+    hu, v0, v1 = extent(TYPES[ap["type"]])
+    lo, hi = (-hu - margin, v0 - margin), (hu + margin, v1 + margin)
+
+    def through(s, t):  # Liang-Barsky: does s-t pass through the box (1 m inside its edge)?
+        t0, t1 = 0.0, 1.0
+        for d, a, b0, b1 in ((t[0] - s[0], s[0], lo[0] + 100, hi[0] - 100), (t[1] - s[1], s[1], lo[1] + 100, hi[1] - 100)):
+            if abs(d) < 1e-9:
+                if not b0 < a < b1:
+                    return False
+                continue
+            ta, tb = sorted(((b0 - a) / d, (b1 - a) / d))
+            t0, t1 = max(t0, ta), min(t1, tb)
+            if t0 >= t1:
+                return False
+        return True
+
+    def out_of(s):  # a point inside the box, moved to its nearest edge
+        if not (lo[0] < s[0] < hi[0] and lo[1] < s[1] < hi[1]):
+            return s
+        return min(((lo[0], s[1]), (hi[0], s[1]), (s[0], lo[1]), (s[0], hi[1])), key=lambda c: math.dist(c, s))
+    a0, b0 = f.uv(*p[:2]), f.uv(*q[:2])
+    a, b = out_of(a0), out_of(b0)
+    head, tail = ([a] if a != a0 else []), ([b] if b != b0 else [])
+    if not through(a, b):
+        return [list(f.w(*c)) for c in head + tail]
+    corners = [(lo[0], lo[1]), (hi[0], lo[1]), (hi[0], hi[1]), (lo[0], hi[1])]
+    best = None
+    for n in (1, 2, 3):
+        for seq in itertools.permutations(corners, n):
+            path = [a, *seq, b]
+            if any(through(s, t) for s, t in zip(path, path[1:])):
+                continue
+            length = sum(math.dist(s, t) for s, t in zip(path, path[1:]))
+            if best is None or length < best[0]:
+                best = (length, list(seq))
+        if best:
+            break
+    return [list(f.w(*c)) for c in head + (best[1] if best else []) + tail]
 
 
 def inside(ap: dict, x: float, y: float, margin: float = 0.0) -> bool:
@@ -530,6 +587,26 @@ def layers(airports_rows: list) -> dict:
 
 
 def _demo() -> None:
+    # an airport's land covers everything build() lays on the city side, and a road goes round it
+    for t_, spec_ in TYPES.items():
+        ap_ = {"type": t_, "center": [0, 0], "heading": 30.0, "city": "A"}
+        got_ = build(ap_, lambda x, y: 0.0)
+        for s in got_["parking"]:
+            fr = math.radians(s[2])
+            for i in (-1, 1):
+                for j in (-1, 1):
+                    x, y = s[0] + math.cos(fr) * i * s[3] * 50 - math.sin(fr) * j * s[4] * 50, s[1] + math.sin(fr) * i * s[3] * 50 + math.cos(fr) * j * s[4] * 50
+                    assert inside(ap_, x, y), (t_, "a car park outside the airport's land")
+        fr_ = Frame(0, 0, 30.0)
+        hu_, v0_, v1_ = extent(spec_)
+        p_, q_ = fr_.w(-hu_ - 60000, (v0_ + v1_) / 2 + 3000), fr_.w(hu_ + 60000, (v0_ + v1_) / 2 - 2000)  # right through it, end to end
+        via_ = around(ap_, p_, q_)
+        assert 2 <= len(via_) <= 3, (t_, via_)
+        line_ = [p_] + via_ + [q_]
+        for s, e in zip(line_, line_[1:]):
+            for k in range(41):
+                assert not inside(ap_, s[0] + (e[0] - s[0]) * k / 40, s[1] + (e[1] - s[1]) * k / 40, 9000), (t_, "the road round it runs through it")
+        assert around(ap_, fr_.w(-hu_ - 60000, v1_ + 30000), fr_.w(hu_ + 60000, v1_ + 30000)) == [], "a road already clear of it is left alone"
     flat = lambda x, y: 500.0
     lake = lambda x, y: 300000 < x < 400000
     city = {"name": "Metro", "x": 0, "y": 0, "radius": 150000}

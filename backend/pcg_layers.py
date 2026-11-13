@@ -22,7 +22,7 @@ import random
 import re
 import zlib
 
-from .citygen import outline  # every district edge follows the city's irregular outline
+from .citygen import core_reach, outline, zone_share  # every district edge follows the city's irregular outline
 
 KINDS = ("scatter", "along_roads", "at_junctions", "buildings", "foliage")
 # foliage = trees, rocks, bushes: imported as Foliage Types and painted in UEFN's Foliage mode (like by
@@ -348,10 +348,16 @@ def preset(name: str = "full_city") -> list:
 
 
 def _ring(c: dict, radius: float, sides: int = 48) -> list:
-    """A district edge: the ring radius bent by the city's outline, never a circle."""
+    """A district edge: the ring radius bent by the city's outline, never a circle; round the city's centre
+    district where that was moved (citygen.zone_share)."""
     out = []
+    reach = core_reach(c)
     for k in range(sides):
         a = 2 * math.pi * k / sides
+        if reach:
+            r = reach[round(math.degrees(a)) % 360] * radius / c["radius"]
+            out.append([round(c["x"] + c["core"][0] + r * math.cos(a)), round(c["y"] + c["core"][1] + r * math.sin(a))])
+            continue
         r = radius * outline(c, math.degrees(a))
         out.append([round(c["x"] + r * math.cos(a)), round(c["y"] + r * math.sin(a))])
     return out
@@ -922,19 +928,25 @@ def clear_roads(placed: dict, samples: list) -> dict:
 def clear_buildings(placed: dict, margin: float = 0.0) -> dict:
     """No tree, bush or rock inside a building: the forest is placed before the cities' buildings, and one that
     takes road frontage (a mansion, an office) knows nothing of a tree that grew there first. Only inside its
-    walls: a yard tree half a metre behind its house is where the plan put it. Returns {layer: removed}."""
-    rows = [p for layer in placed.values() if layer.get("kind") == "buildings" for p in layer.get("points") or [] if len(p) > 8]
+    walls: a yard tree half a metre behind its house is where the plan put it. Nor on a slab laid on the ground
+    (a car park, an apron, a sports field, a pool): the trees planted round an interchange stood between the
+    parked cars. Paved lots are not such a slab: a tree there stands in its pit. Returns {layer: removed}."""
+    rows = [(p[0], p[1], p[3], p[8] * 50 + margin, p[7] * 50 + margin)
+            for layer in placed.values() if layer.get("kind") == "buildings" for p in layer.get("points") or [] if len(p) > 8]
+    rows += [(p[0], p[1], p[3], p[4] * 50, p[5] * 50)
+             for layer in placed.values() if layer.get("kind") == "site" and layer.get("role") == "site"
+             and list((layer.get("box_m") or [0, 0])[:2]) == [1, 1] and not layer.get("planted")
+             for p in layer.get("points") or []]
     gone: dict = {}
     if not rows:
         return gone
     # (cells as wide as the widest building reaches: a tree looks at its own cell and the eight round it, and a
     # tree with no building in those nine, most of a forest, at nothing)
-    cell = max(4000.0, max(math.hypot(p[7], p[8]) for p in rows) * 50 + margin)
+    cell = max(4000.0, max(math.hypot(r[3], r[4]) for r in rows))
     grid: dict = {}
-    for p in rows:
-        f = math.radians(p[3])
-        grid.setdefault((int(p[0] // cell), int(p[1] // cell)), []).append(
-            (p[0], p[1], math.cos(f), math.sin(f), p[8] * 50 + margin, p[7] * 50 + margin))
+    for x, y, yaw, hd, hw in rows:
+        f = math.radians(yaw)
+        grid.setdefault((int(x // cell), int(y // cell)), []).append((x, y, math.cos(f), math.sin(f), hd, hw))
     near = {(gx + i, gy + j) for gx, gy in grid for i in (-1, 0, 1) for j in (-1, 0, 1)}
     for name, layer in placed.items():
         if not (layer.get("role") in NATURAL or layer.get("kind") in SCATTERED):
@@ -1003,6 +1015,94 @@ def open_land(cities: list):
             return False
         return not any(airport.inside(a, x, y, 3000) for a in fields)
     return free
+
+
+PAVED_NORMAL = 0.3  # of the normal city's blocks of plain lots, how many are paved (downtown and industry: all)
+PAVE_TILE_CM = 700.0  # a paved lot is laid in slabs about this size, each at the height of the ground under it
+PAVE_DEEP_CM = 200.0  # ... and this deep: where the next slab lies lower its side shows as a low wall
+PAVE_UP_CM = 6.0  # a slab's top over the highest ground under it
+GREEN_ROLES = ("house", "mansion", "park")  # what stands on these keeps its garden
+
+
+def paved_lots(cities: list, placed: dict, ground) -> dict:
+    """The built-in layer 'Paved lots': in the city centre the ground is not grass. Every lot downtown, every lot
+    of the industrial zone and the lots of some blocks of the normal city (PAVED_NORMAL of its blocks of plain
+    lots, each block by its own draw) is covered edge to edge with concrete, laid in slabs PAVE_TILE_CM across.
+    Each slab lies PAVE_UP_CM over the highest ground under it and is PAVE_DEEP_CM deep, so on a slope the slabs
+    step down the hill like stacked boxes, each one's side the wall above the next; on level ground (under and
+    round a building, where the lot was cut level) they join into one. `ground`: the finished ground, lots cut
+    in: the paving levels nothing itself and never rises over a building's floor, the ground does not.
+    Not a lot with a house, a mansion or a park on it, nor a spot a plan drew a building at (a complex, a
+    facility: those have their own grounds). A tree on a paved lot stays: it stands in its pit.
+    Rows [x, y, z, yaw, sx, sy, sz] for the 1 m apron slab, z its bottom."""
+    built = _Rects()
+    for layer in placed.values():
+        if layer.get("kind") == "buildings":
+            for p in layer.get("points") or []:
+                if len(p) > 8:
+                    f = math.radians(p[3])
+                    built.add((p[0], p[1], math.cos(f), math.sin(f), p[7] * 50, p[8] * 50, layer.get("role")))
+    downtown, industry = _where_test("downtown", cities), _where_test("industrial", cities)
+    rows, lots = [], 0
+    for c in cities:
+        cell = 20000.0
+        blocks: dict = {}
+        for b in c.get("blocks") or []:
+            if len(b) > 4 and len(b[4]) > 2:
+                xs, ys = [p[0] for p in b[4]], [p[1] for p in b[4]]
+                for gx in range(int(min(xs) // cell), int(max(xs) // cell) + 1):
+                    for gy in range(int(min(ys) // cell), int(max(ys) // cell) + 1):
+                        blocks.setdefault((gx, gy), []).append(b)
+        for r in c.get("lots") or []:
+            x, y, yaw, w, d = r[:5]
+            if (len(r) > 8 and r[8] is True) or (len(r) > 7 and r[7] in GREEN_ROLES):
+                continue
+            b = next((b for b in blocks.get((int(x // cell), int(y // cell)), ()) if inside(b[4], x, y)), None)
+            if b is not None and b[2] == "park":
+                continue
+            if not (industry(x, y) or (b[3] == "downtown" if b is not None else downtown(x, y))
+                    or (b is not None and b[3] == "normal" and b[2] == "parcels"
+                        and _u01("paved", round(b[0]), round(b[1])) < PAVED_NORMAL)):
+                continue
+            f = math.radians(yaw)
+            fx, fy = math.cos(f), math.sin(f)
+            if any(o[6] in GREEN_ROLES for o in built.near(x, y, math.hypot(w, d) / 2)
+                   if _rects_hit((x, y, fx, fy, w / 2, d / 2), o, -100.0)):
+                continue
+            lots += 1
+            # the lot in slabs: nu along its facing, nv across; each slab's top from the ground at its corners
+            nu, nv = max(1, round(d / PAVE_TILE_CM)), max(1, round(w / PAVE_TILE_CM))
+            du, dv = d / nu, w / nv
+            at = lambda u, v: (x + fx * u - fy * v, y + fy * u + fx * v)
+            node = [[ground(*at(-d / 2 + i * du, -w / 2 + j * dv)) or 0.0 for j in range(nv + 1)] for i in range(nu + 1)]
+            top = [[max(node[i][j], node[i + 1][j], node[i][j + 1], node[i + 1][j + 1]) + PAVE_UP_CM for j in range(nv)]
+                   for i in range(nu)]
+            done_ = [[False] * nv for _ in range(nu)]
+            for i in range(nu):
+                for j in range(nv):
+                    if done_[i][j]:
+                        continue
+                    same = lambda a, b_: not done_[a][b_] and abs(top[a][b_] - top[i][j]) <= 4.0
+                    i1 = i
+                    while i1 + 1 < nu and same(i1 + 1, j):
+                        i1 += 1
+                    j1 = j
+                    while j1 + 1 < nv and all(same(a, j1 + 1) for a in range(i, i1 + 1)):
+                        j1 += 1
+                    z = max(top[a][b_] for a in range(i, i1 + 1) for b_ in range(j, j1 + 1))
+                    for a in range(i, i1 + 1):
+                        for b_ in range(j, j1 + 1):
+                            done_[a][b_] = True
+                    cx, cy = at(-d / 2 + (i + i1 + 1) / 2 * du, -w / 2 + (j + j1 + 1) / 2 * dv)
+                    rows.append([round(cx), round(cy), round(z - PAVE_DEEP_CM), round(yaw, 1),
+                                 round((i1 - i + 1) * du / 100, 2), round((j1 - j + 1) * dv / 100, 2), PAVE_DEEP_CM / 10.0])
+    if not rows:
+        return {}
+    # (pad False: it lies on the ground as the lots left it and is never itself a reason to cut the ground)
+    return {"Paved lots": {"kind": "site", "role": "site", "mesh": "SM_Kit_Apron", "box_m": [1, 1, 0.1],
+                           "tint": "mix:fg-dim:bg:0.45", "planted": True, "pad": False, "lots": lots,
+                           "count": len(rows), "shown": len(rows), "points": rows, "meshes": [],
+                           "row": "x, y, z (its bottom), yaw, sx, sy, sz"}}
 
 
 STREET_PIECES = ("TwoLane", "FourLane", "Boulevard", "OneLane")  # the road pieces a city street is laid with
@@ -1219,7 +1319,8 @@ def _where_test(where: str, cities: list):
             if dist < outer * OUTLINE_MIN and where in ("outside", "cities"):
                 return where == "cities"  # inside the outer ring whichever way its outline bends
             # distance against the outline in this direction: the same bent edges the plan's polygons have
-            d = dist / outline(c, math.degrees(math.atan2(y - cy, x - cx)))
+            # (from the city's centre district, where that was moved)
+            d = zone_share(c, x, y) * c["radius"] if c.get("core") else dist / outline(c, math.degrees(math.atan2(y - cy, x - cx)))
             if where == "outside" and d < outer:
                 return False
             if d >= outer:
@@ -1344,9 +1445,9 @@ def core_peak(cities: list, x: float, y: float) -> float:
     the radius, near 0 by 40 %), so the skyline peaks in the middle and steps down to the suburbs."""
     best = 0.0
     for c in cities:
-        dx, dy = x - c["x"], y - c["y"]
-        share = math.hypot(dx, dy) / (c["radius"] * outline(c, math.degrees(math.atan2(dy, dx))))
-        best = max(best, math.exp(-(share / 0.22) ** 2))
+        if math.hypot(x - c["x"], y - c["y"]) > c["radius"] * 1.3:
+            continue
+        best = max(best, math.exp(-(zone_share(c, x, y) / 0.22) ** 2))
     return best
 
 
@@ -1528,6 +1629,21 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
     for x, y, half, _, _ in street_samples(cities):
         priv_hash.add(x, y, half, (x, y, half))
     built = _Rects()  # every building of every layer, as the rectangle it stands on
+    # What the cities planned, before any layer is placed: each car park, each ground (an apron, a sports field)
+    # and each building a complex or a facility drew at its own spot. A layer that builds along road frontage, or
+    # on a free lot, never stands on one. They knew only what was already built: a tower took the corner first, on
+    # a shopping centre's car park and on the spot of the shops themselves, which were then never built (a car
+    # park with a notch out of it and a building in the notch, Nov 13 2026).
+    held = _Rects()
+    for c in cities:
+        priv = c.get("private") or {}
+        for row in (priv.get("parking") or []) + (priv.get("grounds") or []):
+            f = math.radians(row[2])
+            held.add((row[0], row[1], math.cos(f), math.sin(f), row[4] * 50, row[3] * 50))
+        for r in c.get("lots") or []:
+            if len(r) > 8 and r[8] is True:
+                f = math.radians(r[2])
+                held.add((r[0], r[1], math.cos(f), math.sin(f), r[3] / 2, r[4] / 2))
     # blocks laid out as a park (city 'blocks': [x, y, kind, zone, polygon]): trees and paths only, so a layer that
     # builds along road frontage (mansions, offices) leaves them alone too
     parks = [(b[4], min(p[0] for p in b[4]), min(p[1] for p in b[4]), max(p[0] for p in b[4]), max(p[1] for p in b[4]))
@@ -1793,6 +1909,8 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                     rw, rd = (bw, bd) if lot else (layer["width_m"] * (1 + layer["size_jitter"] * 0.5),
                                                    layer["depth_m"] * (1 + layer["size_jitter"] * 0.3))
                     rect = (x, y, math.cos(math.radians(yaw)), math.sin(math.radians(yaw)), rw * 50, rd * 50)
+                    if not (lot and cand[9]) and held.hit(rect, 0.0):
+                        continue  # a planned car park, ground or building spot: not this building's land
                     if _lot_hits_road(priv_hash, x, y, yaw, rw * 50, rd * 50) or built.hit(rect):
                         if lot:
                             tree = [round(x), round(y), round(z), round((x * 7 + y * 13) % 360),
@@ -2107,6 +2225,32 @@ def _demo() -> None:
                         "points": [[10000, 10000, 0, 0, 1, 6, 0, 10.0, 8.0]]}}
     assert clear_buildings(grove) == {"Trees": 2}, "(the house is 8 m deep along x, 10 m wide: the first two are inside it)"
     assert grove["Trees"]["points"] == [[10450, 10000, 0, 0, 1], [10700, 10000, 0, 0, 1]], "a tree half a metre behind the wall stays"
+    # ... nor on a car park; a tree on a paved lot stays (it stands in its pit)
+    lot_trees = lambda: {"Trees": {"kind": "foliage", "role": "tree", "count": 2, "shown": 2, "points": [[500, 0, 0, 0, 1], [5000, 0, 0, 0, 1]]}}
+    slab = {"kind": "site", "role": "site", "mesh": "SM_Kit_ParkingLot", "box_m": [1, 1, 0.08], "points": [[0, 0, 0, 0.0, 30.0, 20.0, 1.0]]}
+    assert clear_buildings({**lot_trees(), "Complex parking": slab}) == {"Trees": 1}
+    assert clear_buildings({**lot_trees(), "Paved lots": {**slab, "planted": True}}) == {}
+    # the city centre stands on concrete, lot by lot: a downtown lot is paved at its building's level, an empty one
+    # at the ground's, a house's lot and a suburb's are not; the ground is levelled under each, to its own edge
+    core = {**cities[0], "blocks": [[0, 0, "parcels", "downtown", [(-6000, -6000), (6000, -6000), (6000, 6000), (-6000, 6000)], 0]],
+            "lots": [[-3000, 0, 90.0, 2800, 3000, -3000, 1500, "", False], [0, 0, 90.0, 2800, 3000, 0, 1500, "", False],
+                     [3000, 0, 90.0, 2800, 3000, 3000, 1500, "house", False], [45000, 0, 90.0, 1600, 3000, 45000, 1500, "", False]]}
+    stands = {"Offices": {"kind": "buildings", "role": "office", "points": [[-3000, 200, 340, 90, 1.0, 20.0, 0, 24.0, 22.0, 0.5]]},
+              "Homes": {"kind": "buildings", "role": "house", "points": [[3000, 200, 100, 90, 1.0, 6.0, 0, 12.0, 10.0, 0.5]]}}
+    paved = paved_lots([core], stands, lambda x, y: 100.0)["Paved lots"]
+    # level ground: one slab a lot, the whole lot (30 m deep along its facing, 28 m wide), its top 6 cm over the ground
+    assert [p[:2] + p[4:6] for p in paved["points"]] == [[-3000, 0, 30.0, 28.0], [0, 0, 30.0, 28.0]], paved["points"]
+    assert paved["lots"] == 2 and all(p[2] + paved["box_m"][2] * 100 * p[6] == 100 + PAVE_UP_CM for p in paved["points"])
+    assert not pads({"Paved lots": paved}), "it lies on the ground as it is: it levels nothing"
+    # a slope: the slabs step down it like stacked boxes, none below the ground under it, none more than a step over
+    hill = lambda x, y: 100.0 + 0.1 * y
+    steps = paved_lots([core], {}, hill)["Paved lots"]["points"]
+    assert len(steps) > 6 and len({p[2] for p in steps}) > 3, len(steps)
+    for p in steps:
+        top, far = p[2] + PAVE_DEEP_CM, p[1] + p[4] * 50  # (yaw 90: its depth runs along y)
+        assert hill(0, far) + PAVE_UP_CM - 1 <= top <= hill(0, far) + PAVE_UP_CM + 5, (p, top, hill(0, far))
+    area = sum(p[4] * p[5] for p in steps)
+    assert abs(area - 2 * 30.0 * 28.0) < 1.0, ("both lots covered edge to edge, no slab twice; the house's lot is not", area)
     # the land a planned city leaves free: the middle of a block of plain lots, the ground beyond its last lots;
     # never a lot, a block with its own layout, a planned ground. A city with no plan has none.
     sq = lambda x0, y0, s: [[x0, y0], [x0 + s, y0], [x0 + s, y0 + s], [x0, y0 + s]]
@@ -2164,6 +2308,26 @@ def _demo() -> None:
     assert _in_where("cities", zoned, hx, 0) and not _in_where("outside", zoned, hx, 0)
     assert all(_in_where(w, zoned, hx, 9000) == _in_where(w, cities, hx, 9000)
                for w in ("downtown", "normal", "housing", "industrial")), "the block beside it is as it was"
+    # a city whose centre district was moved: downtown, and the skyline's peak, are round the new spot
+    off_c = {**cities[0], "core": [20000, 0]}
+    assert _where_test("downtown", [off_c])(20000, 0) and not _where_test("downtown", [off_c])(-15000, 0)
+    assert _where_test("downtown", cities)(-15000, 0) and core_peak([off_c], 20000, 0) == 1.0 > core_peak([off_c], 0, 0)
+    assert _where_test("cities", [off_c])(-45000, 0) and not _where_test("cities", [off_c])(70000, 0), "its edge stays"
+    ring_ = _ring(off_c, 20000.0)
+    assert inside(ring_, 20000, 0) and not inside(ring_, -15000, 0), "the downtown ring is drawn round it"
+    # what a city planned stays free for it: a tower along the street stands on no planned car park, and not on
+    # the spot of a planned building that a later layer builds
+    lot_town = {**cities[0], "lots": [[9000, -3000, 90.0, 3000, 2500, 9000, -1700, "shop", True]],
+                "private": {"parking": [[-9000, -3000, 0.0, 60.0, 30.0]], "stalls": []}}
+    tower = {"name": "Towers", "kind": "buildings", "role": "skyscraper", "where": "cities", "width_m": 30, "depth_m": 30,
+             "spacing_m": 40, "setback_m": 4, "order": 1}
+    shops = {"name": "Shops", "kind": "buildings", "role": "shop", "width_m": 14, "depth_m": 12, "order": 2}
+    street = [(x, -100.0, 700.0, 1.0, 0.0) for x in range(-30000, 30001, 400)]
+    stood = preview([tower, shops], [lot_town], {"min": [-80000, -80000], "max": [80000, 80000]}, street, lambda x, y: 0.0)
+    for p in stood["Towers"]["points"]:
+        assert not (-12000 - 1500 < p[0] < -6000 + 1500 and -4500 - 1500 < p[1] < -1500 + 1500), ("a tower on a car park", p[:2])
+        assert not (7500 - 1500 < p[0] < 10500 + 1500 and -4250 - 1500 < p[1] < -1750 + 1500), ("a tower on a planned shop's spot", p[:2])
+    assert stood["Towers"]["points"] and len(stood["Shops"]["points"]) == 1, "the towers stand elsewhere along the street; the shop is built"
     # a block laid out as a park: a layer that builds along road frontage leaves it empty
     front = clean({"name": "Mansions", "kind": "buildings", "where": "cities", "width_m": 30, "depth_m": 30, "spacing_m": 60,
                    "setback_m": 6, "role": "mansion"})

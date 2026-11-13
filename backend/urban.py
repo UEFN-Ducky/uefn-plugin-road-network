@@ -308,13 +308,35 @@ def _cross(p1, p2, q1, q2):
     return 0 < t < 1 and 0 < u < 1
 
 
+DRIVE_HALF_CM = 400.0  # a site's drive: 8 m, like a complex's private street
+
+
 def develop(spec: dict, site: _Site, ftype: str) -> dict:
-    """DevelopmentGenerator: the archetype's parts as lot rows (buildings / garages) and ground rows."""
-    from .neighbourhoods import parking
-    out = {"lots": [], "parking": [], "stalls": [], "grounds": []}
+    """DevelopmentGenerator: the archetype's parts as lot rows (buildings / garages) and ground rows, and the
+    drives into its car parks (streets [[x, y], ...]): from the street in front, off-centre, right through each
+    car park as a cross aisle with no stalls on it; two into a wide one. A car park had no way in at all."""
+    import zlib
+    from .neighbourhoods import AISLE, STALL_D, parking
+    out = {"lots": [], "parking": [], "stalls": [], "grounds": [], "streets": []}
     front = site.w(0.0, -site.D / 2)
-    for kind, *fr in ARCHETYPES[spec["arch"]]:
-        u0, u1, v0, v1 = site.rect(*fr)
+    parts = [(kind, *site.rect(*fr)) for kind, *fr in ARCHETYPES[spec["arch"]]]
+    cross: dict = {}  # car park (its index in parts) -> where drives cross it
+    u01 = lambda *tag: (zlib.crc32(repr((round(site.cx), round(site.cy), ftype, *tag)).encode()) % 100003) / 100003
+    for k, (kind, u0, u1, v0, v1) in enumerate(parts):
+        if kind != "parking" or v1 - v0 < 2 * STALL_D + AISLE or u1 - u0 < 2500:
+            continue  # (one row of stalls along the street is driven into from the street)
+        n = 2 if u1 - u0 >= 7000 else 1
+        for j in range(n):
+            lo, hi = u0 + (u1 - u0) * j / n + 900, u0 + (u1 - u0) * (j + 1) / n - 900
+            for t in range(4):  # its own draw, then a few more: a spot with nothing but car parks between it and the street
+                u = lo + (hi - lo) * (0.15 + 0.7 * u01(k, j, t))
+                ahead = [(i, p) for i, p in enumerate(parts) if p[3] < v0 and p[1] - DRIVE_HALF_CM - 300 < u < p[2] + DRIVE_HALF_CM + 300]
+                if all(p[0] == "parking" for _, p in ahead):
+                    for i in [k] + [i for i, _ in ahead]:
+                        cross.setdefault(i, []).append(u)
+                    out["streets"].append([[*map(round, site.w(u, -site.D / 2 - 900))], [*map(round, site.w(u, v1))]])
+                    break
+    for k, (kind, u0, u1, v0, v1) in enumerate(parts):
         cx, cy = site.w((u0 + u1) / 2, (v0 + v1) / 2)
         w, d = u1 - u0, v1 - v0
         if kind.startswith("building"):
@@ -327,7 +349,7 @@ def develop(spec: dict, site: _Site, ftype: str) -> dict:
             out["lots"].append([round(cx), round(cy), round(site.facing, 1), round(w), round(d),
                                 round(front[0]), round(front[1]), "parking_garage", True])
         elif kind == "parking":
-            slab, stalls = parking(site, u0, u1, v0, v1)
+            slab, stalls = parking(site, u0, u1, v0, v1, cross=cross.get(k, ()))
             out["parking"].append(slab)
             out["stalls"] += stalls
         else:
@@ -362,7 +384,11 @@ def plan(lots: list, nodes: dict, edges: list, ring_of, ground=None, anchors: li
             J[n] = J.get(n, 0.0) + pop["jobs"][k]
     # street segments (and freeways through a block) that a site never spans
     seg_cell: dict = {}
-    lines = [(net.pos[e[0]], net.pos[e[1]]) for e in edges if e[0] in net.pos and e[1] in net.pos]
+    lines = []  # every street as it runs: through its bends, not the chord between its two junctions
+    for e in edges:
+        if e[0] in net.pos and e[1] in net.pos:
+            run = [tuple(net.pos[e[0]][:2])] + [tuple(p[:2]) for p in (e[3] if len(e) > 3 and e[3] else [])] + [tuple(net.pos[e[1]][:2])]
+            lines += list(zip(run, run[1:]))
     for p, q in lines + [(tuple(a[:2]), tuple(b[:2])) for a, b in barriers or []]:
         for gx in range(int(min(p[0], q[0]) // 10000), int(max(p[0], q[0]) // 10000) + 1):
             for gy in range(int(min(p[1], q[1]) // 10000), int(max(p[1], q[1]) // 10000) + 1):
@@ -381,6 +407,61 @@ def plan(lots: list, nodes: dict, edges: list, ring_of, ground=None, anchors: li
     for k in free:
         if lot_node[k] is not None:
             node_lots.setdefault(lot_node[k], []).append(k)
+
+    all_cell: dict = {}  # every lot, free or not: a site's rectangle covers none that is not its own
+    for k, r in enumerate(lots):
+        all_cell.setdefault((int(r[0] // 10000), int(r[1] // 10000)), []).append(k)
+
+    def site_of(group):
+        """The site rectangle: the claimed lots' corners in the seed lot's frame (facing its street)."""
+        s = lots[group[0]]
+        site = _Site(s[0], s[1], s[2], 1, 1)
+        us, vs = [], []
+        for k in group:
+            r = lots[k]
+            rf = _Site(r[0], r[1], r[2], 1, 1)
+            for a in (-0.5, 0.5):
+                for b in (-0.5, 0.5):
+                    x = r[0] + rf.ux * a * r[3] + rf.vx * b * r[4]
+                    y = r[1] + rf.uy * a * r[3] + rf.vy * b * r[4]
+                    dx, dy = x - s[0], y - s[1]
+                    us.append(dx * site.ux + dy * site.uy)
+                    vs.append(dx * site.vx + dy * site.vy)
+        cu, cv = (min(us) + max(us)) / 2, (min(vs) + max(vs)) / 2
+        cx, cy = s[0] + site.ux * cu + site.vx * cv, s[1] + site.uy * cu + site.vy * cv
+        return _Site(cx, cy, s[2], max(us) - min(us), max(vs) - min(vs))
+
+    def own_land(group):
+        """The group's site when its rectangle is the group's own land, else None. Lots round a corner or along
+        a bend make a rectangle far bigger than themselves: it reached over the street and over the neighbours'
+        lots, and a car park was laid across a road with other buildings standing in it (Nov 13 2026). So: no
+        street within 6 m of it, no lot of another's with its middle inside it. A free lot inside it joins the
+        group. Returns (group, site) or None."""
+        group = list(group)
+        for _ in range(4):
+            site = site_of(group)
+            hl, hd = site.L / 2, site.D / 2
+            within = lambda x, y, m: (abs((x - site.cx) * site.ux + (y - site.cy) * site.uy) < hl + m
+                                      and abs((x - site.cx) * site.vx + (y - site.cy) * site.vy) < hd + m)
+            reach = math.hypot(hl, hd) + 1000
+            cells = [(gx, gy) for gx in range(int((site.cx - reach) // 10000), int((site.cx + reach) // 10000) + 1)
+                     for gy in range(int((site.cy - reach) // 10000), int((site.cy + reach) // 10000) + 1)]
+            for c in cells:
+                for p, q in seg_cell.get(c, ()):
+                    n_ = max(1, int(math.dist(p, q) // 400))
+                    if any(within(p[0] + (q[0] - p[0]) * i / n_, p[1] + (q[1] - p[1]) * i / n_, 600.0) for i in range(n_ + 1)):
+                        return None
+            more = []
+            for c in cells:
+                for k in all_cell.get(c, ()):
+                    if k not in group and within(lots[k][0], lots[k][1], -200.0):
+                        if k in taken or (len(lots[k]) > 7 and lots[k][7]):
+                            return None  # a neighbour's house, another site's building
+                        more.append(k)
+            if not more:
+                return group, site
+            group += [k for k in dict.fromkeys(more)]
+        return None
 
     def claim(n, spec):
         """A site of spec['size'] from free lots reached from node n (or near it), one block."""
@@ -407,30 +488,24 @@ def plan(lots: list, nodes: dict, edges: list, ring_of, ground=None, anchors: li
                 if same_block((s[0], s[1]), (lots[k][0], lots[k][1])):
                     group.append(k)
                     area += lots[k][3] * lots[k][4]
-            if best is None or area > best[1]:
-                best = (group, area)
-        group, area = best
+            got = None
+            while group:  # the biggest part of it, nearest lots first, whose rectangle is its own land
+                got = own_land(group)
+                if got:
+                    break
+                group.pop()
+            if got:
+                area = sum(lots[k][3] * lots[k][4] for k in got[0])
+                if best is None or area > best[1]:
+                    best = (got, area)
+        if best is None:
+            return None
+        (group, site), area = best
         if area < min(want * 0.45, MIN_SITE_M2 * 1e4) and area < want:
             return None
-        # the site rectangle: the claimed lots' corners in the seed lot's frame (facing its street)
-        s = lots[group[0]]
-        site = _Site(s[0], s[1], s[2], 1, 1)
-        us, vs = [], []
-        for k in group:
-            r = lots[k]
-            rf = _Site(r[0], r[1], r[2], 1, 1)
-            for a in (-0.5, 0.5):
-                for b in (-0.5, 0.5):
-                    x = r[0] + rf.ux * a * r[3] + rf.vx * b * r[4]
-                    y = r[1] + rf.uy * a * r[3] + rf.vy * b * r[4]
-                    dx, dy = x - s[0], y - s[1]
-                    us.append(dx * site.ux + dy * site.uy)
-                    vs.append(dx * site.vx + dy * site.vy)
-        cu, cv = (min(us) + max(us)) / 2, (min(vs) + max(vs)) / 2
-        cx, cy = s[0] + site.ux * cu + site.vx * cv, s[1] + site.uy * cu + site.vy * cv
-        return group, _Site(cx, cy, s[2], max(us) - min(us), max(vs) - min(vs))
+        return group, site
 
-    built = {"lots": [], "parking": [], "stalls": [], "grounds": []}
+    built = {"lots": [], "parking": [], "stalls": [], "grounds": [], "streets": []}
     facilities = []
     at_node: dict = {}  # facility key -> [nodes]
 
@@ -614,6 +689,7 @@ def plan(lots: list, nodes: dict, edges: list, ring_of, ground=None, anchors: li
     for f in facilities:
         counts[f["type"]] = counts.get(f["type"], 0) + 1
     return {"lots": lots_out, "parking": built["parking"], "stalls": built["stalls"], "grounds": built["grounds"],
+            "streets": built["streets"],
             "plan": {"population": {k: v for k, v in pop.items() if k not in ("residents", "jobs")},
                      "demand": {"retail": round(P * RETAIL_PER_RESIDENT),
                                 "school_seats": {k: pop["ages"][CATALOG[k]["age"]] for k in
@@ -657,6 +733,32 @@ def _demo() -> None:
     roles = {r[7] for r in out["lots"] if r[8] is True}
     assert {"school", "fire_station", "police", "shop", "park"} <= roles, roles
     assert out["parking"] and out["stalls"], "sites come with their parking"
+    # a site is its own land: no street runs through a car park or a planned building, and no lot that is not
+    # the site's lies under one
+    def on(row, x, y, half_a, half_b, m=0.0):
+        f_ = math.radians(row[2])
+        dx, dy = x - row[0], y - row[1]
+        return abs(dx * math.cos(f_) + dy * math.sin(f_)) < half_a + m and abs(-dx * math.sin(f_) + dy * math.cos(f_)) < half_b + m
+    pieces = [(r, r[3] * 50, r[4] * 50) for r in out["parking"]] + [(r, r[4] / 2, r[3] / 2) for r in out["lots"] if len(r) > 8 and r[8] is True]
+    for e in edges:
+        (ax, ay), (bx, by) = nodes[e[0]][:2], nodes[e[1]][:2]
+        n_ = max(1, int(math.dist((ax, ay), (bx, by)) // 300))
+        for i in range(n_ + 1):
+            x, y = ax + (bx - ax) * i / n_, ay + (by - ay) * i / n_
+            assert not any(on(r, x, y, ha, hb) for r, ha, hb in pieces), ("a street through a site", round(x), round(y))
+    plain = [r for r in out["lots"] if not (len(r) > 7 and r[7])]
+    assert not any(on(r, p[0], p[1], ha, hb, -300) for r, ha, hb in pieces for p in plain), "a lot left under a site"
+    # ... and every car park of more than one row with a drive into it: from the street, on a cross aisle no
+    # stall stands on, through nothing but car parks
+    from .neighbourhoods import AISLE as _A, STALL_D as _S
+    deep = [p for p in out["parking"] if p[4] * 100 >= 2 * _S + _A and p[3] * 100 >= 2500]
+    assert deep and len(out["streets"]) >= len(deep) * 0.6, (len(deep), len(out["streets"]))
+    for s in out["streets"]:
+        (ax, ay), (bx, by) = s
+        n = max(1, int(math.dist(s[0], s[1]) // 200))
+        for k in range(n + 1):
+            x, y = ax + (bx - ax) * k / n, ay + (by - ay) * k / n
+            assert not any(math.hypot(st[0] - x, st[1] - y) < 250 for st in out["stalls"]), ("a stall on a drive", s)
     # no site spans a street; claimed lots are gone, the rest stay
     assert len(out["lots"]) < len(lots) + len([f for f in p["facilities"]]) * 4
     # water towers on the highest ground, treatment on the lowest (ground rises to +x)

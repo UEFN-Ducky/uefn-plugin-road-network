@@ -250,9 +250,14 @@ HIGHWAYS = CHOICES["highway"][0]
 FEATURES = ("airports", "shipyards", "freeways", "waterfront", "canals", "planner")
 
 
+CITY_SHARES = ("downtown", "normal")  # ... and its own district sizes (shares of its radius), kept with them
+CORE_MAX = 0.6  # a city's centre district may be moved this far toward its edge (a share of the way there)
+
+
 def city_options(city: dict, opts: dict | None = None) -> dict:
-    """The world's options with this city's own feature choices on top."""
-    return options({**(opts or {}), **{k: v for k, v in (city.get("features") or {}).items() if k in FEATURES}})
+    """The world's options with this city's own feature choices and district sizes on top."""
+    return options({**(opts or {}), **{k: v for k, v in (city.get("features") or {}).items()
+                                       if k in FEATURES or k in CITY_SHARES}})
 
 
 def options(given: dict | None = None) -> dict:
@@ -342,10 +347,73 @@ def push_out(keep: list, x: float, y: float, margin: float) -> list:
     return [x, y]
 
 
+LAKE_WIDTH_M = (60.0, 200.0, 1500.0)  # a drawn lake's width: the least, what a new one gets, the most
+LAKE_BANK_GRADE = 0.3  # how steeply the land comes down to a dug lake: about 1 in 3 ...
+LAKE_BANK_CM = (3000.0, 60000.0)  # ... over at least 30 m and never more than 600 m
+
+
+def lake_list(raw) -> list:
+    """The lakes drawn by hand on a world, cleaned: [{id, pts [[x, y], ...] (cm, along its middle), width_m}]."""
+    out, used = [], set()
+    lo, _new, hi = LAKE_WIDTH_M
+    for r in raw or []:
+        try:
+            pts = [[round(float(p[0])), round(float(p[1]))] for p in r["pts"]][:200]
+            width = max(lo, min(hi, float(r.get("width_m") or _new)))
+        except (KeyError, TypeError, ValueError, IndexError):
+            continue
+        pts = [p for k, p in enumerate(pts) if k == 0 or p != pts[k - 1]]
+        if not pts:
+            continue
+        lid = str(r.get("id") or "")
+        if not lid or lid in used:
+            lid = next(f"lake-{n}" for n in range(1, 10000) if f"lake-{n}" not in used and not any(
+                str(o.get("id")) == f"lake-{n}" for o in raw or [] if isinstance(o, dict)))
+        used.add(lid)
+        out.append({"id": lid, "pts": pts, "width_m": round(width, 1)})
+    return out
+
+
+def _dig_lakes(base: list, xs: list, ys: list, lakes: list, sea, depth: float, shore: float):
+    """The lakes drawn by hand, dug into the natural ground (rows `base`, cell centres xs / ys): (rows, water
+    line). Each is a line with a width. Inside it the ground goes down to a bed: a beach at its edge, the world's
+    water depth in its middle. Outside it the land comes down to the shore as a bank no steeper than
+    LAKE_BANK_GRADE, so a lake drawn on a hill lies in a valley, never in a pit. A world has ONE water line: its
+    own, or, with none, one just under its lowest ground (so no other land floods), and every lake is dug to it.
+    A lake is never narrower than two cells of the terrain, the least the grid can hold."""
+    if not lakes:
+        return base, sea
+    grid, cell = len(xs), (xs[1] - xs[0]) if len(xs) > 1 else 1.0
+    if sea is None:
+        sea = min(min(r) for r in base) - shore - 100.0
+    top = sea + shore  # where a lake's edge lies: the last of the beach
+    for lake in lakes:
+        pts = lake["pts"]
+        segs = list(zip(pts, pts[1:])) or [(pts[0], pts[0])]
+        half = max(lake["width_m"] * 50.0, cell)
+        reach = half + LAKE_BANK_CM[1]
+        x0, x1 = min(p[0] for p in pts) - reach, max(p[0] for p in pts) + reach
+        y0, y1 = min(p[1] for p in pts) - reach, max(p[1] for p in pts) + reach
+        for j in range(max(0, int((y0 - ys[0]) // cell)), min(grid, int((y1 - ys[0]) // cell) + 2)):
+            for i in range(max(0, int((x0 - xs[0]) // cell)), min(grid, int((x1 - xs[0]) // cell) + 2)):
+                d = min(_dist_seg((xs[i], ys[j]), a, b) for a, b in segs)
+                z = base[j][i]
+                if d <= half:
+                    bed = top - (depth + 2 * shore) * _smoothstep(0.0, 1.0, 1.25 * (1.0 - d / half))
+                    base[j][i] = min(z, bed)
+                elif z > top:
+                    bank = max(LAKE_BANK_CM[0], min(LAKE_BANK_CM[1], (z - top) / LAKE_BANK_GRADE))
+                    if d - half < bank:
+                        base[j][i] = min(z, top + (z - top) * _smoothstep(0.0, 1.0, (d - half) / bank))
+    return base, sea
+
+
 def terrain(seed: int, size_cm: float, relief_cm: float, cities: list, grid: int = 160,
-            center: tuple = (0.0, 0.0), opts: dict | None = None, keep: list | None = None) -> dict:
+            center: tuple = (0.0, 0.0), opts: dict | None = None, keep: list | None = None,
+            lakes: list | None = None) -> dict:
     """Hills (natural ground; option city_ground 'flatten' levels the land under every city, never its water). Same shape as a ground scan:
-    {min, max, grid, heights[j][i]} with cell centres, so the 3D view and drape read it as is."""
+    {min, max, grid, heights[j][i]} with cell centres, so the 3D view and drape read it as is.
+    lakes (lake_list): lakes drawn by hand, dug into the natural ground before anything is levelled on it."""
     o = options(opts)
     fbm = _fbm(seed, o["detail"], o["roughness"], o["ridges"])
     half = size_cm / 2
@@ -382,6 +450,7 @@ def terrain(seed: int, size_cm: float, relief_cm: float, cities: list, grid: int
         return h
 
     base = [[shape(n) for n in row] for row in noise]
+    base, sea = _dig_lakes(base, xs, ys, lakes or [], sea, depth, shore)
 
     def at(x, y):
         i = max(0, min(grid - 1, int((x - lo[0]) / size_cm * grid)))
@@ -850,14 +919,19 @@ def spread(towns: list, gap_cm: float, keep: list | None = None) -> list:
 
 
 def districts(city: dict, opts: dict | None = None) -> dict:
-    o = options(opts)
+    """A city's districts as the panel and the placement read them: the downtown and normal rings (radii along
+    the way from its centre district to its edge, `zone_share`), the housing beyond, the industrial wedge, and
+    `core` when the centre district was moved off the city's own centre (cm from it)."""
+    o = city_options(city, opts)
     r = city["radius"]
+    # one wedge of the outer rings is the industrial zone (factories, warehouses): its direction from the seed,
+    # or the one it was given by hand (`industry_deg`), turned with the city
+    base = float(city["industry_deg"]) if city.get("industry_deg") is not None else (int(city.get("seed", 0)) * 137) % 360
+    core = city.get("core") or [0, 0]
     return {"downtown": {"radius": round(r * o["downtown"])}, "normal": {"radius": round(r * max(o["normal"], o["downtown"]))},
             "housing": {"radius": round(r)},
-            # one wedge of the outer rings is the industrial zone (factories, warehouses), its direction from the seed
-            # (turned with the city)
-            "industrial": {"angle": ((int(city.get("seed", 0)) * 137) % 360 + float(city.get("spin") or 0.0)) % 360,
-                           "spread": 75}}
+            "industrial": {"angle": (base + float(city.get("spin") or 0.0)) % 360, "spread": 75},
+            **({"core": [round(core[0]), round(core[1])]} if core[0] or core[1] else {})}
 
 
 SHAPE_POINTS = 16  # a hand-drawn outline: this many handles round the city, each a factor of its radius
@@ -929,11 +1003,63 @@ def yielded(city: dict, x: float, y: float, margin: float = YIELD_CM) -> bool:
     return False
 
 
+_REACH: dict = {}  # a city with its centre district moved -> how far its edge lies from that centre, per degree
+
+
+def core_reach(city: dict) -> list | None:
+    """For a city whose centre district was moved (`core`: cm from the city's own centre): the distance from that
+    centre to the city's edge in each of 360 directions. None for a city whose districts are centred on it."""
+    core = city.get("core")
+    if not core or not (core[0] or core[1]):
+        return None
+    key = (city["x"], city["y"], city["radius"], city.get("seed"), city.get("spin"), tuple(city.get("shape") or ()),
+           core[0], core[1])
+    got = _REACH.get(key)
+    if got is None:
+        R, cx, cy = city["radius"], city["x"], city["y"]
+        px, py = cx + core[0], cy + core[1]
+        out_ = lambda x, y: math.hypot(x - cx, y - cy) > R * outline(city, math.degrees(math.atan2(y - cy, x - cx)))
+        got = []
+        for k in range(360):
+            dx, dy = math.cos(math.radians(k)), math.sin(math.radians(k))
+            t, step = 0.0, R / 40
+            while t < 2.8 * R and not out_(px + dx * (t + step), py + dy * (t + step)):
+                t += step
+            lo, hi = t, t + step  # the first time the ray leaves the city
+            for _ in range(16):
+                mid = (lo + hi) / 2
+                lo, hi = (lo, mid) if out_(px + dx * mid, py + dy * mid) else (mid, hi)
+            got.append((lo + hi) / 2)
+        if len(_REACH) > 64:
+            _REACH.clear()
+        _REACH[key] = got
+    return got
+
+
+def clamp_core(city: dict, dx: float, dy: float) -> list:
+    """Where a city's centre district may be put: (dx, dy) from the city's own centre, pulled back to CORE_MAX
+    of the way to its edge. [0, 0] when that is at (or within 20 m of) the city's centre."""
+    d = math.hypot(dx, dy)
+    if d < 2000:
+        return [0, 0]
+    edge = city["radius"] * outline(city, math.degrees(math.atan2(dy, dx)))
+    k = min(1.0, CORE_MAX * edge / d)
+    return [round(dx * k), round(dy * k)]
+
+
 def zone_share(city: dict, x: float, y: float) -> float:
     """Distance from the centre as a share of the city's (irregular) edge in that direction: <downtown
-    share = core, <normal share = neighbourhood, <1 = suburb."""
-    dx, dy = x - city["x"], y - city["y"]
-    return math.hypot(dx, dy) / (city["radius"] * outline(city, math.degrees(math.atan2(dy, dx))))
+    share = core, <normal share = neighbourhood, <1 = suburb. The centre is the city's own, or the spot its
+    centre district was moved to (`core`): the rings then lie round that spot, squeezed on the side where the
+    edge is near and stretched on the far side, and the city's edge stays where it is (share 1 on it)."""
+    reach = core_reach(city)
+    if reach is None:
+        dx, dy = x - city["x"], y - city["y"]
+        return math.hypot(dx, dy) / (city["radius"] * outline(city, math.degrees(math.atan2(dy, dx))))
+    dx, dy = x - city["x"] - city["core"][0], y - city["y"] - city["core"][1]
+    t = math.degrees(math.atan2(dy, dx)) % 360.0
+    i = int(t) % 360
+    return math.hypot(dx, dy) / (reach[i] + (reach[(i + 1) % 360] - reach[i]) * (t - int(t)))
 
 
 def orientation(city: dict) -> float:
@@ -1285,7 +1411,7 @@ def canal_wet(city: dict, opts: dict | None = None):
 
 def zoning(city: dict, opts: dict | None = None) -> tuple:
     """(ring_of(x, y) -> 'core' | 'normal' | 'housing', industrial(x, y) -> bool) for one city."""
-    o = options(opts)
+    o = city_options(city, opts)
     down, normal = o["downtown"], max(o["normal"], o["downtown"])
     ring_of = lambda x, y: (lambda s: "core" if s <= down else "normal" if s <= normal else "housing")(
         zone_share(city, x, y))
@@ -2939,6 +3065,9 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
         out["parking"] += got["parking"]
         out["stalls"] += got["stalls"]
         out["grounds"], out["plan"] = got["grounds"], got["plan"]
+        # the drives into the sites' car parks: private streets like a complex's own
+        out["streets"] += [s for s in got.get("streets") or []
+                           if not any(fw.blocked(p[0], p[1]) or (wet and wet(p[0], p[1])) for p in s)]
         if fw.lines and out["plan"]:
             # a site the planner merged from lots each clear of the freeway can still have its middle in the
             # freeway's corridor (a power plant did): that site is not built, its grounds go with it
@@ -2949,6 +3078,18 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
                     out["plan"]["counts"][f["type"]] = out["plan"]["counts"].get(f["type"], 1) - 1
                 out["lots"] = [r for r in out["lots"] if not (len(r) > 8 and r[8] is True and fw.blocked(r[0], r[1]))]
                 out["grounds"] = [g for g in out["grounds"] if not fw.blocked(g[0], g[1])]
+    # a stall is painted on a car park: where the slab was not built (in the water, under a freeway, in a keep
+    # zone) its stalls go with it, and none is left as white lines on the grass
+    slabs = [(s[0], s[1], math.cos(math.radians(s[2])), math.sin(math.radians(s[2])), s[3] * 50 + 60, s[4] * 50 + 60) for s in out["parking"]]
+    by_cell: dict = {}
+    for s in slabs:
+        r = math.hypot(s[4], s[5])
+        for gx in range(int((s[0] - r) // 20000), int((s[0] + r) // 20000) + 1):
+            for gy in range(int((s[1] - r) // 20000), int((s[1] + r) // 20000) + 1):
+                by_cell.setdefault((gx, gy), []).append(s)
+    out["stalls"] = [t for t in out["stalls"]
+                     if any(abs((t[0] - x) * c + (t[1] - y) * s_) < a and abs(-(t[0] - x) * s_ + (t[1] - y) * c) < b
+                            for x, y, c, s_, a, b in by_cell.get((int(t[0] // 20000), int(t[1] // 20000)), ()))]
     return out
 
 
@@ -3629,7 +3770,9 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
         for p, q in every_tip:
             L = math.dist(p[:2], q[:2]) or 1.0
             if sum(1 for u, _v in every_tip if math.dist(u[:2], p[:2]) < 200) == 1 and not in_keep(keep, p[0], p[1], 6000):
-                mine.append([p[0], p[1], (p[0] - q[0]) / L, (p[1] - q[1]) / L, bool(wet and wet(p[0], p[1]))])
+                hx, hy = (p[0] - q[0]) / L, (p[1] - q[1]) / L
+                # (in the water, or ended at a shore with the water right ahead: no highway carries on from it)
+                mine.append([p[0], p[1], hx, hy, bool(wet and any(wet(p[0] + hx * d, p[1] + hy * d) for d in (0.0, 10000.0, 20000.0, 30000.0)))])
         tips.append(mine)
     # cities that lie close together are joined street to street, the closer the more; each lays its own half
     joined: set = set()
@@ -3706,6 +3849,13 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
                         leads[k].append([leads[k][0][0] + bx / bl * 30000, leads[k][0][1] + by / bl * 30000])
         via = [v for v in via if all(math.dist(v[:2], e) > 60000 for e, ld in zip(ends, leads) if ld)]
         via = leads[0] + via + leads[1][::-1]
+        for field in airports or []:  # ... and round an airport, never through its terminal and car park
+            from . import airport
+            via = [v for v in via if not airport.inside(field, v[0], v[1], 10000)]
+            line, went = [ends[0]] + via + [ends[1]], []
+            for p, q in zip(line, line[1:]):
+                went += airport.around(field, p, q) + [q]
+            via = [[v[0], v[1]] for v in went[:-1]]
         if o["overpasses"] == "yes":
             via, _ = overpass_via([ends[0]] + via + [ends[1]], streets, o["highway"])
         if gates and o["interchange"] == "stack" and L > 70000:  # rise onto an elevated deck into each gate
@@ -4730,6 +4880,43 @@ def _demo() -> None:
     cut = _near_cuts({"fw_near": [[5000, 0, 650]]})
     assert cut((5000, -3000), (5000, 3000), 525.0) and cut((3800, -3000), (3800, 3000), 525.0)
     assert not cut((9000, -3000), (9000, 3000), 525.0) and not _near_cuts({})((0, 0), (1, 1), 500.0)
+    # a lake drawn by hand: dug to the world's water line (a world with none gets one under its lowest ground,
+    # so nothing else floods), a bed in its middle, banks no steeper than 1 in 3, nothing changed far from it
+    drawn = lake_list([{"pts": [[-60000, 0], [60000, 0]], "width_m": 300}, {"pts": [[0, 90000]]}, {"pts": "x"}, {"id": "lake-1", "pts": [[1, 1], [1, 1]], "width_m": 5}])
+    assert [(l["id"], len(l["pts"]), l["width_m"]) for l in drawn] == [("lake-2", 2, 300.0), ("lake-3", 1, 200.0), ("lake-1", 1, 60.0)], drawn
+    dry_t = terrain(5, 400000, 3000, [], grid=80)
+    lake_t = terrain(5, 400000, 3000, [], grid=80, lakes=drawn[:1])
+    assert dry_t["sea"] is None and lake_t["sea"] < min(min(r) for r in dry_t["heights"]), "its water line lies under all the land"
+    wet_l = wet_from(lake_t)
+    assert all(wet_l(x, 0) for x in range(-55000, 55001, 5000)) and wet_l(0, 10000) and not wet_l(0, 40000), "water along the line, as wide as drawn"
+    flooded = sum(1 for j in range(80) for i in range(80) if lake_t["heights"][j][i] < lake_t["sea"])
+    assert 0.6 * 120000 * 30000 < flooded * 5000 * 5000 < 1.6 * 150000 * 30000, flooded
+    same = sum(1 for j in range(80) for i in range(80) if lake_t["heights"][j][i] == dry_t["heights"][j][i])
+    assert same > 0.5 * 6400 and lake_t["heights"][2][2] == dry_t["heights"][2][2], "the land away from it is as it was"
+    steep = max(abs(lake_t["heights"][j][40] - lake_t["heights"][j + 1][40]) / 5000 for j in range(46, 70))
+    assert steep <= LAKE_BANK_GRADE * 1.6, ("its banks are slopes, not a pit", steep)
+    sea_t = terrain(5, 400000, 3000, [], grid=80, opts={"sea_m": -10}, lakes=drawn[:1])
+    assert sea_t["sea"] == -1000.0 and wet_from(sea_t)(0, 0), "a world with water: dug to that water's level"
+    # a city's centre district moved off its centre: the rings lie round the new spot, the edge stays where it
+    # is; its own district sizes and industrial side are the city's, whatever the world's are
+    plain_c = {"name": "Plain", "x": 0, "y": 0, "radius": 100000, "seed": 4, "style": "grid", "turn": 0.0}
+    moved_c = {**plain_c, "core": [40000, 0]}
+    assert core_reach(plain_c) is None and zone_share(moved_c, 40000, 0) == 0.0
+    for deg_ in range(0, 360, 7):
+        ex, ey = (100000 * outline(plain_c, deg_) * f_ for f_ in (math.cos(math.radians(deg_)), math.sin(math.radians(deg_))))
+        assert abs(zone_share(moved_c, ex, ey) - 1.0) < 0.004, (deg_, zone_share(moved_c, ex, ey))
+        assert zone_share(moved_c, ex * 0.98, ey * 0.98) < 1.0 < zone_share(moved_c, ex * 1.02, ey * 1.02)
+    assert zone_share(moved_c, 0, 0) > 0.25 and zone_share(plain_c, 40000, 0) > 0.3, "the old centre is no longer the middle"
+    ring_m, _ind = zoning(moved_c, {"downtown": 0.3})
+    assert ring_m(40000, 0) == "core" and ring_m(-20000, 0) != "core" and zoning(plain_c, {"downtown": 0.3})[0](0, 0) == "core"
+    assert clamp_core(plain_c, 500, 500) == [0, 0] and math.hypot(*clamp_core(plain_c, 300000, 0)) <= 0.6 * 100000 * 1.27
+    own = {**plain_c, "features": {"downtown": 0.2, "normal": 0.5}, "industry_deg": 90.0, "spin": 10.0}
+    d_own = districts(own, {"downtown": 0.4})
+    assert d_own["downtown"]["radius"] == 20000 and d_own["normal"]["radius"] == 50000 and d_own["industrial"]["angle"] == 100.0
+    assert "core" not in d_own and districts(moved_c)["core"] == [40000, 0]
+    g_plain, g_moved = city_graph(plain_c, {"downtown": 0.3}), city_graph(moved_c, {"downtown": 0.3})
+    wide = lambda g, x0, x1: sum(1 for a, b, k, *_ in g[1] if k == options()["core_roads"] and x0 < g[0][a][0] < x1 and abs(g[0][a][1]) < 20000)
+    assert wide(g_moved, 25000, 55000) > wide(g_plain, 25000, 55000), "downtown's streets are where the centre district is now"
     # a freeway never runs out over a lake to end in the water: it stops at the shore, back at grade; a river with
     # land beyond it is crossed as before
     from . import freeways as _fw
@@ -4744,6 +4931,20 @@ def _demo() -> None:
     river_city.pop("fw_shore")
     shore_plan([river_city], None, lambda x, y: 60000 < y < 66000)
     assert min(river_city["fw_shore"]["ns"]) > 150000, "land beyond the water: the freeway bridges it"
+    # ... a river, not a bay: water wider than freeways.FW_WATER_MAX ends it on the near shore, land beyond or not
+    bay_city = dict(lake_city, name="Bay")
+    bay_city.pop("fw_shore")
+    shore_plan([bay_city], None, lambda x, y: 60000 < y < 60000 + _fw.FW_WATER_MAX + 30000)
+    assert bay_city["fw_shore"]["ns"][1] <= 60000 < bay_city["fw_shore"]["ns"][0], bay_city["fw_shore"]
+    # ... and no interchange with a ramp in the water: the ones a river runs past are left out, the rest stay
+    dry_ics = [i["at"] for i in freeway_plan(dict(lake_city, name="Dry", fw_shore=None)).interchanges if i["kind"] != "stack"]
+    pond_at = dry_ics[0]
+    pond_city = dict(lake_city, name="Pond")
+    pond_city.pop("fw_shore")
+    shore_plan([pond_city], None, lambda x, y: math.hypot(x - pond_at[0], y - pond_at[1]) < 8000)
+    assert min(pond_city["fw_shore"]["ns"]) > 150000, "(a pond 160 m across: the freeway itself bridges it)"
+    left = [i["at"] for i in freeway_plan(pond_city).interchanges]
+    assert left and all(math.dist(i, pond_at) > 30000 for i in left), (pond_at, left)
     assert _fw.shore_reach(lake_city, options(), None) is None and "fw_shore" not in (shore_plan([river_city], None, None) or river_city)
     # ... and it ends before a neighbouring city's land: none of it runs through the other city
     host = {"name": "Host", "x": 0, "y": 0, "radius": 120000, "seed": 4, "style": "grid", "turn": 0.0}
