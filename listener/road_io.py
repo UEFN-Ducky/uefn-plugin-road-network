@@ -159,10 +159,12 @@ _U_ASPHALT, _U_SHOULDER = 0.27, 0.02
 _R1_MATERIAL = "/Game/Athena/Apollo/Environments/Landscape/Materials/MI_Apollo_Roads_Straight_NO_RVT"
 
 
-# Our own road kit (WorldGen/Roads): a flat deck at z 0 in M_Asphalt. A junction for it is flat too,
-# a hair above the deck so the road ends it overlaps never flicker, with planar UVs in metres.
-_OWN_DECK_Z = 2.0
+# Our own road kit (WorldGen/Roads): a flat deck at z 0 in M_Asphalt, drawn 50 cm up the point by the segments'
+# SegmentMeshOffset. A junction piece sits on its point with no offset, so it carries that 50 cm lift itself,
+# plus a hair so the road ends it overlaps never flicker, with planar UVs in metres.
+_OWN_DECK_Z = 52.0
 _OWN_UV_CM = 400.0
+_OWN_SKIRT_Z = -330.0  # a straight wall down under every fillet, like the road tiles' 3 m skirt
 
 
 _PAINT_Z = 1.0  # painted lines sit this far above the junction deck
@@ -274,11 +276,13 @@ def _junction_geometry(arm_deg: list, half: float = _R1_W, flat: bool = False, h
                 o = (ty / L2, -tx / L2)
                 if o[0] * p[0] + o[1] * p[1] < 0:
                     o = (-o[0], -o[1])
-            outs.append((p[0] + o[0] * _R1_SKIRT, p[1] + o[1] * _R1_SKIRT))
+            out = 0.0 if flat else _R1_SKIRT  # own kit: a vertical wall; Road1: a 50 cm flare
+            outs.append((p[0] + o[0] * out, p[1] + o[1] * out))
+        skirt_z = _OWN_SKIRT_Z if flat else _R1_SKIRT_Z
         for side in (0, 1):  # both faces, separate vertices (shared ones cancel the normals)
             for i in range(len(chain) - 1):
                 base = len(verts)
-                for (x, y), z in ((chain[i], edge_z), (chain[i + 1], edge_z), (outs[i + 1], _R1_SKIRT_Z), (outs[i], _R1_SKIRT_Z)):
+                for (x, y), z in ((chain[i], edge_z), (chain[i + 1], edge_z), (outs[i + 1], skirt_z), (outs[i], skirt_z)):
                     verts.append((x, y, z))
                     uvs.append(uv(x, y, _U_SHOULDER))
                 q = (base, base + 1, base + 2, base + 3)
