@@ -787,6 +787,10 @@ def register(api) -> None:
         by_i = {p["i"]: p for p in pts}
         half = (lambda arms: max(by_i[m]["w"] for m in arms)) if gen else (lambda arms: 545.0)  # kit roads: Road1 width
         built, unsaved = 0, []
+        # a piece only slides its mouths along their own roads: a heightmap cut for these roads stays theirs
+        net = data.get(f"net.{nid}") or {}
+        hm_current = bool((net.get("generated") or {}).get("heightmap_roads")) and \
+            net["generated"]["heightmap_roads"] == roads_digest(nid)
         try:
             # few meshes per call: each mesh build opens a progress window that UEFN frees only when the
             # call's frame ends (see street_kit_build)
@@ -818,6 +822,10 @@ def register(api) -> None:
         finally:
             store_actor(nid, head["label"], {"points": pts, "segments": segs}, head["name"].split(" / ")[0])
             push({"what": "actor", "id": nid, "label": head["label"]})
+            if hm_current:
+                net = data.get(f"net.{nid}")
+                net["generated"]["heightmap_roads"] = roads_digest(nid)
+                data.put(f"net.{nid}", net)
         record("road_network_build_pieces", "network", f"{nid}-{aslug}", None, [])
         return {"ok": True, "label": head["label"], "built": built, "folder": folder,
                 "problems": {k: len(v) for k, v in st.problems(pts, segs).items()}}
