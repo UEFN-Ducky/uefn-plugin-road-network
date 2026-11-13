@@ -1265,7 +1265,12 @@ async function loadPcgPreviewNow() {
   calls.push([{ id: "road-walls", name: "Bridges and sites" }]);  // the built-in layers: piers, approach walls, neighbourhood sites, planted lots
   const picked = {};
   // the card is the city's own: a rebuild's or an edit's card stays up while the city fills in under it
-  const card = (msg, opts) => { if (!loading.title || loading.title === "Placing the city") busy(msg, opts); };
+  live.sharing = !!live.shareNext && Object.values(peers).some((p) => p.state?.net === state.net);
+  live.shareNext = false;
+  live.shared = 0;
+  // (a teammate's change: their PC already showed it here, this one only catches up, so no card over the map)
+  const hush = !live.sharing && Date.now() < (live.quietUntil || 0);
+  const card = (msg, opts) => { if (!hush && (!loading.title || loading.title === "Placing the city")) busy(msg, opts); };
   for (const [i, ls] of calls.entries()) {  // the first call computes the whole city; the rest read it from the cache
     card("Placing the city", { text: i ? `${ls.map((l) => l.name).join(", ")}` : "Placing every building, prop and tree…",
       step: i, of: calls.length });
@@ -1291,6 +1296,7 @@ async function loadPcgPreviewNow() {
     state.ground = { net, key: terrainKey(raw), t: { ...raw, grid: gr.grid, heights: gr.heights, max: gr.max || raw.max }, fit: gr.ground_fit };
   }
   state.pcg = out;
+  live.sharing = false;
   state.lifted = null;  // every layer is in: the moved city's old place is whatever the rebuild left there
   renderPcgCounts();
   state.fadeNext = false;  // it already came in, layer by layer (revealLayers)
@@ -2087,6 +2093,7 @@ async function regenerate(title) {
     ground_from: gen.ground_from || "", options: JSON.stringify(optionsOf(state.gen)) });
   state.generating = false;
   tellGroup();
+  live.shareNext = out.ok !== false;  // what this rebuild changes goes straight to teammates' screens
   if (state.lifted) state.lifted.roads = false;  // a moved city: its new roads are in, its buildings still to come
   busy("");
   if (out.ok === false) showError(out.error);
@@ -2509,6 +2516,8 @@ window.addEventListener("message", (ev) => {
         loading.job = true;
         busy(e.title, { text: e.text, step: e.step || 0, of: e.of || 0 });
       } else if (loading.title) busy(loading.title, { text: e.text, step: (e.step || 0) + 1, of: (e.of || 1) + 1 });
+    } else if (e.what === "hold") {
+      refreshHolds();  // a ducky on this PC took or let go of a city
     } else if (e.what === "city") {
       // a city was added or removed: the regenerate that follows reloads everything
     } else if (state.generating || edits.running) {
@@ -2516,6 +2525,7 @@ window.addEventListener("message", (ev) => {
     } else reloadSoon(e.what === "pcg" ? "layers" : "geometry");
   }
   if (e.type === "live.memberState") onMemberState(e.from, e.state);
+  if (e.type === "live.message" && e.topic === "pcg") onPeerPcg(e.data);
   if (e.type === "live.state") {  // live went on or off: off, nobody is here any more
     live.on = !!e.on;
     if (!e.on) { for (const k of Object.keys(peers)) delete peers[k]; drawPeers(); }
@@ -2589,6 +2599,7 @@ function sendMyCamera() {  // my live state: where I look, the city I have, a ci
   call("live.setMyState", { state: { id: ME, net: state.net, tab: state.tab,
     city: live.idle ? "" : state.cityPick || "", since: live.since,
     busy: state.generating ? (loading.title || "Rebuilding") : "",
+    ducky: (state.holds || []).filter((x) => x.kind === "ducky").map((x) => ({ city: x.city, who: x.who, task: x.task })),
     move: m ? { city: m.c.id, x: Math.round(m.to[0]), y: Math.round(m.to[1]) } : null,
     cam: { x: +t.x.toFixed(1), y: +t.y.toFixed(1), z: +t.z.toFixed(1), dist: Math.round(orbit.dist), az: +orbit.az.toFixed(3), el: +orbit.el.toFixed(3) } } }).catch(() => {});
 }
@@ -2603,16 +2614,24 @@ function onMemberState(from, s) {
     p.name = String(from?.name || p.name);
     p.state = s;
     live.on = true;
+    if (s.busy && s.net === state.net) live.quietUntil = Date.now() + 120000;  // their change comes in without a loading card here
   }
   drawPeers();
 }
 // The teammate who has a city (picked it first and still has it picked), or null when it is free or mine. Everyone
 // works it out from the same live states, so every screen names the same person.
 function holderOf(id) {
+  if (!id) return null;
+  const here = (state.holds || []).find((x) => x.city === id && x.kind === "ducky");  // a ducky on this PC is changing it
+  if (here) return { since: 0, id: `ducky:${here.who}`, name: here.who, tint: "accent", task: here.task };
+  for (const p of Object.values(peers)) {  // ... or a teammate's ducky
+    const dk = p.state?.net === state.net && (p.state.ducky || []).find((x) => x.city === id);
+    if (dk) return { since: 0, id: `ducky:${dk.who}`, name: String(dk.who || `${p.name}'s ducky`), tint: p.tint, task: dk.task };
+  }
   let best = null;
   for (const p of Object.values(peers)) {
     const s = p.state;
-    if (!s || s.net !== state.net || !id || s.city !== id) continue;
+    if (!s || s.net !== state.net || s.city !== id) continue;
     const since = Number(s.since) || 0;
     if (!best || since < best.since || (since === best.since && String(s.id) < best.id)) best = { since, id: String(s.id), name: p.name, tint: p.tint };
   }
@@ -2620,11 +2639,45 @@ function holderOf(id) {
   const mine = state.cityPick === id && !live.idle;
   return mine && (live.since < best.since || (live.since === best.since && ME < best.id)) ? null : best;
 }
-function heldElsewhere(c) {  // true, and says whose it is, when a teammate has this city
+function heldElsewhere(c) {  // true, and says whose it is, when a teammate or a ducky has this city
   const hd = c && holderOf(c.id);
-  if (hd) flash(`${hd.name} has ${c.name}. It is yours when they let go.`);
+  if (hd) flash(`${hd.name} has ${c.name}${hd.task ? ` (${hd.task})` : ""}. It is yours when they let go.`);
   return !!hd;
 }
+// The backend keeps the holds too (holds.py), so a ducky's tool call obeys them and a ducky's own hold shows here:
+// this page tells it the city I picked, hears which cities duckies on this PC hold, and passes on what teammates
+// hold (from the live group), every few seconds, which also tells it the panel is open.
+let myHold = "", toldPeers = "", toldAt = 0;
+async function refreshHolds() {
+  if (!state.net) return;
+  const r = await rpc("holds", { net_id: state.net }).catch(() => null);
+  if (!r || r.ok === false) return;
+  const was = JSON.stringify(state.holds || []);
+  state.holds = r.holds || [];
+  if (JSON.stringify(state.holds) !== was) { heldSig = ""; drawPeers(); tellGroup(); }
+}
+async function keepHold() {  // the city I have picked is held for me while I have it; the one I had is let go
+  const want = state.cityPick && !live.idle && !holderOf(state.cityPick) ? state.cityPick : "";
+  if (myHold && myHold !== want) rpc("release", { net_id: state.net, city: myHold }).catch(() => {});
+  myHold = want;
+  if (!want) return;
+  const r = await rpc("hold", { net_id: state.net, city: want }).catch(() => null);
+  if (r && r.ok === false) { myHold = ""; await refreshHolds(); }  // someone got there first (a ducky on this PC)
+}
+function relayHolds(force) {  // what teammates hold, for the backend: on a change, and every 10 s as a sign of life
+  if (!state.net || !(live.on || Object.keys(peers).length)) return;
+  const rows = [];
+  for (const c of state.cities) {
+    const hd = holderOf(c.id);
+    if (hd && !(state.holds || []).some((x) => x.city === c.id && x.kind === "ducky")) rows.push({ city: c.id, who: hd.name });
+  }
+  const text = JSON.stringify(rows);
+  if (!force && text === toldPeers && Date.now() - toldAt < 10000) return;
+  toldPeers = text;
+  toldAt = Date.now();
+  rpc("peer_holds", { net_id: state.net, holds: text }).catch(() => {});
+}
+setInterval(() => { if (liveReady && visible) { relayHolds(); if (state.cityPick) keepHold(); } }, 10000);
 const peerBusy = () => Object.values(peers).find((p) => p.state?.net === state.net && p.state.busy) || null;
 async function peersIdle(title) {  // one rebuild of a world at a time: mine starts when a teammate's is in
   let waited = false;
@@ -2693,6 +2746,7 @@ function drawPeers() {
   const sig = state.cities.map((c) => `${c.id}:${holderOf(c.id)?.id || ""}`).join("|");
   if (sig !== heldSig) {
     heldSig = sig;
+    relayHolds(true);
     const host = $("labels");
     if (host) host.replaceChildren();  // placeLabels writes them again, with the holders' names
     if (state.cityPick) { renderWorldCity?.(); drawCityMark(); }
@@ -2796,12 +2850,77 @@ function touched() {
   live.idle = false;
   live.since = Date.now();
   tellGroup();
+  keepHold();
 }
 for (const type of ["pointerdown", "keydown", "wheel"]) window.addEventListener(type, touched, { passive: true, capture: true });
 setInterval(() => {
-  if (!live.idle && state.cityPick && Object.keys(peers).length && Date.now() - live.active > IDLE_MS) { live.idle = true; tellGroup(); }
+  if (!live.idle && state.cityPick && Date.now() - live.active > IDLE_MS) { live.idle = true; tellGroup(); keepHold(); }
 }, 15000);
-window.addEventListener("beforeunload", () => { call("live.setMyState", { state: null }).catch(() => {}); });
+window.addEventListener("beforeunload", () => {
+  call("live.setMyState", { state: null }).catch(() => {});
+  if (myHold) rpc("release", { net_id: state.net, city: myHold }).catch(() => {});
+});
+// ---- a rebuild's result goes straight to teammates' screens
+// The PC that rebuilt a city sends, layer by layer, what is new and what is gone (live.send: short messages from
+// PC to PC, nothing stored). A teammate's page puts that in at once, as its own rebuild would, so they watch the
+// change come in while their own PC places it in the background and then agrees (placement is the same on every
+// PC: each piece comes from its own spot). A change too big to send (a whole new world) is left to each PC.
+const spot = (p) => `${p[0]},${p[1]},${p[3]}`;
+const SHARE_MAX = 90000, PART_BYTES = 12000;
+const outbox = [];
+let outTimer = 0;
+function sendLive(topic, data) {  // at most ~22 a second: the link takes 30
+  outbox.push([topic, data]);
+  if (outTimer) return;
+  outTimer = setInterval(() => {
+    const m = outbox.shift();
+    if (!m) { clearInterval(outTimer); outTimer = 0; return; }
+    call("live.send", { topic: m[0], data: m[1] }).catch(() => {});
+  }, 45);
+}
+function shareLayer(name, layer, oldPts) {
+  const pts = layer.points || [], now = new Set(pts.map(spot)), had = new Set((oldPts || []).map(spot));
+  const add = pts.filter((p) => !had.has(spot(p))), gone = [...had].filter((k) => !now.has(k));
+  if (!add.length && !gone.length) return;
+  live.shared = (live.shared || 0) + add.length + gone.length;
+  if (live.shared > SHARE_MAX) return;
+  const { points, ...meta } = layer;
+  let part = { n: state.net, l: name, m: meta, a: [], g: [] }, size = JSON.stringify(meta).length + 80;
+  const flush = (end) => {
+    if (end) part.e = 1;
+    sendLive("pcg", part);
+    part = { n: state.net, l: name, a: [], g: [] };
+    size = 80;
+  };
+  for (const p of add) {
+    const bytes = JSON.stringify(p).length + 1;
+    if (size + bytes > PART_BYTES && (part.a.length || part.g.length)) flush(false);
+    part.a.push(p);
+    size += bytes;
+  }
+  for (const k of gone) {
+    if (size + k.length + 3 > PART_BYTES) flush(false);
+    part.g.push(k);
+    size += k.length + 3;
+  }
+  flush(true);
+}
+const inbox = {};  // layer -> what has come of it so far, until its last part
+function onPeerPcg(d) {
+  if (!d || d.n !== state.net || !d.l) return;
+  live.quietUntil = Date.now() + 120000;
+  const box = inbox[d.l] ||= { m: null, a: [], g: [] };
+  if (d.m) box.m = d.m;
+  for (const p of d.a || []) box.a.push(p);
+  for (const k of d.g || []) box.g.push(k);
+  if (!d.e) return;
+  delete inbox[d.l];
+  const old = state.pcg?.[d.l];
+  if (!old && !box.m) return;
+  const gone = new Set(box.g), kept = (old?.points || []).filter((p) => !gone.has(spot(p))), have = new Set(kept.map(spot));
+  const points = kept.concat(box.a.filter((p) => !have.has(spot(p))));
+  revealLayers({ [d.l]: { ...old, ...box.m, points, shown: points.length } }, false);
+}
 let remoteSel = null;
 const selGroup = new THREE.Group();
 scene.add(selGroup);
@@ -3191,6 +3310,7 @@ function selectCity(id) {
   if (id !== state.cityPick) { state.block = null; live.since = Date.now(); }  // picked now: behind anyone who already has it
   state.cityPick = id;
   tellGroup();
+  keepHold();
   renderCityList();
   renderWorldCity?.();
   drawCityMark();
@@ -3392,9 +3512,9 @@ const NO_POINTS = { points: [] };
 async function revealLayers(layers, first) {
   if (first) settleCity();
   const old = state.pcg || {};
-  const spot = (p) => `${p[0]},${p[1]},${p[3]}`;
   const stay = {}, fresh = {};
   for (const [name, layer] of Object.entries(layers)) {
+    if (live.sharing) shareLayer(name, layer, old[name]?.points);
     const had = old[name]?.points?.length ? new Set(old[name].points.map(spot)) : null;
     if (!had) { fresh[name] = layer; continue; }
     const s = [], f = [];
@@ -3692,7 +3812,8 @@ function loadChats() {  // fetched once in the background (on start), refreshed 
   call("plugin.subscribe", { types: ["road_network_changed"] }).catch(() => {});
   liveReady = true;
   // a page that opens while the group is live catches up on cameras and the shared selection
-  call("live.state").then((r) => { live.on = !!r?.on; if (live.on) tellGroup(); }).catch(() => {});
+  call("live.state").then((r) => { live.on = !!r?.on; if (live.on) { tellGroup(); relayHolds(true); } }).catch(() => {});
+  setTimeout(refreshHolds, 2500);
   call("live.memberStates").then((r) => {
     const rows = Array.isArray(r) ? r : r?.states || r?.members || [];
     rows.forEach((m) => onMemberState(m.from, m.state));

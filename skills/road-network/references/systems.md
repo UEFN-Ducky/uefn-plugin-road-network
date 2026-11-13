@@ -195,8 +195,23 @@ holds, edits as they happen"). Nothing here is stored or goes to a server: it ri
 - A city being dragged shows on every screen where it is right now; a rebuild under way shows as a line at the
   top of the map. Only one rebuild of a world runs at a time: a second person's starts when the first is in.
 - The change itself arrives with sync (`plugin_scope_changed`, reason `synced`): the panel re-reads only what
-  the keys name, places the city on that PC (only what changed) and swaps each layer in place.
-- An AI changing a world through the tools is not held back by a person's pick.
+  the keys name and swaps each layer in place.
+- Teammates do not wait for their own PC to place the change: the PC that rebuilt sends, layer by layer, the
+  pieces that are new and the ones that are gone (`live.send` topic `pcg`, at most 90,000 pieces; a whole new
+  world is left to each PC). Their page puts them in at once; their own PC then places the change in the
+  background without a loading card and ends on the same result (placement is the same on every PC).
+- **Holds are kept by the backend too** (`backend/holds.py`, in memory, nothing stored or synced), so a ducky's
+  tool call obeys them:
+  - `road_network_city_save`, `road_network_city_delete`, and a `road_network_generate` that changes the world's
+    settings or cities, are refused while someone else holds a city, with the holder's name. Do not retry in a
+    loop: work on another city, or tell the person who has it.
+  - A ducky that changes a city holds it for two minutes from each change, and every screen shows whose ducky
+    it is ("Builder (Ilya's ducky)"). `road_network_hold(net_id, city, task, minutes)` takes a city for a longer
+    job, `road_network_release` lets go, `road_network_holds` lists who has what.
+  - A person's own ducky may change the city that person has open; the person's controls for it are read-only
+    until the ducky's hold ends.
+  - What teammates hold reaches a PC through its open City Builder panel. While the team is live and the panel
+    is closed on a PC, a ducky there changes no city: it says to open City Builder (or leave Live) first.
 
 ## One city by hand: turn, outline, blocks (`road_network_city_save`)
 Everything the panel does to one city is this tool, so an AI can do the same:

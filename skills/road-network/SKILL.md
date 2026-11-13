@@ -79,6 +79,11 @@ UEFN. A blown-out or empty screenshot is a failure, not a pass.
   by hand stays where it was put, even against or over another city: the bigger one keeps the shared land, and
   cities closer than 600 m are joined by streets with houses along them.
 
+## Working beside people
+A city someone is working on is theirs: `road_network_holds(net_id)` lists who has which city. A change to a held
+city is refused and says whose it is; pick another city or tell the person, never retry in a loop. Your own change
+holds the city for two minutes so nobody edits under you; `road_network_release` when you are done sooner.
+
 ## Examples
 - The `full_city` preset's layers are worked examples of every building and street layer. Read one before
   writing a new layer.

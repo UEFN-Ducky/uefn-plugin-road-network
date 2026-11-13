@@ -25,6 +25,7 @@ import threading
 import time
 
 from . import citygen as cg
+from . import holds as hd
 from . import kit_bake
 from . import pcg_batch
 from . import pcg_layers as pl
@@ -102,6 +103,99 @@ def register(api) -> None:
         run.__name__ = fn.__name__
         run.__doc__ = fn.__doc__
         return run
+
+    # ---------------------------------------------------------------- holds: who is working on which city
+    # (holds.py: in memory on this PC, nothing stored or synced). A person's pick in the panel, a ducky's change,
+    # and what teammates hold as the panel hears it from the live group. Every change to a city asks city_guard.
+    held_cities = hd.Holds()
+    held_lock = threading.Lock()  # (their own: a pick is taken and kept while a rebuild holds the world)
+    me_cache = {"at": -1e9, "name": "", "user": ""}
+
+    def actor() -> dict:
+        """Who is calling: the signed-in person, or their ducky (a ducky's call is the ducky's, never the person's)."""
+        if time.monotonic() - me_cache["at"] > 30:
+            try:
+                from frontend.duckyos_account import get_status
+                got = get_status()
+                me_cache.update(name=str(got.get("display_name") or ""), user=str(got.get("user_id") or ""))
+            except Exception:  # signed out, or run outside the app: holds still work on this PC
+                pass
+            me_cache["at"] = time.monotonic()
+        try:
+            from backend.uefn_plugins.scopes import caller
+            kind, ducky = caller()
+        except Exception:
+            kind, ducky = "user", ""
+        if kind == "agent":
+            return {"kind": "ducky", "name": ducky, "for": me_cache["name"] or "You", "user": me_cache["user"]}
+        return {"kind": "person", "name": me_cache["name"] or "You", "user": me_cache["user"]}
+
+    def team_live() -> bool:
+        """Is this PC live with teammates on this plugin's team copy right now?"""
+        try:
+            from backend.uefn_plugins import live as host_live
+            return bool(host_live.is_live(pid_))
+        except Exception:
+            return False
+
+    NO_PANEL = ("Your team is live on this world and City Builder is not open on this PC, so there is no telling "
+                "which cities teammates are working on. Open City Builder here (or leave Live), then try again. "
+                "Nothing was changed.")
+
+    def city_guard(nid: str, cslug: str, name: str, what: str) -> dict | None:
+        """Before a city changes: the refusal when someone else has it, else None. A ducky that goes ahead holds
+        the city while it works (every screen shows whose ducky has it)."""
+        who = actor()
+        with held_lock:
+            if who["kind"] == "ducky" and team_live() and not held_cities.panel_open(nid):
+                return {"ok": False, "error": NO_PANEL}
+            held = held_cities.blocks(nid, cslug, who)
+            if held:
+                return {"ok": False, "error": hd.refusal(held, name, held_cities.clock()), "held_by": hd.label(held["by"])}
+            if who["kind"] == "ducky":
+                held_cities.take(nid, cslug, who, what)
+        if who["kind"] == "ducky":
+            push({"what": "hold", "id": nid})
+        return None
+
+    def hold(net_id: str = "", city: str = "", task: str = "", minutes: float = 0.0) -> dict:
+        nid, cslug = slug(net_id), slug(city)
+        doc = data.get(f"net.{nid}.city.{cslug}") if nid and cslug else None
+        if not doc:
+            return {"ok": False, "error": f"No city {city!r} in {net_id!r}. List them with road_network_cities."}
+        who = actor()
+        with held_lock:
+            if who["kind"] == "ducky" and team_live() and not held_cities.panel_open(nid):
+                return {"ok": False, "error": NO_PANEL}
+            got = held_cities.take(nid, cslug, who, task, minutes, doc.get("name") or city)
+        if got.get("ok") and (who["kind"] == "ducky" or got.get("new")):
+            push({"what": "hold", "id": nid})
+        return got
+
+    def release(net_id: str = "", city: str = "") -> dict:
+        nid, cslug = slug(net_id), slug(city)
+        who = actor()
+        with held_lock:
+            got = held_cities.release(nid, cslug, who)
+        if got.get("released"):
+            push({"what": "hold", "id": nid})
+        return got
+
+    def holds(net_id: str = "") -> dict:
+        nid = slug(net_id)
+        with held_lock:
+            return {"ok": True, "id": nid, "holds": held_cities.all(nid, actor()), "live": team_live(),
+                    "panel_open": held_cities.panel_open(nid)}
+
+    def peer_holds(net_id: str = "", holds: str = "") -> dict:
+        """The panel's word on what teammates hold (their picks and their duckies), from the live group."""
+        try:
+            rows = json.loads(holds) if str(holds or "").strip() else []
+        except ValueError:
+            rows = []
+        with held_lock:
+            held_cities.said(slug(net_id), rows if isinstance(rows, list) else [])
+        return {"ok": True}
 
     def record(command: str, kind: str, ident: str, before, inverse: list) -> None:
         api.changeset.record(command=command, kind=kind, ident=ident, facet="record", before=before,
@@ -939,6 +1033,17 @@ def register(api) -> None:
             bounds = ((center_x - size / 2, center_y - size / 2), (center_x + size / 2, center_y + size / 2))
         old = city_docs(nid)
         text = str(cities or "").strip()
+        who = actor()
+        if who["kind"] == "ducky" and (given or text):
+            # a ducky changing the world's settings or its cities rebuilds every city: not while someone has one
+            with held_lock:
+                if team_live() and not held_cities.panel_open(nid):
+                    return {"ok": False, "error": NO_PANEL}
+                for cslug, c in old.items():
+                    held = held_cities.blocks(nid, cslug, who)
+                    if held:
+                        return {"ok": False, "error": "This would rebuild every city, and " + hd.refusal(
+                            held, c.get("name") or cslug, held_cities.clock()), "held_by": hd.label(held["by"])}
         if text.startswith("["):
             try:
                 given = json.loads(text)
@@ -1142,6 +1247,9 @@ def register(api) -> None:
         before = data.get(head) if nid and cslug else None
         if not before:
             return {"ok": False, "error": f"No city {city!r} in {net_id!r}. List them with road_network_cities."}
+        stop = city_guard(nid, cslug, before.get("name") or city, "deleting it")
+        if stop:
+            return stop
         if len(city_docs(nid)) <= 1:
             return {"ok": False, "error": "A world keeps at least one city."}
         if not confirm:
@@ -1170,6 +1278,9 @@ def register(api) -> None:
         before = data.get(f"net.{nid}.city.{cslug}") if nid and cslug else None
         if not before:
             return {"ok": False, "error": f"No city {city!r} in {net_id!r}. List them with road_network_cities."}
+        stop = city_guard(nid, cslug, before.get("name") or city, "changing it")  # someone else has it: nothing changes
+        if stop:
+            return stop
         if style and style not in cg.STYLES:
             return {"ok": False, "error": f"style is one of {', '.join(cg.STYLES)}."}
         doc = dict(before)
@@ -2861,6 +2972,29 @@ def register(api) -> None:
         return out
 
     @api.tool(intent=GEN_INTENT, listener=False)
+    def road_network_holds(net_id: str = "") -> dict:
+        """Who is working on which city of a world right now: [{city, who, kind (person / ducky / teammate), mine,
+        task, left_s}]. A city someone else holds can't be changed: road_network_city_save, city_delete and a
+        generate that changes the world's settings are refused and say whose it is. A person holds the city they
+        have picked in the panel; a ducky holds a city for two minutes from each change it makes to it; a person's
+        own ducky may change the city that person has open. Look here before planning changes to several cities."""
+        return safe(holds)(net_id)
+
+    @api.tool(intent=GEN_INTENT, listener=False)
+    def road_network_hold(net_id: str = "", city: str = "", task: str = "", minutes: float = 0.0) -> dict:
+        """Take a city before a longer job on it, so no one else changes it meanwhile: task says what you are doing
+        in a few words (everyone sees it: "Builder (Ilya's ducky) · re-planning the harbour"), minutes how long
+        (default 2; every change you make to the city starts the two minutes again, so plain edits need no call).
+        Refused, with the holder's name, while someone else has the city. Let go with road_network_release."""
+        return safe(hold)(net_id, city, task, minutes)
+
+    @api.tool(intent=GEN_INTENT, listener=False)
+    def road_network_release(net_id: str = "", city: str = "") -> dict:
+        """Let go of a city you hold (road_network_hold, or the hold your last change to it took), so the next
+        person or ducky can change it at once instead of after two minutes."""
+        return safe(release)(net_id, city)
+
+    @api.tool(intent=GEN_INTENT, listener=False)
     def road_network_cities(net_id: str = "") -> dict:
         """The cities of a generated world: centre, radius, road style, district rings and building sets."""
         return safe(list_cities)(net_id)
@@ -2983,6 +3117,10 @@ def register(api) -> None:
                                name, seed, cities, size_km, relief_m, ground_from, folder, center_x, center_y, options))
     api.register_panel_rpc("generate_options", lambda: road_network_generate_options())
     api.register_panel_rpc("cities", lambda net_id="": safe(list_cities)(net_id))
+    api.register_panel_rpc("hold", lambda net_id="", city="", task="", minutes=0.0: safe(hold)(net_id, city, task, minutes))
+    api.register_panel_rpc("release", lambda net_id="", city="": safe(release)(net_id, city))
+    api.register_panel_rpc("holds", lambda net_id="": safe(holds)(net_id))
+    api.register_panel_rpc("peer_holds", lambda net_id="", holds="": safe(peer_holds)(net_id, holds))
     api.register_panel_rpc("city_save", lambda net_id="", city="", name="", style="", radius_m=0.0, buildings="",
                            x=None, y=None, features="", turn_deg=None, shape="", zones="":
                            safe(save_city)(net_id, city, name, style, radius_m, buildings, x, y, features,
