@@ -2916,6 +2916,176 @@ def access_actor(city: dict, rows: list, ground, folder: str) -> dict:
     return build_actor(nodes, edges, ground, folder)
 
 
+JOIN_REACH_CM = 1200.0  # a private street end this far past a street's edge still joins it with a junction
+_KIND_OF_MESH = {}
+for _k, _m in ROAD_MESH.items():
+    if HALF.get(_k, 0) >= HALF.get(_KIND_OF_MESH.get(_m, ""), 0):
+        _KIND_OF_MESH[_m] = _k
+
+
+def unjoin_private(roads: dict) -> dict:
+    """The roads actor as it was before join_private: every joined private street out, every host road whole again."""
+    pts = [p for p in roads["points"] if not p.get("join")]
+    segs = [s for s in roads["segments"] if not s.get("join")]
+    for p in roads["points"]:
+        undo = p.get("undo")
+        if p.get("join") and undo:  # what a join cut out of a host; a host a join made itself is not brought back
+            pts += [dict(q) for q in undo["points"] if not q.get("join")]
+            segs += [dict(s) for s in undo["segments"] if not s.get("join")]
+    seen: set = set()
+    pts = [p for p in pts if not (p["i"] in seen or seen.add(p["i"]))]
+    seen = set()
+    segs = [s for s in segs if not (s["i"] in seen or seen.add(s["i"]))]
+    keep = {p["i"] for p in pts}
+    return {"points": pts, "segments": [s for s in segs if s["a"] in keep and s["b"] in keep]}
+
+
+def join_private(roads: dict, access: dict, folder: str) -> tuple:
+    """Every private street joins the street (or the private street) its end meets with a real junction, in ONE
+    spline actor: UEFN only connects control points of the same actor, so a private street kept in its own
+    '<City> Access' actor ended on the grass beside its street. Each private street run moves from `access` into
+    `roads`; where its end lies within the host's half width + JOIN_REACH_CM, the host is cut open there: a junction
+    centre (pending piece, Build pieces makes the mesh) with a mouth MOUTH_CM up and down the host and one into the
+    private street. Driveways stay in `access`. Returns (roads, access, joins). Re-running is safe: unjoin first."""
+    roads = unjoin_private(roads)
+    rp = {p["i"]: dict(p) for p in roads["points"]}
+    rs = [dict(s) for s in roads["segments"]]
+    ap = {p["i"]: dict(p) for p in access["points"]}
+    pr_mesh = ROAD_MESH["PR"].rsplit("/", 1)[-1]
+    moving = [dict(s) for s in access["segments"] if s["mesh"] == pr_mesh]
+    moved_pts = {i for s in moving for i in (s["a"], s["b"])}
+    rest_segs = [dict(s) for s in access["segments"] if s["mesh"] != pr_mesh and s["a"] not in moved_pts and s["b"] not in moved_pts]
+    rest_pts = {i for s in rest_segs for i in (s["a"], s["b"])}
+    nid = iter(range(max([0] + list(rp) + list(ap) + [s["i"] for s in rs + list(access["segments"])]) + 1, 1 << 30))
+    remap = {}
+    for i in moved_pts:  # the private street points come over under new ids
+        q = dict(ap[i], i=next(nid), join=True)
+        remap[i] = q["i"]
+        rp[q["i"]] = q
+    for s in moving:
+        rs.append(dict(s, i=next(nid), a=remap[s["a"]], b=remap[s["b"]], join=True))
+
+    def nbrs(i):
+        return [s for s in rs if i in (s["a"], s["b"])]
+
+    def half(s):
+        return HALF.get(_KIND_OF_MESH.get(s["mesh"], ""), 400.0)
+
+    def plain(i):  # a point along a road (never a junction's mouth: one of its links has no mesh)
+        p, two = rp[i], nbrs(i)
+        return len(two) == 2 and all(s["mesh"] for s in two) and not p.get("mesh") and p.get("raise", True)
+
+    joins = 0
+    ends = [remap[i] for i in moved_pts if len([s for s in moving if i in (s["a"], s["b"])]) == 1]
+    for e in ends:
+        if e not in rp or len(nbrs(e)) != 1:
+            continue
+        E = rp[e]
+        own = {e}
+        stack = [e]
+        while stack:  # the end's own private street, never its own host
+            c = stack.pop()
+            for s in nbrs(c):
+                o = s["b"] if s["a"] == c else s["a"]
+                if o not in own and rp[o].get("join"):
+                    own.add(o)
+                    stack.append(o)
+        best = None
+        for s in rs:
+            if not s["mesh"] or s["a"] in own or s["b"] in own or not s.get("raise", True):
+                continue
+            a, b = rp[s["a"]], rp[s["b"]]
+            dx, dy = b["x"] - a["x"], b["y"] - a["y"]
+            L2 = dx * dx + dy * dy
+            if L2 < 1.0:
+                continue
+            t = max(0.0, min(1.0, ((E["x"] - a["x"]) * dx + (E["y"] - a["y"]) * dy) / L2))
+            px, py = a["x"] + dx * t, a["y"] + dy * t
+            d = math.hypot(E["x"] - px, E["y"] - py)
+            if d <= half(s) + JOIN_REACH_CM and (best is None or d < best[0]):
+                best = (d, s, t, px, py)
+        if best is None:
+            continue
+        _d, host, t, px, py = best
+        a, b = rp[host["a"]], rp[host["b"]]
+        pz = a["z"] + (b["z"] - a["z"]) * t
+        hx, hy = (b["x"] - a["x"]), (b["y"] - a["y"])
+        hl = math.hypot(hx, hy) or 1.0
+        ux, uy = hx / hl, hy / hl
+
+        def walk(start_seg, from_pt, dist):
+            """Points passed and the cut along the host from the centre, through plain points, `dist` cm one way."""
+            gone, s, cur, (cx, cy), left = [], start_seg, from_pt, (px, py), dist
+            while True:
+                q = rp[cur]
+                step = math.hypot(q["x"] - cx, q["y"] - cy)
+                if step >= left:
+                    f = left / (step or 1.0)
+                    return gone, s, cur, (cx + (q["x"] - cx) * f, cy + (q["y"] - cy) * f)
+                if not plain(cur):
+                    return None
+                left -= step
+                gone.append(cur)
+                cx, cy = q["x"], q["y"]
+                s = next(x for x in nbrs(cur) if x is not s)
+                cur = s["b"] if s["a"] == cur else s["a"]
+
+        back = walk(host, host["a"], MOUTH_CM)
+        fwd = walk(host, host["b"], MOUTH_CM)
+        if not back or not fwd:
+            continue  # too close to another junction or a piece: left as it is
+        # the private street's side: drop its points inside the junction, the mouth on its line MOUTH_CM out
+        run, s, cur = [e], next(iter(nbrs(e))), e
+        while True:
+            nxt = s["b"] if s["a"] == cur else s["a"]
+            q = rp[nxt]
+            if math.hypot(q["x"] - px, q["y"] - py) > MOUTH_CM or len(nbrs(nxt)) != 2:
+                break
+            run.append(nxt)
+            s = next(x for x in nbrs(nxt) if x is not s)
+            cur = nxt
+        far = rp[nxt]
+        vx, vy = far["x"] - px, far["y"] - py
+        vl = math.hypot(vx, vy) or 1.0
+        if vl <= MOUTH_CM + 100:
+            continue  # a stub shorter than the junction: nothing to join
+        undo = {"points": [dict(rp[i]) for i in back[0] + fwd[0]],
+                "segments": [dict(x) for x in rs if x["a"] in back[0] + fwd[0] or x["b"] in back[0] + fwd[0] or x is host]}
+        tmpl = dict(host)
+        for i in back[0] + fwd[0]:
+            rp.pop(i, None)
+        dead = set(back[0] + fwd[0])
+        rs = [x for x in rs if x is not host and x["a"] not in dead and x["b"] not in dead]
+        for i in run:
+            rp.pop(i, None)
+        rs = [x for x in rs if x is not s and x["a"] not in run and x["b"] not in run]
+        j = _point(next(nid), px, py, pz, 0.0, max(half(host), HALF["PR"]) + 300.0, JUNCTION)
+        j.update(join=True, undo=undo)
+        m1 = _point(next(nid), back[3][0], back[3][1], pz, math.degrees(math.atan2(-uy, -ux)), half(host))
+        m2 = _point(next(nid), fwd[3][0], fwd[3][1], pz, math.degrees(math.atan2(uy, ux)), half(host))
+        mx, my = px + vx / vl * MOUTH_CM, py + vy / vl * MOUTH_CM
+        m3 = _point(next(nid), mx, my, pz, math.degrees(math.atan2(vy, vx)), HALF["PR"])
+        for p in (j, m1, m2, m3):
+            p["join"] = True
+            rp[p["i"]] = p
+        new = [_segment(next(nid), j["i"], m["i"], "", folder) for m in (m1, m2, m3)]
+        new.append(dict(tmpl, i=next(nid), a=back[2], b=m1["i"], ta=0.0, tb=0.0, join=True))
+        new.append(dict(tmpl, i=next(nid), a=m2["i"], b=fwd[2], ta=0.0, tb=0.0, join=True))
+        new.append(_segment(next(nid), m3["i"], nxt, "PR", folder))
+        for x in new:
+            x["join"] = True
+        rs += new
+        joins += 1
+    by_i = rp
+    for s in rs:
+        if s.get("join") and s["a"] in by_i and s["b"] in by_i:
+            st.retangent(by_i, s)
+    keep = set(rp)
+    rs = [s for s in rs if s["a"] in keep and s["b"] in keep]
+    out_access = {"points": [ap[i] for i in rest_pts], "segments": rest_segs}
+    return {"points": list(rp.values()), "segments": rs}, out_access, joins
+
+
 COLLECTOR_ROWS = 0.65  # of the suburbs' rows of blocks, how many share one winding street from block to block
 SUPERBLOCK_SHARE = 0.8  # of the suburbs' whole collector cells, how many are one subdivision with no public street inside
 LOT_W_CM, LOT_D_CM = 1600.0, 3500.0  # a lot: 16 m frontage, up to 35 m deep (two back to back in a block)
