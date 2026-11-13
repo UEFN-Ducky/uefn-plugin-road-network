@@ -26,10 +26,10 @@ STYLES = {
     "tower": {"corner": "SM_BK_Tower_Corner",
               "walls": {"Window": "SM_BK_Tower_Wall_Curtain", "Band": "SM_BK_Tower_Wall_Band",
                         "Solid": "SM_BK_Tower_Wall_Solid", "Lobby": "SM_BK_Tower_Wall_Lobby",
-                        "Door": "SM_BK_Tower_Wall_RevolvingDoor"},
+                        "Door": "SM_BK_Tower_Wall_RevolvingDoor_Doorway"},
               "front_ground": "[Lobby*,Door,Lobby*]", "ground": "[Solid,Window*,Solid]", "upper": "[{Window:5,Band:1}*]"},
     "shop": {"corner": "SM_BK_Shop_Corner", "awning": "SM_BK_Shop_Awning",
-             "walls": {"Storefront": "SM_BK_Shop_Wall_Storefront", "Entrance": "SM_BK_Shop_Wall_Entrance",
+             "walls": {"Storefront": "SM_BK_Shop_Wall_Storefront", "Entrance": "SM_BK_Shop_Wall_Entrance_Doorway",
                        "Window": "SM_BK_Shop_Wall_Window", "Solid": "SM_BK_Shop_Wall_Solid"},
              "front_ground": "[Storefront*,Entrance,Storefront*]", "ground": "[{Window:1,Solid:1}*]",
              "upper": "[{Window:3,Solid:1}*]"},
@@ -51,15 +51,15 @@ STYLES = {
                "front_ground": "[Glass*]", "ground": "[{Glass:1,Wood:1}*]", "upper": "[{Glass:2,Wood:1}*]"},
     "civic": {"corner": "SM_BK_Mansion_Column",  # city hall, courthouse: arched windows, a grand door
               "walls": {"Arch": "SM_BK_Mansion_Wall_ArchWindows", "Bay": "SM_BK_Mansion_Wall_BayWindow",
-                        "Entrance": "SM_BK_Mansion_Wall_GrandEntrance"},
+                        "Entrance": "SM_BK_Mansion_Wall_GrandEntrance_Doorway"},
               "front_ground": "[Arch*,Entrance,Arch*]", "ground": "[Arch*]", "upper": "[{Arch:4,Bay:1}*]"},
     "school": {"corner": "SM_BK_Modern_StonePillar",  # schools, libraries, community and post offices
                "walls": {"Glass": "SM_BK_Modern_SlidingGlassWall", "Wood": "SM_BK_Modern_Wall_Wood",
-                         "Door": "SM_BK_Shop_Wall_Entrance"},
+                         "Door": "SM_BK_Shop_Wall_Entrance_Doorway"},
                "front_ground": "[Glass*,Door,Glass*]", "ground": "[{Glass:2,Wood:1}*]", "upper": "[{Glass:3,Wood:1}*]"},
     "industrial": {"corner": "SM_BK_Ind_Corner",  # factories, plants, depots, fire and ambulance stations
                    "walls": {"Metal": "SM_BK_Ind_Wall_Metal", "Window": "SM_BK_Ind_Wall_Window",
-                             "Roller": "SM_BK_Ind_Wall_RollerDoor", "Door": "SM_BK_Ind_Wall_Door"},
+                             "Roller": "SM_BK_Ind_Wall_RollerDoor_Doorway", "Door": "SM_BK_Ind_Wall_Door_Doorway"},
                    "front_ground": "[Roller*,Door,Roller*]", "ground": "[Door,{Metal:2,Window:1}*]",
                    "upper": "[{Window:1,Metal:1}*]"},
     "jail": {"corner": "SM_BK_Jail_Corner",
@@ -68,7 +68,7 @@ STYLES = {
              "front_ground": "[Slit*,Gate,Slit*]", "ground": "[{Slit:2,Solid:1}*]", "upper": "[{Slit:2,Solid:1}*]"},
     "mansion": {"corner": "SM_BK_Mansion_Column",
                 "walls": {"Arch": "SM_BK_Mansion_Wall_ArchWindows", "Bay": "SM_BK_Mansion_Wall_BayWindow",
-                          "Entrance": "SM_BK_Mansion_Wall_GrandEntrance"},
+                          "Entrance": "SM_BK_Mansion_Wall_GrandEntrance_Doorway"},
                 "front_ground": "[Arch*,Entrance,Arch*]", "ground": "[{Arch:2,Bay:1}*]", "upper": "[{Arch:2,Bay:1}*]"},
 }
 SHARED = {"parapet": "SM_BK_Parapet", "roof": "SM_BK_Floor"}
@@ -98,6 +98,38 @@ Shop_Wall_Solid:0,0,0,512,20,384 Shop_Wall_Storefront:0,-12,0,512,21,384 Shop_Wa
 Tower_Corner:-10,-10,0,30,30,384 Tower_Wall_Band:0,-1,0,512,21,384 Tower_Wall_Curtain:0,-1,0,512,21,384
 Tower_Wall_Lobby:0,-150,0,512,21,384 Tower_Wall_RevolvingDoor:0,-125,0,512,150,384 Tower_Wall_Solid:0,0,0,512,20,384
 """.split())}
+# Every door a player walks through opens: the wall module is the doorway (the door cut out, frame kept) and the
+# leaf is its own mesh, an openable Scene Graph prefab placed on top (door_leaves). Same boxes as the closed
+# modules, except the revolving door's drum, which went with its doorway.
+BOUNDS.update({k + "_Doorway": BOUNDS[k] for k in ("SM_BK_Shop_Wall_Entrance", "SM_BK_Ind_Wall_Door",
+                                                    "SM_BK_Ind_Wall_RollerDoor", "SM_BK_Mansion_Wall_GrandEntrance")})
+BOUNDS["SM_BK_Tower_Wall_RevolvingDoor_Doorway"] = (0, -1, 0, 512, 26, 384)
+# doorway -> its leaves: (leaf mesh, hinge x cm along the wall, hinge y cm in UEFN's local frame (UEFN's y is
+# Blender's -y), 1 = the leaf turned round to hang on the right jamb, how it opens: 'swing' | 'slide')
+DOOR_LEAVES = {
+    "SM_BK_Shop_Wall_Entrance_Doorway": [("SM_BK_DoorLeaf_Shop", 196, -10, 0, "swing")],
+    "SM_BK_Ind_Wall_Door_Doorway": [("SM_BK_DoorLeaf_Ind", 198, -12, 0, "swing")],
+    "SM_BK_Ind_Wall_RollerDoor_Doorway": [("SM_BK_DoorLeaf_Roller", 50, -15, 0, "slide")],
+    "SM_BK_Mansion_Wall_GrandEntrance_Doorway": [("SM_BK_DoorLeaf_Mansion", 158, -15, 0, "swing"),
+                                                 ("SM_BK_DoorLeaf_Mansion", 354, -15, 1, "swing")],
+    "SM_BK_Tower_Wall_RevolvingDoor_Doorway": [("SM_BK_DoorLeaf_Tower", 115, -12, 0, "swing"),
+                                               ("SM_BK_DoorLeaf_Tower", 397, -12, 1, "swing")],
+}
+
+
+def door_leaves(module: str, row: list) -> list:
+    """The leaves of one placed doorway: [(leaf mesh, [x, y, z, yaw, sx, sy, sz], 'swing' | 'slide')], world space.
+    row is the doorway's own placement ([x, y, z, yaw, sx, sy, sz]); a stretched module stretches its leaves."""
+    x, y, z, yaw, sx, sy, sz = row[:7]  # (a baked row may carry more after its transform)
+    c, s = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+    out = []
+    for leaf, hx, hy, right, how in DOOR_LEAVES.get(module, ()):
+        lx, ly = hx * sx, hy * sy
+        out.append((leaf, [round(x + lx * c - ly * s, 1), round(y + lx * s + ly * c, 1), z,
+                           round((yaw + 180 * right) % 360, 1), sx, sy, sz], how))
+    return out
+
+
 # role -> style (a planned facility can pick its own style instead: kit_bake.FACILITIES)
 STYLE_BY_ROLE = {"skyscraper": "tower", "office": "tower", "apartment": "apartment", "shop": "shop", "mall": "shop",
                  "transit": "shop", "gas_station": "shop", "house": "house", "mansion": "mansion", "school": "school",
@@ -330,8 +362,8 @@ def _demo() -> None:
     # a 15 m x 12 m two-storey shop: front storefronts + awnings, a door in the middle, whole storeys
     rows, blocks = build("box", "shop", 1500, 1200, 700, 7, p)
     assert blocks == [(-750, -600, 0, 750, 600, 768)], blocks
-    front = [r for r in rows["SM_BK_Shop_Wall_Storefront"]] + rows["SM_BK_Shop_Wall_Entrance"]
-    assert len(rows["SM_BK_Shop_Wall_Entrance"]) == 1 and all(r[0] == 750 and r[2] == 0 for r in front), front
+    front = [r for r in rows["SM_BK_Shop_Wall_Storefront"]] + rows["SM_BK_Shop_Wall_Entrance_Doorway"]
+    assert len(rows["SM_BK_Shop_Wall_Entrance_Doorway"]) == 1 and all(r[0] == 750 and r[2] == 0 for r in front), front
     assert len(rows["SM_BK_Shop_Awning"]) == len(front)
     assert all(0.65 <= r[4] <= 1.35 for rs in rows.values() for r in rs if rs is not rows["SM_BK_Floor"]), "modules barely stretch"
     walls = sum(len(v) for k, v in rows.items() if "_Wall_" in k)
@@ -348,7 +380,13 @@ def _demo() -> None:
     # forms: a podium tower is two blocks, the tower on the podium's whole-storey top
     rows, blocks = build("podium_tower", "office", 3200, 3200, 11000, 3, p)
     assert len(blocks) == 2 and blocks[1][2] == blocks[0][5] and blocks[1][5] <= 11000 + STOREY_CM, blocks
-    assert len(rows["SM_BK_Tower_Wall_RevolvingDoor"]) == 1, "one front door at street level"
+    assert len(rows["SM_BK_Tower_Wall_RevolvingDoor_Doorway"]) == 1, "one front door at street level"
+    # every door slot is a doorway with its leaves: two for the tower, hung on opposite jambs, facing opposite ways
+    assert all(m in DOOR_LEAVES for st_ in STYLES.values() for k, m in st_["walls"].items()
+               if k in ("Door", "Entrance", "Roller") and "House" not in m), "a door slot with no leaf"
+    two = door_leaves("SM_BK_Tower_Wall_RevolvingDoor_Doorway", [1000, 2000, 50, 90, 1, 1, 1])
+    assert [(l[1][0], l[1][1], l[1][3]) for l in two] == [(1012.0, 2115.0, 90.0), (1012.0, 2397.0, 270.0)], two
+    assert door_leaves("SM_BK_Ind_Wall_RollerDoor_Doorway", [0, 0, 0, 0, 1.2, 1, 1])[0][1][:2] == [60.0, -15.0]
     assert all(m in modules() for m in rows), "the manifest lists every placed module"
     assert not [m for m in modules() if m not in BOUNDS], "every module has its size: the panel draws it"
     # a roof slab covers exactly its block (podium, then tower): placed at the corner, stretched over +X / +Y

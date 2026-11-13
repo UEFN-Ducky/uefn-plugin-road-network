@@ -4048,6 +4048,35 @@ def register(api) -> None:
         comes from."""
         return safe(pcg_assets)(net_id, asset_set, interiors, trees, trees_max)
 
+    def door_spots(net_id: str = "") -> dict:
+        """Every door leaf the city's doorways need, where the building grammar put each doorway."""
+        from . import grammar
+        nid = slug(net_id)
+        got = pcg_preview(nid)
+        if not got.get("ok"):
+            return got
+        folder = road_folder()
+        root = folder.split("/WorldGen/Roads")[0] if "/WorldGen/Roads" in folder else ""
+        groups = kit_bake.bake(got.get("layers") or {}, root, interiors_of(nid), tree_props(nid))[0]
+        leaves: dict = {}
+        for path, rows in groups.items():
+            module = path.rsplit(".", 1)[-1]
+            for row in rows:
+                for leaf, xf, how in grammar.door_leaves(module, row):
+                    leaves.setdefault(leaf, {"opens": how, "folder": f"{root}/WorldGen/{grammar.FOLDER}",
+                                             "spots": []})["spots"].append(xf)
+        return {"ok": True, "id": nid, "leaves": leaves, "count": sum(len(v["spots"]) for v in leaves.values()),
+                "row": "[x, y, z, yaw, sx, sy, sz] (cm, degrees): the leaf's hinge, world space",
+                "do": "One Entity Prefab per leaf mesh (the leaf + walkup_door_component, SlideUpCm for 'slide'), "
+                      "one instance at each spot with that transform."}
+
+    @tool(intent=PCG_INTENT, listener=False)
+    def road_network_door_spots(net_id: str = "") -> dict:
+        """Where every door leaf goes: the building grammar puts a doorway module (the door cut out) in each
+        door slot, and each doorway needs its leaf (one, or two for double doors) as an openable Scene Graph
+        prefab. Returns {leaf mesh: {opens: 'swing' | 'slide', spots: [[x, y, z, yaw, sx, sy, sz]]}}."""
+        return safe(door_spots)(net_id)
+
     @tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_preview(net_id: str = "", layer_id: str = "", summary: bool = False) -> dict:
         """Run a world's PCG layers offline with the graph's rules (district, off the roads, clear of earlier

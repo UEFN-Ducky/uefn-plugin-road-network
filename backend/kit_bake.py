@@ -893,7 +893,7 @@ def _demo() -> None:
     gc = bake(fac_lot("city_hall", "civic", found=1.0), "/R")[0]
     for piece in ("SM_Kit_Portico", "SM_Kit_CivicDome", "SM_Kit_Flagpole", "SM_Kit_EntranceSteps", "SM_Kit_StairCore"):
         assert path(piece, "/R") in gc, piece
-    assert bk("SM_BK_Mansion_Wall_GrandEntrance") in gc and not any("SM_City_" in k for k in gc), "a city hall, not a mid-rise"
+    assert bk("SM_BK_Mansion_Wall_GrandEntrance_Doorway") in gc and not any("SM_City_" in k for k in gc), "a city hall, not a mid-rise"
     portico = gc[path("SM_Kit_Portico", "/R")][0]
     assert portico[0] == round(0.36 * 5000), ("the portico stands on the shell's front face", portico)
     assert gc[path("SM_Kit_CivicDome", "/R")][0][2] >= 1152 - 1, "the dome sits on the roof"
@@ -902,7 +902,7 @@ def _demo() -> None:
     assert bk("SM_BK_Jail_Wall_SallyPort") in gj and path("SM_Kit_StairCore", "/R") in gj
     gpp = bake(fac_lot("power_plant", "factory", 90, 90, 18), "/R")[0]
     assert len(gpp[path("SM_Kit_CoolingTower", "/R")]) == 2 and path("SM_Kit_Chimney", "/R") in gpp
-    assert path("SM_Kit_FactoryMachine", "/R") in gpp and bk("SM_BK_Ind_Wall_RollerDoor") in gpp
+    assert path("SM_Kit_FactoryMachine", "/R") in gpp and bk("SM_BK_Ind_Wall_RollerDoor_Doorway") in gpp
     assert len({r[2] for r in gpp[path("SM_Kit_FactoryMachine", "/R")]}) == 1, "a power hall is one open storey, not 5 floors"
     assert path("SM_Kit_StairCore", "/R") not in gpp, "a one-storey hall has nowhere for stairs to go"
     # no stair core under a modular roof: the top storey's floor is where the last flight lands
@@ -922,7 +922,7 @@ def _demo() -> None:
     assert all(r[2] + KIT["SM_Kit_FactoryMachine"][6] <= roof_z for r in gfac[path("SM_Kit_FactoryMachine", "/R")]), "machine through the roof"
     # a warehouse layer set to modular is an industrial shed now, not a stack of containers
     gw2 = bake({"W": {"kind": "buildings", "role": "warehouse", "build": "modular", "points": [lot]}}, "/R")[0]
-    assert bk("SM_BK_Ind_Wall_RollerDoor") in gw2 and not any("SM_V4_Container" in k for k in gw2)
+    assert bk("SM_BK_Ind_Wall_RollerDoor_Doorway") in gw2 and not any("SM_V4_Container" in k for k in gw2)
     # a tower's interior follows its measured glass: no floor out past a setback, none in the crown, no core on top
     gt = {}
     _interior(gt, "/R", profile_parts(["SM_City_DT_CrownTower"]), "", 0, 0, 0, 0, 1.0, 1.0, 1.0)
