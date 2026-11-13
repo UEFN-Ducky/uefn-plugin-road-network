@@ -371,7 +371,7 @@ function placeCamera() {
   camera.lookAt(target);
   if (scene.fog) { scene.fog.near = dist * 1.4; scene.fog.far = dist * 5; }
   needsDraw = true;
-  if (typeof sendMyCamera === "function" && liveReady) sendMyCamera();
+  if (liveReady) { live.moved = performance.now(); sendMyCamera(); }
 }
 let liveReady = false;  // set once the page has started (the live helpers below exist then)
 // Fly camera, like the Unreal viewport: hold the right mouse button to look around, W A S D to move, Q / E to go
@@ -429,7 +429,7 @@ renderer.domElement.addEventListener("pointerdown", (e) => {
     drag.cityCand = cityUnder(e);  // a plain click picks it, then its blocks; the Pointer never moves a city
   }
   if (e.button === 0 && state.tool === "city" && !e.shiftKey) {  // Edit city: one of its handles, else the city itself
-    const hnd = handleUnder(e), hit = hnd ? null : cityUnder(e);
+    const hnd0 = handleUnder(e), hnd = hnd0 && heldElsewhere(hnd0.c) ? null : hnd0, hit = hnd0 ? null : cityUnder(e);
     if (hnd) drag.handle = hnd;
     else if (hit) { drag.cityCand = hit; drag.cityMove = true; }
     if (hnd || hit) renderer.domElement.style.cursor = "grab";
@@ -511,7 +511,8 @@ function resize() {
 new ResizeObserver(resize).observe(view);
 function loop(now) {
   flyStep(now || performance.now());
-  if (visible && needsDraw) { renderer.render(scene, camera); placeLabels(); needsDraw = false; }
+  const gliding = liveReady && stepGhosts();  // teammates' bodies on their way to where they now look
+  if (visible && (needsDraw || gliding)) { renderer.render(scene, camera); placeLabels(); if (liveReady) placePeerLabels(); needsDraw = false; }
   requestAnimationFrame(loop);
 }
 function clear(group) {
@@ -1244,7 +1245,16 @@ function schedulePcgPreview(delay = 700) {
 // Foliage layers are the big replies (hundreds of thousands of trees): each comes on its own; the rest come
 // PCG_BATCH layers to a call, the road walls with the last (every call re-reads the world's inputs once).
 const PCG_BATCH = 12;
+// One at a time: a second ask while the city is coming in (a teammate's change arrives in two syncs) waits and runs
+// once after it, instead of two loads swapping the same layers over each other
+let pcgLoading = false, pcgAgain = false;
 async function loadPcgPreview() {
+  if (pcgLoading) { pcgAgain = true; return; }
+  pcgLoading = true;
+  try { await loadPcgPreviewNow(); } finally { pcgLoading = false; }
+  if (pcgAgain) { pcgAgain = false; return loadPcgPreview(); }
+}
+async function loadPcgPreviewNow() {
   if (!state.net || !(state.layers || []).length) { state.pcg = {}; settleCity(); state.lifted = null; buildScene(); loadSync(); return; }
   const net = state.net;
   const out = {};
@@ -1347,7 +1357,11 @@ function placeLabels() {
   const host = $("labels");
   if (!state.view.districts || !state.geo) { host.innerHTML = ""; return; }
   if (host.children.length !== state.cities.length) {
-    host.innerHTML = state.cities.map((c) => `<div class="rn-label" data-live-id="city:${esc(c.id)}">${iconHTML("pin", 12)}${esc(c.name)}</div>`).join("");
+    // (a city a teammate has: their name on its tag)
+    host.innerHTML = state.cities.map((c) => {
+      const hd = liveReady ? holderOf(c.id) : null;
+      return `<div class="rn-label" data-live-id="city:${esc(c.id)}">${iconHTML("pin", 12)}${esc(c.name)}${hd ? ` · ${iconHTML("lock", 11)}${esc(hd.name)}` : ""}</div>`;
+    }).join("");
   }
   const w = view.clientWidth, hh = view.clientHeight, t = state.geo.terrain || {};
   state.cities.forEach((c, k) => {
@@ -1928,6 +1942,7 @@ function blockSection(c) {
 }
 const lotsIn = (c, b) => (c.lots || []).filter((r) => insidePoly(b[4], r[0], r[1]));
 function setBlock(c, b, change) {
+  if (heldElsewhere(c)) { renderWorldCity(); return; }
   const own = (c.zones || []).find((z) => insidePoly(b[4], z.x, z.y)) || {};
   const next = { x: b[0], y: b[1], kind: change.reset ? "" : change.kind ?? own.kind ?? "", zone: change.reset ? "" : change.zone ?? own.zone ?? "" };
   const green = change.reset ? null : change.green ?? own.green ?? null;
@@ -1969,6 +1984,12 @@ function renderWorldCity() {
       h("span", {}, "Normal city"), h("span", {}, `${Math.round((d.normal?.radius || 0) / 100)} m`),
       h("span", {}, "Housing"), h("span", {}, `${Math.round((d.housing?.radius || 0) / 100)} m`))),
     section("Plan", cityPlan(c.plan), cityWater(c.waterfront), cityAirport(c.airport)));
+  const hd = holderOf(c.id);
+  if (hd) {  // a teammate has this city: everything about it can be read here, nothing changed
+    for (const el of pane.children) el.inert = true;
+    pane.prepend(h("div", { class: "rn-held" }, icon("lock", 16),
+      h("span", {}, `${hd.name} has ${c.name}. You can look round it; it is yours to change when they let go.`)));
+  }
 }
 function renderCitiesPane() {
   renderWorldCity();
@@ -2038,6 +2059,7 @@ async function runEdits() {
   }
 }
 function saveCity(c, change) {
+  if (heldElsewhere(c)) { renderWorldCity(); return; }  // a teammate has this city: nothing of it changes from here
   // the ring and the panel follow at once; the city itself is rebuilt with the next rebuild
   if (change.radius_m) c.radius = change.radius_m * 100;
   if (change.style) c.style = change.style;
@@ -2056,12 +2078,15 @@ async function regenerate(title) {
   const n = currentNet();
   if (!n) return;
   const gen = n.generated || {};
+  await peersIdle(title);  // a teammate's rebuild of this world first: two at once would undo each other
   state.generating = true;
   busy(title, { text: "Starting…", step: 0, of: 1 });
+  tellGroup();
   const out = await rpc("generate", { name: n.name || state.net, seed: gen.seed ?? state.gen.seed, cities: "",
     size_km: gen.size_km ?? state.gen.size_km, relief_m: gen.relief_m ?? state.gen.relief_m,
     ground_from: gen.ground_from || "", options: JSON.stringify(optionsOf(state.gen)) });
   state.generating = false;
+  tellGroup();
   if (state.lifted) state.lifted.roads = false;  // a moved city: its new roads are in, its buildings still to come
   busy("");
   if (out.ok === false) showError(out.error);
@@ -2410,6 +2435,8 @@ function renderActors(geo) {
 }
 
 async function generate() {
+  const other = peerBusy();
+  if (other) return flash(`${other.name} is rebuilding this world. Yours can start when theirs is in.`);
   const g = state.gen;
   const name = (g.name || "").trim();
   if (!name) { openTab("world"); ctl.name?.input.focus(); return showError("Give the world a name."); }
@@ -2428,10 +2455,12 @@ async function generate() {
   const keep = same && have === g.cities;
   state.generating = true;
   busy(`Generating ${name}`, { text: "Starting…", step: 0, of: 1 });
+  tellGroup();
   const out = await rpc("generate", { name, seed: g.seed, cities: keep ? "" : String(g.cities), size_km: g.size_km, relief_m: g.relief_m,
     ground_from: groundFrom, options: JSON.stringify(optionsOf(g)) });
   state.generating = false;
   busy("");
+  tellGroup();
   if (out.ok === false) return showError(out.error);
   showError("");
   const reframe = out.id !== state.net;
@@ -2487,6 +2516,11 @@ window.addEventListener("message", (ev) => {
     } else reloadSoon(e.what === "pcg" ? "layers" : "geometry");
   }
   if (e.type === "live.memberState") onMemberState(e.from, e.state);
+  if (e.type === "live.state") {  // live went on or off: off, nobody is here any more
+    live.on = !!e.on;
+    if (!e.on) { for (const k of Object.keys(peers)) delete peers[k]; drawPeers(); }
+    else tellGroup();
+  }
   if (e.type === "live.shared" && e.key === "selection") onSharedSelection(e.value, e.by);
 });
 window.addEventListener("ducky-live-goto", (ev) => {  // the group moved to another world or tab
@@ -2532,51 +2566,242 @@ async function applySync(keys) {
   if (plan.layers && !plan.geometry) loadLayers();  // loadGeometry already reloads layers
 }
 
-// ------------------------------------------------------------------ live: cameras and the shared selection
-// Each person's 3D camera is their own live state (teammates see where everyone is looking); the picked
-// spline point is one shared value for the group.
-const peers = {};
+// ------------------------------------------------------------------ live: bodies, holds, edits as they happen
+// While the group is live everyone flies round the map as a ghost with their name under it: a body hovers over
+// the spot each person looks at (your own shows while you move). The city a person has picked is theirs until
+// they let go, as a Kanban card someone has open: the others see whose it is and can look, not change it. A city
+// being dragged and a rebuild under way show on every screen as they happen; the change itself comes with sync
+// (plugin_scope_changed) and is swapped in place, layer by layer.
+// Everything here rides on each person's live state (live.setMyState): nothing is stored, nothing goes to a server.
+const ME = Math.random().toString(36).slice(2, 10);  // this page, to tell its own pick from a teammate's
+const live = { on: false, moved: 0, since: 0, idle: false, active: Date.now() };
+const peers = {};  // device -> { name, tint, state, at (where its body is shown) }
+const PEER_TINTS = ["blue", "green", "amber", "red"];
+const tintOf = (name) => PEER_TINTS[[...String(name)].reduce((n, ch) => (n * 31 + ch.charCodeAt(0)) >>> 0, 7) % PEER_TINTS.length];
+const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 let camSent = 0, camTimer = 0;
-function sendMyCamera() {
+function sendMyCamera() {  // my live state: where I look, the city I have, a city I am dragging, a rebuild I am running
   clearTimeout(camTimer);
-  const now = Date.now();
-  if (now - camSent < 250) { camTimer = setTimeout(sendMyCamera, 250); return; }
+  const now = Date.now(), every = drag?.city ? 90 : 250;
+  if (now - camSent < every) { camTimer = setTimeout(sendMyCamera, every); return; }
   camSent = now;
-  const t = orbit.target;
-  call("live.setMyState", { state: { net: state.net, tab: state.tab,
+  const t = orbit.target, m = drag?.city;
+  call("live.setMyState", { state: { id: ME, net: state.net, tab: state.tab,
+    city: live.idle ? "" : state.cityPick || "", since: live.since,
+    busy: state.generating ? (loading.title || "Rebuilding") : "",
+    move: m ? { city: m.c.id, x: Math.round(m.to[0]), y: Math.round(m.to[1]) } : null,
     cam: { x: +t.x.toFixed(1), y: +t.y.toFixed(1), z: +t.z.toFixed(1), dist: Math.round(orbit.dist), az: +orbit.az.toFixed(3), el: +orbit.el.toFixed(3) } } }).catch(() => {});
 }
+const tellGroup = () => { if (liveReady) sendMyCamera(); };
 function peerKey(from) { return String(from?.device || from?.user || from?.name || from || ""); }
 function onMemberState(from, s) {
   const k = peerKey(from);
   if (!k) return;
-  if (!s) delete peers[k];
-  else peers[k] = { name: String(from?.name || "Teammate"), state: s };
+  if (!s) delete peers[k];  // they left: what they had picked is free again
+  else {
+    const p = peers[k] ||= { name: String(from?.name || "Teammate"), tint: tintOf(from?.name || k), at: null };
+    p.name = String(from?.name || p.name);
+    p.state = s;
+    live.on = true;
+  }
   drawPeers();
 }
+// The teammate who has a city (picked it first and still has it picked), or null when it is free or mine. Everyone
+// works it out from the same live states, so every screen names the same person.
+function holderOf(id) {
+  let best = null;
+  for (const p of Object.values(peers)) {
+    const s = p.state;
+    if (!s || s.net !== state.net || !id || s.city !== id) continue;
+    const since = Number(s.since) || 0;
+    if (!best || since < best.since || (since === best.since && String(s.id) < best.id)) best = { since, id: String(s.id), name: p.name, tint: p.tint };
+  }
+  if (!best) return null;
+  const mine = state.cityPick === id && !live.idle;
+  return mine && (live.since < best.since || (live.since === best.since && ME < best.id)) ? null : best;
+}
+function heldElsewhere(c) {  // true, and says whose it is, when a teammate has this city
+  const hd = c && holderOf(c.id);
+  if (hd) flash(`${hd.name} has ${c.name}. It is yours when they let go.`);
+  return !!hd;
+}
+const peerBusy = () => Object.values(peers).find((p) => p.state?.net === state.net && p.state.busy) || null;
+async function peersIdle(title) {  // one rebuild of a world at a time: mine starts when a teammate's is in
+  let waited = false;
+  for (let n = 0; n < 480; n++) {
+    const p = peerBusy();
+    if (!p) break;
+    waited = true;
+    busy(title, { text: `${p.name} is rebuilding (${String(p.state.busy).toLowerCase()}). Yours starts when theirs is in…` });
+    await sleep(500);
+  }
+  if (waited) await sleep(2500);  // their change reaches this PC with sync
+}
+let flashTimer = 0;
+function flash(text) {
+  live.flash = text;
+  renderLiveNote();
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => { live.flash = ""; renderLiveNote(); }, 3200);
+}
+function renderLiveNote() {  // top of the map: what teammates are doing to this world right now
+  const host = $("liveNote");
+  if (!host) return;
+  const rows = Object.values(peers).filter((p) => p.state?.net === state.net && (p.state.busy || p.state.move)).map((p) =>
+    h("div", { class: "rn-live__row" }, h("span", { class: "rn-live__dot", style: `background: var(--${p.tint})` }),
+      `${p.name}: ${p.state.busy || `moving ${state.cities.find((c) => c.id === p.state.move.city)?.name || "a city"}`}`));
+  if (live.flash) rows.push(h("div", { class: "rn-live__row" }, icon("lock", 12), live.flash));
+  host.replaceChildren(...rows);
+}
+// On the map: the edge of every city a teammate has, in their colour, and a city a teammate is dragging, where it
+// is right now
 const peerGroup = new THREE.Group();
 scene.add(peerGroup);
+let heldSig = "";
 function drawPeers() {
   clear(peerGroup);
-  for (const p of Object.values(peers)) {
-    const c = p.state?.cam;
-    if (!c || p.state.net !== state.net) continue;
-    const pos = new THREE.Vector3(c.x + c.dist * Math.cos(c.el) * Math.sin(c.az), c.y + c.dist * Math.sin(c.el),
-      c.z + c.dist * Math.cos(c.el) * Math.cos(c.az));
-    const size = Math.max(8, c.dist / 40);
-    const eye = new THREE.Mesh(new THREE.ConeGeometry(size * 0.6, size * 1.6, 4), new THREE.MeshStandardMaterial({ color: col("accent") }));
-    eye.position.copy(pos);
-    eye.lookAt(c.x, c.y, c.z);
-    eye.rotateX(Math.PI / 2);
-    peerGroup.add(eye);
-    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([pos, new THREE.Vector3(c.x, c.y, c.z)]),
-      new THREE.LineDashedMaterial({ color: col("accent"), dashSize: size, gapSize: size / 2 }));
-    line.computeLineDistances();
-    peerGroup.add(line);
-    p.pos = pos;
+  const t = state.geo?.terrain || {};
+  const ring = (c, x, y, tint, real, wash) => {
+    const pts = [];
+    for (let k = 0; k <= 90; k++) {
+      const deg = k * 4, a = deg * Math.PI / 180, r = c.radius * (real ? cityOutline(c, deg) : 1);
+      const px = x + Math.cos(a) * r, py = y + Math.sin(a) * r;
+      pts.push(toV(px, py, (sampleZ(t, px, py) ?? 0) + 700));
+    }
+    peerGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+      new THREE.LineBasicMaterial({ color: col(tint), depthTest: false, transparent: true, opacity: 0.95 })));
+    if (wash) {
+      const mid = toV(x, y, (sampleZ(t, x, y) ?? 0) + 700), fan = [];
+      for (let k = 0; k + 1 < pts.length; k++) fan.push(mid, pts[k], pts[k + 1]);
+      peerGroup.add(new THREE.Mesh(new THREE.BufferGeometry().setFromPoints(fan),
+        new THREE.MeshBasicMaterial({ color: col(tint), transparent: true, opacity: 0.14, depthTest: false, side: THREE.DoubleSide })));
+    }
+  };
+  if (state.geo) {
+    for (const p of Object.values(peers)) {
+      const s = p.state;
+      if (!s || s.net !== state.net) continue;
+      const held = s.city && state.cities.find((c) => c.id === s.city);
+      if (held && holderOf(held.id)?.id === String(s.id)) ring(held, held.x, held.y, p.tint, true, false);
+      const moving = s.move && state.cities.find((c) => c.id === s.move.city);
+      if (moving) ring(moving, s.move.x, s.move.y, p.tint, false, true);
+    }
+  }
+  syncGhosts();
+  renderLiveNote();
+  // whose a city is shows in its name tag and its details: redrawn only when that changes
+  const sig = state.cities.map((c) => `${c.id}:${holderOf(c.id)?.id || ""}`).join("|");
+  if (sig !== heldSig) {
+    heldSig = sig;
+    const host = $("labels");
+    if (host) host.replaceChildren();  // placeLabels writes them again, with the holders' names
+    if (state.cityPick) { renderWorldCity?.(); drawCityMark(); }
   }
   needsDraw = true;
 }
+// A ghost: a rounded body with two eyes, in its person's colour, hovering over the spot that person looks at and
+// turned the way they look. It is drawn as big as it needs to be seen from here, near or far.
+const ghostGroup = new THREE.Group();
+scene.add(ghostGroup);
+const ghosts = new Map();  // device ("me" for this page) -> its body
+const GHOST_BODY = new THREE.LatheGeometry([[0.001, 1.5], [0.28, 1.46], [0.5, 1.28], [0.62, 0.95], [0.64, 0.3], [0.56, 0.0]]
+  .map(([r, y]) => new THREE.Vector2(r, y)), 20);
+const GHOST_EYE = new THREE.SphereGeometry(0.085, 10, 8);
+function makeGhost(tint) {
+  const g = new THREE.Group();
+  const skin = new THREE.MeshStandardMaterial({ color: col(tint), emissive: col(tint), emissiveIntensity: 0.3, roughness: 0.55,
+    transparent: true, opacity: 0.85, side: THREE.DoubleSide });
+  g.add(new THREE.Mesh(GHOST_BODY, skin));
+  for (const sx of [-0.2, 0.2]) {
+    const eye = new THREE.Mesh(GHOST_EYE, new THREE.MeshBasicMaterial({ color: col("bg"), transparent: true }));
+    eye.position.set(sx, 1.05, 0.55);
+    g.add(eye);
+  }
+  g.userData.skin = skin;
+  return g;
+}
+function syncGhosts() {
+  const want = new Map(Object.entries(peers).filter(([, p]) => p.state?.cam && p.state.net === state.net).map(([k, p]) => [k, p.tint]));
+  if (want.size) want.set("me", "accent");  // my own body: only with someone to fly with
+  for (const [k, g] of ghosts) {
+    if (want.has(k)) continue;
+    ghostGroup.remove(g);
+    g.userData.skin.dispose();
+    ghosts.delete(k);
+  }
+  for (const [k, tint] of want) {
+    if (ghosts.has(k)) continue;
+    const g = makeGhost(tint);
+    g.visible = false;
+    ghosts.set(k, g);
+    ghostGroup.add(g);
+  }
+}
+// every frame: each body glides to where its person now looks; true while one is still on its way (keep drawing)
+function stepGhosts() {
+  if (!ghosts.size) return false;
+  let moving = false;
+  const put = (g, at, az, fade) => {
+    const size = Math.max(3, Math.min(900, camera.position.distanceTo(at) * 0.024));
+    g.position.set(at.x, at.y + size * 0.9, at.z);
+    g.scale.setScalar(size);
+    g.rotation.y = az + Math.PI;  // facing the way its person looks
+    g.userData.size = size;
+    g.visible = fade > 0.02;
+    g.userData.skin.opacity = 0.85 * fade;
+    for (const o of g.children) if (o.material !== g.userData.skin) o.material.opacity = fade;
+  };
+  for (const [k, g] of ghosts) {
+    if (k === "me") {  // shown while I move, gone a moment after I stop: it never sits in the way of a click
+      const still = performance.now() - live.moved, fade = Math.max(0, Math.min(1, 1 - (still - 900) / 600));
+      put(g, orbit.target, orbit.az, fade);
+      if (fade > 0 && fade < 1) moving = true;
+      else if (fade === 1 && still < 900) moving = true;
+      continue;
+    }
+    const p = peers[k], c = p?.state?.cam;
+    if (!c) continue;
+    const goal = new THREE.Vector3(c.x, c.y, c.z);
+    if (!p.at || p.at.distanceTo(goal) > Math.max(4000, c.dist * 4)) p.at = goal.clone();  // (a jump across the map: no glide)
+    else if (p.at.distanceTo(goal) > 0.05) { p.at.lerp(goal, 0.18); moving = true; }
+    put(g, p.at, c.az, 1);
+  }
+  return moving;
+}
+function placePeerLabels() {  // each body's name, under it
+  const host = $("peers");
+  if (!host) return;
+  const rows = [...ghosts].filter(([, g]) => g.visible).map(([k, g]) => [k, g, k === "me" ? "You" : peers[k]?.name || "Teammate", k === "me" ? "accent" : peers[k]?.tint || "accent"]);
+  const sig = rows.map(([k, , name]) => `${k}:${name}`).join("|");
+  if (host.dataset.sig !== sig) {
+    host.dataset.sig = sig;
+    host.replaceChildren(...rows.map(([, , name, tint]) => h("div", { class: "rn-label rn-label--peer" },
+      h("span", { class: "rn-live__dot", style: `background: var(--${tint})` }), name)));
+  }
+  const w = view.clientWidth, hh = view.clientHeight;
+  rows.forEach(([, g], i) => {
+    const el = host.children[i], v = g.position.clone().project(camera);
+    if (!el) return;
+    el.style.display = v.z > 1 ? "none" : "";
+    el.style.left = ((v.x + 1) / 2 * w) + "px";
+    el.style.top = ((1 - v.y) / 2 * hh) + "px";
+  });
+}
+// A person who stops touching the panel for a while lets go of the city they had (as a Kanban card ends its lock):
+// it is theirs again, at the back of the line, the moment they come back to it.
+const IDLE_MS = 90000;
+function touched() {
+  live.active = Date.now();
+  if (!live.idle) return;
+  live.idle = false;
+  live.since = Date.now();
+  tellGroup();
+}
+for (const type of ["pointerdown", "keydown", "wheel"]) window.addEventListener(type, touched, { passive: true, capture: true });
+setInterval(() => {
+  if (!live.idle && state.cityPick && Object.keys(peers).length && Date.now() - live.active > IDLE_MS) { live.idle = true; tellGroup(); }
+}, 15000);
+window.addEventListener("beforeunload", () => { call("live.setMyState", { state: null }).catch(() => {}); });
 let remoteSel = null;
 const selGroup = new THREE.Group();
 scene.add(selGroup);
@@ -2963,8 +3188,9 @@ function cityFeatures(c) {
   return box;
 }
 function selectCity(id) {
-  if (id !== state.cityPick) state.block = null;
+  if (id !== state.cityPick) { state.block = null; live.since = Date.now(); }  // picked now: behind anyone who already has it
   state.cityPick = id;
+  tellGroup();
   renderCityList();
   renderWorldCity?.();
   drawCityMark();
@@ -2984,6 +3210,7 @@ async function addCityAt(e) {
     (out) => { if (out?.id) selectCity(out.id); });
 }
 async function deleteCity(c) {
+  if (heldElsewhere(c)) return;
   const ok = await call("ui.confirm", { title: `Delete ${c.name}`, danger: true, confirm: "Delete",
     message: `${c.name} and everything on it (roads, buildings, services, airport, waterfront) go; the other cities are rebuilt and their highways re-join without it. Nothing in UEFN changes until you build.` }).catch(() => null);
   if (!ok?.confirmed) return;
@@ -3212,6 +3439,7 @@ async function revealLayers(layers, first) {
   await new Promise((done) => setTimeout(done, 170 + fresh_.length * gap));
 }
 function startCityDrag(c) {
+  if (heldElsewhere(c)) { drag.cityCand = null; drag.cityMove = false; return; }
   const v = groundAt({ clientX: drag.x0, clientY: drag.y0 });
   if (!v) return;
   const [x, y] = toUE(v);
@@ -3228,6 +3456,7 @@ function dragCity(e) {
   const [x, y] = toUE(v);
   drag.city.to = [x + drag.city.dx, y + drag.city.dy];
   drag.city.c.dragTo = drag.city.to;  // its name tag follows
+  tellGroup();  // teammates see it move as it is dragged
   slideGhost(drag.city.to);
   drawCityGhost(drag.city);
 }
@@ -3255,6 +3484,7 @@ function cancelCityDrag() {  // Esc while dragging: the city stays where it was
   clear(marks);
   delete drag.city.c.dragTo;
   drag = null;
+  tellGroup();
   dropLift();
   renderer.domElement.style.cursor = "";
   drawCityMark();
@@ -3264,6 +3494,7 @@ function cancelCityDrag() {  // Esc while dragging: the city stays where it was
 async function dropCity(m) {
   clear(marks);
   delete m.c.dragTo;
+  setTimeout(tellGroup, 80);  // the drag is over: teammates' copy of it goes
   needsDraw = true;
   if (Math.hypot(m.to[0] - m.c.x, m.to[1] - m.c.y) < 1000) { dropLift(); drawCityMark(); return; }  // barely moved: nothing to do
   await saveCity(m.c, { x: Math.round(m.to[0]), y: Math.round(m.to[1]) });
@@ -3461,12 +3692,13 @@ function loadChats() {  // fetched once in the background (on start), refreshed 
   call("plugin.subscribe", { types: ["road_network_changed"] }).catch(() => {});
   liveReady = true;
   // a page that opens while the group is live catches up on cameras and the shared selection
+  call("live.state").then((r) => { live.on = !!r?.on; if (live.on) tellGroup(); }).catch(() => {});
   call("live.memberStates").then((r) => {
     const rows = Array.isArray(r) ? r : r?.states || r?.members || [];
     rows.forEach((m) => onMemberState(m.from, m.state));
   }).catch(() => {});
   call("live.shared").then((r) => {
-    const v = r?.selection ?? (Array.isArray(r?.items) ? r.items.find((x) => x.key === "selection") : null);
+    const v = r?.values?.selection ?? r?.selection;
     if (v) onSharedSelection(v.value ?? v, v.by);
   }).catch(() => {});
   await loadNets(false);

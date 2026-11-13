@@ -184,6 +184,20 @@ place at once and a light copy of its buildings rides with the pointer; after th
 rebuilt city starts to come in. A rebuilt city always comes in a few layers at a time, never all at once. The
 map has no distance fog.
 
+**Live with a team** (the app's Live menu on a team copy; the panel's part is in `ui/app.js`, "live: bodies,
+holds, edits as they happen"). Nothing here is stored or goes to a server: it rides on each person's live state.
+- Everyone flies round the map as a ghost with their name under it: a body hovers over the spot each person looks
+  at, turned the way they look. Your own body shows while you move.
+- The city a person has picked is theirs until they let go (pick something else, close it, leave, or stop
+  touching the panel for 90 s), as a Kanban card someone has open. The others see its edge in that person's
+  colour and their name on its tag; they can open it and read everything, but not move, turn, reshape, re-plan
+  or delete it. The next person who picked it gets it when it is let go.
+- A city being dragged shows on every screen where it is right now; a rebuild under way shows as a line at the
+  top of the map. Only one rebuild of a world runs at a time: a second person's starts when the first is in.
+- The change itself arrives with sync (`plugin_scope_changed`, reason `synced`): the panel re-reads only what
+  the keys name, places the city on that PC (only what changed) and swaps each layer in place.
+- An AI changing a world through the tools is not held back by a person's pick.
+
 ## One city by hand: turn, outline, blocks (`road_network_city_save`)
 Everything the panel does to one city is this tool, so an AI can do the same:
 - `turn_deg`: the whole city turns round its centre (street grid, outline, industrial side).

@@ -217,6 +217,15 @@
                 font-size: 11px; color: var(--fg); background: var(--bg-panel); border: 1px solid var(--border); border-radius: 999px;
                 padding: 2px 8px; box-shadow: var(--shadow-sm); }
     .rn-label .rn-icon { color: var(--accent); }
+    /* ---------- live: a teammate's name under their body, what teammates are doing, a city someone else has */
+    .rn-label--peer { transform: translate(-50%, 6px); font-weight: 600; }
+    .rn-live { position: absolute; left: 12px; top: 56px; z-index: 4; display: flex; flex-direction: column; gap: 6px; pointer-events: none; }
+    .rn-live__row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg); background: var(--bg-panel);
+                    border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; box-shadow: var(--shadow-sm); }
+    .rn-live__dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+    .rn-held { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; padding: 8px 10px; font-size: 12px; line-height: 1.4;
+               color: var(--fg); background: var(--bg-hover); border: 1px solid var(--border); border-radius: var(--radius); }
+    .rn-pane [inert] { opacity: 0.55; }
     .rn-busy { position: absolute; left: 50%; top: 56px; transform: translateX(-50%); z-index: 5; pointer-events: none; }
     /* ---------- loading card: what is happening, and how far along */
     .rn-load { width: min(360px, calc(100vw - 48px)); background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius);
@@ -326,6 +335,8 @@
     <main class="dk-main rn-main">
       <div id="view" tabindex="0" aria-label="3D road network view"></div>
       <div class="rn-labels" id="labels"></div>
+      <div class="rn-labels" id="peers"></div>
+      <div class="rn-live" id="liveNote" aria-live="polite"></div>
       <div class="rn-toolbar" id="toolbar"></div>
       <div class="rn-hud" id="hud"></div>
       <div class="rn-busy" id="busy"></div>
