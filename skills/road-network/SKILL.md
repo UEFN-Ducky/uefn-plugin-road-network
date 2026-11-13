@@ -151,3 +151,11 @@ situation and what to do. Keep it to what you couldn't have known.
 - The person wants the land left alone when a city moves: a city adapts to the terrain, the terrain is not
   remade for the city. 'Ground under the cities: Natural' never changes the land; 'Flatten' levels the land under a
   city but never its lakes or sea (the plateau comes up from the shore). Never fill or move water for a city.
+- The person does not want a chequerboard (Nov 12 2026): main roads wander, and past downtown many streets
+  between two neighbouring blocks are simply not built, so subdivisions lie side by side. Only a Grid city is
+  ruled. Never bring back a ring of roads round every block to make a layout easier.
+- "Nothing is generated here" has four different causes; find which before changing anything: land no street
+  rings (it gets lots along the street's open side), the middle of a block of plain lots (planted), a lot no
+  layer fits (planted; downtown and industrial lots are built by the tower, office and warehouse layers), a keep
+  zone (left alone on purpose). `road_network_pcg_preview` summary `swept` lists what was taken off the roads.
+- A forest layer covers the whole map. `reach` is how far from a city it is as dense as asked, not where it stops.

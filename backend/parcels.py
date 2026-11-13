@@ -17,7 +17,11 @@ SIDEWALK_CM = 380.0  # pedestrian zone between kerb and lot line (1.8 m clear pa
 
 
 def blocks(nodes: dict, edges: list) -> list:
-    """Every face of the planar street graph except the outer one: [[node key, ...], ...] counter-clockwise."""
+    """Every face of the planar street graph except the outer one: [[node key, ...], ...] counter-clockwise.
+    Each face is walked whole, however many corners it has. The walk once stopped at 64: the city's outer edge
+    (hundreds of corners) came back as stretches of 64, and every stretch that happened to turn the right way
+    became a "block" closed straight across the streets and blocks inside it. A subdivision was then laid out
+    over streets that were already there (Nov 12 2026)."""
     nbrs: dict = {}
     for a, b, *_ in edges:
         if a != b:
@@ -31,7 +35,7 @@ def blocks(nodes: dict, edges: list) -> list:
             if (a, b) in seen:
                 continue
             face, u, v = [], a, b
-            while (u, v) not in seen and len(face) < 64:
+            while (u, v) not in seen:
                 seen.add((u, v))
                 face.append(u)
                 around = order[v]
@@ -79,8 +83,17 @@ def inset(poly: list, by: list) -> list:
         nx, ny = -dy / L, dx / L  # inward for a counter-clockwise polygon
         lines.append(((p[0] + nx * by[i], p[1] + ny * by[i]), (dx, dy)))
     out = []
-    for (p1, d1), (p2, d2) in zip(lines[-1:] + lines[:-1], lines):
+    for i, ((p1, d1), (p2, d2)) in enumerate(zip(lines[-1:] + lines[:-1], lines)):
         den = d1[0] * d2[1] - d1[1] * d2[0]
+        l1, l2 = math.hypot(*d1) or 1.0, math.hypot(*d2) or 1.0
+        if abs(den) < 0.02 * l1 * l2 and d1[0] * d2[0] + d1[1] * d2[1] < 0:
+            # the end of a dead-end street inside the block (the outline runs out along it and straight back):
+            # round its end, square, as far off as off its sides
+            b = max(by[i - 1], by[i])
+            ux, uy = d1[0] / l1, d1[1] / l1
+            out.append((poly[i][0] - uy * by[i - 1] + ux * b, poly[i][1] + ux * by[i - 1] + uy * b))
+            out.append((poly[i][0] + uy * by[i] + ux * b, poly[i][1] - ux * by[i] + uy * b))
+            continue
         if abs(den) < 1e-9:
             out.append(p2)
             continue
@@ -142,19 +155,32 @@ def split(poly: list, lot_w: float, lot_d: float, rnd, out: list | None = None) 
     return out
 
 
-def block_areas(nodes: dict, edges: list, half: dict) -> list:
-    """Every block's buildable area: its polygon inset by each street's half width + the sidewalk zone."""
+def block_faces(nodes: dict, edges: list, half: dict) -> list:
+    """Every block as (its buildable area, the streets round it [(node, next node, kind)] in the same order):
+    its polygon inset by each street's half width + the sidewalk zone."""
     kind = {}
     for a, b, k, *_ in edges:
         kind[(a, b)] = kind[(b, a)] = k
     out = []
     for face in blocks(nodes, edges):
         poly = [tuple(nodes[n][:2]) for n in face]
-        by = [half.get(kind.get((face[i], face[(i + 1) % len(face)])), 500.0) + SIDEWALK_CM for i in range(len(face))]
-        area = inset(poly, by)
+        sides = [(face[i], face[(i + 1) % len(face)], kind.get((face[i], face[(i + 1) % len(face)]))) for i in range(len(face))]
+        area = inset(poly, [half.get(k, 500.0) + SIDEWALK_CM for _a, _b, k in sides])
         if area:
-            out.append(area)
+            out.append((area, sides))
     return out
+
+
+def block_areas(nodes: dict, edges: list, half: dict) -> list:
+    """Every block's buildable area: its polygon inset by each street's half width + the sidewalk zone."""
+    return [area for area, _sides in block_faces(nodes, edges, half)]
+
+
+def solid(area: list) -> float:
+    """How much of its own oriented box a block fills, 0..1: 1 for a rectangle, about 0.75 for an L. A layout
+    drawn in the block's box (a subdivision, an apartment complex) fits a block that fills its box."""
+    _, _, _, _, length, width = _obb(area)
+    return abs(_area(area)) / max(1.0, length * width)
 
 
 def lots_in(area: list, lot_w_cm: float, lot_d_cm: float, rnd) -> list:
@@ -201,6 +227,22 @@ def _demo() -> None:
     edges = [[(i, j), (i + 1, j), "2L"] for i in range(3) for j in range(4)] + \
             [[(i, j), (i, j + 1), "2L"] for i in range(4) for j in range(3)]
     assert len(blocks(nodes, edges)) == 9, "nine blocks"
+    # the outer edge is never a block, however long: a 20 x 20 grid's outline has 80 corners (it was once cut
+    # into stretches of 64, and a stretch round a bay closed into a block over the streets inside it)
+    wide = {(i, j): [i * 10000.0, j * 10000.0] for i in range(21) for j in range(21) if not (8 <= i <= 12 and j < 6)}
+    wide_e = [[a, b, "2L"] for a in wide for b in ((a[0] + 1, a[1]), (a[0], a[1] + 1)) if b in wide]
+    faces = blocks(wide, wide_e)
+    assert len(faces) == 400 - 6 * 6, len(faces)
+    assert max(len(f) for f in faces) == 4, "every block of a grid is a square, round a bay too"
+    # a dead-end street inside a block: the block's area goes round it, on both sides and past its end
+    stub = {**{(i, j): [i * 20000.0, j * 20000.0] for i in range(2) for j in range(2)}, "m": [10000.0, 0.0], "t": [10000.0, 9000.0]}
+    stub_e = [[(0, 0), "m", "2L"], ["m", (1, 0), "2L"], [(1, 0), (1, 1), "2L"], [(1, 1), (0, 1), "2L"], [(0, 1), (0, 0), "2L"],
+              ["m", "t", "2L"]]
+    (area, sides), = block_faces(stub, stub_e, {"2L": 525.0})
+    off = 525 + SIDEWALK_CM
+    assert len(sides) == 7 and abs(_area(area) - ((20000 - 2 * off) ** 2 - 2 * off * (9000 + off - off))) < 1e3, _area(area)
+    assert all(not (10000 - off + 1 < x < 10000 + off - 1 and y < 9000 + off - 1) for x, y in area), "nothing of it on the street"
+    assert 0.9 < solid(area) < 1.0 and abs(solid([(0, 0), (2, 0), (2, 1), (1, 1), (1, 2), (0, 2)]) - 0.75) < 1e-9
     got = lots(nodes, edges, {"2L": 525.0}, 1500, 3000, random.Random(1))
     assert len(got) >= 9 * 8, len(got)
     for x, y, yaw, w, d, poly, frx, fry in got:

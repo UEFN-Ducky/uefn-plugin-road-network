@@ -1144,7 +1144,7 @@ def register(api) -> None:
             progress(3 + k, f"Planning {t['name']}: lots, services, waterfront")
             api.search.upsert(f"net.{nid}.city.{cslug}", t["name"], f"City {t['name']} in world {name}: {t['style']} roads")
             layout = cg.city_layout(t, opts, wet, lambda x, y: st.sample_grid(ter, x, y),
-                                    ((prev.get("plan") or {}).get("facilities")), water)
+                                    ((prev.get("plan") or {}).get("facilities")), water, clear=keep)
             # the open land along a street that joins this city to one close by fills in with house lots
             extra, corridors = cg.join_lots(t, towns, opts, wet, keep)
             layout["lots"] += extra
@@ -1771,7 +1771,8 @@ def register(api) -> None:
             # edit to one city places that city again and leaves every other building and tree where it was
             memo = _PREVIEW_MEMO.setdefault(nid, pl.PreviewMemo())
             placed = pl.preview(list(docs.values()), cities, terrain, pl.road_samples(actors), ground,
-                                limit=6000, juncs=pl.junctions(actors), keep=keep, foliage_limit=FOREST_LIMIT, memo=memo)
+                                limit=6000, juncs=pl.junctions(actors), keep=keep, foliage_limit=FOREST_LIMIT, memo=memo,
+                                arms=pl.arm_samples(actors))
             _PREVIEW_CACHE["placing"] = dict(memo.last)
             # (no loose wall slabs along the roads: every road piece carries its own side walls down into the
             # ground, road_profiles 'skirt'; every building its own foundation, kit_bake.foundation; every low deck
@@ -1793,6 +1794,10 @@ def register(api) -> None:
                 g["count"] = g["shown"] = len(g["points"])
             placed.update(groves)
             pl.clear_of(placed, pl.road_samples(fast, 400.0))
+            # last of all: nothing on a road surface (junctions and private streets are road too), no tree in a
+            # building. Every layer above was placed by its own rule, and each knew some roads and not others.
+            _PREVIEW_CACHE["swept"] = {"off_roads": pl.clear_roads(placed, pl.surface_samples(actors, cities)),
+                                       "out_of_buildings": pl.clear_buildings(placed)}
             # waterfront structures (piers, marinas, quays, beaches, ports, stilt / floating homes)
             placed.update(waterfront.layers(cities))
             # airports: aircraft, jet bridges, hangars, tower, lights, aprons, fuel farm
@@ -1926,7 +1931,9 @@ def register(api) -> None:
             out = pick
         if summary:  # counts only: a quick check for an agent, no point lists
             return {"ok": True, "id": nid, "counts": {k: v["count"] for k, v in out.items()},
-                    "ground_fit": fit_summary()}
+                    "ground_fit": fit_summary(),
+                    # what the last pass took off the roads and out of the buildings, per layer
+                    "swept": _PREVIEW_CACHE.get("swept")}
         return {"ok": True, "id": nid, "layers": out}
 
     _GROUND: dict = {}
@@ -3555,7 +3562,9 @@ def register(api) -> None:
         layer: JSON {name, kind (scatter | foliage | along_roads | at_junctions | buildings), where (outside |
         cities | downtown | normal | housing | industrial | shipyards | everywhere), meshes [{path, weight}] (Content Browser
         paths: a layer WITH meshes places exactly those, weighted; without, the kit piece for its role), density
-        (per 100 m2), cover (forest share), reach (city radii), spacing_m, setback_m, scale_min, scale_max,
+        (per 100 m2), cover (forest share), reach (foliage is this dense within so many city radii of a city;
+        beyond it the layer goes on over the whole map, thinner if it must; 0 = one density everywhere),
+        spacing_m, setback_m, scale_min, scale_max,
         sink_cm, footprint, road_clear_m, avoid_roads, avoid [earlier layer names], self_prune, upright,
         random_yaw, collision, seed, order, enabled}. Ranges: road_network_pcg_layers `fields`. Preview with
         road_network_pcg_preview, then Push city (road_network_pcg_build) builds only the changed tiles."""

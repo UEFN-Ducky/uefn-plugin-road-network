@@ -56,8 +56,32 @@ class _Frame:
     def w(self, u, v):
         return (self.cx + self.ux * u - self.uy * v, self.cy + self.uy * u + self.ux * v)
 
+    def local(self, x, y):  # a world point in the block's frame
+        dx, dy = x - self.cx, y - self.cy
+        return dx * self.ux + dy * self.uy, -dx * self.uy + dy * self.ux
+
+    def side(self, x, y):  # which side of the block a world point on its edge is: 'u-', 'u+', 'v-' or 'v+'
+        u, v = self.local(x, y)
+        if abs(v) * self.L >= abs(u) * self.W:
+            return "v+" if v > 0 else "v-"
+        return "u+" if u > 0 else "u-"
+
     def yaw(self, du, dv):  # a local direction as a world yaw in degrees
         return math.degrees(math.atan2(self.uy * du + self.ux * dv, self.ux * du - self.uy * dv))
+
+
+def _inside(poly: list, x: float, y: float) -> bool:
+    """Point in polygon (even-odd ray cast)."""
+    hit = False
+    for (ax, ay), (bx, by) in zip(poly, poly[1:] + poly[:1]):
+        if (ay > y) != (by > y) and x < ax + (y - ay) * (bx - ax) / (by - ay):
+            hit = not hit
+    return hit
+
+
+def _within(poly: list, x: float, y: float, grow: float) -> bool:
+    """Inside the polygon, or no further than `grow` outside it."""
+    return _inside(poly, x, y) or any(_dist_seg((x, y), a, b) <= grow for a, b in zip(poly, poly[1:] + poly[:1]))
 
 
 def _round(street: list, r: float = 2000.0, n: int = 5) -> list:
@@ -76,10 +100,11 @@ def _round(street: list, r: float = 2000.0, n: int = 5) -> list:
     return out + [street[-1]]
 
 
-def _lots_along(street, f: _Frame, lot_w, lot_d, streets, taken, role="house", rnd=None, yard=None):
+def _lots_along(street, f: _Frame, lot_w, lot_d, streets, taken, role="house", rnd=None, yard=None, block=None):
     """Lots on both sides of a local polyline street, walked along its whole length so they follow its bends and
     face it wherever it turns, each its own width (0.85-1.15 x lot_w: no row of identical plots), inside the block
-    and off every street. yard: {trees, fences, pools} gets each lot's back fence and one side fence
+    (`block`: its outline in the frame; its box alone let lots of a slanted block reach onto the street) and off
+    every street. yard: {trees, fences, pools} gets each lot's back fence and one side fence
     (u, v, du, dv, length), a pool (u, v, du, dv) or a tree (u, v) in the back yard, a front-corner tree for some."""
     out = []
     lim_u, lim_v = f.L / 2 - 100, f.W / 2 - 100
@@ -105,7 +130,7 @@ def _lots_along(street, f: _Frame, lot_w, lot_d, streets, taken, role="house", r
             cu, cv = su + nu * back, sv + nv * back
             corners = [(cu + du * a * w / 2 + nu * b * lot_d / 2, cv + dv * a * w / 2 + nv * b * lot_d / 2)
                        for a in (1, -1) for b in (1, -1)]
-            if any(abs(x) > lim_u or abs(y) > lim_v for x, y in corners):
+            if any(abs(x) > lim_u or abs(y) > lim_v or (block and not _inside(block, x, y)) for x, y in corners):
                 continue  # past the block's edge (the public street's sidewalk)
             if any(_dist_seg((cu, cv), a, b) < (back * 0.85 if s is street else PRIVATE_HALF + lot_d * 0.45)
                    for s in streets for a, b in zip(s, s[1:])):
@@ -172,9 +197,25 @@ def parking(f: _Frame, u0, u1, v0, v1, face: int = 1):
     return slab, stalls
 
 
-def generate(poly: list, kind: str, rnd, lot_w=1600.0, lot_d=3000.0) -> dict:
-    """One neighbourhood in a block (its inset polygon, world cm)."""
+def generate(poly: list, kind: str, rnd, lot_w=1600.0, lot_d=3000.0, joins: list | None = None,
+             closed: list | None = None) -> dict:
+    """One neighbourhood in a block (its inset polygon, world cm). Everything it lays out stays inside that
+    polygon: a block is rarely the exact rectangle its frame is, and one with a dead-end street reaching into
+    it, or a corner cut off, had houses and private streets on the public street.
+    closed: the stretches of the block's edge with NO street ([(point, point)], world cm: the next block lies
+    right there). The neighbourhood is turned so that it opens onto a side that has one, and none of its
+    streets crosses a closed side. joins (a 'collector' superblock): the middle of each closed side, where its
+    streets run on to and meet the streets of the subdivision beside it."""
     f = _Frame(poly)
+    shut = lambda: {f.side(*((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)) for p, q in closed or []}
+    if closed and kind != "collector":
+        for _ in range(3):  # its entrance (the -v side) on a side with a street: turned round, or a quarter turn
+            if "v-" not in shut():
+                break
+            if "v+" not in shut():
+                f.ux, f.uy = -f.ux, -f.uy
+                break
+            f.ux, f.uy, f.L, f.W = -f.uy, f.ux, f.W, f.L
     L, W = f.L, f.W
     out = {"kind": kind, "streets": [], "lots": [], "parking": [], "stalls": [], "pads": [], "trees": [],
            "fences": [], "pools": []}
@@ -188,10 +229,22 @@ def generate(poly: list, kind: str, rnd, lot_w=1600.0, lot_d=3000.0) -> dict:
         # where this one ends, so it runs on through block after block. Cul-de-sacs branch off both sides.
         if abs(f.ux) < abs(f.uy):
             f.ux, f.uy, f.L, f.W = -f.uy, f.ux, f.W, f.L
-            L, W = f.L, f.W
-        wind = lambda u: W * 0.2 * math.sin(2 * math.pi * (u / L + 0.5)) * math.sin(math.pi * (u / L + 0.5))
-        streets = [[(-L / 2 - 900, 0.0)] + [(u, wind(u)) for u in (L * (k / 24 - 0.5) for k in range(25))] + [(L / 2 + 900, 0.0)]]
+        if closed and {"u-", "u+"} <= shut() and not {"v-", "v+"} <= shut():
+            f.ux, f.uy, f.L, f.W = -f.uy, f.ux, f.W, f.L  # (no street at either end that way: it runs the other way)
+        L, W = f.L, f.W
+        # ... and where no road was built between this block and the subdivision beside it (joins), the street
+        # does not stop at the edge: it runs on to the middle of that side, where the neighbour's begins. Across
+        # the other two sides the nearest cul-de-sac runs through instead of ending in a bulb.
+        local = [f.local(x, y) for x, y in joins or []]
+        lo = next((p for p in local if p[0] < -L / 2 + 2500 and abs(p[1]) < W * 0.3), None)
+        hi = next((p for p in local if p[0] > L / 2 - 2500 and abs(p[1]) < W * 0.3), None)
+        across = [p for p in local if abs(p[1]) > W / 2 - 2500 and abs(p[0]) < L / 2 - 2500]
+        ease = lambda t: 2 * t ** 3 - 3 * t * t + 1  # 1 at the low end, 0 at the high one, level at both
+        aim = lambda u: (lo[1] if lo else 0.0) * ease(u / L + 0.5) + (hi[1] if hi else 0.0) * (1 - ease(u / L + 0.5))
+        wind = lambda u: W * 0.2 * math.sin(2 * math.pi * (u / L + 0.5)) * math.sin(math.pi * (u / L + 0.5)) + aim(u)
+        streets = [[lo or (-L / 2 - 900, 0.0)] + [(u, wind(u)) for u in (L * (k / 24 - 0.5) for k in range(25))] + [hi or (L / 2 + 900, 0.0)]]
         pitch = 2 * lot_d + 2 * (PRIVATE_HALF + WALK) + 500  # two back-to-back lot rows between neighbouring stubs
+        stubs = []
         for side in (1, -1):
             u = -L / 2 + pitch * (0.6 if side > 0 else 1.1)
             end = side * (W / 2 - BULB - lot_d * 0.5)
@@ -199,9 +252,21 @@ def generate(poly: list, kind: str, rnd, lot_w=1600.0, lot_d=3000.0) -> dict:
                 v0 = wind(u)
                 lean = rnd.uniform(-0.2, 0.2) * abs(end - v0)
                 if abs(end - v0) > 2 * lot_w:
-                    streets.append(_round([(u, v0), (u, (v0 + end) / 2), (u + lean, end)], n=4))
-                    out["pads"].append([*map(round, f.w(u + lean, end)), BULB])
+                    stubs.append([side, u, v0, end, lean, None])
                 u += pitch
+        for ju, jv in across:  # the stub nearest each open side's middle runs through to it
+            side = 1 if jv > 0 else -1
+            mine = [s for s in stubs if s[0] == side and s[5] is None]
+            if mine:
+                min(mine, key=lambda s: abs(s[1] - ju))[5] = (ju, jv)
+            else:
+                stubs.append([side, ju, wind(ju), jv, 0.0, (ju, jv)])
+        for side, u, v0, end, lean, through in stubs:
+            if through:
+                streets.append(_round([(u, v0), (u, (v0 + through[1]) / 2), through], n=4))
+            else:
+                streets.append(_round([(u, v0), (u, (v0 + end) / 2), (u + lean, end)], n=4))
+                out["pads"].append([*map(round, f.w(u + lean, end)), BULB])
     if kind == "branch":  # an S through the block (two entrances) with a cul-de-sac off each bend
         a = L / 5
         spine = [(-a, edge)] + _bezier((-a, -W / 2), (-a, W * 0.1), (a, -W * 0.1), (a, W / 2))[1:-1] + [(a, W / 2 + 900)]
@@ -226,9 +291,42 @@ def generate(poly: list, kind: str, rnd, lot_w=1600.0, lot_d=3000.0) -> dict:
         end = W / 2 - BULB - lot_d * 0.6
         streets = [[(0.0, edge), (0.0, end)]]
         out["pads"].append([*map(round, f.w(0.0, end)), BULB])
+    block = [f.local(x, y) for x, y in poly]  # (after a 'collector' has turned the frame its way)
+    walls = [(f.local(*p), f.local(*q)) for p, q in closed or []]
+    # (a street may run 9 m out of the block, across the sidewalk to the kerb: never where there is no street)
+    reach = lambda p: _inside(block, p[0], p[1]) or (not any(_dist_seg(p, a, b) < 1300 for a, b in walls)
+                                                     and _within(block, p[0], p[1], 1000.0))
+    met = [f.local(x, y) for x, y in joins or []] if kind == "collector" else []
+    def in_block(streets):
+        """The private streets, each stopped where it would leave the block (the 9 m across the sidewalk to the
+        kerb aside): the part outside goes, and a piece under 15 m with it; then the turnarounds no street
+        reaches any more. A street that is inside all the way keeps its own points."""
+        kept, whole = [], True
+        for s in streets:
+            fine = [s[0]]
+            for a, b in zip(s, s[1:]):
+                n = max(1, int(math.dist(a, b) // 500))
+                fine += [(a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n) for k in range(1, n + 1)]
+            ok = lambda p: reach(p) or any(math.dist(p, m) < 5 for m in met)  # (where it meets the neighbour's)
+            if all(ok(p) for p in fine):
+                kept.append(s)
+                continue
+            whole, piece = False, []
+            for p in fine + [None]:
+                if p is not None and ok(p):
+                    piece.append(p)
+                else:
+                    if len(piece) > 3:  # (over 15 m)
+                        kept.append(piece)
+                    piece = []
+        if not whole:
+            ends = [p for s in kept for p in s]
+            out["pads"] = [p for p in out["pads"] if any(math.dist(f.local(p[0], p[1]), q) < 600 for q in ends)]
+        return kept
+    streets = in_block(streets)
     taken: list = []
     for s in streets:
-        out["lots"] += _lots_along(s, f, lot_w, lot_d, streets, taken, rnd=rnd, yard=yard)
+        out["lots"] += _lots_along(s, f, lot_w, lot_d, streets, taken, rnd=rnd, yard=yard, block=block)
     if kind == "cul_de_sac":  # lots round the bulb, facing its centre
         end = streets[0][-1][1]
         ring = BULB + WALK + lot_d / 2
@@ -237,7 +335,10 @@ def generate(poly: list, kind: str, rnd, lot_w=1600.0, lot_d=3000.0) -> dict:
             a = math.pi * (0.15 + 0.7 * k / max(1, n - 1)) - math.pi  # the far half, away from the stem
             a = -a
             cu, cv = math.cos(a) * ring, end + math.sin(a) * ring
-            if abs(cu) > L / 2 - 100 or abs(cv) > W / 2 - 100 or any(math.hypot(cu - x, cv - y) < lot_w * 0.9 for x, y in taken):
+            ca, sa = math.cos(a), math.sin(a)  # (the whole lot inside the block: the far ones reached over its edge)
+            if abs(cu) > L / 2 - 100 or abs(cv) > W / 2 - 100 or any(math.hypot(cu - x, cv - y) < lot_w * 0.9 for x, y in taken) \
+                    or not all(_inside(block, cu + ca * i * lot_d / 2 - sa * j * lot_w / 2, cv + sa * i * lot_d / 2 + ca * j * lot_w / 2)
+                               for i in (1, -1) for j in (1, -1)):
                 continue
             taken.append((cu, cv))
             fu, fv = math.cos(a) * (BULB + WALK), end + math.sin(a) * (BULB + WALK)
@@ -301,15 +402,27 @@ def generate(poly: list, kind: str, rnd, lot_w=1600.0, lot_d=3000.0) -> dict:
             (gx, gy), (gfx, gfy) = f.w(0.0, W / 2 - 2600), f.w(0.0, W / 2 - 4600)
             out["lots"].append([round(gx), round(gy), round(f.yaw(0, -1), 1), 2200, 4000, round(gfx), round(gfy),
                                 "parking_garage", True])
+    if kind in ("garden", "suburban", "urban"):
+        streets = in_block(streets)
     out["streets"] = [[[round(c) for c in f.w(u, v)] for u, v in s] for s in streets]
-    out["trees"] = [[round(c) for c in f.w(u, v)] for u, v in trees]
-    out["fences"] = [[*map(round, f.w(u, v)), round(f.yaw(du, dv), 1), round(ln / 100, 2)] for u, v, du, dv, ln in yard["fences"]]
-    out["pools"] = [[*map(round, f.w(u, v)), round(f.yaw(du, dv), 1), 8.0, 4.0] for u, v, du, dv in yard["pools"]]
+    out["trees"] = [[round(c) for c in f.w(u, v)] for u, v in trees if _inside(block, u, v)]
+    out["fences"] = [[*map(round, f.w(u, v)), round(f.yaw(du, dv), 1), round(ln / 100, 2)] for u, v, du, dv, ln in yard["fences"]
+                     if _inside(block, u, v)]
+    out["pools"] = [[*map(round, f.w(u, v)), round(f.yaw(du, dv), 1), 8.0, 4.0] for u, v, du, dv in yard["pools"]
+                    if _inside(block, u, v)]
+    # the complexes' own buildings, parking and roundabouts are drawn in the frame's box: whatever of them falls
+    # outside the block itself is not built
+    on = lambda x, y: _inside(poly, x, y)
+    out["lots"] = [r for r in out["lots"] if not r[8] or on(r[0], r[1])]
+    out["stalls"] = [r for r in out["stalls"] if on(r[0], r[1])]
+    out["parking"] = [r for r in out["parking"] if on(r[0], r[1])]
+    out["pads"] = [r for r in out["pads"] if on(r[0], r[1])]
     return out
 
 
 def _demo() -> None:
     import random
+    nb_dist = _dist_seg
     block = [(0, 0), (18000, 0), (18000, 16000), (0, 16000)]
     rnd = random.Random(3)
     big = generate([(0, 0), (38000, 0), (38000, 38000), (0, 38000)], "collector", rnd)
@@ -322,6 +435,42 @@ def _demo() -> None:
     one = generate(block, "collector", rnd)["streets"]
     two = generate([(x + 20000, y) for x, y in block], "collector", rnd)["streets"]
     assert len(one) >= 3 and one[0][-1][1] == two[0][0][1] == 8000 and two[0][0][0] - one[0][-1][0] == 200, (one[0][-1], two[0][0])
+    # no road between two superblocks: the winding street of each runs to the middle of the side they share and
+    # they meet there, to the centimetre; across the other side a cul-de-sac runs through instead of ending
+    sq = [(0, 0), (38000, 0), (38000, 38000), (0, 38000)]
+    left = generate(sq, "collector", random.Random(3), joins=[(38150, 19400), (20000, 38150)])
+    right = generate([(x + 38300, y) for x, y in sq], "collector", random.Random(4), joins=[(38150, 19400)])
+    assert left["streets"][0][-1] == [38150, 19400] == right["streets"][0][0], (left["streets"][0][-1], right["streets"][0][0])
+    assert left["streets"][0][0] == [-900, 19000] and right["streets"][0][-1] == [38300 + 38900, 19000], "its other end as ever"
+    through = [s for s in left["streets"][1:] if s[-1] == [20000, 38150]]
+    assert len(through) == 1 and len(left["pads"]) == len(left["streets"]) - 2, "one cul-de-sac runs through, bulb and all gone"
+    assert len(left["lots"]) > 110, len(left["lots"])
+    # a block with a corner cut off: nothing of the neighbourhood outside it (its box reaches over the corner)
+    cut_off = [(0, 0), (18000, 0), (18000, 9000), (11000, 16000), (0, 16000)]
+    for kind in ("grid", "loop", "organic", "branch", "garden", "suburban", "urban", "cul_de_sac"):
+        g = generate(cut_off, kind, random.Random(5))
+        for r in g["lots"]:
+            fx_, fy_ = math.cos(math.radians(r[2])), math.sin(math.radians(r[2]))
+            for a_, b_ in ((1, 1), (1, -1), (-1, 1), (-1, -1)) if not r[8] else ((0, 0),):
+                px, py = r[0] + fx_ * a_ * r[4] / 2 - fy_ * b_ * r[3] / 2, r[1] + fy_ * a_ * r[4] / 2 + fx_ * b_ * r[3] / 2
+                assert _within(cut_off, px, py, 5.0), (kind, "a lot outside its block", r[:5])
+        assert all(_within(cut_off, p[0], p[1], 1005.0) for s in g["streets"] for p in s), (kind, "a street outside its block")
+        assert all(_inside(cut_off, r[0], r[1]) for key in ("stalls", "parking", "trees", "pools") for r in g[key]), kind
+    # a block with no street on one side or two: the neighbourhood turns its entrance to a side that has one,
+    # and no street of its own crosses a side that has none
+    box = [(0, 0), (20000, 0), (20000, 20000), (0, 20000)]
+    side_of = {"south": ((0, -150), (20000, -150)), "north": ((0, 20150), (20000, 20150)),
+               "west": ((-150, 0), (-150, 20000)), "east": ((20150, 0), (20150, 20000))}
+    for shut in (("south",), ("north",), ("south", "north"), ("south", "west"), ("east", "north", "south")):
+        walls = [side_of[s] for s in shut]
+        for kind in ("grid", "loop", "cul_de_sac", "organic", "branch", "garden", "suburban", "urban", "collector"):
+            g = generate(box, kind, random.Random(7), closed=walls)
+            assert g["lots"] and g["streets"], (kind, shut)
+            out_of = lambda p: p[0] < -1 or p[0] > 20001 or p[1] < -1 or p[1] > 20001
+            leaves = [p for s in g["streets"] for p in s if out_of(p)]
+            assert leaves, (kind, shut, "it reaches a street")
+            for p in leaves:
+                assert not any(nb_dist(p, a, b) < 1000 for a, b in walls), (kind, shut, "a street out over a side with none", p)
     for kind in ("grid", "loop", "cul_de_sac", "organic", "branch", "garden", "suburban", "urban"):
         g = generate(block, kind, rnd)
         assert g["streets"], kind

@@ -1573,7 +1573,7 @@ function buildPanes() {
       sl("block_ratio", "Block shape", 1, 3, 0.1, (v) => v <= 1.01 ? "Square" : `1 : ${Math.round(v * 10) / 10}`,
         "Square blocks, or long ones: 1 : 2 is twice as long as it is wide"),
       sl("wobble", "Curvy streets", 0, 0.45, 0.01, pct,
-        "0 = dead straight. Higher: the streets between main roads bow in smooth curves (everywhere in an Organic city, past downtown in a Mixed one, never in a Grid one)"),
+        "0 = a ruled grid. Any more and the whole street net drifts in long waves, main roads with it. Higher: the streets between main roads bow as well (everywhere in an Organic city, past downtown in a Mixed one, never in a Grid one)"),
       sl("follow_hills", "Streets follow the hills", 0, 1, 0.05, pct,
         "On sloping ground: a street across the slope runs along the hillside, one up it winds, and local streets too steep to climb are left out. 0 = the grid ignores the hills. Needs natural ground under the cities; never in a Grid city"),
       sl("green_lots", "Lots left green", 0, 0.6, 0.05, pct, "Share of every block's lots planted with trees instead of built on"),

@@ -351,7 +351,9 @@ layer's spacing; that spacing only applies to scattered lots.
   beach: with none drawn, its gentlest park or row of homes becomes one.
 - **Streets and the made shore:** streets are laid on the made ground. Where the land was cut down by more than
   2 m for it, no street runs (it would stand on a ramp above the promenade): streets end at the top of the bank.
-  A bridge keeps both its ends. No street-grid lot stays on a made shore, and no other layer places there.
+  A bridge keeps both its ends, and the street that leads to it: from an end that would be left bare, the
+  shortest way inland to a junction that stays is kept. No street-grid lot stays on a made shore, and no other
+  layer places there.
 - **Heights:** everything at the water stands where it was built and levels no ground: piers on piles, floating
   docks, boats, slips, floating homes, quay walls, breakwaters, sand, promenades (`OWN_HEIGHT`, `NO_PAD`).
   Earlier they were re-seated on the ground under them, which had been raised to them: a pier became a strip
@@ -555,9 +557,34 @@ Roads define the city, blocks are what roads enclose, lots are cut from blocks, 
    - **Streets bow, they never jog** (`wobble`, 0 to 0.45 of a block, default 0.12; `_bow`): a street between
      two main roads follows one long seeded wave, so it bends as a whole and the streets beside it bend with it.
      0 = dead straight. A Grid city never bows, a Mixed one only past downtown, an Organic one everywhere.
-   - In a Mixed city the main roads (collectors, the axes) stay dead straight. In an Organic one they bow with
-     the rest, except within a few blocks of a freeway: interchanges land on straight roads, and the two
-     streets under a viaduct never move.
+   - In an Organic city the main roads (collectors, the axes) bow with the rest, except within a few blocks of
+     a freeway: interchanges land on straight roads, and the two streets under a viaduct never move.
+   - **The whole street net drifts** (`citygen.meander`). Where streets may bow at all (`wobble` above 0, not a
+     Grid city) every crossing also moves with one smooth field of three long waves (7 to 14 blocks), by up
+     to half a block, main roads with the rest:
+     - a main road swings a block's width over half a kilometre and never rules a line across the city;
+     - blocks keep at least 60 % of their size, and no crossing turns more than about 15 degrees;
+     - nothing moves downtown in a Mixed city (half as far there in an Organic one) or within 1.5 blocks of
+       a freeway;
+     - a wobble of 3 % already gives most of it. Before, an Organic city with a low wobble still had a
+       ruled main road on every fourth line, and every four of them made a square.
+   - **Streets left out** (`citygen._street_gaps`, with `superblocks`, never in a Grid city). Past downtown
+     every block was ringed by its own square of streets, a subdivision or a complex inside each. Now many of
+     the streets between two neighbouring blocks are not built:
+
+     | Between | Share left out |
+     |---|---|
+     | two blocks of the neighbourhoods round downtown | 35 % |
+     | two blocks of the suburbs | 50 % |
+     | two whole subdivisions (superblocks) | 55 % |
+
+     The land is still parted along them (`city_layout` cuts the blocks with them, side kind `--`). Each
+     block is laid out on its own ground, 1.5 m short of the line, and turned so that it opens onto a side
+     that has a street. A `collector` subdivision's streets run on into the next one's. Never left out:
+     downtown, the two axes, the two streets beside a freeway, an interchange's cross road, a block's last
+     two streets, a crossing's last two roads, the street that holds the network together.
+   - **One network** (`citygen.one_network`): a bridge with no street at one of its ends is not built, and
+     fewer than 8 junctions joined to nothing go with it.
    - **Streets follow the hills** (`follow_hills`, 0 to 1, default 0.8; `citygen.plan_hills`, kept on the city
      as `hills`). On sloping ground the grid is eased onto the hill before any street is laid:
      - a street across a slope moves up or down it, round after round, toward the height of its neighbours
@@ -577,9 +604,31 @@ Roads define the city, blocks are what roads enclose, lots are cut from blocks, 
 3. **Blocks -> lots** (`parcels.py`, Vanegas 2012): faces of the street graph, inset by road half width +
    3.8 m sidewalk zone, cut into back-to-back strips then 16 m frontages (`LOT_W_CM` / `LOT_D_CM` 16 x 35 m);
    every lot fronts a street square on; corner lots front their short side; stored as each city's `lots`.
+   - Every face is walked whole (`parcels.blocks`). The walk once stopped at 64 corners: stretches of the
+     city's outer edge came back as blocks closed across the streets inside them, and a subdivision was laid
+     out over streets that were already there.
+   - A dead-end street inside a block: the block's area goes round it (`parcels.inset`).
+   - A block that fills less than 86 % of its own box (`parcels.solid`: an L, a wedge) gets plain lots. A
+     neighbourhood is drawn in the block's box, and whatever it lays out is kept inside the block's real
+     outline (`neighbourhoods.generate`: lots, private streets, parking, pools, trees).
+   - **Courts** (`citygen._court`): a block of plain lots is built along its streets only. What its lots
+     leave free (a court 130 m across in a 200 m block) is planted, a tree about every 10 m, as Garden trees.
+   - **Lots along open street sides** (`citygen.frontage_lots`): only land ringed by streets is a block, so
+     the land beyond a city's last streets and along every dead end had no lot. Each street side that no
+     block lies on gets its own row of 16 x 30 m lots: inside the city's edge, off the water, every other
+     street, a shipyard, an airport and a keep zone.
 4. **Buildings**: layers narrower than 25 m (houses, shops, apartments, gas stations) fill lots, one per lot,
-   set back from the front lot line; wider ones (offices, towers, civic, mansions, industry) take road frontage
-   first and the lot fill keeps clear of them.
+   set back from the front lot line. Wider ones (offices, towers, mansions, industry) first take every free lot
+   of their district that they fit, then road frontage.
+   - Lots are cut for what is built on them (`citygen.ZONE_LOT_W_CM`): 28 m of frontage downtown, 40 m in the
+     industrial zone, 16 m everywhere else. An industrial block is always plain lots.
+   - A lot keeps clear of earlier buildings by its own rectangle against theirs, never by the wide circle
+     round a big building (that left the lots beside every mansion and office empty).
+   - **No lot is left with nothing.** A lot no layer built on (too shallow for a house behind its front yard, a
+     corner nothing fits) gets a tree, two when it is deep, as Infill trees. Before, half the downtown lots
+     stood empty: only towers and office blocks build downtown, and they only knew road frontage.
+   - Nothing is planned in a keep zone (`city_layout(clear=...)`): no lot, private street, parking or yard. A
+     block a keep zone reaches into gets plain lots along the streets it still has.
 5. **Lot grading** (`_lot_ground`): level pad at the corners' mean, a foundation
    on every building (deeper where the ground falls away), the uphill side held by the graded ground, a
    full-width frontage apron (shops, offices, apartments, civic) or walkway + driveway (houses) to the kerb.
@@ -593,7 +642,7 @@ follows the same list and never invents its own layout. In short: highways only 
 where such a highway meets a city (180 m from its gate, highway > 900 m), never alone, their cross road joined to
 the city's streets; freeways bridge 7.5 m over streets they cross; bridges / ramps / decks sit over the highest
 ground within 15 m and never shape the terrain; keep zones are never built on; lots are levelled with plinths,
-walkways and driveways; forests are dense patches in a belt round each city; PCG is tiled and incremental; one
+walkways and driveways; forests are dense patches over the whole map, densest round the cities; PCG is tiled and incremental; one
 editor call does little.
 Fully automatic for anyone who installs it: Generate (World tab) makes the cities, roads, terrain AND every
 starter PCG layer (`full_city` preset, added when the world has none); Push roads, then Push city. No AI step.
@@ -679,6 +728,25 @@ Example: Flower beds in the suburbs: `{"name": "Flower beds", "kind": "scatter",
 "density": 0.5, "cover": 0.4, "meshes": [{"path": "/MyIsland/Garden/SM_Tulips", "weight": 3}],
 "avoid": ["Houses"], "order": 20}`.
 
+- **Forests cover the whole map.** A foliage layer is as dense as its `density` within `reach` city radii of a
+  city. Beyond that it goes on over the whole map: just as dense where the layer's budget allows (200 000 points
+  kept per layer), else thinner, never under a fifth (`pcg_layers.FAR_KEEP`). `reach` 0 = one density everywhere.
+  It once stopped at `reach`: a ring of forest round each city and bare hills over the rest of the map.
+- **Forests grow on a city's leftover land** (`pcg_layers.open_land`). A foliage or scatter layer set to
+  `outside` also places inside a planned city wherever nothing was planned: no lot within 4 m, no block with a
+  layout of its own (a subdivision, a complex, a park), no planned ground or parking lot, no airfield.
+- **Nothing stands on a road** (`pcg_layers.clear_roads`, last of all). Every layer is placed by its own rule, and
+  each rule knew some roads and not others. So everything placed is checked once more against every road
+  surface (`surface_samples`: every road and street, a junction's arms, every private street):
+
+  | Placed thing | Goes when |
+  |---|---|
+  | Tree, bush, rock (any layer, garden and infill trees too) | within half a metre of a road surface |
+  | Street furniture (lamps, bins, hydrants, benches, signs, lights) | it stands a metre into one |
+  | Buildings, bridge parts, stalls, aprons, sidewalk corners | never looked at |
+
+  While layers are placed, a junction's arms are road as well (`arm_samples`), and no tree, lamp or bench is
+  placed on a private street. `clear_buildings`: no tree, bush or rock inside a building.
 - `road_network_pcg_preset(net_id, preset="full_city")` adds starter layers (meshes empty): nature (Trees, Rocks,
   Bushes and grass), every building type (Skyscrapers and Office blocks downtown; Hospitals and schools, Apartments
   and Shops in the normal ring; Factories and Warehouses in each city's industrial wedge; Gas stations; Houses in

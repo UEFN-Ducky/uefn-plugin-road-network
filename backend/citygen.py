@@ -149,7 +149,8 @@ RULES = [
     "(hospital, school, city hall...). ground_fit.left_out counts them.",
     "Nothing stands on air and no loose wall slab holds anything up: ground roads carry their own 3 m side walls, "
     "a deck or ramp too low for piers stands on its approach wall, an uphill cut is graded ground.",
-    "Forests grow in dense patches with meadows between, in a belt around each city; parks are dense groves.",
+    "Forests grow in dense patches with meadows between, over the whole map (densest round the cities) and on the "
+    "land a city leaves free; parks are dense groves.",
     "PCG is tiled (400 m) and incremental: a change rebuilds only the tiles it touches.",
     "Urban freeways are planned before a city's blocks (from 600 m radius one north-south, from 2 km a second "
     "east-west one and a directional stack): mid-block on the city's grid, a viaduct 7.5 m (one level) over the "
@@ -228,7 +229,9 @@ OPTIONS = {
     # planned grid (Parish & Mueller hierarchy; real cities ~80 % planned). A street between two main roads may
     # bow off its grid line in one smooth curve (a seeded wave along the whole street, _bow): it never jogs from
     # intersection to intersection, and its neighbours bow with it, so blocks keep their width. 0 = dead straight
-    "wobble": (0.12, 0.0, 0.45),       # how far a street bows off its grid line (share of a block)
+    # how far a street bows off its grid line (share of a block). Any at all also lets the whole street net
+    # drift in long waves, main roads with it (meander); 0 is a ruled grid
+    "wobble": (0.12, 0.0, 0.45),
     # on sloping ground the streets follow the hills (plan_hills): along the hillside across a slope, winding up
     # it, the too-steep ones left out. 0 = the grid ignores the hills; never in a Grid city
     "follow_hills": (0.8, 0.0, 1.0),
@@ -1025,6 +1028,9 @@ def plan_hills(cities: list, ground, opts: dict | None = None) -> None:
                 ease = _smoothstep(down, down + 0.15, share) if style == "mixed" else 1.0
                 near = min(abs(ix - fw[0]), abs(iy - fw[1])) if fw else 9.0
                 free[i][j] = ease * _smoothstep(1.5, 3.5, near)
+        # (where each crossing stands before the hills move it: the grid, bowed and drifted)
+        local = _grid_local(c, co)[0]
+        base = [[local(i - kx, j - ky)[:2] for j in range(ny)] for i in range(nx)]
         du = [[0.0] * ny for _ in range(nx)]  # cm, along the grid's two directions
         dv = [[0.0] * ny for _ in range(nx)]
         h = [[None] * ny for _ in range(nx)]
@@ -1035,7 +1041,7 @@ def plan_hills(cities: list, ground, opts: dict | None = None) -> None:
             live = 0.0
             for i in range(nx):
                 for j in range(ny):
-                    lx, ly = (i - kx) * bx + du[i][j], (j - ky) * by + dv[i][j]
+                    lx, ly = base[i][j][0] + du[i][j], base[i][j][1] + dv[i][j]
                     h[i][j] = H(lx, ly)
                     near = (H(lx + e, ly), H(lx - e, ly), H(lx, ly + e), H(lx, ly - e))
                     if h[i][j] is None or None in near:
@@ -1064,8 +1070,8 @@ def plan_hills(cities: list, ground, opts: dict | None = None) -> None:
                         if not nb:
                             continue
                         p, q = nb[0], nb[-1]
-                        tx = (q[0] - p[0]) * bx + du[q[0]][q[1]] - du[p[0]][p[1]]
-                        ty = (q[1] - p[1]) * by + dv[q[0]][q[1]] - dv[p[0]][p[1]]
+                        tx = base[q[0]][q[1]][0] - base[p[0]][p[1]][0] + du[q[0]][q[1]] - du[p[0]][p[1]]
+                        ty = base[q[0]][q[1]][1] - base[p[0]][p[1]][1] + dv[q[0]][q[1]] - dv[p[0]][p[1]]
                         tl = math.hypot(tx, ty)
                         if tl < 1:
                             tx, ty, tl = di * bx, dj * by, math.hypot(di * bx, dj * by)
@@ -1100,7 +1106,7 @@ def plan_hills(cities: list, ground, opts: dict | None = None) -> None:
                     dv[i][j] += HILL_ZIG * by * (1 if (i - kx) % 2 else -1) * (a * a / (s * s)) * steep
 
         def spot(i, j):
-            return (i - kx) * bx + du[i][j], (j - ky) * by + dv[i][j]
+            return base[i][j][0] + du[i][j], base[i][j][1] + dv[i][j]
 
         def bend(i, j, di, dj):  # how far the street through three crossings turns at the middle one, degrees
             p0, p1, p2 = spot(i - di, j - dj), spot(i, j), spot(i + di, j + dj)
@@ -1126,15 +1132,40 @@ def plan_hills(cities: list, ground, opts: dict | None = None) -> None:
                       "gu": _pack(v for row in gu for v in row), "gv": _pack(v for row in gv for v in row)}
 
 
-def street_grid(city: dict, o: dict) -> tuple:
-    """The city's street grid before anything is cut from it: (at, kx, ky). at(ix, iy) -> (x, y, share): where
-    grid lines ix and iy cross in world cm, and that spot's share of the way to the city's edge (zone_share of
-    the plain grid point). Blocks are block_m wide and block_m x block_ratio long. Streets bow by `wobble` of a
-    block, eased in past downtown in a mixed city and nowhere in a grid city. In a mixed city the main roads
-    (collectors and the axes) stay dead straight; in an organic one they bow too, except within a few blocks of
-    a freeway: interchanges land on straight roads, and the two streets under a viaduct never move. On sloping ground the streets also follow the hills, main roads too: every crossing moves by
-    `follow_hills` of what the hillside asks (city['hills'], plan_hills: nothing beside a freeway, nothing
-    downtown in a mixed city)."""
+MEANDER = 0.5  # where a city is not a strict grid its whole street net drifts off the grid's lines by up to this
+# share of a block, main roads and the streets between them together ...
+MEANDER_WAVES = ((10.0, 14.0, 0.5), (7.0, 10.0, 0.3), (7.0, 10.0, 0.2))  # ... as three waves (shortest, longest in
+# blocks; its share): a road swings a block's width over half a kilometre, never more than ~15 degrees at a crossing
+MEANDER_FROM = 0.03  # ... in full as soon as streets may bow at all (`wobble` of this is most of it; 0 is a ruled grid)
+
+
+def meander(city: dict, o: dict):
+    """(grid line ix, iy) -> (du, dv): how far that crossing drifts off the grid, in blocks, along the grid's two
+    directions. None in a strict grid city, or with `wobble` 0. One smooth field for the whole city, so
+    neighbouring streets move together: blocks keep their size (never under 60 % of it), no street kinks.
+    `wobble` alone bowed only the side streets, a few metres: the main roads of an Organic city still ruled a
+    square every fourth line (Nov 12 2026)."""
+    if city.get("style", "mixed") == "grid" or o["wobble"] <= 0:
+        return None
+    amount = MEANDER * (1.0 - math.exp(-o["wobble"] / MEANDER_FROM))
+    r = random.Random(f"meander:{city.get('seed', 1)}")
+    tau = 2 * math.pi
+    waves = []
+    for _axis in (0, 1):
+        ws = []
+        for lo, hi, share in MEANDER_WAVES:
+            lam, way, phase = r.uniform(lo, hi), r.uniform(0, math.pi), r.random()
+            ws.append((math.cos(way) / lam, math.sin(way) / lam, phase, share))
+        waves.append(ws)
+    return lambda ix, iy: tuple(amount * sum(k * math.sin(tau * (ix * a + iy * b + p)) for a, b, p, k in ws) for ws in waves)
+
+
+def _grid_local(city: dict, o: dict) -> tuple:
+    """(local, near_fw, fw_at). local(ix, iy) -> (x, y, share): where grid lines ix and iy cross, in cm from the
+    city's centre along its own two grid directions, before the hills move it, and that spot's share of the way
+    to the city's edge (zone_share of the plain grid point). near_fw(ix, iy): blocks from the nearest freeway
+    line. fw_at: (the grid line ix the north-south freeway runs along, the line iy of the east-west one), each
+    halfway between two streets, or None."""
     from . import freeways
     bx, by = block_xy(o)
     cx, cy, R, style = city["x"], city["y"], city["radius"], city.get("style", "mixed")
@@ -1149,8 +1180,7 @@ def street_grid(city: dict, o: dict) -> tuple:
         still_x, still_y = {fx, fx + 1}, {-fy - 1, -fy}
     off_x = lambda i: 0.0 if i in still_x else math.sin(math.pi * (i % ce) / ce)  # 0 on a main road, most
     off_y = lambda i: 0.0 if i in still_y else math.sin(math.pi * (i % ce) / ce)  # halfway between two
-    hills = city.get("hills") if style != "grid" else None
-    follow = float(o.get("follow_hills", 0.0)) if hills else 0.0
+    drift = meander(city, o)
 
     def near_fw(ix, iy):  # blocks from the nearest freeway line (what lands on a freeway is laid out straight)
         d = 9.0
@@ -1160,7 +1190,7 @@ def street_grid(city: dict, o: dict) -> tuple:
             d = min(d, abs(iy - (min(still_y) + 0.5)))
         return d
 
-    def at(ix: int, iy: int) -> tuple:
+    def local(ix: int, iy: int) -> tuple:
         lx, ly = ix * bx, iy * by
         share = zone_share(city, cx + c * lx - s * ly, cy + s * lx + c * ly)
         ease = 0.0 if style == "grid" else _smoothstep(down, down + 0.15, share) if style == "mixed" else 1.0
@@ -1174,6 +1204,40 @@ def street_grid(city: dict, o: dict) -> tuple:
                 kx_, ky_ = (0.0 if ix in still_x else max(kx_, main)), (0.0 if iy in still_y else max(ky_, main))
             lx += amount * bx * kx_ * bow_x(iy, ix)
             ly += amount * by * ky_ * bow_y(ix, iy)
+        if drift:
+            # ... and the whole net drifts (meander): nothing downtown in a Mixed city (half as far there in an
+            # Organic one), in full a quarter of the way further out; nothing beside a freeway
+            wide = _smoothstep(down, down + 0.25, share)
+            k = (wide if style == "mixed" else 0.5 + 0.5 * wide) * _smoothstep(1.5, 3.5, near_fw(ix, iy))
+            if k:
+                mu, mv = drift(ix, iy)
+                lx += k * bx * mu
+                ly += k * by * mv
+        return lx, ly, share
+    return local, near_fw, ((min(still_x) + 0.5) if still_x else None, (min(still_y) + 0.5) if still_y else None)
+
+
+def street_grid(city: dict, o: dict) -> tuple:
+    """The city's street grid before anything is cut from it: (at, kx, ky). at(ix, iy) -> (x, y, share): where
+    grid lines ix and iy cross in world cm, and that spot's share of the way to the city's edge (zone_share of
+    the plain grid point). Blocks are block_m wide and block_m x block_ratio long. Nowhere in a Grid city, and
+    never within a few blocks of a freeway (interchanges land on straight roads, and the two streets under a
+    viaduct never move), the streets leave the grid's lines three ways (_grid_local, plan_hills):
+      - they bow by `wobble` of a block: the side streets, and in an Organic city the main roads with them;
+      - the whole net drifts in long waves (meander), main roads too, so no road rules a line across the city
+        and no four of them a square. Past downtown in a Mixed city, everywhere in an Organic one;
+      - on sloping ground they follow the hills: every crossing moves by `follow_hills` of what the hillside
+        asks (city['hills'])."""
+    bx, by = block_xy(o)
+    cx, cy, R, style = city["x"], city["y"], city["radius"], city.get("style", "mixed")
+    turn = math.radians(orientation(city))
+    c, s = math.cos(turn), math.sin(turn)
+    local = _grid_local(city, o)[0]
+    hills = city.get("hills") if style != "grid" else None
+    follow = float(o.get("follow_hills", 0.0)) if hills else 0.0
+
+    def at(ix: int, iy: int) -> tuple:
+        lx, ly, share = local(ix, iy)
         if follow:
             hu, hv, _gu, _gv = hill_at(hills, ix, iy)
             lx += follow * bx * hu
@@ -1394,11 +1458,14 @@ def water_of(city: dict, opts: dict | None, wet):
     return lambda x, y: cw(x, y) or bool(wet and wet(x, y))
 
 
-def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | None = None) -> tuple:
+def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | None = None,
+               virtual: list | None = None) -> tuple:
     """Street network of one city: nodes {key: [x, y]}, edges [(a, b, kind)]. Real cities mix patterns
     (urban-design transect): a strict grid of short blocks in the core, a looser grid in the
     neighbourhoods, curving streets with cul-de-sacs in the suburbs, all inside an irregular outline.
-    Downtown and the two main axes are four-lane; suburbs are two-lane; the rest has pavements."""
+    Downtown and the two main axes are four-lane; suburbs are two-lane; the rest has pavements.
+    virtual (a list to fill): the streets left out between neighbouring blocks (_street_gaps), as
+    [node, node, [x, y], [x, y]]: no road, but still the line the land is parted into blocks along."""
     o = city_options(city, opts)
     down, normal = o["downtown"], max(o["normal"], o["downtown"])
     rnd = random.Random(city.get("seed", 1))
@@ -1456,6 +1523,9 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
             return big[g]
         edges = [e for e in edges if (e[0][0] if e[1][0] == e[0][0] else e[0][1]) % ce == 0
                  or not superblock((e[0][0] // ce, e[0][1] // ce))]
+        if style != "grid":
+            edges = _street_gaps(city, o, nodes, ring, edges, {g for g, yes in big.items() if yes}, virtual,
+                                 [ic["at"] for ic in fwp.interchanges if ic.get("b_axis")])
     hills = city.get("hills") if style != "grid" and o["follow_hills"] else None
     if hills:
         # no local street straight up a steep hillside: the ones that would climb steeper than STEEP_STREET are
@@ -1561,6 +1631,36 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
         look = waterfront.Made([city])
         spans = {n for e in edges if len(e) > 3 and e[3] for n in e[:2]}
         drop = {n for n, p in nodes.items() if n not in spans and look.no_street(p[0], p[1])}
+        if drop and spans:
+            # ... nor is its own street: a bridge that lands on a made shore kept its end there and lost every
+            # street that led to it, so it stood at the water joined to nothing (Nov 12 2026). From each end
+            # that would be left bare, the shortest way inland to a junction that stays is kept.
+            adj: dict = {}
+            for e in edges:
+                if not (len(e) > 3 and e[3]):
+                    adj.setdefault(e[0], []).append(e[1])
+                    adj.setdefault(e[1], []).append(e[0])
+            for end in sorted(spans, key=str):
+                if any(m not in drop for m in adj.get(end, ())):
+                    continue  # a street still leaves it
+                came, todo, found = {end: None}, [end], None
+                while todo and found is None:
+                    nxt = []
+                    for n in todo:
+                        for m in adj.get(n, ()):
+                            if m in came:
+                                continue
+                            came[m] = n
+                            if m not in drop and m not in spans:
+                                found = m
+                                break
+                            nxt.append(m)
+                        if found is not None:
+                            break
+                    todo = nxt
+                while found is not None:
+                    drop.discard(found)
+                    found = came[found]
         if drop:
             edges = [e for e in edges if e[0] not in drop and e[1] not in drop]
             used = {n for e in edges for n in e[:2]}
@@ -1648,7 +1748,182 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
         edges = [e for k, e in enumerate(edges) if k not in lost]
         used = {n for e in edges for n in e[:2]}
         nodes = {n: p for n, p in nodes.items() if n in used}
+    nodes, edges = one_network(nodes, edges)
+    if virtual:
+        # the land is not parted where it is no land of the city's blocks: water, a shipyard, an airport, a made
+        # shore, a freeway's ramps (the streets there are gone the same way)
+        from . import airport, shipyard, waterfront
+        look = waterfront.Made([city]) if city.get("shores") else None
+
+        def gone(v) -> bool:
+            for p in (v[2], v[3]):
+                if (wet and wet(p[0], p[1])) or (look and look.no_street(p[0], p[1])) or \
+                        any(shipyard.reserved(y, p[0], p[1], 1500) if y.get("z") is not None
+                            else shipyard.inside(y, p[0], p[1], -2000) for y in yards) or \
+                        any(airport.inside(a, p[0], p[1], 3000) for a in fields):
+                    return True
+            return bool(fw.lines and fw.street_blocked(v[2], v[3], 500.0))
+        virtual[:] = [v for v in virtual if not gone(v)]
     return nodes, edges
+
+
+# Of the streets that would run between two neighbouring blocks, how many are not built: between two whole
+# subdivisions (superblocks), between two blocks of the suburbs, between two of the neighbourhoods round downtown
+GAPS = {"super": 0.55, "housing": 0.5, "normal": 0.35}
+
+
+def _street_gaps(city: dict, o: dict, nodes: dict, ring: dict, edges: list, supers: set, virtual: list | None,
+                 interchanges: list | None = None) -> list:
+    """The street edges without the streets that are not built. Past downtown every block of the grid was ringed
+    by its own square of roads, a subdivision or a complex inside each: housing on top of a chequerboard. Real
+    neighbourhoods lie side by side with nothing but back fences between them. So of the streets between two
+    neighbouring blocks many are left out (GAPS): each block is still laid out on its own ground and turned to a
+    side that has a street (city_layout, neighbourhoods), and the streets that remain take the traffic.
+    Never: downtown, a stretch of the city's two axes, the two streets beside a freeway, an interchange's cross
+    road within three blocks of it (`interchanges`: where each one is), a block's last two streets, a crossing's
+    last two roads, the street that holds the network together. The stretches left out are added to `virtual`. nodes: the grid crossings {(ix, iy): ...}; ring: each
+    one's share of the way to the city's edge; supers: the collector cells that are one subdivision."""
+    ce, down, normal = o["collector_every"], o["downtown"], max(o["normal"], o["downtown"])
+    at = {}
+    for e in edges:
+        at[(e[0], e[1])] = at[(e[1], e[0])] = e
+    fw_x, fw_y = _grid_local(city, o)[2]
+    bx, by = block_xy(o)
+    turn = math.radians(orientation(city))
+    cross = set()  # ('x' | 'y', grid line) of every interchange's cross road
+    for x, y in interchanges or []:
+        gx = ((x - city["x"]) * math.cos(turn) + (y - city["y"]) * math.sin(turn)) / bx
+        gy = (-(x - city["x"]) * math.sin(turn) + (y - city["y"]) * math.cos(turn)) / by
+        if fw_x is not None and abs(gx - fw_x) < 0.6:
+            cross.add(("y", round(gy)))
+        if fw_y is not None and abs(gy - fw_y) < 0.6:
+            cross.add(("x", round(gx)))
+    cells = {n for n in nodes if (n[0] + 1, n[1]) in nodes and (n[0], n[1] + 1) in nodes and (n[0] + 1, n[1] + 1) in nodes}
+    east = lambda c: ((c[0] + 1, c[1]), (c[0] + 1, c[1] + 1))  # the street between a cell and the one east of it
+    north = lambda c: ((c[0], c[1] + 1), (c[0] + 1, c[1] + 1))
+    block: dict = {}  # cell -> its block: the cells no street parts
+    members: list = []
+    for c in sorted(cells):
+        if c in block:
+            continue
+        block[c], todo, got = len(members), [c], []
+        while todo:
+            u = todo.pop()
+            got.append(u)
+            for v, e in (((u[0] + 1, u[1]), east(u)), ((u[0], u[1] + 1), north(u)),
+                         ((u[0] - 1, u[1]), east((u[0] - 1, u[1]))), ((u[0], u[1] - 1), north((u[0], u[1] - 1)))):
+                if v in cells and v not in block and e not in at:
+                    block[v] = len(members)
+                    todo.append(v)
+        members.append(got)
+    sides: dict = {}  # (block, block, 'x' | 'y', grid line) -> the street between the two, piece by piece
+    real = [set() for _ in members]  # each block's sides that have a street
+    for c in sorted(cells):
+        me = block[c]
+        for v, e, way, line in (((c[0] + 1, c[1]), east(c), "x", c[0] + 1), ((c[0], c[1] + 1), north(c), "y", c[1] + 1)):
+            if e in at and v in cells and block[v] != me:
+                key = (min(me, block[v]), max(me, block[v]), way, line)
+                sides.setdefault(key, []).append(e)
+                real[me].add(key)
+                real[block[v]].add(key)
+            elif e in at and v not in cells:
+                real[me].add((me, None, way, line))
+        for v, e, way, line in (((c[0] - 1, c[1]), east((c[0] - 1, c[1])), "x", c[0]), ((c[0], c[1] - 1), north((c[0], c[1] - 1)), "y", c[1])):
+            if v not in cells and e in at:
+                real[me].add((me, None, way, line))
+    zone, whole = [], []
+    for got in members:
+        lo = min(ring[n] for c in got for n in (c, (c[0] + 1, c[1]), (c[0], c[1] + 1), (c[0] + 1, c[1] + 1)))
+        zone.append("housing" if lo > normal else "normal" if lo > down else "core")
+        c0 = min(got)
+        whole.append(len(got) == ce * ce and (c0[0] // ce, c0[1] // ce) in supers)
+    todo = []
+    for key in sorted(sides):
+        ra, rb, way, line = key
+        es = sorted(sides[key])
+        if line == 0 or "core" in (zone[ra], zone[rb]) or min(len(members[ra]), len(members[rb])) < 4:
+            continue  # an axis, downtown, or a block of the fine grid
+        beside, across = (fw_x, fw_y) if way == "x" else (fw_y, fw_x)  # the freeway it runs along, the one it meets
+        if any(p[1] != q[0] for p, q in zip(es, es[1:])) or (beside is not None and abs(line - beside) < 1.0) or \
+                ((way, line) in cross and min(abs(n[1 if way == "x" else 0] - across) for e in es for n in e) < 3.5):
+            continue  # (not one straight stretch; a street beside a freeway; an interchange's cross road)
+        rate = GAPS["super"] if whole[ra] and whole[rb] else GAPS["housing"] if zone[ra] == zone[rb] == "housing" else GAPS["normal"]
+        # (each stretch has its own draw, from where it is: a change in one corner of the city does not re-deal
+        # the streets of the rest)
+        draw = random.Random(f"gap:{city.get('seed', 1)}:{way}:{line}:{es[0][0]}").random()
+        if draw < rate:
+            todo.append((draw, key, es[0][0], es[-1][1], [at[e] for e in es]))
+    todo.sort(key=lambda t: (t[0], t[1][2], t[1][3], t[2]))
+    adj: dict = {}
+    for e in edges:
+        adj.setdefault(e[0], set()).add(e[1])
+        adj.setdefault(e[1], set()).add(e[0])
+    gone = set()
+    for _draw, key, a, b, es in todo:
+        if len(real[key[0]]) < 3 or len(real[key[1]]) < 3 or len(adj[a]) < 3 or len(adj[b]) < 3:
+            continue
+        cut = {(e[0], e[1]) for e in es} | {(e[1], e[0]) for e in es}
+        seen, walk = {a}, [a]
+        while walk and b not in seen:  # still one network without it?
+            n = walk.pop()
+            for m in adj[n]:
+                if m not in seen and (n, m) not in cut:
+                    seen.add(m)
+                    walk.append(m)
+        if b not in seen:
+            continue
+        real[key[0]].discard(key)
+        real[key[1]].discard(key)
+        for e in es:
+            adj[e[0]].discard(e[1])
+            adj[e[1]].discard(e[0])
+            gone.add(id(e))
+            if virtual is not None:
+                virtual.append([e[0], e[1], list(nodes[e[0]][:2]), list(nodes[e[1]][:2])])
+    return [e for e in edges if id(e) not in gone]
+
+
+LOOSE_MIN = 8  # a part of the street network that nothing joins to the rest is kept only with this many junctions
+
+
+def one_network(nodes: dict, edges: list) -> tuple:
+    """The streets as one network: a bridge with no street at one of its ends is not built (it led from a street
+    to nothing, or stood on its own between two shores), and a few streets nothing joins to the rest of the
+    city go too (a district of its own across the water stays)."""
+    while True:
+        deg: dict = {}
+        for e in edges:
+            deg[e[0]] = deg.get(e[0], 0) + 1
+            deg[e[1]] = deg.get(e[1], 0) + 1
+        bare = {id(e) for e in edges if len(e) > 3 and e[3] and (deg[e[0]] == 1 or deg[e[1]] == 1)}
+        if not bare:
+            break
+        edges = [e for e in edges if id(e) not in bare]
+    adj: dict = {}
+    for e in edges:
+        adj.setdefault(e[0], []).append(e[1])
+        adj.setdefault(e[1], []).append(e[0])
+    part: dict = {}
+    sizes = []
+    for n in adj:
+        if n in part:
+            continue
+        k, todo = len(sizes), [n]
+        part[n] = k
+        count = 0
+        while todo:
+            u = todo.pop()
+            count += 1
+            for m in adj[u]:
+                if m not in part:
+                    part[m] = k
+                    todo.append(m)
+        sizes.append(count)
+    if len(sizes) > 1:
+        main = max(range(len(sizes)), key=lambda k: sizes[k])
+        edges = [e for e in edges if part[e[0]] == main or sizes[part[e[0]]] >= LOOSE_MIN]
+    used = {n for e in edges for n in e[:2]}
+    return {n: p for n, p in nodes.items() if n in used}, edges
 
 
 def _dist_seg(p, a, b):
@@ -2292,18 +2567,44 @@ def access_actor(city: dict, rows: list, ground, folder: str) -> dict:
 COLLECTOR_ROWS = 0.5  # of the suburbs' rows of blocks, how many share one winding street from block to block
 SUPERBLOCK_SHARE = 0.7  # of the suburbs' whole collector cells, how many are one subdivision with no public street inside
 LOT_W_CM, LOT_D_CM = 1600.0, 3500.0  # a lot: 16 m frontage, up to 35 m deep (two back to back in a block)
+# ... wider where what is built there is wider: an office block or a tower downtown (a 16 m lot fits neither, and
+# every downtown lot between two towers stood empty), a warehouse or a factory in the industrial zone
+ZONE_LOT_W_CM = {"downtown": 2800.0, "industrial": 4000.0}
+
+
+NO_ROAD = "--"  # a block's side where the street was not built (_street_gaps): the next block lies right there
+NO_ROAD_INSET = 150.0  # ... so the block reaches to 1.5 m short of that line (back fences 3 m apart), no sidewalk
+SOLID_MIN = 0.86  # a block that fills less of its own box than this (an L, a wedge, one a dead end reaches deep into)
+# is cut into plain lots along its streets: a neighbourhood is laid out in the box
 
 
 def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, keep: list | None = None,
-                water: dict | None = None) -> dict:
+                water: dict | None = None, clear: list | None = None) -> dict:
     """BlockGenerator + neighbourhoods: every block of the city's street grid becomes either plain street-fronting
     lots (parcels) or one neighbourhood (neighbourhoods.TYPES: subdivisions with private streets, apartment
-    complexes with parking), picked per block from the city's seed and weighted by its district ring.
-    Lots: [[x, y, yaw, width_cm, depth_cm, front x, front y, role ('' = any layer), footprint]]."""
+    complexes with parking), picked per block from the city's seed and weighted by its district ring. Then
+    every street side that no block lies on gets a row of lots of its own (frontage_lots): the land between
+    the last street and the city's edge, and round every dead end, is built on like any other.
+    Lots: [[x, y, yaw, width_cm, depth_cm, front x, front y, role ('' = any layer), footprint]].
+    keep: the planned facilities to keep where they are; clear: the world's keep zones (nothing is laid there)."""
     from . import neighbourhoods as nb
     from . import parcels
     o = city_options(city, opts)
-    nodes, edges = city_graph(city, opts, wet)
+    unbuilt: list = []
+    nodes, edges = city_graph(city, opts, wet, virtual=unbuilt)
+    # the land is parted into blocks along every street, and along the streets that were not built between two
+    # neighbouring blocks (_street_gaps): each is still laid out on its own ground, with nothing between it and
+    # the next
+    cut_nodes, cut_edges = nodes, edges
+    if unbuilt:
+        cut_nodes, cut_edges = dict(nodes), list(edges)
+        have = {(e[0], e[1]) for e in edges} | {(e[1], e[0]) for e in edges}
+        for a, b, pa, pb in unbuilt:
+            if (a, b) not in have:
+                cut_nodes.setdefault(a, pa)
+                cut_nodes.setdefault(b, pb)
+                cut_edges.append([a, b, NO_ROAD])
+    cut_half = {**HALF, NO_ROAD: NO_ROAD_INSET - parcels.SIDEWALK_CM}
     wet = water_of(city, o, wet)  # canals are water too: no lot in them
     rnd = random.Random(f"lots:{city.get('seed', 1)}")
     fw = freeway_plan(city, o)
@@ -2313,7 +2614,26 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
     zones = [z for z in city.get("zones") or [] if isinstance(z, dict) and "x" in z and "y" in z]
     in_wedge = zoning(city, o)[1]
     PARTS = ("lots", "streets", "parking", "stalls", "pads", "trees", "fences", "pools")
-    for area in parcels.block_areas(nodes, edges, HALF):
+    fronted: set = set()  # (node, next node) of every street side a block lies on
+    meets: set = set()  # the middle of every block side with no street: where two subdivisions' streets may meet
+    ce = o["collector_every"]
+    crossing = lambda n: isinstance(n, tuple) and len(n) == 2 and isinstance(n[0], int) and n[0] % ce == 0 and n[1] % ce == 0
+    for area, sides in parcels.block_faces(cut_nodes, cut_edges, cut_half):
+        fronted.update((a, b) for a, b, _k in sides)
+        # where this block has no road on a side: that side's middle (each stretch from one main-road crossing
+        # to the next), where its streets meet the neighbour's; and the lines no lot may front
+        ghosts = [(cut_nodes[a][:2], cut_nodes[b][:2]) for a, b, k in sides if k == NO_ROAD]
+        open_mids, run = [], []
+        start = next((i for i, (a, _b, k) in enumerate(sides) if k != NO_ROAD or crossing(a)), 0) if ghosts else 0
+        for a, b, k in (sides[start:] + sides[:start] + [(None, None, None)] if ghosts else ()):
+            if k == NO_ROAD:
+                run = (run or [a]) + [b]
+            if run and (k != NO_ROAD or crossing(b)):
+                m = len(run) // 2  # (the same point from either block: the middle crossing, or the middle of the middle piece)
+                p, q = cut_nodes[run[m]], cut_nodes[run[m] if len(run) % 2 else run[m - 1]]
+                open_mids.append([round((p[0] + q[0]) / 2), round((p[1] + q[1]) / 2)])
+                run = []
+        meets.update((p[0], p[1]) for p in open_mids)
         cx, cy = sum(p[0] for p in area) / len(area), sum(p[1] for p in area) / len(area)
         share = zone_share(city, cx, cy)
         ring = "core" if share <= down else "normal" if share <= normal else "housing"
@@ -2322,19 +2642,31 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
             ux, uy = -uy, ux
         row = round((cx * uy - cy * ux) * (1 if ux > 0 else -1) / 6000)  # blocks side by side along it share a row
         kind = nb.pick(ring, rnd) if ring != "core" and min(L, W) >= nb.MIN_SIDE else "parcels"
-        cut = bool(fw.lines and fw.blocked(cx, cy, 0.5 * max(L, W)))
+        # (a block the freeway cuts gets plain lots, the ones clear of it kept; so does one that is no near
+        # rectangle: a neighbourhood drawn in its box would not fit it)
+        cut = bool(fw.lines and fw.blocked(cx, cy, 0.5 * max(L, W))) or parcels.solid(area) < SOLID_MIN
+        if clear and not cut:
+            # ... and one that a keep zone reaches into: nothing is laid in the zone, and what a neighbourhood has
+            # left outside it is half a layout (its entrance gone, a block bare beside the zone)
+            cut = any(in_keep(clear, p[0], p[1], 2000) for p in area) or in_keep(clear, cx, cy, 2000) or \
+                any(_inside(area, x, y) for k in clear for x in (k["x0"], k["x1"]) for y in (k["y0"], k["y1"]))
         if cut:
             kind = "parcels"
         elif ring != "core" and min(L, W) >= nb.BIG_SIDE:
             kind = "collector"  # a superblock: plain lots would be landlocked in its middle
         elif ring == "housing" and kind != "parcels" and \
                 random.Random(f"row:{city.get('seed', 1)}:{row}").random() < COLLECTOR_ROWS:
-            kind = "collector"  # a whole row of suburb blocks: the one winding street runs on through them all  # a block the freeway cuts gets plain lots, the ones clear of it kept
-        plain = lambda r: {"lots": [[x, y, yaw, w, d, fx, fy, "", False]
-                                    for x, y, yaw, w, d, _poly, fx, fy in parcels.lots_in(area, LOT_W_CM, LOT_D_CM, r)]}
-        # the block as the city's own plan lays it, on the city's shared random as always ...
-        add = plain(rnd) if kind == "parcels" else nb.generate(area, kind, rnd)
+            kind = "collector"  # a whole row of suburb blocks: the one winding street runs on through them all
         zone = "downtown" if ring == "core" else "industrial" if in_wedge(cx, cy) else ring
+        if zone == "industrial":
+            kind = "parcels"  # industry stands on plain lots along the streets: no subdivision among the factories
+        plain = lambda r, z: {"lots": [[x, y, yaw, w, d, fx, fy, "", False]
+                                       for x, y, yaw, w, d, _poly, fx, fy in parcels.lots_in(area, ZONE_LOT_W_CM.get(z, LOT_W_CM), LOT_D_CM, r)
+                                       # (no lot faces a side where no road was built)
+                                       if not any(_dist_seg((fx, fy), p, q) < NO_ROAD_INSET + 150 for p, q in ghosts)]}
+        laid = lambda k, r: nb.generate(area, k, r, joins=open_mids if k == "collector" else None, closed=ghosts)
+        # the block as the city's own plan lays it, on the city's shared random as always ...
+        add = plain(rnd, zone) if kind == "parcels" else laid(kind, rnd)
         own = next((z for z in reversed(zones) if _inside(area, z["x"], z["y"])), None) if zones else None
         if own:
             # ... then the person's own choice for it, on a random of the block's own: the plan above was still
@@ -2350,16 +2682,55 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
                 kind, add = "park", {"trees": _grove(area, local)}
             elif want == "parcels" or (want in BLOCK_KINDS and want in nb.TYPES and not cut
                                        and min(L, W) >= nb.MIN_SIDE):
-                kind, add = want, plain(local) if want == "parcels" else nb.generate(area, want, local)
+                kind, add = want, plain(local, zone) if want == "parcels" else laid(want, local)
         # some of its lots are planted instead of built on: the block's own share, else the world's
         green = own["green"] if own and own.get("green") is not None else o["green_lots"]
         green = max(0.0, min(1.0, float(green)))
         if green and add.get("lots"):
             add = _green_lots(add, green, random.Random(f"green:{city.get('seed', 1)}:{round(cx)}:{round(cy)}"))
+        if kind == "parcels" and add.get("lots"):
+            # a block of plain lots is built along its streets only: whatever it leaves in the middle (a court
+            # 130 m across in a 200 m block, the strip along a side with no street) is planted, never bare
+            court = _court(area, add["lots"], random.Random(f"court:{city.get('seed', 1)}:{round(cx)}:{round(cy)}"))
+            if len(court) >= COURT_MIN:
+                add = {**add, "trees": list(add.get("trees") or []) + court}
         out["hoods"][kind] = out["hoods"].get(kind, 0) + 1
         for key in PARTS:
             out[key] += add.get(key) or []
         out["blocks"].append([round(cx), round(cy), kind, zone, [[round(x), round(y)] for x, y in area], round(green, 2)])
+    # two subdivisions with no road between them: where the street of one ends on the street of the other, the
+    # two are one street
+    ends: dict = {}
+    for s in out["streets"]:
+        for at_end in (0, -1):
+            ends.setdefault((s[at_end][0], s[at_end][1]), []).append(s)
+    for point in [k for k, v in ends.items() if len(v) == 2 and v[0] is not v[1]]:
+        a, b = ends[point]
+        if a not in out["streets"] or b not in out["streets"]:
+            continue
+        a_ = a if (a[-1][0], a[-1][1]) == point else a[::-1]
+        b_ = b if (b[0][0], b[0][1]) == point else b[::-1]
+        one = a_ + b_[1:]
+        out["streets"] = [s for s in out["streets"] if s is not a and s is not b] + [one]
+        for k, v in ends.items():
+            ends[k] = [one if s is a or s is b else s for s in v]
+    # ... and where the block beside it has no street to meet (a complex, a loop, plain lots), the street does
+    # not run up to a back fence: it stops 13 m short, in a turnaround
+    for s in out["streets"]:
+        for at_end, nxt in ((0, 1), (-1, -2)):
+            p, q = s[at_end], s[nxt]
+            if (p[0], p[1]) in meets:
+                d = math.dist(p[:2], q[:2]) or 1.0
+                back = min(1300.0, 0.9 * d)
+                s[at_end] = [round(p[0] + (q[0] - p[0]) * back / d), round(p[1] + (q[1] - p[1]) * back / d)]
+                out["pads"].append([s[at_end][0], s[at_end][1], nb.BULB])
+    out["lots"] += frontage_lots(city, o, nodes, edges, fronted, wet, clear)
+    if clear:
+        # a keep zone is left alone: no street is laid into it (generate), so no lot, private street, parking or
+        # yard is planned there either (lots stood there on streets that were never built, empty for good)
+        for key in ("lots", "parking", "stalls", "pads", "fences", "pools"):
+            out[key] = [r for r in out[key] if not in_keep(clear, r[0], r[1], 2000)]
+        out["streets"] = [s for s in out["streets"] if not any(in_keep(clear, p[0], p[1], 2000) for p in s)]
     if fw.lines:  # right of way: nothing built under or beside a freeway or ramp
         out["lots"] = [r for r in out["lots"] if not fw.blocked(r[0], r[1], 0.5 * max(r[3], r[4]))]
         for key in ("parking", "stalls", "pads", "trees", "fences", "pools"):
@@ -2393,6 +2764,15 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
         wf = waterfront.plan(city, water, out["lots"], ring_of, industrial, ground, nodes, pop)
         out["lots"], out["water"] = wf["lots"], wf["rows"]
         out["waterfront"] = {k: wf[k] for k in ("segments", "developments", "shoreline_m", "made_m", "report", "shipyards")}
+    # the blocks' own trees keep off what is not a block's ground: a made shore, a shipyard, an airfield, a keep zone
+    from . import airport, shipyard, waterfront
+    look = waterfront.Made([city]) if city.get("shores") else None
+    yards = (city.get("shipyards") or []) + (city.get("shipyards_near") or [])
+    if look or yards or city.get("airports") or clear:
+        out["trees"] = [t for t in out["trees"] if not (
+            (look and look.shelf(t[0], t[1], 300)) or in_keep(clear, t[0], t[1], 2000)
+            or any(shipyard.reserved(y, t[0], t[1], 500) for y in yards if y.get("z") is not None)
+            or any(airport.inside(a, t[0], t[1], 2000) for a in city.get("airports") or []))]
     if o["planner"] == "yes" and out["lots"]:
         from . import urban
         barriers = [(p, q) for ln in fw.lines for p, q in zip(ln["points"], ln["points"][1:])]
@@ -2419,6 +2799,86 @@ def city_lots(city: dict, opts: dict | None = None) -> list:
     return city_layout(city, opts)["lots"]
 
 
+FRONT_LOT_D_CM = 3000.0  # a lot along a street with open land behind it: 16 m of frontage, 30 m deep
+FRONT_END_CM = 1400.0  # ... none this close to the street's end at a junction (the corner stays clear)
+
+
+def frontage_lots(city: dict, o: dict, nodes: dict, edges: list, fronted: set, wet=None, clear: list | None = None) -> list:
+    """Lots along every side of a street that no block lies on. Only land ringed by streets is a block, so the
+    land behind a city's outermost streets, between two streets that never meet again and on both sides of a dead
+    end had no lot at all: a street ran through bare ground with a lamp every 30 m (in the owner's Valley a
+    quarter of each city, Nov 12 2026). Each such side now gets a row of lots facing it, as city_layout's:
+    inside the city's edge, off the water, off every other street, a shipyard, an airport and a keep zone
+    (`clear`), and never over a lot of the row round the corner. fronted: (node, next node) of every street
+    side a block lies on (its land is on the left going from the one to the other)."""
+    from . import airport, parcels, shipyard
+    yards = (city.get("shipyards") or []) + (city.get("shipyards_near") or [])
+    fields = city.get("airports") or []
+    near_cut = _near_cuts(city) if city.get("fw_near") else None
+    cell = 6000.0
+    road: dict = {}
+    for k, e in enumerate(edges):
+        line = [nodes[e[0]][:2]] + [v[:2] for v in (e[3] if len(e) > 3 and e[3] else [])] + [nodes[e[1]][:2]]
+        for p, q in zip(line, line[1:]):
+            n = max(1, int(math.dist(p, q) // (cell / 2)))
+            for i in range(n + 1):
+                key = (int((p[0] + (q[0] - p[0]) * i / n) // cell), int((p[1] + (q[1] - p[1]) * i / n) // cell))
+                road.setdefault(key, set()).add((k, tuple(p), tuple(q), HALF.get(e[2], 500.0)))
+
+    def on_road(x, y, own) -> bool:
+        gx, gy = int(x // cell), int(y // cell)
+        return any(k != own and _dist_seg((x, y), p, q) < half + 0.5 * parcels.SIDEWALK_CM
+                   for i in (-1, 0, 1) for j in (-1, 0, 1) for k, p, q, half in road.get((gx + i, gy + j), ()))
+    deg: dict = {}
+    for e in edges:
+        deg[e[0]] = deg.get(e[0], 0) + 1
+        deg[e[1]] = deg.get(e[1], 0) + 1
+    made: dict = {}  # the rows laid so far, by 60 m cell: (x, y, ux, uy)
+    W, D = LOT_W_CM, FRONT_LOT_D_CM
+    out = []
+    for k, e in enumerate(edges):
+        if (len(e) > 3 and e[3]) or e[2] == "DT":
+            continue  # a bridge, a dirt track
+        for a, b in ((e[0], e[1]), (e[1], e[0])):
+            if (a, b) in fronted:
+                continue
+            p, q = nodes[a], nodes[b]
+            L = math.dist(p[:2], q[:2])
+            if in_keep(clear, p[0], p[1], 2000) or in_keep(clear, q[0], q[1], 2000):
+                continue  # (the street itself is not laid there)
+            m0, m1 = (FRONT_END_CM if deg[a] > 1 else 300.0), (FRONT_END_CM if deg[b] > 1 else 300.0)
+            n = int((L - m0 - m1) // W)
+            if n < 1:
+                continue
+            ux, uy = (q[0] - p[0]) / L, (q[1] - p[1]) / L
+            nx, ny = -uy, ux  # the open land: on the left
+            back = HALF.get(e[2], 500.0) + parcels.SIDEWALK_CM
+            yaw = round(math.degrees(math.atan2(-ny, -nx)), 1)  # +X faces the street
+            for i in range(n):
+                t = m0 + (L - m0 - m1 - n * W) / 2 + (i + 0.5) * W
+                fx, fy = p[0] + ux * t + nx * back, p[1] + uy * t + ny * back
+                cx, cy = fx + nx * D / 2, fy + ny * D / 2
+                spots = [(cx, cy)] + [(fx + ux * s * (W / 2 - 50) + nx * d, fy + uy * s * (W / 2 - 50) + ny * d)
+                                      for s in (1, -1) for d in (50.0, D)]
+                if zone_share(city, cx, cy) > 1.0 or (city.get("yield_to") and yielded(city, cx, cy)):
+                    continue
+                if (wet and any(wet(x, y) for x, y in spots)) or in_keep(clear, cx, cy, 2500):
+                    continue
+                if any(shipyard.reserved(y_, cx, cy, 1500) if y_.get("z") is not None else shipyard.inside(y_, cx, cy, -2000)
+                       for y_ in yards) or any(airport.inside(f, cx, cy, 3000) for f in fields):
+                    continue
+                if any(on_road(x, y, k) for x, y in spots) or (near_cut and near_cut((cx, cy), (cx, cy), D / 2)):
+                    continue
+                gx, gy = int(cx // cell), int(cy // cell)
+                if any(abs((cx - x) * vx + (cy - y) * vy) < (W if abs(ux * vx + uy * vy) > 0.7 else (W + D) / 2) - 60 and
+                       abs(-(cx - x) * vy + (cy - y) * vx) < (D if abs(ux * vx + uy * vy) > 0.7 else (W + D) / 2) - 60
+                       for i_ in (-1, 0, 1) for j_ in (-1, 0, 1) for x, y, vx, vy in made.get((gx + i_, gy + j_), ())):
+                    continue  # over a lot already laid (the row across a narrow strip, or round the corner)
+                made.setdefault((gx, gy), []).append((cx, cy, ux, uy))
+                out.append([round(cx), round(cy), yaw, round(W), round(D), round(fx), round(fy), "", False])
+    return out
+
+
 def _inside(poly: list, x: float, y: float) -> bool:
     """Point in polygon (even-odd ray cast)."""
     hit = False
@@ -2429,6 +2889,28 @@ def _inside(poly: list, x: float, y: float) -> bool:
 
 
 GROVE_CM = 700.0  # a park block: a tree about every 7 m
+COURT_CM = 1000.0  # the planted middle of a block of plain lots: one about every 10 m
+COURT_MIN = 4  # ... when there is room for this many
+
+
+def _court(area: list, lots: list, rnd) -> list:
+    """Trees on the land a block's lots leave free ([[x, y]], world cm): a jittered grid inside the block, none
+    on a lot or within 3 m of one."""
+    rects = [(r[0], r[1], math.cos(math.radians(r[2])), math.sin(math.radians(r[2])), r[4] / 2 + 300, r[3] / 2 + 300) for r in lots]
+    xs, ys = [p[0] for p in area], [p[1] for p in area]
+    out = []
+    y = min(ys) + COURT_CM / 2
+    while y < max(ys):
+        x = min(xs) + COURT_CM / 2
+        while x < max(xs):
+            px, py = x + rnd.uniform(-0.35, 0.35) * COURT_CM, y + rnd.uniform(-0.35, 0.35) * COURT_CM
+            if _inside(area, px, py) and min(_dist_seg((px, py), a, b) for a, b in zip(area, area[1:] + area[:1])) > 300 and \
+                    not any(abs((px - cx) * fx + (py - cy) * fy) < hd and abs(-(px - cx) * fy + (py - cy) * fx) < hw
+                            for cx, cy, fx, fy, hd, hw in rects):
+                out.append([round(px), round(py)])
+            x += COURT_CM
+        y += COURT_CM
+    return out
 
 
 def _green_lots(add: dict, share: float, rnd) -> dict:
@@ -3556,11 +4038,11 @@ def _demo() -> None:
         areas["core" if zone_share(sb, cx, cy) < 0.3 else "out"].append(abs(parcels._area(poly)))
     assert max(areas["core"]) < 1.5e8 < max(areas["out"]), {k: max(v) for k, v in areas.items()}
     # planned grid: streets bow, they never jog. Along one street the heading changes a little from block to block
-    # (always a spline bend, never an elbow), main roads stay dead straight, no block is squeezed thin, and
-    # collectors run every 4th line
+    # (always a spline bend, never an elbow), no block is squeezed thin, and collectors run every 4th line
     block = OPTIONS["block_m"][0] * 100
     ce = OPTIONS["collector_every"][0]
     main_bent: dict = {}
+    core_bent: dict = {}
     for style in ("mixed", "organic"):
         city = {"x": 0, "y": 0, "radius": 60000, "seed": 11, "style": style, "turn": 0.0}
         gn, ge = city_graph(city, {"wobble": 9, "freeways": "no"})  # asked for more: clamped to 0.45
@@ -3577,6 +4059,8 @@ def _demo() -> None:
                     bent = max(bent, turn)
                     if (iy if da[0] else ix) % ce == 0:
                         main_bent[style] = max(main_bent.get(style, 0.0), turn)
+                        if max(abs(ix + da[0]), abs(iy + da[1])) <= 1:
+                            core_bent[style] = max(core_bent.get(style, 0.0), turn)
         assert bent > 5, (style, "streets between the main roads curve", bent)
         assert {"4L"} <= {k for _, _, k in ge}, "collectors / arterials exist"
     # streets follow the hills. A town on a round hill 60 m high: every street across the slope bends to run
@@ -3631,8 +4115,110 @@ def _demo() -> None:
     up = [e for e in te if e[0][0] == e[1][0]]
     assert up and all(e[0][0] % ce == 0 for e in up), "only main roads climb a 16 % hillside"
     assert len([e for e in te if e[0][1] == e[1][1]]) == len([e for e in pe if e[0][1] == e[1][1]]), "every street along it stays"
-    # a mixed city's main roads are dead straight; an organic city's bow with the rest of it
-    assert main_bent["mixed"] < 1e-6 and main_bent["organic"] > 3, main_bent
+    # a mixed city's main roads are dead straight downtown and wander past it; an organic city's bow all the way
+    assert core_bent["mixed"] < 1e-6 and main_bent["mixed"] > 3 and main_bent["organic"] > 3, (core_bent, main_bent)
+    # the whole street net drifts off the grid in long waves, main roads with it, as soon as streets may bow at
+    # all: with a wobble of 4 % a main road already leaves its line by tens of metres (it bowed 3 m: every
+    # fourth line was a ruled road, every four of them a square). Never in a grid city, never with wobble 0.
+    drifting = {"x": 0, "y": 0, "radius": 120000, "seed": 11, "style": "organic", "turn": 0.0}
+    dn, de = city_graph(drifting, {"wobble": 0.04, "freeways": "no", "prune": 0, "superblocks": "no"})
+    off_line = [abs(dn[(ix, 4)][1] - 4 * block) for ix in range(-10, 11) if (ix, 4) in dn]
+    assert max(off_line) > 2000 and max(off_line) <= (MEANDER + 0.04) * block, ("a main road wanders", max(off_line))
+    assert all(block * 0.6 <= math.dist(dn[a], dn[b]) <= block * 1.4 for a, b, _k in de), "blocks keep their size"
+    for (ix, iy), p in dn.items():
+        for da in ((1, 0), (0, 1)):
+            q, r = dn.get((ix + da[0], iy + da[1])), dn.get((ix + 2 * da[0], iy + 2 * da[1]))
+            if q and r:
+                turn = abs((math.degrees(math.atan2(r[1] - q[1], r[0] - q[0]) - math.atan2(q[1] - p[1], q[0] - p[0])) + 180) % 360 - 180)
+                assert turn < 18, ("a road swings, it never kinks", (ix, iy), turn)
+    assert meander(dict(drifting, style="grid"), options({"wobble": 0.3})) is None and meander(drifting, options({"wobble": 0})) is None
+    mixed_n, _me = city_graph(dict(drifting, style="mixed"), {"wobble": 0.04, "freeways": "no", "prune": 0, "superblocks": "no"})
+    assert all(math.dist(mixed_n[(i, j)], (i * block, j * block)) < 1.0 for i in range(-3, 4) for j in range(-3, 4)), "downtown stays a grid"
+    assert max(math.dist(p, (n[0] * block, n[1] * block)) for n, p in mixed_n.items()) > 2000
+    # past downtown many of the streets between two neighbouring blocks are not built. Against the same city as a
+    # strict grid (which keeps them all): every street is either built or listed as left out, a fair share is
+    # left out, none of them downtown or on an axis, the network is in one piece and no new dead end was made
+    gap_city = {"x": 0, "y": 0, "radius": 150000, "seed": 5, "style": "organic", "turn": 0.0}
+    gap_o = {"wobble": 0, "freeways": "no", "prune": 0, "planner": "no"}
+    left_out: list = []
+    gn2, ge2 = city_graph(gap_city, gap_o, virtual=left_out)
+    all_n, all_e = city_graph(dict(gap_city, style="grid"), gap_o)
+    pair = lambda e: frozenset(e[:2])
+    assert {pair(e) for e in ge2} | {pair(v) for v in left_out} == {pair(e) for e in all_e} and not {pair(e) for e in ge2} & {pair(v) for v in left_out}
+    assert 0.08 * len(all_e) < len(left_out) < 0.4 * len(all_e), (len(left_out), len(all_e))
+    go = city_options(gap_city, gap_o)
+    for a_, b_, pa, pb in left_out:
+        assert min(zone_share(gap_city, *pa), zone_share(gap_city, *pb)) > go["downtown"], "never downtown"
+        assert not (a_[0] == 0 == b_[0] or a_[1] == 0 == b_[1]), "never one of the two axes"
+    ends_of = lambda es: {n: sum(1 for e in es if n in e[:2]) for e in es for n in e[:2]}
+    d_now, d_all = ends_of(ge2), ends_of(all_e)
+    assert sum(1 for n, d in d_now.items() if d == 1) <= sum(1 for n, d in d_all.items() if d == 1), "no new dead end"
+    reach_, walk_ = {(0, 0)}, [(0, 0)]
+    while walk_:
+        n_ = walk_.pop()
+        for e in ge2:
+            if n_ in e[:2]:
+                m_ = e[1] if e[0] == n_ else e[0]
+                if m_ not in reach_:
+                    reach_.add(m_)
+                    walk_.append(m_)
+    assert reach_ == set(gn2), "one network"
+    assert city_graph(gap_city, gap_o)[1] == ge2, "the same streets whether or not the caller asks which were left out"
+    # ... and the land is still parted along them: as many blocks as the strict grid has, each laid out on its
+    # own ground; no lot fronts a street that is not there, and no block is left without a street
+    lay_gap, lay_all = city_layout(gap_city, gap_o), city_layout(dict(gap_city, style="grid"), gap_o)
+    assert len(lay_gap["blocks"]) == len(lay_all["blocks"]), (len(lay_gap["blocks"]), len(lay_all["blocks"]))
+    built = [(gn2[e[0]][:2], gn2[e[1]][:2]) for e in ge2]
+    for r in lay_gap["lots"]:
+        if r[7] == "":
+            assert min(_dist_seg((r[5], r[6]), p, q) for p, q in built) < 2500, ("a lot's front is on a street", r[:7])
+    # no private street runs up to a line where no street was built and stops there: it meets the street of the
+    # subdivision beside it, or ends in a turnaround short of it
+    on_line = lambda p: any(_dist_seg(p, v[2], v[3]) < 5 for v in left_out)
+    tips = [tuple(s[k][:2]) for s in lay_gap["streets"] for k in (0, -1)]
+    assert not [p for p in tips if on_line(p)], [p for p in tips if on_line(p)][:3]
+    joined_ = [s for s in lay_gap["streets"] if any(on_line(p) for p in s[1:-1])]
+    assert joined_ or len(lay_gap["hoods"]) and lay_gap["hoods"].get("collector", 0) < 2, "two subdivisions side by side share a street"
+    # a block of plain lots is planted where its lots leave it free (a court in its middle), never on a lot
+    courts = 0
+    for bx_, by_, kind_, _zone, poly_, _green in lay_gap["blocks"]:
+        if kind_ != "parcels":
+            continue
+        mine = [r for r in lay_gap["lots"] if _inside(poly_, r[0], r[1])]
+        for t in (t for t in lay_gap["trees"] if _inside(poly_, t[0], t[1])):
+            courts += 1
+            for r in mine:
+                fx_, fy_ = math.cos(math.radians(r[2])), math.sin(math.radians(r[2]))
+                assert abs((t[0] - r[0]) * fx_ + (t[1] - r[1]) * fy_) >= r[4] / 2 or abs(-(t[0] - r[0]) * fy_ + (t[1] - r[1]) * fx_) >= r[3] / 2, "a court tree on a lot"
+    assert courts > 100, courts
+    # every side of a street that no block lies on gets a row of lots: the land beyond a city's last streets is
+    # built on. Each such lot is inside the city, off every street and off the lot beside it.
+    polys = [b[4] for b in lay_gap["blocks"]]
+    beyond = [r for r in lay_gap["lots"] if r[7] == "" and not any(_inside(p, r[0], r[1]) for p in polys)]
+    assert len(beyond) > 60, len(beyond)
+    for k_, r in enumerate(beyond):
+        assert zone_share(gap_city, r[0], r[1]) <= 1.0, "inside the city's edge"
+        assert min(_dist_seg((r[0], r[1]), p, q) for p, q in built) > 1500, ("off every street", r[:5])
+        assert all(math.dist(r[:2], s[:2]) > 1400 for s in beyond[:k_]), ("not on the lot beside it", r[:5])
+    assert not frontage_lots(gap_city, go, gn2, ge2, {(e[0], e[1]) for e in ge2} | {(e[1], e[0]) for e in ge2}), "none where blocks lie"
+    assert not [r for r in frontage_lots(gap_city, go, gn2, ge2, set(), clear=[{"x0": -9e9, "x1": 9e9, "y0": -9e9, "y1": 9e9}])], "none in a keep zone"
+    kept_clear = [{"name": "K", "x0": 20000.0, "x1": 50000.0, "y0": -15000.0, "y1": 15000.0, "z": 0.0}]
+    lay_keep = city_layout(gap_city, gap_o, clear=kept_clear)
+    assert not any(in_keep(kept_clear, r[0], r[1], 2000) for key in ("lots", "trees", "parking", "stalls", "pools") for r in lay_keep[key])
+    assert not any(in_keep(kept_clear, p[0], p[1], 2000) for s in lay_keep["streets"] for p in s), "nothing planned in a keep zone"
+    assert any(in_keep(kept_clear, r[0], r[1], 2000) for r in lay_gap["lots"]), "(lots were planned there)"
+    beside = [b for b in lay_keep["blocks"] if any(in_keep(kept_clear, p[0], p[1], 2000) for p in b[4])]
+    assert beside and all(b[2] in ("parcels", "park") for b in beside), "a block a keep zone reaches into is plain lots"
+    # one network: a bridge with a bare end is not built, a few streets joined to nothing go, a district stays
+    net_n = {k: [k * 1000.0, 0.0] for k in range(13)}
+    net_n.update({"far": [19000.0, 0.0], "x": [0.0, 9000.0], "y": [1000.0, 9000.0]})
+    net_n.update({("d", k): [k * 1000.0, 20000.0] for k in range(LOOSE_MIN)})
+    net_e = [[k, k + 1, "2S"] for k in range(12)] + [[12, "far", "2S", [[16000, 0, 800, "BR"]]], ["x", "y", "2S"]] + \
+            [[("d", k), ("d", k + 1), "2S"] for k in range(LOOSE_MIN - 1)]
+    one_n, one_e = one_network(net_n, net_e)
+    assert "far" not in one_n and "x" not in one_n and ("d", 0) in one_n and len(one_e) == 12 + LOOSE_MIN - 1, one_e
+    joined = net_e + [["far", "x", "2S"], ["y", 0, "2S"]]  # the bridge now leads somewhere: everything stays
+    assert len(one_network(net_n, joined)[1]) == len(joined)
     # ... but not beside a freeway: the streets on either side of it and the main roads that cross it stay put
     fw_city = {"x": 0, "y": 0, "radius": 120000, "seed": 11, "style": "organic", "turn": 0.0}
     fo = city_options(fw_city, {"wobble": 0.45})
@@ -4040,12 +4626,14 @@ def _demo() -> None:
     assert [b[2] for b in parked["blocks"] if b[:2] == pick[:2]] == ["park"]
     assert not there(parked["lots"]) and len(there(parked["trees"])) > 20, "a park block: trees, nothing built"
     away = lambda rows: [r for r in rows if not _inside(pick[4], r[0], r[1])]
-    assert away(parked["lots"]) == away(base["lots"]) and [b for b in parked["blocks"] if b[:2] != pick[:2]] == \
+    bare = {"planner": "no"}  # the lots as the blocks cut them, before the planner picks its sites from them
+    # (... which it does anew for the city as it now is: with the homes of that block gone a daycare may move)
+    assert away(city_layout({**big, "zones": [{"x": pick[0], "y": pick[1], "kind": "park"}]}, bare)["lots"]) == \
+        away(city_layout(big, bare)["lots"]) and [b for b in parked["blocks"] if b[:2] != pick[:2]] == \
         [b for b in base["blocks"] if b[:2] != pick[:2]], "no other block moved"
     # lots left green: that share of the block's lots is planted instead of built on, a bigger share keeps the
     # ones a smaller share planted, and no other block changes
     lots_at = lambda lay: {(r[0], r[1]) for r in lay["lots"] if _inside(pick[4], r[0], r[1])}
-    bare = {"planner": "no"}  # the lots as the blocks cut them, before the planner picks its sites from them
     plots = city_layout({**big, "zones": [{"x": pick[0], "y": pick[1], "kind": "parcels"}]}, bare)
     half = city_layout({**big, "zones": [{"x": pick[0], "y": pick[1], "kind": "parcels", "green": 0.5}]}, bare)
     most = city_layout({**big, "zones": [{"x": pick[0], "y": pick[1], "kind": "parcels", "green": 0.9}]}, bare)
