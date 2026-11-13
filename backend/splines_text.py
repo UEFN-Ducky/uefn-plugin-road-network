@@ -596,7 +596,9 @@ def retangent(by_i: dict, s: dict) -> None:
 
 
 STRAIGHT_XY_CM = 150.0  # a run point this close to the straight line in plan is dropped...
-STRAIGHT_Z_CM = 200.0   # ...if it is also this close in height: long roads become one straight segment
+STRAIGHT_Z_CM = 200.0   # ...and, on a deck or ramp (never shaping the ground), this close in height
+# A road on the ground keeps a point only where it turns: from corner to corner it runs dead straight and the
+# landscape's Splines layer cuts / fills the ground to it (a point per bump made every street wave up and down).
 
 
 def straighten(points: list, segments: list, xy_tol: float = STRAIGHT_XY_CM, z_tol: float = STRAIGHT_Z_CM) -> tuple:
@@ -613,10 +615,12 @@ def straighten(points: list, segments: list, xy_tol: float = STRAIGHT_XY_CM, z_t
         at.setdefault(s["a"], []).append(s)
         at.setdefault(s["b"], []).append(s)
 
-    def plain(i):
+    held = {i for p in pts.values() for s in ((p.get("undo") or {}).get("segments") or []) for i in (s["a"], s["b"])}
+
+    def plain(i):  # (a point a join's undo needs to put a road back stays)
         two = at.get(i, [])
         p = pts[i]
-        return (len(two) == 2 and two[0]["lines"] == two[1]["lines"] and not any(l.startswith("Mesh=") for l in p.get("lines") or [])
+        return (i not in held and len(two) == 2 and two[0]["lines"] == two[1]["lines"] and not any(l.startswith("Mesh=") for l in p.get("lines") or [])
                 and p.get("raise") == pts[two[0]["b"] if two[0]["a"] == i else two[0]["a"]].get("raise"))
 
     def far(run, lo, hi):  # index of the run point furthest off the lo-hi line, and whether it is off it
@@ -629,7 +633,7 @@ def straighten(points: list, segments: list, xy_tol: float = STRAIGHT_XY_CM, z_t
             t = max(0.0, min(1.0, ((p["x"] - a["x"]) * dx + (p["y"] - a["y"]) * dy) / (L * L)))
             off_xy = abs((p["x"] - a["x"]) * dy - (p["y"] - a["y"]) * dx) / L
             off_z = abs(p["z"] - (a["z"] + (b["z"] - a["z"]) * t))
-            score = max(off_xy / xy_tol, off_z / z_tol)
+            score = max(off_xy / xy_tol, 0.0 if a.get("raise", True) else off_z / z_tol)
             if score > worst:
                 best, worst = k, score
         return best, worst > 1.0

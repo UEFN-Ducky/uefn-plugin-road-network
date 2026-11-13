@@ -2518,24 +2518,34 @@ def register(api) -> None:
         # no private street runs across a freeway, a ramp or a highway (they are laid after the blocks are cut)
         towns = [{**t, "private": {**(t.get("private") or {}), "streets": streets}} for t, streets in private_plans(nid, towns)]
         joins = {}
+        gone = []
         for t in towns:
             access = cg.access_actor(t, rows_by[t["name"]], ground, folder)
-            # private streets go into the city's Roads actor with a real junction where they meet a street: UEFN only
-            # connects points of one actor, so in an actor of their own they ended on the grass beside it
+            paths = cg.paths_actor(t, opts, rows_by[t["name"]], ground, folder, cg.wet_from(ter))
+            # ONE spline network per city: UEFN only connects points of one actor, so private streets, driveways,
+            # sidewalks and walkways in actors of their own all ended on the grass beside the street they belong to.
+            # Private streets get a real junction; every other loose end a mesh-less link onto the road it meets.
             rhead, rpts, rsegs = load_actor(nid, slug(f"{t['name']} Roads"))
-            if rhead and access["segments"]:
-                roads, access, joins[t["name"]] = cg.join_private({"points": rpts, "segments": rsegs}, access, folder)
-                out[f"{t['name']} Roads"] = store_actor(nid, f"{t['name']} Roads", roads, doc.get("name") or nid)["stats"]
-            for label, actor in ((f"{t['name']} Paths", cg.paths_actor(t, opts, rows_by[t["name"]], ground, folder,
-                                                                        cg.wet_from(ter))),
-                                 (f"{t['name']} Access", access)):
-                if actor["segments"]:
-                    out[label] = store_actor(nid, label, actor, doc.get("name") or nid)["stats"]
+            if not rhead:
+                for label, actor in ((f"{t['name']} Paths", paths), (f"{t['name']} Access", access)):
+                    if actor["segments"]:
+                        out[label] = store_actor(nid, label, actor, doc.get("name") or nid)["stats"]
+                continue
+            roads, rest, n_pr = cg.join_private({"points": rpts, "segments": rsegs}, access, folder)
+            roads, n_links = cg.join_links(roads, [rest, paths], folder)
+            pts, segs = st.straighten(roads["points"], roads["segments"])
+            joins[t["name"]] = {"junctions": n_pr, "links": n_links}
+            out[f"{t['name']} Roads"] = store_actor(nid, f"{t['name']} Roads", {"points": pts, "segments": segs},
+                                                    doc.get("name") or nid)["stats"]
+            for label in (f"{t['name']} Paths", f"{t['name']} Access"):  # now inside the Roads actor
+                if data.get(f"net.{nid}.actor.{slug(label)}"):
+                    data.delete(f"net.{nid}.actor.{slug(label)}")
+                    gone.append(label)
         doc = data.get(f"net.{nid}") or {}
-        doc["actors"] = sorted(set(doc.get("actors") or []) | set(out))
+        doc["actors"] = sorted((set(doc.get("actors") or []) | set(out)) - set(gone))
         data.put(f"net.{nid}", doc)
         push({"what": "network", "id": nid})
-        return {"ok": True, "actors": out, "private_junctions": joins}
+        return {"ok": True, "actors": out, "joined": joins, "merged_away": gone}
 
     def pipeline_run(net_id: str = "", run_from: str = "", confirm: bool = False) -> dict:
         """Status of every stage, or (run_from) re-run that stage and everything downstream, offline."""

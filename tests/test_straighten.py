@@ -27,8 +27,12 @@ def test_straighten():
     pts, segs = road([(k * 2000.0, 0.0, 0.0) for k in range(51)] + [(100000.0, k * 2000.0, 0.0) for k in range(1, 51)])
     p2, s2 = st.straighten(pts, segs)
     assert sorted(p["i"] for p in p2) == [0, 50, 100], sorted(p["i"] for p in p2)
-    # a hill crest higher than the tolerance keeps its top point
+    # a street over a hill: no point for the crest, it runs straight and the Splines layer cuts the ground to it
     pts, segs = road([(k * 2000.0, 0.0, 2000.0 - abs(k - 25) * 80.0) for k in range(51)])
+    assert sorted(p["i"] for p in st.straighten(pts, segs)[0]) == [0, 50]
+    # ... but a deck (never shaping the ground) keeps the rise and fall it was designed with
+    for p in pts:
+        p["raise"] = False
     assert 25 in {p["i"] for p in st.straighten(pts, segs)[0]}
     # a junction piece in the middle is never dropped, and nothing is changed in the caller's lists
     pts, segs = road([(k * 2000.0, 0.0, 0.0) for k in range(21)], junction_at=10)

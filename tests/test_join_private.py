@@ -47,6 +47,22 @@ def test_join_private():
                            [[0, 3, "4L"], [3, 1, "4L"], [2, 3, "4L"]], FLAT, "/Game/X/Roads")
     _j, _r, n3 = cg.join_private(cross, access, "/Game/X/Roads")
     assert n3 == 0, n3
+    # walkways / driveways / sidewalks: one network, every loose end tied to the road it meets by a link
+    paths = cg.build_actor({"w0": [20000, half + 200], "w1": [20000, half + 1500]}, [["w0", "w1", "WK"]], FLAT, "/Game/X/Roads")
+    net, links = cg.join_links(joined, [rest, paths], "/Game/X/Roads")
+    assert links >= 2, links  # the driveway and the walkway, each at its street end
+    seg_at: dict = {}
+    for s in net["segments"]:
+        for i in (s["a"], s["b"]):
+            seg_at.setdefault(i, []).append(s)
+    loose = [p for p in net["points"] if len(seg_at.get(p["i"], [])) == 1 and abs(p["y"]) < half + 1000 and p.get("join")
+             and not any(abs(p["x"] - x) < 1 for x in (0, 100000))]
+    assert not loose, [(p["x"], p["y"]) for p in loose]
+    for s in net["segments"]:
+        if s.get("join") and not s["mesh"] and s["a"] not in {w[0] for w in st.pending_nodes(net["points"], net["segments"])}:
+            assert "bRaiseTerrain=False" in s["lines"], "a link shapes nothing"
+    back2 = cg.unjoin_private(net)
+    assert (len(back2["points"]), len(back2["segments"])) == before, "links come out again too"
     print("join_private ok:", len(joined["points"]), "points,", len(waiting), "pieces waiting")
 
 

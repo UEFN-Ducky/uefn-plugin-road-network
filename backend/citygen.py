@@ -3086,6 +3086,97 @@ def join_private(roads: dict, access: dict, folder: str) -> tuple:
     return {"points": list(rp.values()), "segments": rs}, out_access, joins
 
 
+LINK_REACH_CM = 600.0  # a walkway / driveway / sidewalk end this far past a host's edge is tied to it
+SNAP_CM = 150.0  # ... onto the host's own point when one is this close, instead of a new one
+
+
+def join_links(roads: dict, extra: list, folder: str) -> tuple:
+    """Every spline in ONE actor and none on its own: each actor in `extra` (sidewalks, walkways, driveways) moves into
+    `roads`, and every loose end (one segment) is tied to the nearest road / sidewalk it reaches with a mesh-less link
+    to a point on that host (the host's own point when one is within SNAP_CM, else the host is split there). The link
+    draws nothing and never shapes the ground: the pieces look as they did, but form one connected spline network.
+    Marked like join_private's work, so unjoin_private takes it all out again. Returns (roads, links)."""
+    rp = {p["i"]: dict(p) for p in roads["points"]}
+    rs = [dict(s) for s in roads["segments"]]
+    nid = iter(range(max([0] + list(rp) + [s["i"] for s in rs]) + 1, 1 << 30))
+    for actor in extra:  # their points and segments come over under new ids
+        remap = {}
+        for p in actor["points"]:
+            q = dict(p, i=next(nid), join=True)
+            remap[p["i"]] = q["i"]
+            rp[q["i"]] = q
+        for s in actor["segments"]:
+            if s["a"] in remap and s["b"] in remap:
+                rs.append(dict(s, i=next(nid), a=remap[s["a"]], b=remap[s["b"]], join=True))
+    at: dict = {}
+    for s in rs:
+        at.setdefault(s["a"], []).append(s)
+        at.setdefault(s["b"], []).append(s)
+
+    def half(s):
+        return HALF.get(_KIND_OF_MESH.get(s["mesh"], ""), 200.0)
+
+    def component(e):  # every point joined to e through segments that draw a mesh (its own road / path)
+        seen, stack = {e}, [e]
+        while stack:
+            c = stack.pop()
+            for s in at.get(c, []):
+                o = s["b"] if s["a"] == c else s["a"]
+                if o not in seen and s["mesh"]:
+                    seen.add(o)
+                    stack.append(o)
+        return seen
+
+    links = 0
+    for e in [i for i in list(rp) if len(at.get(i, [])) == 1 and at[i][0]["mesh"] and rp[i].get("join")]:
+        E, own = rp[e], component(e)
+        best = None
+        for s in rs:
+            if not s["mesh"] or s["a"] in own or s["b"] in own:
+                continue
+            a, b = rp[s["a"]], rp[s["b"]]
+            dx, dy = b["x"] - a["x"], b["y"] - a["y"]
+            L2 = dx * dx + dy * dy
+            if L2 < 1.0:
+                continue
+            t = max(0.0, min(1.0, ((E["x"] - a["x"]) * dx + (E["y"] - a["y"]) * dy) / L2))
+            px, py = a["x"] + dx * t, a["y"] + dy * t
+            d = math.hypot(E["x"] - px, E["y"] - py)
+            if d <= half(s) + LINK_REACH_CM and (best is None or d < best[0]):
+                best = (d, s, t, px, py)
+        if best is None:
+            continue
+        _d, host, t, px, py = best
+        a, b = rp[host["a"]], rp[host["b"]]
+        L = math.hypot(b["x"] - a["x"], b["y"] - a["y"])
+        if t * L <= SNAP_CM:
+            h = a
+        elif (1 - t) * L <= SNAP_CM:
+            h = b
+        else:  # split the host there: two halves of the same piece, one shared point
+            pz = a["z"] + (b["z"] - a["z"]) * t
+            h = _point(next(nid), px, py, pz, a["yaw"], a.get("w", half(host)))
+            h["lines"] = [l for l in (a.get("lines") or []) if not l.startswith(("Mesh=", "MeshScale="))] or h["lines"]
+            h.update(join=True, undo={"points": [], "segments": [dict(host)]})
+            rp[h["i"]] = h
+            rs.remove(host)
+            at[host["a"]].remove(host)
+            at[host["b"]].remove(host)
+            for u, v in ((host["a"], h["i"]), (h["i"], host["b"])):
+                ns = dict(host, i=next(nid), a=u, b=v, ta=0.0, tb=0.0, join=True)
+                rs.append(ns)
+                at.setdefault(u, []).append(ns)
+                at.setdefault(v, []).append(ns)
+                st.retangent(rp, ns)
+        link = _segment(next(nid), e, h["i"], "", folder, lifted=True)  # draws nothing, shapes nothing
+        link["join"] = True
+        rs.append(link)
+        at.setdefault(e, []).append(link)
+        at.setdefault(h["i"], []).append(link)
+        links += 1
+    return {"points": list(rp.values()), "segments": rs}, links
+
+
 COLLECTOR_ROWS = 0.65  # of the suburbs' rows of blocks, how many share one winding street from block to block
 SUPERBLOCK_SHARE = 0.8  # of the suburbs' whole collector cells, how many are one subdivision with no public street inside
 LOT_W_CM, LOT_D_CM = 1600.0, 3500.0  # a lot: 16 m frontage, up to 35 m deep (two back to back in a block)
