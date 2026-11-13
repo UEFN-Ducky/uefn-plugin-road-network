@@ -619,7 +619,8 @@ Roads define the city, blocks are what roads enclose, lots are cut from blocks, 
      street, a shipyard, an airport and a keep zone.
 4. **Buildings**: layers narrower than 25 m (houses, shops, apartments, gas stations) fill lots, one per lot,
    set back from the front lot line. Wider ones (offices, towers, mansions, industry) first take every free lot
-   of their district that they fit, then road frontage.
+   of their district that they fit, then road frontage. What the planner sites (malls, schools, hospitals, civic
+   buildings) never takes a free lot, and where the planner ran it is built on the planned sites only.
    - Lots are cut for what is built on them (`citygen.ZONE_LOT_W_CM`): 28 m of frontage downtown, 40 m in the
      industrial zone, 16 m everywhere else. An industrial block is always plain lots.
    - A lot keeps clear of earlier buildings by its own rectangle against theirs, never by the wide circle
@@ -746,7 +747,8 @@ Example: Flower beds in the suburbs: `{"name": "Flower beds", "kind": "scatter",
   | Buildings, bridge parts, stalls, aprons, sidewalk corners | never looked at |
 
   While layers are placed, a junction's arms are road as well (`arm_samples`), and no tree, lamp or bench is
-  placed on a private street. `clear_buildings`: no tree, bush or rock inside a building.
+  placed on a private street. `clear_buildings`: no tree, bush or rock inside a building's walls (a yard tree
+  half a metre behind its house stays).
 - `road_network_pcg_preset(net_id, preset="full_city")` adds starter layers (meshes empty): nature (Trees, Rocks,
   Bushes and grass), every building type (Skyscrapers and Office blocks downtown; Hospitals and schools, Apartments
   and Shops in the normal ring; Factories and Warehouses in each city's industrial wedge; Gas stations; Houses in

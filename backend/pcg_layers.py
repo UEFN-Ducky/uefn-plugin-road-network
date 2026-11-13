@@ -919,10 +919,10 @@ def clear_roads(placed: dict, samples: list) -> dict:
     return gone
 
 
-def clear_buildings(placed: dict, margin: float = 150.0) -> dict:
+def clear_buildings(placed: dict, margin: float = 0.0) -> dict:
     """No tree, bush or rock inside a building: the forest is placed before the cities' buildings, and one that
-    takes road frontage (a mansion, an office) knows nothing of a tree that grew there first. Returns
-    {layer: removed}."""
+    takes road frontage (a mansion, an office) knows nothing of a tree that grew there first. Only inside its
+    walls: a yard tree half a metre behind its house is where the plan put it. Returns {layer: removed}."""
     rows = [p for layer in placed.values() if layer.get("kind") == "buildings" for p in layer.get("points") or [] if len(p) > 8]
     gone: dict = {}
     if not rows:
@@ -1494,7 +1494,10 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
     vacant = None  # (x, y) -> on land inside a city that nothing was planned for (open_land, made when first asked)
     infill: list = []  # lots left empty because a building would stand on another or on a street: planted instead
     plan_roles = {row[7] for c in cities for row in c.get("lots") or [] if len(row) > 8 and row[8] is True}
-    planned = lambda layer: layer["role"] in PLANNED_ROLES and layer["role"] in plan_roles
+    # (where the planner ran, what it sites is built on its sites only: when it found a city too small for a mall
+    # the Malls layer went back to road frontage and put one every 250 m, 18 in a world that had one)
+    has_plan = any(c.get("plan") for c in cities)
+    planned = lambda layer: layer["role"] in PLANNED_ROLES and (has_plan or layer["role"] in plan_roles)
     kept: dict = {}
     taken: set = set()  # lots already built on (by front point)
     lot_layers: set = set()  # layers that filled lots
@@ -1618,7 +1621,7 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                           for r in c.get("lots") or [] if not (len(r) > 7 and r[7])]
                     cs.sort(key=lambda k: _u01(seed, name, k[6], k[7]))
                     r = c["radius"] * 1.35
-                    if cs and not planned(layer):
+                    if cs and layer["role"] not in PLANNED_ROLES:  # (what the planner sites is never put on a free lot)
                         free.append((("f", str(c.get("name"))), (min(c["x"] - r, min(k[0] for k in cs) - 5000),
                                                                  min(c["y"] - r, min(k[1] for k in cs) - 5000),
                                                                  max(c["x"] + r, max(k[0] for k in cs) + 5000),
@@ -2039,11 +2042,12 @@ def _demo() -> None:
     assert [p[:2] for p in stuff["Street lamps"]["points"]] == [[30000, 1025], [900, 900]], "a lamp at the kerb, one on the corner: they stay"
     assert len(stuff["Houses"]["points"]) == 1 and len(stuff["Parking stalls"]["points"]) == 1
     # ... and no tree inside a building (the forest is placed first; a house built along a road knows nothing of it)
-    grove = {"Trees": {"kind": "foliage", "role": "tree", "count": 3, "shown": 3,
-                       "points": [[10000, 10000, 0, 0, 1], [10450, 10350, 0, 0, 1], [10700, 10000, 0, 0, 1]]},
+    grove = {"Trees": {"kind": "foliage", "role": "tree", "count": 4, "shown": 4,
+                       "points": [[10000, 10000, 0, 0, 1], [10300, 10350, 0, 0, 1], [10450, 10000, 0, 0, 1], [10700, 10000, 0, 0, 1]]},
              "Houses": {"kind": "buildings", "role": "house", "count": 1, "shown": 1,
                         "points": [[10000, 10000, 0, 0, 1, 6, 0, 10.0, 8.0]]}}
-    assert clear_buildings(grove) == {"Trees": 2} and grove["Trees"]["points"] == [[10700, 10000, 0, 0, 1]]
+    assert clear_buildings(grove) == {"Trees": 2}, "(the house is 8 m deep along x, 10 m wide: the first two are inside it)"
+    assert grove["Trees"]["points"] == [[10450, 10000, 0, 0, 1], [10700, 10000, 0, 0, 1]], "a tree half a metre behind the wall stays"
     # the land a planned city leaves free: the middle of a block of plain lots, the ground beyond its last lots;
     # never a lot, a block with its own layout, a planned ground. A city with no plan has none.
     sq = lambda x0, y0, s: [[x0, y0], [x0 + s, y0], [x0 + s, y0 + s], [x0, y0 + s]]
@@ -2191,6 +2195,16 @@ def _demo() -> None:
     bare = [r[:5] for r in core_town["lots"] if not r[8] and not stands(r, all_of_it)]
     assert not bare, ("a lot with nothing on it", len(bare), bare[:3])
     assert len(fill["Houses"]["points"]) > 300 and fill.get("Infill trees"), "homes outside downtown; trees where nothing fits"
+    # ... but what the planner sites (a mall, a school) never takes a free lot: with none planned it stays a rare
+    # building along a road (18 malls stood on downtown lots)
+    mall = clean({"name": "Malls", "kind": "buildings", "role": "mall", "where": "downtown", "width_m": 30, "depth_m": 20,
+                  "setback_m": 5, "spacing_m": 100, "order": 1})
+    box = {"min": [-80000, -80000], "max": [80000, 80000]}
+    assert not preview([mall], [core_town], box, [], lambda x, y: 0.0)["Malls"]["points"]
+    # ... and where the planner ran and sited none, there is none: not along the roads either
+    ring_road = [(x, 9000.0, 300.0, 1.0, 0.0) for x in range(-20000, 20001, 500)]
+    assert preview([mall], [core_town], box, ring_road, lambda x, y: 0.0)["Malls"]["points"], "(no planner: it takes road frontage)"
+    assert not preview([mall], [{**core_town, "plan": {"facilities": []}}], box, ring_road, lambda x, y: 0.0)["Malls"]["points"]
     # a dropped kerb at the street end of a house's drive, half the sidewalk past the lot line
     ap = aprons({"H": {"kind": "buildings", "points": [[0, 0, 0, 0, 1, 8, 0, 12, 12, 0, [[DRIVE_M, [600, 0, 0, 1600, 0, 0]]]]]}})
     assert ap["Driveway aprons"]["points"] == [[1775, 0, 0, 0.0, 3.5, DRIVE_M + 1.0, 1.0]], ap
