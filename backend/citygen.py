@@ -229,6 +229,9 @@ OPTIONS = {
     # bow off its grid line in one smooth curve (a seeded wave along the whole street, _bow): it never jogs from
     # intersection to intersection, and its neighbours bow with it, so blocks keep their width. 0 = dead straight
     "wobble": (0.12, 0.0, 0.45),       # how far a street bows off its grid line (share of a block)
+    # on sloping ground the streets follow the hills (plan_hills): along the hillside across a slope, winding up
+    # it, the too-steep ones left out. 0 = the grid ignores the hills; never in a Grid city
+    "follow_hills": (0.8, 0.0, 1.0),
     "green_lots": (0.0, 0.0, 0.6),     # share of each block's lots planted with trees instead of built on
     "prune": (0.12, 0.0, 0.35),        # share of local side streets removed in neighbourhoods / suburbs
     "collector_every": (4, 2, 8),      # every Nth grid line is a collector (wider, through the city)
@@ -953,12 +956,185 @@ def _bow(seed, tag: str):
                                 + 0.35 * math.sin(tau * (along / l2 - line * drift + p2)))
 
 
+HILL_MOVE = 1.5  # a crossing leaves its grid place by this many blocks at most, to follow a hillside
+HILL_UNIT = 0.04  # ... kept in steps of this share of a block (_pack: -39..39 of them)
+HILL_ZIG = 0.10  # a street that climbs steep ground swings this far to each side, block after block
+HILL_TURN_DEG = 24.0  # ... and no street turns more than this at a crossing for the hills (it bends, never elbows)
+HILL_PASSES = 40  # rounds of easing the streets onto the hillside
+HILL_NET = 0.4  # how much of a crossing's move is its neighbours' (the net that keeps blocks whole)
+HILL_HOLD = 0.99  # ... and how much of it lasts a round (a weak pull back to the grid)
+STEEP_STREET = 0.12  # a local street that would climb steeper than this is left out: the blocks lie along the hill
+
+
+def _pack(vals, unit: float = 0.01) -> str:
+    """Numbers in steps of `unit`, -39..39 steps, a printable character each: a city's hills in a few KB of text."""
+    return "".join(chr(87 + max(-39, min(39, int(round(v / unit))))) for v in vals)
+
+
+def hill_at(hills: dict | None, ix: int, iy: int) -> tuple:
+    """A grid crossing's part of the city's hills (plan_hills): (how far it moves along the grid's two directions
+    for the hillside, in blocks; the ground's grade along those two directions where it ends up)."""
+    if not hills:
+        return 0.0, 0.0, 0.0, 0.0
+    kx, ky = hills["k"]
+    if abs(ix) > kx or abs(iy) > ky:
+        return 0.0, 0.0, 0.0, 0.0
+    n = (ix + kx) * (2 * ky + 1) + (iy + ky)
+    return ((ord(hills["u"][n]) - 87) * HILL_UNIT, (ord(hills["v"][n]) - 87) * HILL_UNIT,
+            (ord(hills["gu"][n]) - 87) / 100, (ord(hills["gv"][n]) - 87) / 100)
+
+
+def plan_hills(cities: list, ground, opts: dict | None = None) -> None:
+    """TerrainAnalyzer for the streets, before any is laid: sets city['hills'] where a city (not a strict grid)
+    stands on sloping ground. Real towns do not lay one square grid over a hill, so the grid is eased onto it:
+      - a street across a slope follows the hillside. Round after round every crossing moves up or down the
+        slope toward the height of its neighbours along the street it lies across the slope of, so that street
+        comes to run at one even grade round the hill; its neighbours are carried along (the grid stretches
+        like a net, it never tears), and far more than a block where the hill asks for it;
+      - a street up the slope winds: on steep ground its crossings swing to one side and the other (HILL_ZIG);
+      - no street turns more than HILL_TURN_DEG for it, and no block is squeezed under half its size;
+      - nothing moves beside a freeway (everything that lands on one is laid out straight), nor downtown in a
+        Mixed city.
+    Kept per crossing as text (_pack): the two moves in blocks and the ground's two grades there, which
+    city_graph reads to leave out local streets that would climb steeper than STEEP_STREET."""
+    from . import freeways
+    o = options(opts)
+    for c in cities:
+        c.pop("hills", None)
+        co = city_options(c, o)
+        style = c.get("style", "mixed")
+        if ground is None or style == "grid" or not co["follow_hills"]:
+            continue
+        bx, by = block_xy(co)
+        turn = math.radians(orientation(c))
+        cs, sn = math.cos(turn), math.sin(turn)
+        R, down = c["radius"], co["downtown"]
+        kx, ky = int(R * 1.3 // bx), int(R * 1.3 // by)
+        nx, ny = 2 * kx + 1, 2 * ky + 1
+        H = lambda lx, ly: ground(c["x"] + cs * lx - sn * ly, c["y"] + sn * lx + cs * ly)
+        e = 0.25 * min(bx, by)
+        fw = None
+        if co.get("freeways", "yes") == "yes" and R >= freeways.FW_MIN_R:
+            fw = (round(down * R / bx) + 0.5, -round(down * R / by) - 0.5)
+        # how freely each crossing moves: not beside a freeway, not downtown in a mixed city
+        free = [[0.0] * ny for _ in range(nx)]
+        for i in range(nx):
+            for j in range(ny):
+                ix, iy = i - kx, j - ky
+                share = zone_share(c, c["x"] + cs * ix * bx - sn * iy * by, c["y"] + sn * ix * bx + cs * iy * by)
+                ease = _smoothstep(down, down + 0.15, share) if style == "mixed" else 1.0
+                near = min(abs(ix - fw[0]), abs(iy - fw[1])) if fw else 9.0
+                free[i][j] = ease * _smoothstep(1.5, 3.5, near)
+        du = [[0.0] * ny for _ in range(nx)]  # cm, along the grid's two directions
+        dv = [[0.0] * ny for _ in range(nx)]
+        h = [[None] * ny for _ in range(nx)]
+        gu = [[0.0] * ny for _ in range(nx)]
+        gv = [[0.0] * ny for _ in range(nx)]
+
+        def read():  # the ground and its fall at every crossing, where it stands now
+            live = 0.0
+            for i in range(nx):
+                for j in range(ny):
+                    lx, ly = (i - kx) * bx + du[i][j], (j - ky) * by + dv[i][j]
+                    h[i][j] = H(lx, ly)
+                    near = (H(lx + e, ly), H(lx - e, ly), H(lx, ly + e), H(lx, ly - e))
+                    if h[i][j] is None or None in near:
+                        h[i][j], gu[i][j], gv[i][j] = None, 0.0, 0.0
+                    else:
+                        gu[i][j], gv[i][j] = (near[0] - near[1]) / (2 * e), (near[2] - near[3]) / (2 * e)
+                        if free[i][j] > 0:
+                            live = max(live, _smoothstep(0.02, 0.07, math.hypot(gu[i][j], gv[i][j])))
+            return live
+        if read() < 0.3:
+            continue  # flat ground: the grid stays as it is
+        cap = HILL_MOVE * min(bx, by)
+        for _ in range(HILL_PASSES):
+            nu, nv = [row[:] for row in du], [row[:] for row in dv]
+            for i in range(nx):
+                for j in range(ny):
+                    a, b = gu[i][j], gv[i][j]
+                    s = math.hypot(a, b)
+                    w = free[i][j] * _smoothstep(0.02, 0.07, s)
+                    if h[i][j] is None or w <= 0:
+                        continue
+                    mu = mv = 0.0
+                    for di, dj in ((1, 0), (0, 1)):  # the two streets through this crossing
+                        nb = [(i + di * m, j + dj * m) for m in (-1, 1)
+                              if 0 <= i + di * m < nx and 0 <= j + dj * m < ny and h[i + di * m][j + dj * m] is not None]
+                        if not nb:
+                            continue
+                        p, q = nb[0], nb[-1]
+                        tx = (q[0] - p[0]) * bx + du[q[0]][q[1]] - du[p[0]][p[1]]
+                        ty = (q[1] - p[1]) * by + dv[q[0]][q[1]] - dv[p[0]][p[1]]
+                        tl = math.hypot(tx, ty)
+                        if tl < 1:
+                            tx, ty, tl = di * bx, dj * by, math.hypot(di * bx, dj * by)
+                        across = 1.0 - ((tx * a + ty * b) / (tl * s)) ** 2  # 1: the street lies across the slope
+                        want = sum(h[m][n] for m, n in nb) / len(nb) - h[i][j]
+                        mu += a * want / (s * s) * across
+                        mv += b * want / (s * s) * across
+                    m = math.hypot(mu, mv)
+                    lim = 0.12 * min(bx, by)
+                    if m > lim:
+                        mu, mv = mu * lim / m, mv * lim / m
+                    nu[i][j] += 0.5 * w * mu
+                    nv[i][j] += 0.5 * w * mv
+            for f, g in ((du, nu), (dv, nv)):  # the net: each crossing is drawn toward its neighbours' move
+                for i in range(nx):
+                    for j in range(ny):
+                        acc, n = 0.0, 0
+                        for a, b in ((i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)):
+                            if 0 <= a < nx and 0 <= b < ny:
+                                acc += g[a][b]
+                                n += 1
+                        v = ((1 - HILL_NET) * g[i][j] + HILL_NET * acc / n) * HILL_HOLD * min(1.0, free[i][j] * 4)
+                        f[i][j] = max(-cap, min(cap, v))
+            read()
+        for i in range(nx):  # a street up a steep slope winds
+            for j in range(ny):
+                a, b = gu[i][j], gv[i][j]
+                s = math.hypot(a, b)
+                steep = _smoothstep(0.06, 0.14, s) * free[i][j]
+                if steep > 0:
+                    du[i][j] += HILL_ZIG * bx * (1 if (j - ky) % 2 else -1) * (b * b / (s * s)) * steep
+                    dv[i][j] += HILL_ZIG * by * (1 if (i - kx) % 2 else -1) * (a * a / (s * s)) * steep
+
+        def spot(i, j):
+            return (i - kx) * bx + du[i][j], (j - ky) * by + dv[i][j]
+
+        def bend(i, j, di, dj):  # how far the street through three crossings turns at the middle one, degrees
+            p0, p1, p2 = spot(i - di, j - dj), spot(i, j), spot(i + di, j + dj)
+            a1, a2 = math.atan2(p1[1] - p0[1], p1[0] - p0[0]), math.atan2(p2[1] - p1[1], p2[0] - p1[0])
+            return abs((math.degrees(a2 - a1) + 180) % 360 - 180)
+        for _ in range(30):  # ease any crossing that turns too sharply, or squeezes a block, toward its neighbours
+            moved = False
+            for di, dj in ((1, 0), (0, 1)):
+                rest = bx if di else by
+                for i in range(di, nx - di):
+                    for j in range(dj, ny - dj):
+                        short = min(math.dist(spot(i, j), spot(i - di, j - dj)), math.dist(spot(i, j), spot(i + di, j + dj)))
+                        if bend(i, j, di, dj) > HILL_TURN_DEG or short < 0.6 * rest:
+                            for f in (du, dv):
+                                f[i][j] = 0.5 * f[i][j] + 0.25 * (f[i - di][j - dj] + f[i + di][j + dj])
+                            moved = True
+            if not moved:
+                break
+        read()
+        c["hills"] = {"k": [kx, ky],
+                      "u": _pack((v / bx for row in du for v in row), HILL_UNIT),
+                      "v": _pack((v / by for row in dv for v in row), HILL_UNIT),
+                      "gu": _pack(v for row in gu for v in row), "gv": _pack(v for row in gv for v in row)}
+
+
 def street_grid(city: dict, o: dict) -> tuple:
     """The city's street grid before anything is cut from it: (at, kx, ky). at(ix, iy) -> (x, y, share): where
     grid lines ix and iy cross in world cm, and that spot's share of the way to the city's edge (zone_share of
     the plain grid point). Blocks are block_m wide and block_m x block_ratio long. Streets bow by `wobble` of a
-    block, eased in past downtown in a mixed city and nowhere in a grid city; main roads (collectors and the
-    axes) and the two streets under a freeway's viaduct stay dead straight: interchanges land on them exactly."""
+    block, eased in past downtown in a mixed city and nowhere in a grid city. In a mixed city the main roads
+    (collectors and the axes) stay dead straight; in an organic one they bow too, except within a few blocks of
+    a freeway: interchanges land on straight roads, and the two streets under a viaduct never move. On sloping ground the streets also follow the hills, main roads too: every crossing moves by
+    `follow_hills` of what the hillside asks (city['hills'], plan_hills: nothing beside a freeway, nothing
+    downtown in a mixed city)."""
     from . import freeways
     bx, by = block_xy(o)
     cx, cy, R, style = city["x"], city["y"], city["radius"], city.get("style", "mixed")
@@ -973,14 +1149,35 @@ def street_grid(city: dict, o: dict) -> tuple:
         still_x, still_y = {fx, fx + 1}, {-fy - 1, -fy}
     off_x = lambda i: 0.0 if i in still_x else math.sin(math.pi * (i % ce) / ce)  # 0 on a main road, most
     off_y = lambda i: 0.0 if i in still_y else math.sin(math.pi * (i % ce) / ce)  # halfway between two
+    hills = city.get("hills") if style != "grid" else None
+    follow = float(o.get("follow_hills", 0.0)) if hills else 0.0
+
+    def near_fw(ix, iy):  # blocks from the nearest freeway line (what lands on a freeway is laid out straight)
+        d = 9.0
+        if still_x:
+            d = min(d, abs(ix - (min(still_x) + 0.5)))
+        if still_y:
+            d = min(d, abs(iy - (min(still_y) + 0.5)))
+        return d
 
     def at(ix: int, iy: int) -> tuple:
         lx, ly = ix * bx, iy * by
         share = zone_share(city, cx + c * lx - s * ly, cy + s * lx + c * ly)
-        amount = 0.0 if style == "grid" else o["wobble"] * (_smoothstep(down, down + 0.15, share) if style == "mixed" else 1.0)
+        ease = 0.0 if style == "grid" else _smoothstep(down, down + 0.15, share) if style == "mixed" else 1.0
+        amount = o["wobble"] * ease
         if amount:
-            lx += amount * bx * off_x(ix) * bow_x(iy, ix)
-            ly += amount * by * off_y(iy) * bow_y(ix, iy)
+            kx_, ky_ = off_x(ix), off_y(iy)
+            if style == "organic":
+                # an organic city bends as a whole: its main roads bow with the streets between them, except
+                # within a few blocks of a freeway (a town of straight avenues with wavy side streets is a grid)
+                main = 0.7 * _smoothstep(1.5, 3.5, near_fw(ix, iy))
+                kx_, ky_ = (0.0 if ix in still_x else max(kx_, main)), (0.0 if iy in still_y else max(ky_, main))
+            lx += amount * bx * kx_ * bow_x(iy, ix)
+            ly += amount * by * ky_ * bow_y(ix, iy)
+        if follow:
+            hu, hv, _gu, _gv = hill_at(hills, ix, iy)
+            lx += follow * bx * hu
+            ly += follow * by * hv
         return cx + c * lx - s * ly, cy + s * lx + c * ly, share
     return at, int(R * 1.3 // bx), int(R * 1.3 // by)
 
@@ -1259,6 +1456,32 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
             return big[g]
         edges = [e for e in edges if (e[0][0] if e[1][0] == e[0][0] else e[0][1]) % ce == 0
                  or not superblock((e[0][0] // ce, e[0][1] // ce))]
+    hills = city.get("hills") if style != "grid" and o["follow_hills"] else None
+    if hills:
+        # no local street straight up a steep hillside: the ones that would climb steeper than STEEP_STREET are
+        # left out (never a main road, never downtown in a mixed city), so the blocks there lie along the hill
+        def too_steep(e):
+            a, b, kind = e[0], e[1], e[2]
+            up_v = a[0] == b[0]
+            line = a[0] if up_v else a[1]
+            if line % o["collector_every"] == 0 or (a[0] == 0 == b[0]) or (a[1] == 0 == b[1]) or \
+                    (style == "mixed" and max(ring[a], ring[b]) <= down):
+                return False
+            return (abs(hill_at(hills, *a)[3 if up_v else 2]) + abs(hill_at(hills, *b)[3 if up_v else 2])) / 2 > STEEP_STREET
+        edges = [e for e in edges if not too_steep(e)]
+        if not o["prune"]:  # (pruning keeps the network in one piece below; without it, here)
+            adj: dict = {}
+            for e in edges:
+                adj.setdefault(e[0], []).append(e[1])
+                adj.setdefault(e[1], []).append(e[0])
+            seen, todo = set(), [min(adj, key=lambda n: abs(n[0]) + abs(n[1]))] if adj else []
+            while todo:
+                n = todo.pop()
+                if n not in seen:
+                    seen.add(n)
+                    todo.extend(adj.get(n, []))
+            edges = [e for e in edges if e[0] in seen]
+            nodes = {n: p for n, p in nodes.items() if n in seen}
     if style != "grid" and o["prune"]:
         # neighbourhoods drop some side streets (never a main one, never a dead end); suburbs drop more and
         # may leave cul-de-sacs, like real subdivisions
@@ -3337,6 +3560,7 @@ def _demo() -> None:
     # collectors run every 4th line
     block = OPTIONS["block_m"][0] * 100
     ce = OPTIONS["collector_every"][0]
+    main_bent: dict = {}
     for style in ("mixed", "organic"):
         city = {"x": 0, "y": 0, "radius": 60000, "seed": 11, "style": style, "turn": 0.0}
         gn, ge = city_graph(city, {"wobble": 9, "freeways": "no"})  # asked for more: clamped to 0.45
@@ -3352,9 +3576,76 @@ def _demo() -> None:
                     assert turn < CORNER_DEG, (style, "a street bends as a spline, never an elbow", turn)
                     bent = max(bent, turn)
                     if (iy if da[0] else ix) % ce == 0:
-                        assert turn < 1e-6, (style, "a main road is dead straight", (ix, iy), turn)
+                        main_bent[style] = max(main_bent.get(style, 0.0), turn)
         assert bent > 5, (style, "streets between the main roads curve", bent)
         assert {"4L"} <= {k for _, _, k in ge}, "collectors / arterials exist"
+    # streets follow the hills. A town on a round hill 60 m high: every street across the slope bends to run
+    # along the hillside (the ground along it rises and falls less than along the plain grid line), no street
+    # turns into an elbow for it, and nothing moves on flat ground or in a Grid town
+    dome = lambda x, y: 6000.0 * math.exp(-(x * x + y * y) / (2 * 30000.0 ** 2))
+    quiet = {"wobble": 0, "freeways": "no", "prune": 0, "superblocks": "no", "follow_hills": 1}
+    hill_town = {"x": 0, "y": 0, "radius": 60000, "seed": 11, "style": "organic", "turn": 0.0}
+    plan_hills([hill_town], dome, quiet)
+    assert hill_town.get("hills") and len(hill_town["hills"]["u"]) == (2 * hill_town["hills"]["k"][0] + 1) * (2 * hill_town["hills"]["k"][1] + 1)
+    import json as _json
+    assert _json.loads(_json.dumps(hill_town["hills"])) == hill_town["hills"], "kept as plain text with the city"
+    hn, he = city_graph(hill_town, quiet)
+    plain_town = {k: v for k, v in hill_town.items() if k != "hills"}
+    pn, pe = city_graph(plain_town, quiet)
+    swing = lambda nodes_, line: (lambda zs: max(zs) - min(zs))([dome(*nodes_[(ix, line)]) for ix in range(-4, 5) if (ix, line) in nodes_])
+    for line in (3, -3, 4, -4, 5):
+        assert swing(hn, line) < swing(pn, line) * 0.8, ("a street across the hill follows it", line, swing(hn, line), swing(pn, line))
+    assert max(math.dist(hn[n], pn[n]) for n in hn if n in pn) <= HILL_MOVE * block * 1.45, "never more than a block and a half"
+    assert all(math.dist(hn[n], pn[n]) > 500 for n in ((2, 3), (-3, 2))) and math.dist(hn[(0, 0)], pn[(0, 0)]) < 50.0
+    for a_, b_, _k in he:  # ... and the net never tears: no block squeezed under half its size or pulled to double
+        assert block * 0.5 <= math.dist(hn[a_], hn[b_]) <= block * 1.7, (a_, b_, math.dist(hn[a_], hn[b_]))
+    for (ix, iy), p in hn.items():
+        for da in ((1, 0), (0, 1)):
+            q, r = hn.get((ix + da[0], iy + da[1])), hn.get((ix + 2 * da[0], iy + 2 * da[1]))
+            if q and r:
+                turn = abs((math.degrees(math.atan2(r[1] - q[1], r[0] - q[0]) - math.atan2(q[1] - p[1], q[0] - p[0])) + 180) % 360 - 180)
+                assert turn < CORNER_DEG, ("the hills bend a street, they never break it", (ix, iy), turn)
+    # beside a freeway nothing moves: what lands on one is laid out straight
+    fw_town = dict(plain_town)
+    plan_hills([fw_town], dome, {**quiet, "freeways": "yes"})
+    assert hill_at(fw_town["hills"], 2, 3)[:2] == (0.0, 0.0) and hill_at(fw_town["hills"], 3, -3)[:2] == (0.0, 0.0)
+    assert math.hypot(*hill_at(fw_town["hills"], -3, 4)[:2]) > 0.1
+    flat_town = dict(plain_town)
+    plan_hills([flat_town], lambda x, y: 100.0 + x * 0.005, quiet)
+    assert "hills" not in flat_town, "half a percent of fall is flat ground"
+    grid_town = dict(plain_town, style="grid")
+    plan_hills([grid_town], dome, quiet)
+    assert "hills" not in grid_town and city_graph(dict(hill_town, style="grid"), quiet)[0] == city_graph(grid_town, quiet)[0]
+    assert city_graph(hill_town, {**quiet, "follow_hills": 0})[0] == pn, "follow_hills 0: the grid ignores the hills"
+    # a street that climbs steep ground winds (its crossings swing to one side, then the other), and a local
+    # street that would climb steeper than 12 % is left out: the blocks there lie along the hill
+    slope_town = dict(plain_town)
+    plan_hills([slope_town], lambda x, y: 0.10 * y, quiet)
+    sn_, se_ = city_graph(slope_town, quiet)
+    side = [sn_[(2, j)][0] - 2 * block for j in range(-3, 4)]
+    assert all(a * b < 0 for a, b in zip(side, side[1:])) and 300 < abs(side[0]) < HILL_ZIG * block, side
+    assert all(abs(sn_[(i, 2)][1] - 2 * block) < 1.0 for i in range(-3, 4)), "on an even slope a street across it is level already"
+    steep_town = dict(plain_town)
+    plan_hills([steep_town], lambda x, y: 0.16 * y, quiet)
+    tn, te = city_graph(steep_town, quiet)
+    up = [e for e in te if e[0][0] == e[1][0]]
+    assert up and all(e[0][0] % ce == 0 for e in up), "only main roads climb a 16 % hillside"
+    assert len([e for e in te if e[0][1] == e[1][1]]) == len([e for e in pe if e[0][1] == e[1][1]]), "every street along it stays"
+    # a mixed city's main roads are dead straight; an organic city's bow with the rest of it
+    assert main_bent["mixed"] < 1e-6 and main_bent["organic"] > 3, main_bent
+    # ... but not beside a freeway: the streets on either side of it and the main roads that cross it stay put
+    fw_city = {"x": 0, "y": 0, "radius": 120000, "seed": 11, "style": "organic", "turn": 0.0}
+    fo = city_options(fw_city, {"wobble": 0.45})
+    fat, _fk, _fj = street_grid(fw_city, fo)
+    fline = round(fo["downtown"] * 120000 / block)
+    for iy in range(-8, 9):
+        for ix in (fline, fline + 1):
+            assert abs(fat(ix, iy)[0] - ix * block) < 1e-6, "the two streets beside the freeway never move"
+    for iy in (-8, 0, 4, 8):  # (main roads: every 4th line)
+        for ix in (fline - 1, fline, fline + 1, fline + 2):
+            assert abs(fat(ix, iy)[1] - iy * block) < 1e-6, "a main road crosses the freeway straight"
+    far = [abs(fat(ix, 8)[1] - 8 * block) for ix in range(-9, fline - 4)]
+    assert max(far) > 500, ("and bows five blocks from it", far)
     still, _ = city_graph({"x": 0, "y": 0, "radius": 60000, "seed": 11, "style": "organic", "turn": 0.0}, {"wobble": 0, "freeways": "no"})
     assert all(abs(p[0] - ix * block) < 1e-6 and abs(p[1] - iy * block) < 1e-6 for (ix, iy), p in still.items()), "wobble 0: an exact grid"
     # long blocks: block_ratio 2 makes every block twice as long as it is wide, the same streets otherwise

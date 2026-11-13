@@ -555,8 +555,20 @@ Roads define the city, blocks are what roads enclose, lots are cut from blocks, 
    - **Streets bow, they never jog** (`wobble`, 0 to 0.45 of a block, default 0.12; `_bow`): a street between
      two main roads follows one long seeded wave, so it bends as a whole and the streets beside it bend with it.
      0 = dead straight. A Grid city never bows, a Mixed one only past downtown, an Organic one everywhere.
-   - Main roads (collectors, the axes) and the two streets under a freeway's viaduct stay dead straight:
-     interchanges land on them exactly.
+   - In a Mixed city the main roads (collectors, the axes) stay dead straight. In an Organic one they bow with
+     the rest, except within a few blocks of a freeway: interchanges land on straight roads, and the two
+     streets under a viaduct never move.
+   - **Streets follow the hills** (`follow_hills`, 0 to 1, default 0.8; `citygen.plan_hills`, kept on the city
+     as `hills`). On sloping ground the grid is eased onto the hill before any street is laid:
+     - a street across a slope moves up or down it, round after round, toward the height of its neighbours
+       along the street, so it comes to run at an even grade round the hill. Its neighbours are carried
+       along like a net: a crossing may move 1.5 blocks, but no block is squeezed under 60 % of its size;
+     - a street up a steep slope winds, its crossings swinging 10 % of a block to one side, then the other;
+     - a local street that would climb steeper than 12 % is left out, so blocks there lie along the hill;
+     - no street turns more than 24 degrees at a crossing for it (a bend, never an elbow), and nothing
+       moves beside a freeway, downtown in a Mixed city, or anywhere in a Grid city.
+     It needs hills: `city_ground` natural. With `flatten` the cities stand on a level plateau and the
+     streets have nothing to follow.
    - `green_lots` (0 to 0.6): that share of every block's lots is planted with trees instead of built on; one
      block can have its own share (`zones` with `green`).
 2. **Grading** (`GRADE`, `st.drape(max_grade=...)`): steepest rise per road (6L 4 %, 4L 5 %, 2S 6 %, 2L / 1W

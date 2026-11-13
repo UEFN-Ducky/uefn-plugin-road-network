@@ -1079,6 +1079,8 @@ def register(api) -> None:
         ter = base or cg.terrain(int(seed), size, max(0.0, float(relief_m)) * 100, towns, center=(center_x, center_y),
                                  opts=opts, keep=keep)
         sea_level = ter.get("sea")
+        # the hills under each city, read before any street is laid: its streets follow them (cg.plan_hills)
+        cg.plan_hills(towns, (lambda x, y, t=ter: st.sample_grid(t, x, y)) if ter.get("heights") else None, opts)
         # roads never dive into a lake: across water they stay 1.5 m above it (a causeway)
         road_ground = ((lambda x, y: max(st.sample_grid(ter, x, y) or 0.0, sea_level + 150)) if sea_level is not None
                        else (lambda x, y: st.sample_grid(ter, x, y) or 0.0))
