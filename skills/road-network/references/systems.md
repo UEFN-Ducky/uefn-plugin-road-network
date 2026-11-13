@@ -564,8 +564,8 @@ Roads define the city, blocks are what roads enclose, lots are cut from blocks, 
      to half a block, main roads with the rest:
      - a main road swings a block's width over half a kilometre and never rules a line across the city;
      - blocks keep at least 60 % of their size, and no crossing turns more than about 15 degrees;
-     - nothing moves downtown in a Mixed city (half as far there in an Organic one) or within 1.5 blocks of
-       a freeway;
+     - nothing moves downtown, in any style (the centre of a city is straight; the further out, the
+       curvier), or within 1.5 blocks of a freeway;
      - a wobble of 3 % already gives most of it. Before, an Organic city with a low wobble still had a
        ruled main road on every fourth line, and every four of them made a square.
    - **Streets left out** (`citygen._street_gaps`, with `superblocks`, in a Grid city too). Past downtown
@@ -586,8 +586,13 @@ Roads define the city, blocks are what roads enclose, lots are cut from blocks, 
    - **One network** (`citygen.one_network`): a bridge with no street at one of its ends is not built, and
      fewer than 8 junctions joined to nothing go with it.
    - **Few bridges** (`citygen.few_bridges`): every street that reached the water once got its own bridge, a
-     dozen side by side over one lake. Now, shortest first: none crosses another, and a long one (over 300 m)
-     is built only if no other long one comes within 800 m of it. Creeks and rivers keep a bridge per street.
+     dozen side by side over one lake. Now no bridge crosses another. First come the bridges that join two
+     parts of the city no street joins (a district on the far bank), shortest first; where two of those would
+     cross, the set that keeps most of the city in one piece is built. Any other bridge is built only if it is
+     short (creeks and rivers keep one per street) or no long one (over 300 m) comes within 800 m of it, and
+     a city has three long ones at most beyond those.
+   - **A district no bridge reaches** (`citygen.join_parts`) gets one of its own: straight to the nearest
+     junction of the rest of the city, up to 2 km, across no street and no other bridge.
    - **Streets follow the hills** (`follow_hills`, 0 to 1, default 0.8; `citygen.plan_hills`, kept on the city
      as `hills`). On sloping ground the grid is eased onto the hill before any street is laid:
      - a street across a slope moves up or down it, round after round, toward the height of its neighbours
