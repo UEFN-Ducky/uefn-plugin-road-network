@@ -861,7 +861,11 @@ def heightmap_png(ter: dict, res: int = 0, pads: list | None = None, rows: list 
     # Landscape mode's New > Location is the landscape's centre, not its corner; 1009 = 16 components x 63 quads + 1
     return png, {"resolution": f"{res} x {res}", "location": [round((lo[0] + hi[0]) / 2), round((lo[1] + hi[1]) / 2), 0],
                  "scale": [round(scale, 3), round(scale, 3), 100.0],
-                 "components": f"{(res - 1) // 63} x {(res - 1) // 63}, 63 quads, 1 section",
+                 # more than 16 components a side spans several World Partition regions (region size 16), and
+                 # UEFN's import repeated one region's heights in each (the map came in as 4 copies of a quarter):
+                 # 2017 is imported as 16 x 16 components of 2 x 2 sections instead, one region
+                 "components": (f"{(res - 1) // 63} x {(res - 1) // 63}, 63 quads, 1 section" if (res - 1) // 63 <= 16
+                                else f"{(res - 1) // 126} x {(res - 1) // 126}, 63 quads, 2x2 sections"),
                  "metres_per_pixel": round(scale / 100, 2),
                  "uefn_limit": f"{res * res:,} of {UEFN_MAX_SAMPLES:,} samples (2048 x 2048)"}
 
@@ -5879,6 +5883,9 @@ def _demo() -> None:
     # landscape size: snapped to whole 63-quad components, 2017 by default (the most UEFN's 2048 x 2048 cap takes)
     assert landscape_res({}) == 2017 and landscape_res({"landscape_px": 1000}) == 1009 and 2017 ** 2 <= UEFN_MAX_SAMPLES
     assert landscape_res({"landscape_px": 2600}) ** 2 > UEFN_MAX_SAMPLES
+    # 2017 stays one World Partition region: 16 x 16 components of 2 x 2 sections (32 x 32 came in as 4 copies)
+    _png, big = heightmap_png(ter, rows=[[32768] * 2017] * 2017)
+    assert big["components"].startswith("16 x 16") and "2x2" in big["components"], big["components"]
     # bicubic refine: a plane stays a plane (no creases), and the coarse samples are kept
     ramp = {"min": [0, 0], "max": [1000, 1000], "grid": 8, "heights": [[i * 10.0 + j for i in range(8)] for j in range(8)]}
     fr = refine(ramp, 32)
