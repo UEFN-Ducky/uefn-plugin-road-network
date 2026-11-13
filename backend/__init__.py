@@ -1843,17 +1843,34 @@ def register(api) -> None:
     def roads_digest(nid: str) -> str:
         # where every road point lies (meshes left out: build_pieces adds junction meshes without moving a road)
         return hashlib.sha1(json.dumps([[(round(p["x"]), round(p["y"]), round(p["z"])) for p in pts]
-                                        for pts, _segs in world_actors(nid)]).encode()).hexdigest()
+                                        for pts, _segs in world_actors(nid, paths=True)]).encode()).hexdigest()
 
-    def world_actors(nid: str) -> list:
+    def world_actors(nid: str, paths: bool = False) -> list:
         actors = []
         for aslug, head in actor_docs(nid).items():
             label = str(head.get("label") or "")
             if " before kit" in label or label.endswith((" Paths", " Access")):
                 continue  # a saved backup, or the sidewalks / walkways / driveways: not streets PCG lines up on
             _, pts, segs = load_actor(nid, aslug)
-            actors.append((pts, segs))
+            actors.append((pts, segs) if paths else public_only(pts, segs))
         return actors
+
+    LOT_PATHS = {cg.ROAD_MESH[k].rsplit("/", 1)[-1] for k in ("SW", "WK", "DW", "PR")}
+
+    def public_only(pts: list, segs: list) -> tuple:
+        """A roads actor without the lot paths joined into it (sidewalks, walkways, driveways, private streets) and
+        the mesh-less links that only lead to them. Those paths were joined into '<City> Roads' so the spline network
+        is one piece; read as roads, every house stood on its own driveway and 768 of them were never built."""
+        path_seg = lambda s: str(s.get("mesh") or "").rsplit("/", 1)[-1] in LOT_PATHS
+        if not any(path_seg(s) for s in segs):
+            return pts, segs
+        road_pts = {i for s in segs if s.get("mesh") and not path_seg(s) for i in (s["a"], s["b"])}
+        path_pts = {i for s in segs if path_seg(s) for i in (s["a"], s["b"])}
+        keep = [s for s in segs if not path_seg(s) and not (
+            not s.get("mesh") and ((s["a"] in path_pts and s["a"] not in road_pts) or
+                                   (s["b"] in path_pts and s["b"] not in road_pts)))]
+        used = {i for s in keep for i in (s["a"], s["b"])}
+        return [p for p in pts if p["i"] in used], keep
 
     def world_roads(nid: str, step: float = 500.0) -> list:
         return pl.road_samples(world_actors(nid), step)
@@ -2133,6 +2150,8 @@ def register(api) -> None:
             out = pick
         if summary:  # counts only: a quick check for an agent, no point lists
             return {"ok": True, "id": nid, "counts": {k: v["count"] for k, v in out.items()},
+                    # why lots stood empty, per building layer (only units placed again since the plugin started)
+                    "skipped": {k: v["skipped"] for k, v in out.items() if v.get("skipped")},
                     "ground_fit": fit_summary(),
                     # what the last pass took off the roads and out of the buildings, per layer
                     "swept": _PREVIEW_CACHE.get("swept")}

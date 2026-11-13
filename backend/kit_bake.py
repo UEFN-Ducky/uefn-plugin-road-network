@@ -419,6 +419,14 @@ def bake(previewed: dict, root: str, interiors: bool = True, props: dict | None 
             baked[name] = len(pts)
         elif pts and layer.get("kind") != "foliage":
             missing.append(name)
+    # BuildingKit meshes come into UEFN with Blender's +Y as UEFN's -Y (every one of them: the roof slab spans
+    # -512..0, the lobby sticks out at +150). The grammar works in Blender's frame (grammar.BOUNDS), so each piece is
+    # placed mirrored back on its own Y: roofs on their buildings, lobbies, awnings and door steps outside again.
+    bk = f"/WorldGen/{grammar.FOLDER}/"
+    for p, rows in groups.items():
+        if bk in p:
+            for r in rows:
+                r[5] = -abs(r[5])
     return groups, baked, missing
 
 
@@ -878,6 +886,8 @@ def _demo() -> None:
     lot = [10000, 0, 300, 90, 1, 11, FORM_NAMES.index("L"), 44, 36, 1.2, []]
     gm2, bm2, mm2 = bake({"Schools": {"kind": "buildings", "role": "school", "build": "modular", "points": [lot]}}, "/R")
     assert bm2 == {"Schools": 1} and not mm2, (bm2, mm2)
+    # every BuildingKit piece mirrored back on its Y (UEFN imports the kit with Blender's +Y as its -Y)
+    assert all(r[5] < 0 for k, rs in gm2.items() if f"/{grammar.FOLDER}/" in k for r in rs), "BuildingKit rows mirrored"
     assert not any("SM_City_" in k for k in gm2), "a modular lot never stretches a whole mesh"
     glass = gm2[bk("SM_BK_Modern_SlidingGlassWall")]
     assert glass and all(r[2] >= 300 for r in glass), "walls stand on the pad"

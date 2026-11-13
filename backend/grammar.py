@@ -247,7 +247,9 @@ ROOF = {
     "industrial": {"SM_BK_Roof_ExhaustFan": 3, "SM_BK_Roof_Skylight": 3, "SM_BK_Roof_Duct": 2, "SM_BK_Roof_SolarArray": 1, "": 1},
     "jail": {"SM_BK_Roof_ACUnit_Large": 2, "SM_BK_Roof_ExhaustFan": 2, "SM_BK_Roof_Hatch": 1, "": 3},
 }
-ROOF_CELL_CM = 450.0  # one piece of roof gear per 4.5 m cell, kept 2.5 m in from the parapet
+ROOF_CELL_CM = 450.0  # roof gear stands on a 4.5 m grid of cells, kept 2.5 m in from the parapet
+ROOF_M2_PER_PIECE = 225.0  # ... one piece per 15 x 15 m of roof at most (at least 3): every cell filled was a car park
+# of AC units on an office roof
 HUT_CLEAR_CM = 400.0  # cells this close to the hut's centre (on both axes) would stand inside it
 BULKHEAD = "SM_BK_Roof_StairBulkhead"  # the roof-access hut over the stair core (blocks of 2+ storeys with a core)
 CORE_BLOCK_CM = 1100.0  # the interiors fit a stair core only in a block at least this wide (kit_bake.CORE_MIN_CM)
@@ -342,18 +344,25 @@ def build(form: str, role: str, d: float, w: float, h: float, seed: int, path, s
         gear = ROOF.get(sname, {})
         names, weights = list(gear), list(gear.values())
         ncx, ncy = max(1, int((bd - 500) // ROOF_CELL_CM)), max(1, int((bw - 500) // ROOF_CELL_CM))
-        for a in range(ncx):
-            for b_ in range(ncy):
-                gu = x0 + (bd - (ncx - 1) * ROOF_CELL_CM) / 2 + a * ROOF_CELL_CM
-                gv = y0 + (bw - (ncy - 1) * ROOF_CELL_CM) / 2 + b_ * ROOF_CELL_CM
-                if not names or (hut and abs(gu - cx) < HUT_CLEAR_CM and abs(gv - cy) < HUT_CLEAR_CM):
-                    continue
-                if any(o[2] >= top - 1 and o[0] - 100 < gu < o[3] + 100 and o[1] - 100 < gv < o[4] + 100
-                       for o in snapped if o[5] > top):
-                    continue  # under the tower that stands on this podium
-                pick = det.choices(names, weights)[0]
-                if pick:
-                    put(pick, gu, gv, top, det.choice((0, 90, 180, 270)))
+        cells = [(x0 + (bd - (ncx - 1) * ROOF_CELL_CM) / 2 + a * ROOF_CELL_CM,
+                  y0 + (bw - (ncy - 1) * ROOF_CELL_CM) / 2 + b_ * ROOF_CELL_CM) for a in range(ncx) for b_ in range(ncy)]
+        # the free ones: not inside the roof-access hut, not under the tower that stands on this podium
+        cells = [(gu, gv) for gu, gv in cells
+                 if not (hut and abs(gu - cx) < HUT_CLEAR_CM and abs(gv - cy) < HUT_CLEAR_CM)
+                 and not any(o[2] >= top - 1 and o[0] - 100 < gu < o[3] + 100 and o[1] - 100 < gv < o[4] + 100
+                             for o in snapped if o[5] > top)]
+        det.shuffle(cells)  # spread over the roof, not packed into the first corner
+        room = max(3, int(bd * bw / 1e4 / ROOF_M2_PER_PIECE))
+        full = [n for n in names if n]
+        for k, (gu, gv) in enumerate(cells):
+            if room <= 0 or not names:
+                break
+            pick = det.choices(names, weights)[0]
+            if not pick and full and len(cells) - k <= min(room, 3):
+                pick = det.choice(full)  # a small roof still gets its few pieces
+            if pick:
+                put(pick, gu, gv, top, det.choice((0, 90, 180, 270)))
+                room -= 1
     return rows, blocks
 
 

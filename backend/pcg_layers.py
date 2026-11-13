@@ -1810,6 +1810,8 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                 vacant = open_land(cities)
             where_ok = (lambda x, y, out_=where_ok, free=vacant: out_(x, y) or free(x, y))  # (not outside: in a city)
         candidates = 0
+        why: dict = {}  # building layers: why each lot was passed over (road_network_pcg_preview `skipped`)
+        no = lambda k: why.__setitem__(k, why.get(k, 0) + 1)
         todo = []
         for uid, box, cands in units:
             had = memo.units.get((name, uid)) if memo is not None else None
@@ -1842,6 +1844,7 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                 lot_role = cand[8] if lot else ""
                 if lot:
                     if (cand[6], cand[7]) in taken:
+                        no("taken")
                         continue  # an earlier layer built on this lot
                     if lot_role and lot_role != layer["role"]:
                         continue  # a neighbourhood decided this lot: houses in a subdivision, apartments in a complex
@@ -1854,6 +1857,7 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                         bw = round(min(layer["width_m"] * (1 + layer["size_jitter"] * 0.5), lw * 0.85), 1)
                         bd = round(min(layer["depth_m"] * (1 + layer["size_jitter"] * 0.3), ld - layer["setback_m"] - 2), 1)
                         if bw < layer["width_m"] * 0.6 or bd < layer["depth_m"] * 0.5:
+                            no("lot too small")
                             continue  # the lot is too small for this kind of building
                         f = math.radians(yaw)  # centre: the front lot line, back by the setback and half the building
                         back = (layer["setback_m"] + bd / 2) * 100
@@ -1861,6 +1865,7 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                 if along and cand[3] - last_at[cand[4]] < spacing:
                     continue  # too soon after the last one on this side of the street
                 if not lot_role and not where_ok(x, y):
+                    lot and no("wrong district")
                     continue  # (a neighbourhood's own lots are already in the right place)
                 if layer["area"] and not inside(layer["area"], x, y):
                     continue  # outside the area this layer was drawn for
@@ -1879,12 +1884,14 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                     continue  # towers cluster at the core and thin out toward the edge: no wall of equal towers
                 z = sample_z(x, y)
                 if z is None or (sea is not None and z < sea + 50) or not on_map(x, y):
+                    lot and no("under water / off map")
                     continue  # nothing grows under water or off the map
                 s = layer["scale_min"] + (layer["scale_max"] - layer["scale_min"]) * _u01("scale", *spot)
                 r = r_base * s
                 # scatter keeps the clearance; roadside layers sit at their setback, so only their own size counts
                 clear = layer["road_clear_m"] * 100 if layer["kind"] in SCATTERED else 0.0
                 if lot and _lot_hits_road(road_hash, x, y, yaw, bw * 50, bd * 50):
+                    no("on a road")
                     continue  # a lot is cut off its own street, but a subdivision's lot can still reach over another one
                 if layer["avoid_roads"] and not lot:
                     if building:  # the lot as the rectangle it is, facing its street
@@ -1896,6 +1903,7 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                 # the wide circle round a big building: that left the three lots on either side of every mansion
                 # and office empty, with no tree either
                 if any(kept[other].hit(x, y, r) for other in avoid if not (lot and (other in lot_layers or other in building_layers))):
+                    lot and no("near an avoided layer")
                     continue
                 # one of a kind per `spacing` in any direction (two hospitals never sit across the street from
                 # each other); dense layers just must not overlap
@@ -1906,6 +1914,7 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                 else:
                     gap = max(r, spacing * 0.5) if along and spacing > 4 * r else r
                 if layer["self_prune"] and gap and own.hit(x, y, gap):
+                    lot and no("spacing")
                     continue
                 if building:
                     # Never on another building, never on a street: its own rectangle against every one placed so far
@@ -1914,9 +1923,12 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                                                    layer["depth_m"] * (1 + layer["size_jitter"] * 0.3))
                     rect = (x, y, math.cos(math.radians(yaw)), math.sin(math.radians(yaw)), rw * 50, rd * 50)
                     if not (lot and cand[9]) and held.hit(rect, 0.0):
+                        lot and no("planned site")
                         continue  # a planned car park, ground or building spot: not this building's land
                     if _lot_hits_road(priv_hash, x, y, yaw, rw * 50, rd * 50) or built.hit(rect):
                         if lot:
+                            no("on a private street" if _lot_hits_road(priv_hash, x, y, yaw, rw * 50, rd * 50)
+                               else "on another building")
                             tree = [round(x), round(y), round(z), round((x * 7 + y * 13) % 360),
                                     round(0.9 + int(_u01("infill", round(x), round(y)) * 40) / 100, 2)]
                             infill.append(tree)
@@ -1967,6 +1979,7 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
             share = math.ceil(shown_cap / len(pts) * 50) / 50
             pts = [p for p in pts if _u01("shown", seed, name, p[0], p[1]) < share]
         out[name] = {"kind": layer["kind"], "role": layer["role"], "count": count, "shown": len(pts), "points": pts,
+                     **({"skipped": why} if why else {}),
                      "radius_cm": round(r_base), "meshes": layer["meshes"], "build": layer["build"],
                      **({"size_m": [layer["width_m"], layer["depth_m"]], "setback_m": layer["setback_m"],
                          "forms": FORM_NAMES, "driveway": layer["driveway"], "walkway": layer["walkway"],
