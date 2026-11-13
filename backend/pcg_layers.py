@@ -1005,6 +1005,52 @@ def open_land(cities: list):
     return free
 
 
+STREET_PIECES = ("TwoLane", "FourLane", "Boulevard", "OneLane")  # the road pieces a city street is laid with
+END_CAP_CM = 350.0  # a street's end cap reaches this far past the road's own edge, all round
+
+
+def road_ends(actors: list, terrain: dict | None = None) -> dict:
+    """A cap on every street that ends: no road stops as a strip of asphalt cut off square. Where a city street
+    runs out (a dead end at the city's edge, a stub the water or a freeway took the rest of), a round paved
+    turnaround closes it, END_CAP_CM wider than the road, at the road's own height. Not where the road goes on
+    in another actor (a street joining two cities, a highway at its gate), not at a bridge, a ramp or a freeway's
+    end, not at the edge of the map. actors: every road actor [(points, segments)]."""
+    at: dict = {}  # how many actors have a point at each spot (to the metre)
+    for pts, _segs in actors:
+        for key in {(round(p["x"] / 100), round(p["y"] / 100)) for p in pts}:
+            at[key] = at.get(key, 0) + 1
+    lo, hi = (terrain or {}).get("min"), (terrain or {}).get("max")
+    sea = (terrain or {}).get("sea")
+    rows = []
+    for pts, segs in actors:
+        by_i = {p["i"]: p for p in pts}
+        ends: dict = {}
+        for s in segs:
+            for n, m in ((s["a"], s["b"]), (s["b"], s["a"])):
+                ends.setdefault(n, []).append((m, s["mesh"]))
+        for n, links in ends.items():
+            p = by_i.get(n)
+            if p is None or len(links) != 1 or p.get("mesh"):
+                continue  # a street that goes on; a junction's own point
+            other, mesh = by_i.get(links[0][0]), str(links[0][1] or "")
+            if other is None or "Bridge" in mesh or not any(k in mesh for k in STREET_PIECES):
+                continue
+            if at.get((round(p["x"] / 100), round(p["y"] / 100)), 0) > 1:
+                continue  # the road goes on in another actor
+            if lo and hi and not (lo[0] + 6000 <= p["x"] <= hi[0] - 6000 and lo[1] + 6000 <= p["y"] <= hi[1] - 6000):
+                continue
+            if sea is not None and p["z"] < sea + 50:
+                continue
+            r = max(300.0, float(p["w"])) + END_CAP_CM
+            yaw = math.degrees(math.atan2(p["y"] - other["y"], p["x"] - other["x"]))
+            rows.append([round(p["x"]), round(p["y"]), round(p["z"] + 3), round(yaw, 1), round(r / 1000, 3), round(r / 1000, 3), 1.0])
+    if not rows:
+        return {}
+    return {"Road ends": {"kind": "site", "role": "site", "mesh": "SM_Kit_Turnaround", "box_m": [20, 20, 0.1], "on_road": True,
+                          "keep_z": True, "pad": False, "count": len(rows), "shown": len(rows), "points": rows, "meshes": [],
+                          "row": "x, y, z, yaw, sx, sy, sz"}}
+
+
 def aprons(placed: dict) -> dict:
     """A dropped kerb where every driveway meets its street: a concrete apron from the lot line across the
     3.5 m sidewalk to the carriageway, a metre wider than the drive, lying on the sidewalk (the kerb is lowered
@@ -2041,6 +2087,19 @@ def _demo() -> None:
     assert stuff["Garden trees"]["points"] == [[9000, 9000, 0, 0, 1]] and stuff["Garden trees"]["count"] == 1
     assert [p[:2] for p in stuff["Street lamps"]["points"]] == [[30000, 1025], [900, 900]], "a lamp at the kerb, one on the corner: they stay"
     assert len(stuff["Houses"]["points"]) == 1 and len(stuff["Parking stalls"]["points"]) == 1
+    # a cap on every street that ends: the dead end gets a turnaround; a through street, a street that goes on in
+    # another actor (two cities joined), a bridge's end and a freeway's end get none
+    street = lambda i, a, b: {"a": a, "b": b, "mesh": "SM_Road_TwoLaneSidewalk_Straight10m"}
+    pt = lambda i, x, y, mesh="": {"i": i, "x": x, "y": y, "z": 120.0, "w": 875, "mesh": mesh}
+    town_a = ([pt(0, 0, 0), pt(1, 10000, 0), pt(2, 20000, 0, "SM_Junc_Gen"), pt(3, 20000, 9000), pt(4, 30000, 0)],
+              [street(0, 0, 1), street(1, 1, 2), street(2, 2, 3), street(3, 2, 4)])
+    town_b = ([pt(0, 30000, 0), pt(1, 40000, 0), pt(2, 50000, 0)],
+              [street(0, 0, 1), {"a": 1, "b": 2, "mesh": "SM_Road_BridgeSidewalk_Straight20m"}])
+    fast = ([pt(0, 0, 50000), pt(1, 9000, 50000)], [{"a": 0, "b": 1, "mesh": "SM_Road_Freeway_Lane20m"}])
+    caps = road_ends([town_a, town_b, fast], {"min": [-90000, -90000], "max": [90000, 90000]})["Road ends"]
+    assert sorted(r[:2] for r in caps["points"]) == [[0, 0], [20000, 9000]], caps["points"]
+    assert caps["points"][0][2] == 123 and caps["points"][0][4] == 1.225 and caps["keep_z"] and caps["pad"] is False
+    assert not road_ends([town_a], {"min": [-3000, -90000], "max": [33000, 90000]})["Road ends"]["points"][0][0] == 0, "none at the map's edge"
     # ... and no tree inside a building (the forest is placed first; a house built along a road knows nothing of it)
     grove = {"Trees": {"kind": "foliage", "role": "tree", "count": 4, "shown": 4,
                        "points": [[10000, 10000, 0, 0, 1], [10300, 10350, 0, 0, 1], [10450, 10000, 0, 0, 1], [10700, 10000, 0, 0, 1]]},

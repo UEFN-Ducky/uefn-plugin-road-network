@@ -1778,6 +1778,7 @@ def register(api) -> None:
             # ground, road_profiles 'skirt'; every building its own foundation, kit_bake.foundation; every low deck
             # its approach wall, citygen.deck_fills; and the ground is graded to the roads)
             placed.update(pl.site_layers(cities, ground))  # complexes' parking, stalls, turnarounds, garages
+            placed.update(pl.road_ends(actors, terrain))  # a cap on every street that ends
             placed.update(pl.aprons(placed))  # a dropped kerb where each driveway meets its street
             # fences only round houses that were built, through no building, across no street, never crossing
             pl.fit_fences(placed, pl.road_samples(actors, 400.0) + pl.street_samples(cities))
@@ -1796,7 +1797,8 @@ def register(api) -> None:
             pl.clear_of(placed, pl.road_samples(fast, 400.0))
             # last of all: nothing on a road surface (junctions and private streets are road too), no tree in a
             # building. Every layer above was placed by its own rule, and each knew some roads and not others.
-            _PREVIEW_CACHE["swept"] = {"off_roads": pl.clear_roads(placed, pl.surface_samples(actors, cities)),
+            caps = [(p[0], p[1], p[4] * 1000.0) for p in (placed.get("Road ends") or {}).get("points") or []]
+            _PREVIEW_CACHE["swept"] = {"off_roads": pl.clear_roads(placed, pl.surface_samples(actors, cities) + caps),
                                        "out_of_buildings": pl.clear_buildings(placed)}
             # waterfront structures (piers, marinas, quays, beaches, ports, stilt / floating homes)
             placed.update(waterfront.layers(cities))

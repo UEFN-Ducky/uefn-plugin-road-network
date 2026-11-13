@@ -585,6 +585,9 @@ Roads define the city, blocks are what roads enclose, lots are cut from blocks, 
      two streets, a crossing's last two roads, the street that holds the network together.
    - **One network** (`citygen.one_network`): a bridge with no street at one of its ends is not built, and
      fewer than 8 junctions joined to nothing go with it.
+   - **A cap on every street that ends** (`pcg_layers.road_ends`, built-in layer Road ends): a dead end gets a
+     round paved turnaround 3.5 m wider than the road, at the road's height. None where the road goes on in
+     another actor, at a bridge, a ramp or a freeway's end, or at the edge of the map.
    - **Few bridges** (`citygen.few_bridges`): every street that reached the water once got its own bridge, a
      dozen side by side over one lake. Now no bridge crosses another. First come the bridges that join two
      parts of the city no street joins (a district on the far bank), shortest first; where two of those would
