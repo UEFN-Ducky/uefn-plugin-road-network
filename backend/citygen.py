@@ -1265,6 +1265,10 @@ MEANDER_WAVES = ((10.0, 14.0, 0.5), (7.0, 10.0, 0.3), (7.0, 10.0, 0.2))  # ... a
 MEANDER_FROM = 0.03  # ... in full as soon as streets may bow at all (`wobble` of this is most of it; 0 is a ruled grid)
 
 
+EDGE_BOW = 0.22  # toward a city's edge every street bows more, the main roads with it: by this share of a block
+# more at the very edge than `wobble` alone gives (none where the normal city begins; none in a strict grid city)
+
+
 def meander(city: dict, o: dict):
     """(grid line ix, iy) -> (du, dv): how far that crossing drifts off the grid, in blocks, along the grid's two
     directions. None in a strict grid city, or with `wobble` 0. One smooth field for the whole city, so
@@ -1298,6 +1302,8 @@ def _grid_local(city: dict, o: dict) -> tuple:
     turn = math.radians(orientation(city))
     c, s = math.cos(turn), math.sin(turn)
     ce, down, seed = o["collector_every"], o["downtown"], city.get("seed", 1)
+    normal = max(o["normal"], down)
+    edge_bow = 0.0 if style == "grid" or o["wobble"] <= 0 else EDGE_BOW * (1.0 - math.exp(-o["wobble"] / MEANDER_FROM))
     bow_x, bow_y = _bow(seed, "x"), _bow(seed, "y")
     still_x: set = set()
     still_y: set = set()
@@ -1330,6 +1336,14 @@ def _grid_local(city: dict, o: dict) -> tuple:
                 kx_, ky_ = (0.0 if ix in still_x else max(kx_, main)), (0.0 if iy in still_y else max(ky_, main))
             lx += amount * bx * kx_ * bow_x(iy, ix)
             ly += amount * by * ky_ * bow_y(ix, iy)
+        if edge_bow:
+            # ... and the further out, the more: past the normal city every street bows, the main roads with the
+            # side streets (they were ruled lines there in a mixed city, a square of them every fourth block),
+            # most at the city's edge. The streets beside one bow with it, so blocks keep their size.
+            more = edge_bow * _smoothstep(normal - 0.15, 1.0, share) * _smoothstep(1.5, 3.5, near_fw(ix, iy))
+            if more:
+                lx += more * bx * (0.0 if ix in still_x else 1.0) * bow_x(iy, ix)
+                ly += more * by * (0.0 if iy in still_y else 1.0) * bow_y(ix, iy)
         if drift:
             # ... and the whole net drifts (meander): nothing downtown (the centre of a city is laid out
             # straight, whatever its style), more and more past it, in full a quarter of the way further out,
@@ -1584,6 +1598,50 @@ def water_of(city: dict, opts: dict | None, wet):
     return lambda x, y: cw(x, y) or bool(wet and wet(x, y))
 
 
+PARK_MIN_R = 100000.0  # a city of this radius or more has one big park in its centre district ...
+PARK_BIG_R = 180000.0  # ... two blocks by three; from this radius two by four
+PARK_AT = 0.6  # ... about this far from the middle of that district to its edge
+
+
+def central_park(city: dict, o: dict, wet=None, grid: tuple | None = None):
+    """The city's one big park, like the one in the middle of Manhattan: a rectangle of the centre district's own
+    blocks with no street through it. (ix0, iy0, ix1, iy1): the grid lines of its four sides, or None (a small
+    city, or no room). Wholly inside the centre district, on dry land, never across one of the city's two main
+    axes or a freeway and the streets beside it. Its place is the city's own draw: the same every time.
+    grid: (nodes, ring) of the street grid when the caller has them (city_graph); else worked out here."""
+    R, down, seed = city["radius"], o["downtown"], city.get("seed", 1)
+    if R < PARK_MIN_R:
+        return None
+    if grid is None:
+        at, kx, ky = street_grid(city, o)
+        nodes, ring = {}, {}
+        for ix in range(-kx, kx + 1):
+            for iy in range(-ky, ky + 1):
+                wx, wy, share = at(ix, iy)
+                if share <= down and not (city.get("yield_to") and yielded(city, wx, wy)):
+                    nodes[(ix, iy)], ring[(ix, iy)] = [wx, wy], share
+    else:
+        nodes, ring = grid
+    fw_x, fw_y = _grid_local(city, o)[2]
+    long_ = 4 if R >= PARK_BIG_R else 3
+    best = None
+    for nx, ny in ((2, long_), (long_, 2)):
+        for ix0, iy0 in nodes:
+            ix1, iy1 = ix0 + nx, iy0 + ny
+            if ix0 < 0 < ix1 or iy0 < 0 < iy1:
+                continue  # the two main streets run on through the city
+            if (fw_x is not None and ix0 - 1 < fw_x < ix1 + 1) or (fw_y is not None and iy0 - 1 < fw_y < iy1 + 1):
+                continue
+            ks = [(i, j) for i in range(ix0, ix1 + 1) for j in range(iy0, iy1 + 1)]
+            if any(k not in nodes or ring[k] > down for k in ks) or (wet and any(wet(*nodes[k][:2]) for k in ks)):
+                continue
+            off = abs(sum(ring[k] for k in ks) / len(ks) - PARK_AT * down)
+            key = (round(off / 0.04), random.Random(f"park:{seed}:{ix0}:{iy0}:{nx}").random())
+            if best is None or key < best[0]:
+                best = (key, (ix0, iy0, ix1, iy1))
+    return best[1] if best else None
+
+
 def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | None = None,
                virtual: list | None = None) -> tuple:
     """Street network of one city: nodes {key: [x, y]}, edges [(a, b, kind)]. Real cities mix patterns
@@ -1627,6 +1685,17 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
             else:
                 kind = o["suburb_roads"] if share > normal else o["neighbourhood_roads"]
             edges.append([(ix, iy), nb, kind])
+    # the one big park: no street runs through it. The streets round it stay, whatever is thinned out below.
+    # (on the same water city_layout reads: the lakes and the city's own canals)
+    park, rim = central_park(city, o, water_of(city, o, wet), (nodes, ring)), set()
+    if park:
+        px0, py0, px1, py1 = park
+        in_park = lambda n: px0 <= n[0] <= px1 and py0 <= n[1] <= py1
+        on_rim = lambda a, b: (a[0] == b[0] and a[0] in (px0, px1)) or (a[1] == b[1] and a[1] in (py0, py1))
+        edges = [e for e in edges if not (in_park(e[0]) and in_park(e[1]) and not on_rim(e[0], e[1]))]
+        for n in [n for n in nodes if px0 < n[0] < px1 and py0 < n[1] < py1]:
+            del nodes[n]
+        rim = {(e[0], e[1]) for e in edges if in_park(e[0]) and in_park(e[1])}
     if o["superblocks"] == "yes":
         def drop(e):
             a, b, _ = e
@@ -1692,7 +1761,7 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
             floor = 1 if suburb else 2  # a suburb street may end in a cul-de-sac
             chance = o["prune"] * (1.6 if suburb else 1.0)
             line = a[0] if b[0] == a[0] else a[1]
-            local = kind != o["core_roads"] and kind != "4L" and line % o["collector_every"] != 0
+            local = kind != o["core_roads"] and kind != "4L" and line % o["collector_every"] != 0 and (a, b) not in rim
             if local and degree[a] > floor and degree[b] > floor and rnd.random() < chance:
                 degree[a] -= 1
                 degree[b] -= 1
@@ -2847,8 +2916,8 @@ def access_actor(city: dict, rows: list, ground, folder: str) -> dict:
     return build_actor(nodes, edges, ground, folder)
 
 
-COLLECTOR_ROWS = 0.5  # of the suburbs' rows of blocks, how many share one winding street from block to block
-SUPERBLOCK_SHARE = 0.7  # of the suburbs' whole collector cells, how many are one subdivision with no public street inside
+COLLECTOR_ROWS = 0.65  # of the suburbs' rows of blocks, how many share one winding street from block to block
+SUPERBLOCK_SHARE = 0.8  # of the suburbs' whole collector cells, how many are one subdivision with no public street inside
 LOT_W_CM, LOT_D_CM = 1600.0, 3500.0  # a lot: 16 m frontage, up to 35 m deep (two back to back in a block)
 # ... wider where what is built there is wider: an office block or a tower downtown (a 16 m lot fits neither, and
 # every downtown lot between two towers stood empty), a warehouse or a factory in the industrial zone
@@ -2895,6 +2964,12 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
            "blocks": [], "rezoned": []}
     down, normal = o["downtown"], max(o["normal"], o["downtown"])
     zones = [z for z in city.get("zones") or [] if isinstance(z, dict) and "x" in z and "y" in z]
+    big_park = central_park(city, o, wet)
+    if big_park:  # the block the streets left whole there is a park (the person's own choice for it still wins)
+        grid_at = street_grid(city, o)[0]
+        corners = [grid_at(i, j)[:2] for i in (big_park[0], big_park[2]) for j in (big_park[1], big_park[3])]
+        zones = [{"x": sum(p[0] for p in corners) / 4, "y": sum(p[1] for p in corners) / 4, "kind": "park"}] + zones
+    park_grounds: list = []
     in_wedge = zoning(city, o)[1]
     PARTS = ("lots", "streets", "parking", "stalls", "pads", "trees", "fences", "pools")
     fronted: set = set()  # (node, next node) of every street side a block lies on
@@ -2962,7 +3037,8 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
                 if not want and zone == "downtown":  # a core block is plain lots for the towers; any other keeps
                     want = "parcels"  # its own layout and only changes what is built on it
             if want == "park":
-                kind, add = "park", {"trees": _grove(area, local)}
+                kind, add = "park", _park(area, local)
+                park_grounds += add["grounds"]
             elif want == "parcels" or (want in BLOCK_KINDS and want in nb.TYPES and not cut
                                        and min(L, W) >= nb.MIN_SIDE):
                 kind, add = want, plain(local, zone) if want == "parcels" else laid(want, local)
@@ -3064,7 +3140,7 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
         out["lots"] = got["lots"]
         out["parking"] += got["parking"]
         out["stalls"] += got["stalls"]
-        out["grounds"], out["plan"] = got["grounds"], got["plan"]
+        out["grounds"], out["plan"] = list(got["grounds"]), got["plan"]
         # the drives into the sites' car parks: private streets like a complex's own
         out["streets"] += [s for s in got.get("streets") or []
                            if not any(fw.blocked(p[0], p[1]) or (wet and wet(p[0], p[1])) for p in s)]
@@ -3078,6 +3154,17 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
                     out["plan"]["counts"][f["type"]] = out["plan"]["counts"].get(f["type"], 1) - 1
                 out["lots"] = [r for r in out["lots"] if not (len(r) > 8 and r[8] is True and fw.blocked(r[0], r[1]))]
                 out["grounds"] = [g for g in out["grounds"] if not fw.blocked(g[0], g[1])]
+    # a port's road comes into the city across land the blocks were cut without it: no lot, tree or car park on it
+    for line in city.get("port_roads") or []:
+        segs = list(zip(line, line[1:]))
+        near = lambda x, y, m: any(_dist_seg((x, y), p, q) < m for p, q in segs)
+        out["lots"] = [r for r in out["lots"] if not near(r[0], r[1], HALF[PORT_ROAD] + 0.5 * max(r[3], r[4]) + 300)]
+        for key in ("trees", "stalls", "pads", "fences", "pools"):
+            out[key] = [r for r in out[key] if not near(r[0], r[1], HALF[PORT_ROAD] + 400)]
+        out["parking"] = [r for r in out["parking"] if not near(r[0], r[1], HALF[PORT_ROAD] + 50 * max(r[3], r[4]))]
+    # what the park blocks hold (paths, benches, playgrounds, a pond, playing fields): grounds like a planned site's
+    out["grounds"] += [g for g in park_grounds if not fw.blocked(g[0], g[1]) and not (wet and wet(g[0], g[1]))
+                       and not in_keep(clear, g[0], g[1], 2000)]
     # a stall is painted on a car park: where the slab was not built (in the water, under a freeway, in a keep
     # zone) its stalls go with it, and none is left as white lines on the grass
     slabs = [(s[0], s[1], math.cos(math.radians(s[2])), math.sin(math.radians(s[2])), s[3] * 50 + 60, s[4] * 50 + 60) for s in out["parking"]]
@@ -3248,6 +3335,103 @@ def _grove(area: list, rnd) -> list:
             x += GROVE_CM
         y += GROVE_CM
     return out
+
+
+PARK_PATH_CM = 300.0  # a park path is this wide ...
+PARK_PIECE_CM = 600.0  # ... and laid in pieces this long, each on its own ground
+PARK_BENCH_CM = 3000.0  # a bench beside a path about this often
+
+
+def park_paths(to_world, yaw: float, half_l: float, half_w: float, boxes: list, rnd, inside=None) -> tuple:
+    """The paths of a park and the benches along them, in the park's own frame (u along its length, v across;
+    to_world(u, v) -> (x, y); yaw: the way u points). A walk round it, one down its length and one across about
+    every 140 m, in pieces PARK_PIECE_CM long; none over what stands in it (`boxes` [(u0, u1, v0, v1)]) or
+    outside it (`inside(x, y)`). Returns (ground rows [x, y, yaw, sx_m, sy_m, kind, 'park'], the path lines
+    [((u, v), (u, v))])."""
+    inset = max(600.0, min(1500.0, 0.08 * 2 * min(half_l, half_w)))
+    a, b = half_l - inset, half_w - inset
+    if a < 1200 or b < 1200:
+        return [], []
+    v0 = rnd.uniform(-0.25, 0.25) * b
+    lines = [((-a, -b), (a, -b)), ((a, -b), (a, b)), ((a, b), (-a, b)), ((-a, b), (-a, -b)), ((-a, v0), (a, v0))]
+    n_cross = max(1, int(2 * a // 14000))
+    for k in range(n_cross):
+        u0 = -a + (k + 0.5 + rnd.uniform(-0.2, 0.2)) * 2 * a / n_cross
+        lines.append(((u0, -b), (u0, b)))
+    rows = []
+    for p, q in lines:
+        length = math.dist(p, q)
+        n = max(1, math.ceil(length / PARK_PIECE_CM))
+        du, dv = (q[0] - p[0]) / length, (q[1] - p[1]) / length
+        ang = (yaw + math.degrees(math.atan2(dv, du))) % 360
+        since = PARK_BENCH_CM * rnd.random()
+        for k in range(n):
+            u, v = p[0] + (q[0] - p[0]) * (k + 0.5) / n, p[1] + (q[1] - p[1]) * (k + 0.5) / n
+            since += length / n
+            if any(u0 - 200 < u < u1 + 200 and w0 - 200 < v < w1 + 200 for u0, u1, w0, w1 in boxes):
+                continue
+            x, y = to_world(u, v)
+            if inside and not inside(x, y):
+                continue
+            rows.append([round(x), round(y), round(ang, 1), round(length / n / 100 + 0.1, 2), PARK_PATH_CM / 100, "path", "park"])
+            if since >= PARK_BENCH_CM:  # a bench at the path's edge, facing it
+                side = rnd.choice((1, -1))
+                bu, bv = u - dv * side * (PARK_PATH_CM / 2 + 80), v + du * side * (PARK_PATH_CM / 2 + 80)
+                bx, by = to_world(bu, bv)
+                if not any(u0 < bu < u1 and w0 < bv < w1 for u0, u1, w0, w1 in boxes) and not (inside and not inside(bx, by)):
+                    rows.append([round(bx), round(by), round((ang + (180 if side > 0 else 0)) % 360, 1), 1.0, 1.0, "bench", "park"])
+                    since = 0.0
+    return rows, lines
+
+
+def _park(area: list, rnd) -> dict:
+    """What a park block holds ([[x, y]], world cm): trees in groves with open lawns between them and a row of
+    trees round its edge (never the even grid of a plantation), paths and benches (park_paths) and, by its size,
+    playgrounds, a pond and playing fields. {'trees': [[x, y]], 'grounds': [[x, y, yaw, sx_m, sy_m, kind,
+    'park']]}: the grounds are laid like a planned site's (pcg_layers.GROUNDS)."""
+    from . import parcels
+    ox, oy, ux, uy, L, W = parcels._obb(area)
+    to_world = lambda u, v: (ox + ux * u - uy * v, oy + uy * u + ux * v)
+    yaw = math.degrees(math.atan2(uy, ux))
+    ha = abs(parcels._area(area)) / 1e8
+    boxes, grounds = [], []
+
+    def put(kind, su, sv):
+        """A rectangle su x sv somewhere in the park, clear of what is there already."""
+        if L < su + 3000 or W < sv + 3000:
+            return
+        for _ in range(24):
+            u, v = rnd.uniform(-L / 2 + su / 2 + 1500, L / 2 - su / 2 - 1500), rnd.uniform(-W / 2 + sv / 2 + 1500, W / 2 - sv / 2 - 1500)
+            box = (u - su / 2, u + su / 2, v - sv / 2, v + sv / 2)
+            if any(box[0] < b[1] + 800 and b[0] < box[1] + 800 and box[2] < b[3] + 800 and b[2] < box[3] + 800 for b in boxes):
+                continue
+            if not all(_inside(area, *to_world(p, q)) for p in (box[0], box[1]) for q in (box[2], box[3])):
+                continue
+            boxes.append(box)
+            grounds.append([*map(round, to_world(u, v)), round(yaw, 1), round(su / 100, 2), round(sv / 100, 2), kind, "park"])
+            return
+    for _ in range(2 if ha >= 9 else 1 if ha >= 4 else 0):
+        put("field", 10000.0, 6400.0)
+    if ha >= 1.2:
+        put("pond", min(15000.0, L * rnd.uniform(0.2, 0.3)), min(9000.0, W * rnd.uniform(0.25, 0.4)))
+    for _ in range(1 if ha < 2 else 2 if ha < 6 else 3):
+        put("playground", rnd.uniform(1600.0, 2400.0), rnd.uniform(1200.0, 1800.0))
+    rows, lines = park_paths(to_world, yaw, L / 2, W / 2, boxes, rnd, lambda x, y: _inside(area, x, y))
+    grounds += rows
+    tau = 2 * math.pi
+    waves = [(rnd.uniform(2500.0, 5500.0), rnd.uniform(0, tau), rnd.uniform(0, tau)) for _ in range(3)]
+    inset = max(600.0, min(1500.0, 0.08 * min(L, W)))
+    trees = []
+    for x, y in _grove(area, rnd):
+        u, v = (x - ox) * ux + (y - oy) * uy, -(x - ox) * uy + (y - oy) * ux
+        if any(u0 - 300 < u < u1 + 300 and w0 - 300 < v < w1 + 300 for u0, u1, w0, w1 in boxes):
+            continue
+        if any(_dist_seg((u, v), p, q) < PARK_PATH_CM / 2 + 250 for p, q in lines):
+            continue
+        belt = abs(u) > L / 2 - inset or abs(v) > W / 2 - inset  # the trees round its edge, outside the walk
+        if belt or sum(math.sin(x / lam + p) * math.sin(y / lam * 1.3 + q) for lam, p, q in waves) > 0.0:
+            trees.append([x, y])
+    return {"trees": trees, "grounds": grounds}
 
 
 def gate(nodes: dict, city: dict, toward: tuple):
@@ -3452,6 +3636,161 @@ def shore_plan(cities: list, opts: dict | None = None, wet=None) -> None:
             c["fw_shore"] = got
         else:
             c.pop("fw_shore", None)
+
+
+PORT_ROAD = "4L"  # the road to a port: four lanes, for its trucks
+PORT_CELL_CM = 6000.0  # ... found on a grid this coarse
+PORT_REACH_CM = 600000.0  # ... to a street or a highway no further than this from its gate
+PORT_GRADE = 0.08  # ... keeping to ground no steeper than this where it can (steeper costs it dearly)
+
+
+def overland(start, goals: list, ok, ground, cell: float = PORT_CELL_CM, reach: float = PORT_REACH_CM):
+    """The way over open land from `start` (x, y) to the nearest of `goals` [(x, y, tag)]: the cheapest path on a
+    grid, where a step costs its length, more on steep ground, and only land `ok(x, y)` is stepped on (a goal's own
+    cell always is). Returns ([(x, y), ...] from start to the goal, both in, the goal's tag) or None."""
+    import heapq
+    key = lambda x, y: (int(x // cell), int(y // cell))
+    at = {}
+    for g in goals:
+        if math.dist(g[:2], start) <= reach:
+            at.setdefault(key(g[0], g[1]), g)
+    if not at:
+        return None
+    s = key(*start)
+    mid = lambda k: ((k[0] + 0.5) * cell, (k[1] + 0.5) * cell)
+    height: dict = {}
+
+    def z(k):
+        if k not in height:
+            height[k] = ground(*mid(k)) or 0.0
+        return height[k]
+    lim = int(reach // cell)
+    best, prev, heap = {s: 0.0}, {}, [(0.0, s)]
+    while heap:
+        d, k = heapq.heappop(heap)
+        if d > best.get(k, math.inf):
+            continue
+        if k in at:
+            path = [tuple(at[k][:2])]
+            while k != s:
+                k = prev[k]
+                path.append(mid(k))
+            path[-1] = tuple(start)
+            return path[::-1], at[key(*path[0])][2]
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                n = (k[0] + dx, k[1] + dy)
+                if n == k or abs(n[0] - s[0]) > lim or abs(n[1] - s[1]) > lim or (n not in at and not ok(*mid(n))):
+                    continue
+                step = cell * math.hypot(dx, dy)
+                nd = d + step * (1.0 + (abs(z(n) - z(k)) / step / PORT_GRADE) ** 2)
+                if nd < best.get(n, math.inf):
+                    best[n], prev[n] = nd, k
+                    heapq.heappush(heap, (nd, n))
+    return None
+
+
+def port_roads(cities: list, graphs: list, hw_nodes: dict, hw_edges: list, ground, wet=None, keep: list | None = None,
+               airports: list | None = None) -> list:
+    """A road to every port. A settled shipyard is a walled platform at the water with one gate, and no street came
+    near it (a city's streets keep 15 m off a yard): nothing could drive in. Each yard now gets a PORT_ROAD from
+    just inside its gate, out through it, and overland (`overland`: off the water, off every yard and airfield,
+    easy on the slopes) to the nearest street crossing of any city, or the nearest plain stretch of a highway,
+    which gets a junction there. The road is the city's own street (or part of the highways) from then on.
+    Sets city['port_roads'] ([[x, y], ...] each) and returns them all."""
+    from . import airport, shipyard
+    yards = [(ci, y) for ci, c in enumerate(cities) for y in c.get("shipyards") or [] if y.get("z") is not None]
+    for c in cities:
+        c.pop("port_roads", None)
+    if not yards:
+        return []
+    every = [y for _ci, y in yards]
+
+    def ok(x, y):
+        if wet and (wet(x, y) or any(wet(x + a, y + b) for a, b in ((4000, 0), (-4000, 0), (0, 4000), (0, -4000)))):
+            return False
+        return not (any(shipyard.reserved(s, x, y, 3000) for s in every)
+                    or any(airport.inside(a, x, y, 6000) for a in airports or [])
+                    or in_keep(keep, x, y, 6000))
+    goals = []
+    for ci, (nodes, _edges) in enumerate(graphs):
+        used = {n for e in _edges for n in e[:2]}
+        goals += [(p[0], p[1], ("street", ci, n)) for n, p in nodes.items()
+                  if n in used and not any(shipyard.reserved(s, p[0], p[1], 1000) for s in every)]
+    for ei, e in enumerate(hw_edges):
+        if len(e) > 3 and e[2] in HIGHWAYS:
+            goals += [(v[0], v[1], ("highway", ei, k)) for k, v in enumerate(e[3])
+                      if (len(v) < 3 or not v[2]) and (len(v) < 4 or v[3] in (None, e[2]))]
+    made = []
+    for yi, (ci, y) in enumerate(yards):
+        f, L, D = y["frame"], y["L"], y["D"]
+        w = lambda u, v: (f["x"] + f["ux"] * u + f["vx"] * v, f["y"] + f["uy"] * u + f["vy"] * v)
+        for key in ("gate_u", "gate_side", "gate_v"):
+            y.pop(key, None)
+        got, bank = None, float(y.get("bank") or 0.0)
+        # its gate: the back corner where shipyard.build puts it; with water or no way out behind that, further
+        # along its back edge; with water all along its back, in one of its sides (a yard on a spit had the lake
+        # behind its gate and got no road at all)
+        ways = [(None, u) for u in (L / 2 - 9950, L / 4, 0.0, -L / 4, -(L / 2 - 9950))] + \
+               [(s, v) for v in (D * 0.75, D * 0.5, D * 0.25) for s in (1, -1)]
+        def straight(out_, reach=30000.0, dry=True):
+            """The nearest street crossing within `reach` that a straight road reaches clear of every yard, and
+            (dry) over dry land: (path, tag). A yard squeezed between the water and a street has no room for the
+            grid's 60 m cells."""
+            for g in sorted((g for g in goals if g[2][0] == "street" and math.dist(g[:2], out_) < reach), key=lambda g: math.dist(g[:2], out_)):
+                n = max(1, int(math.dist(g[:2], out_) // 800))
+                line = [(out_[0] + (g[0] - out_[0]) * i / n, out_[1] + (g[1] - out_[1]) * i / n) for i in range(n + 1)]
+                if not any((dry and wet and wet(*p)) or any(shipyard.reserved(s, p[0], p[1], 300) for s in every) for p in line[1:]):
+                    return [tuple(out_), tuple(g[:2])], g[2]
+            return None
+        for k, (side, at) in enumerate(ways):
+            out_ = w(at, D + bank + 3500) if side is None else w(side * (L / 2 + bank + 3500), at)
+            if wet and wet(*out_):
+                continue
+            got = straight(out_) or overland(out_, goals, ok, ground)
+            if got:
+                if side is not None:
+                    y["gate_side"], y["gate_v"] = side, round(at + 950)  # (the gatehouse beside the road)
+                elif k:
+                    y["gate_u"] = round(at + 950)
+                break
+        if not got:
+            # an island of made ground with water all round it: from its gate straight to the nearest street,
+            # across the water (that stretch is bridged with the city's other crossings, over_water)
+            k, side, at = 0, None, L / 2 - 9950
+            out_ = w(at, D + bank + 3500)
+            got = straight(out_, 60000.0, dry=False)
+        if not got:
+            continue
+        if side is None:
+            inside_, gate_ = w(at, D - (2500 if k == 0 else 700)), w(at, D)
+        else:
+            inside_, gate_ = w(side * (L / 2 - 700), at), w(side * L / 2, at)
+        path, tag = got
+        # eased: the grid's 45-degree steps become one line (a point kept every other cell, each the mean of three)
+        mids = [((a[0] + b[0] + c_[0]) / 3, (a[1] + b[1] + c_[1]) / 3) for a, b, c_ in zip(path, path[1:], path[2:])][::2]
+        via = [list(gate_), list(out_)] + [[round(x), round(y_)] for x, y_ in mids if math.dist((x, y_), path[-1]) > 4000
+                                           and math.dist((x, y_), out_) > 4000]
+        a = ("port", ci, yi)
+        if tag[0] == "street":
+            nodes, edges = graphs[tag[1]]
+            nodes[a] = [round(inside_[0]), round(inside_[1])]
+            edges.append([a, tag[2], PORT_ROAD, via])
+            end = nodes[tag[2]]
+        else:
+            e = hw_edges[tag[1]]
+            j = ("port", ci, yi, "hw")
+            hw_nodes[a], hw_nodes[j] = [round(inside_[0]), round(inside_[1])], [e[3][tag[2]][0], e[3][tag[2]][1]]
+            hw_edges[tag[1]] = [e[0], j, e[2], e[3][:tag[2]]]
+            hw_edges.append([j, e[1], e[2], e[3][tag[2] + 1:]])
+            hw_edges.append([a, j, PORT_ROAD, via])
+            end = hw_nodes[j]
+            # (the other goals on that highway edge: their places in it have moved)
+            goals = [g for g in goals if not (g[2][0] == "highway" and g[2][1] == tag[1])]
+        line = [[round(p[0]), round(p[1])] for p in [inside_] + via + [end]]
+        cities[ci].setdefault("port_roads", []).append(line)
+        made.append(line)
+    return made
 
 
 def links(cities: list) -> list:
@@ -3903,6 +4242,8 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
                     v[3] = deck if up > 0 and nxt_up > 0 else (ramp if up > 0 or nxt_up > 0 else o["highway"])
         hw_nodes[("hw", a, b, 0)], hw_nodes[("hw", a, b, 1)] = ends
         hw_edges.append([("hw", a, b, 0), ("hw", a, b, 1), o["highway"], via])
+    # every port gets its road: from a street or a highway, overland, through its gate and onto its platform
+    port_roads(cities, graphs, hw_nodes, hw_edges, ground, wet, keep, airports)
     for nodes, edges in graphs:  # a city street never runs into a keep zone
         gone = {n for n, p in nodes.items() if in_keep(keep, p[0], p[1], 2000)}
         edges[:] = [e for e in edges if e[0] not in gone and e[1] not in gone]
@@ -4295,6 +4636,11 @@ def weld_ends(actors: dict, edge: dict | None = None) -> int:
     return moved
 
 
+def parcels_area(poly: list) -> float:
+    from . import parcels
+    return parcels._area(poly)
+
+
 def _demo() -> None:
     cities = place_cities(3, 3, ((-200000, -200000), (200000, 200000)))
     assert len(cities) == 3 and all(c["style"] in STYLES for c in cities)
@@ -4430,8 +4776,15 @@ def _demo() -> None:
     drifting = {"x": 0, "y": 0, "radius": 120000, "seed": 11, "style": "organic", "turn": 0.0}
     dn, de = city_graph(drifting, {"wobble": 0.04, "freeways": "no", "prune": 0, "superblocks": "no"})
     off_line = [abs(dn[(ix, 8)][1] - 8 * block) for ix in range(-10, 11) if (ix, 8) in dn]  # (a main road of the suburbs)
-    assert max(off_line) > 2000 and max(off_line) <= (MEANDER + 0.04) * block, ("a main road wanders", max(off_line))
-    assert all(math.dist(dn[(i, j)], (i * block, j * block)) < 0.05 * block for i in range(-2, 3) for j in range(-2, 3)), "the centre stays straight"
+    assert max(off_line) > 2000 and max(off_line) <= (MEANDER + 0.04 + EDGE_BOW) * block, ("a main road wanders", max(off_line))
+    # ... and the nearer the city's edge the more its streets bow, the main roads too; not in the normal city
+    calm = city_graph(drifting, {"wobble": 0.04, "freeways": "no", "prune": 0, "superblocks": "no"})[0]
+    bend_at = lambda net, line, lo, hi: max(abs(net[(i + 1, line)][1] - 2 * net[(i, line)][1] + net[(i - 1, line)][1])
+                                            for i in range(lo, hi) if all((i + d, line) in net for d in (-1, 0, 1)))
+    assert bend_at(calm, 8, -4, 5) > 2 * bend_at(calm, 4, -2, 3), ("a main road of the suburbs bends more than one of the inner city",
+                                                             bend_at(calm, 8, -4, 5), bend_at(calm, 4, -2, 3))
+    assert all(math.dist(dn[(i, j)], (i * block, j * block)) < 0.05 * block for i in range(-2, 3) for j in range(-2, 3)
+               if (i, j) in dn), "the centre stays straight (less the crossings the big park took)"
     assert all(block * 0.6 <= math.dist(dn[a], dn[b]) <= block * 1.4 for a, b, _k in de), "blocks keep their size"
     for (ix, iy), p in dn.items():
         for da in ((1, 0), (0, 1)):
@@ -4441,7 +4794,8 @@ def _demo() -> None:
                 assert turn < 18, ("a road swings, it never kinks", (ix, iy), turn)
     assert meander(dict(drifting, style="grid"), options({"wobble": 0.3})) is None and meander(drifting, options({"wobble": 0})) is None
     mixed_n, _me = city_graph(dict(drifting, style="mixed"), {"wobble": 0.04, "freeways": "no", "prune": 0, "superblocks": "no"})
-    assert all(math.dist(mixed_n[(i, j)], (i * block, j * block)) < 1.0 for i in range(-3, 4) for j in range(-3, 4)), "downtown stays a grid"
+    assert all(math.dist(mixed_n[(i, j)], (i * block, j * block)) < 1.0 for i in range(-3, 4) for j in range(-3, 4)
+               if (i, j) in mixed_n), "downtown stays a grid"
     assert max(math.dist(p, (n[0] * block, n[1] * block)) for n, p in mixed_n.items()) > 2000
     # past downtown many of the streets between two neighbouring blocks are not built. Against the same city
     # with every one of them built: every street is either built or listed as left out, a fair share is
@@ -4880,6 +5234,85 @@ def _demo() -> None:
     cut = _near_cuts({"fw_near": [[5000, 0, 650]]})
     assert cut((5000, -3000), (5000, 3000), 525.0) and cut((3800, -3000), (3800, 3000), 525.0)
     assert not cut((9000, -3000), (9000, 3000), 525.0) and not _near_cuts({})((0, 0), (1, 1), 500.0)
+    # the way overland: round the water, never over it; and a road to every port, from a street of the city
+    # through the port's gate onto its platform
+    lake_ = lambda x, y: 20000 < x < 60000 and -30000 < y < 30000
+    way, tag_ = overland((0, 0), [(80000, 0, "far"), (0, 200000, "further")], lambda x, y: not lake_(x, y), lambda x, y: 0.0)
+    assert tag_ == "far" and way[0] == (0, 0) and way[-1] == (80000, 0) and not any(lake_(*p) for p in way), way
+    assert max(abs(p[1]) for p in way) > 30000 and overland((0, 0), [(80000, 0, "far")], lambda x, y: x < 20000, lambda x, y: 0.0) is None
+    hilly, _t = overland((0, 0), [(60000, 0, "g")], lambda x, y: True, lambda x, y: 3000.0 if 20000 < x < 40000 and abs(y) < 20000 else 0.0)
+    assert max(abs(p[1]) for p in hilly) > 15000, "it goes round a steep hill"
+    yard_ = {"type": "repair", "frame": {"x": 0, "y": -150000, "ux": 1.0, "uy": 0.0, "vx": 0.0, "vy": 1.0}, "L": 40000, "D": 26000,
+             "z": 250.0, "bank": 2000.0, "docks": []}
+    port_c = {"name": "Port", "x": 0, "y": 0, "radius": 90000, "seed": 3, "style": "grid", "shipyards": [yard_]}
+    g_port = [list(city_graph(port_c))]
+    before_n = len(g_port[0][1])
+    roads_ = port_roads([port_c], g_port, {}, [], lambda x, y: 0.0)
+    assert len(roads_) == 1 and port_c["port_roads"] == roads_ and len(g_port[0][1]) == before_n + 1, roads_
+    r0 = roads_[0]
+    from . import shipyard as _sy
+    assert _sy.zone(yard_, *_sy.uv(yard_, *r0[0])) == "platform" and tuple(r0[-1]) in {(round(p[0]), round(p[1])) for p in g_port[0][0].values()}, "from on its platform to a street crossing"
+    assert abs(_sy.uv(yard_, *r0[1])[1] - 26000) < 1 and abs(_sy.uv(yard_, *r0[1])[0] - (20000 - 9950)) < 1, "out through its gate"
+    assert all(not _sy.reserved(yard_, p[0], p[1], 1000) for p in r0[3:]), "then clear of the yard"
+    pond_ = lambda x, y: 0 < x < 20000 and -124000 + 2000 < y < -110000  # water right behind its gate corner
+    spit = {**port_c, "name": "Spit", "shipyards": [dict(yard_)]}
+    moved_ = port_roads([spit], [list(city_graph(spit))], {}, [], lambda x, y: 0.0, pond_)
+    assert len(moved_) == 1 and spit["shipyards"][0].get("gate_u") is not None and spit["shipyards"][0]["gate_u"] < 9000, "its gate moves along the back edge to dry land"
+    assert not any(pond_(*p) for p in moved_[0]) and "gate_u" not in yard_
+    strait = lambda x, y: -124000 + 2000 < y < -112000 and -40000 < x < 40000  # water along the whole of its back
+    side_c = {**port_c, "name": "Side", "shipyards": [dict(yard_)]}
+    by_side = port_roads([side_c], [list(city_graph(side_c))], {}, [], lambda x, y: 0.0, strait)
+    sy_ = side_c["shipyards"][0]
+    assert len(by_side) == 1 and sy_.get("gate_side") in (1, -1) and "gate_u" not in sy_, "with water all along its back it is entered from a side"
+    assert abs(abs(_sy.uv(sy_, *by_side[0][1])[0]) - 20000) < 1 and not any(strait(*p) for p in by_side[0])
+    # ... and a yard with water all round it gets its road straight across the water, to be bridged
+    moat = lambda x, y: abs(y + 137000) < 30000 and abs(x) < 60000 and not (abs(x) <= 20000 and -150000 <= y <= -124000)
+    isle = {**port_c, "name": "Isle", "shipyards": [dict(yard_)]}
+    over_ = port_roads([isle], [list(city_graph(isle))], {}, [], lambda x, y: 0.0, moat)
+    assert len(over_) == 1 and any(moat(*p) for p in over_[0]) and "gate_side" not in isle["shipyards"][0], "straight over the water from its own gate"
+    # a yard with a street right beside it joins it straight (no room there for the route's 60 m cells)
+    tight = {**yard_, "frame": {**yard_["frame"], "y": -40000 - 26000 - 2000 - 3500 - 9000}}
+    near_c = {**port_c, "name": "Near", "shipyards": [tight]}
+    g_near = list(city_graph(near_c))
+    short = port_roads([near_c], [g_near], {}, [], lambda x, y: 0.0)
+    assert len(short) == 1 and len(short[0]) == 4 and math.dist(short[0][2], short[0][3]) < 30000, short
+    hw_n, hw_e = {"a": [-300000, -230000], "b": [300000, -230000]}, [["a", "b", "4L", [[x, -230000] for x in range(-280000, 280001, 20000)]]]
+    far_c = {**port_c, "name": "Far", "y": 400000}
+    port_roads([far_c], [list(city_graph(far_c))], hw_n, hw_e, lambda x, y: 0.0)
+    assert len(hw_e) == 3 and len(hw_n) == 4 and far_c["port_roads"], "a port far from every street joins the highway, at a junction of its own"
+    j_ = hw_n[("port", 0, 0, "hw")]
+    assert hw_e[0][1] == ("port", 0, 0, "hw") == hw_e[1][0] and len(hw_e[0][3]) + len(hw_e[1][3]) == 28 and j_[1] == -230000
+    # one big park in the centre district: no street through it, the streets round it all there, the block they
+    # leave a park (trees in groves, paths, benches, playgrounds, a pond, fields), nothing built on it
+    park_c = {"name": "Parkville", "x": 0, "y": 0, "radius": 200000, "seed": 11, "style": "mixed"}
+    po = city_options(park_c, None)
+    pk = central_park(park_c, po)
+    assert pk and sorted((pk[2] - pk[0], pk[3] - pk[1])) == [2, 4], pk
+    assert central_park(park_c, po) == pk and central_park({**park_c, "radius": 60000}, po) is None, "the same every time; a small city has none"
+    assert not (pk[0] < 0 < pk[2] or pk[1] < 0 < pk[3]), "never across a main axis"
+    pn, pe = city_graph(park_c)
+    inside_pk = lambda n: isinstance(n, tuple) and len(n) == 2 and pk[0] < n[0] < pk[2] and pk[1] < n[1] < pk[3]
+    assert not any(inside_pk(n) for n in pn) and not any(inside_pk(e[0]) or inside_pk(e[1]) for e in pe), "no street in it"
+    rim_n = [(i, j) for i in range(pk[0], pk[2] + 1) for j in range(pk[1], pk[3] + 1) if i in (pk[0], pk[2]) or j in (pk[1], pk[3])]
+    have_e = {(e[0], e[1]) for e in pe} | {(e[1], e[0]) for e in pe}
+    assert all(n in pn for n in rim_n) and all(((i, j), (i + 1, j)) in have_e for i in range(pk[0], pk[2]) for j in (pk[1], pk[3])) \
+        and all(((i, j), (i, j + 1)) in have_e for j in range(pk[1], pk[3]) for i in (pk[0], pk[2])), "a street all the way round it"
+    lay_p = city_layout(park_c, {"planner": "no"})
+    mid_p = [sum(pn[(i, j)][k] for i in (pk[0], pk[2]) for j in (pk[1], pk[3])) / 4 for k in (0, 1)]
+    blk = [b for b in lay_p["blocks"] if _inside(b[4], *mid_p)]
+    assert len(blk) == 1 and blk[0][2] == "park" and abs(parcels_area(blk[0][4])) > 5 * 1e8, blk and blk[0][:4]
+    kinds_p = [g[5] for g in lay_p["grounds"] if _inside(blk[0][4], g[0], g[1])]
+    assert kinds_p.count("path") > 100 and "playground" in kinds_p and "pond" in kinds_p and "bench" in kinds_p, sorted(set(kinds_p))
+    in_blk = [t for t in lay_p["trees"] if _inside(blk[0][4], t[0], t[1])]
+    full = len(_grove(blk[0][4], random.Random(1)))
+    assert 0.3 * full < len(in_blk) < 0.8 * full, ("groves and lawns, not a plantation", len(in_blk), full)
+    assert not any(_inside(blk[0][4], r[0], r[1]) for r in lay_p["lots"]), "nothing built in the park"
+    solid_g = [g for g in lay_p["grounds"] if g[5] in ("pond", "field", "playground") and _inside(blk[0][4], g[0], g[1])]
+    for t in in_blk:
+        for g in solid_g:
+            f_ = math.radians(g[2])
+            du_, dv_ = (t[0] - g[0]) * math.cos(f_) + (t[1] - g[1]) * math.sin(f_), -(t[0] - g[0]) * math.sin(f_) + (t[1] - g[1]) * math.cos(f_)
+            assert not (abs(du_) < g[3] * 50 and abs(dv_) < g[4] * 50), ("a tree in a pond, a field or a playground", t, g)
     # a lake drawn by hand: dug to the world's water line (a world with none gets one under its lowest ground,
     # so nothing else floods), a bed in its middle, banks no steeper than 1 in 3, nothing changed far from it
     drawn = lake_list([{"pts": [[-60000, 0], [60000, 0]], "width_m": 300}, {"pts": [[0, 90000]]}, {"pts": "x"}, {"id": "lake-1", "pts": [[1, 1], [1, 1]], "width_m": 5}])

@@ -1251,7 +1251,10 @@ function drawPcg(legend, only, from) {
       return;
     }
     const building = layer.kind === "buildings";
-    if (building) { drawBuildings(layer, colour, name); legend[`${name} · ${layer.count.toLocaleString()}`] = colour; }
+    // (a park is what stands in it: its trees, paths, benches and playground are layers of their own, on the
+    // ground as it lies. Its lot was drawn as one flat green box, level, hanging over the hillside.)
+    if (building && layer.role !== "park") drawBuildings(layer, colour, name);
+    if (building) legend[`${name} · ${layer.count.toLocaleString()}`] = colour;
     const [geo, lift] = building ? [null, 0] : pcgShape(name, layer.kind);
     if (!building) {
       // trees and bushes in leaf greens, not the UI's signal green; each one a little different

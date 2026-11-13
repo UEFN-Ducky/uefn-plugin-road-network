@@ -138,7 +138,10 @@ Nothing in the city stands on air, and no loose wall slab holds anything up: eve
   road they cross they stay open.
 - **Uphill cuts**: held by the graded ground. A road's own cells sit at the road and blend back to the hill over
   30 m; a lot's pad blends back over a pixel and a half.
-- **No foundation deeper than 4 m** (`pl.FOUND_MAX_M`): a building that would need one is left out and its lot
+- **A city on a hill is built in steps.** A building's foundation is as deep as the ground falls away under it,
+  and on a slope it stands on that as a podium: down to 14 m for anything bigger than a house
+  (`pl.PODIUM_MAX_M`), 6 m for a house or a mansion (`pl.FOUND_MAX_M`). Only a building that would need a deeper
+  one is left out and its lot
   planted (`pl.leave_out_deep`, `pl.plant_lots`, into 'Infill trees'); the ground is cut again without its pad,
   and its driveway kerb and fences go with it. Parks stay, and so does a planned site (hospital, school, city
   hall...). `ground_fit.left_out` says how many went, how many planned sites were kept, how many trees came.
@@ -425,6 +428,18 @@ inside a campus are removed, and no city lot stays inside one.
 
 **Every yard is one level rectangle at the water** (`shipyard.settle`, on worlds that make their own ground):
 made ground with a straight quay, 2.5 m above the water, paved from edge to edge.
+- **A road to every port** (`citygen.port_roads`): a city's streets keep 15 m off a yard, so each settled yard
+  gets its own four-lane road, from just inside its gate, out through the gate, and overland (`overland`: a
+  cheapest path on a 60 m grid, off the water, every yard and airfield, dear on ground steeper than 8 %) to
+  the nearest street crossing of any city, or to the nearest plain stretch of a highway, which gets a
+  junction there. Kept on the city as `port_roads`; no lot, tree or car park is laid on it. With water behind
+  its gate the gate moves along the yard's back edge (`gate_u`), and with water all along its back into one
+  of its sides (`gate_side`, `gate_v`); `shipyard.build` leaves the gap in the fence and puts the gatehouse there.
+- **Piers** (`shipyard.build`, rows `pier_deck` / `pier_wall`, layers `Port piers` / `Pier walls`): from the
+  open quay a pier 90 m long and 26 m wide runs out over the dredged basin about every 120 m
+  (`shipyard.piers`), decked at the platform's level, walled to the bed on both sides and its end, a crane on
+  it and a ship moored along it (a yard with piers moors no ship along the quay itself). Never at a dock's
+  mouth or under the floating dock; none for a yacht yard or a breaker's beach.
 - It reaches out over the water by up to 30 % of the water's width and inland only to where the land has risen
   12 m above it. A yard under a hill is mostly made ground in front of the hill, not a pit dug into it.
 - `citygen.cut_yards` cuts it into the terrain (`shipyard.shaped`): level on the platform, a basin dredged 9 m
@@ -620,6 +635,11 @@ Roads define the city, blocks are what roads enclose, lots are cut from blocks, 
        curvier), or within 1.5 blocks of a freeway;
      - a wobble of 3 % already gives most of it. Before, an Organic city with a low wobble still had a
        ruled main road on every fourth line, and every four of them made a square.
+   - **The further out, the more** (`EDGE_BOW`). Past the normal city every street bows more, the main
+     roads with the side streets, by up to 22 % of a block more at the city's edge than `wobble` alone gives
+     (none where the normal city begins, none in a Grid city, none with `wobble` 0). The streets beside one bow
+     with it, so blocks keep their size. Of the suburbs' collector cells 80 % are one winding subdivision
+     (`SUPERBLOCK_SHARE`), and the curving layouts (`organic`, `loop`) are drawn most there.
    - **Streets left out** (`citygen._street_gaps`, with `superblocks`, in a Grid city too). Past downtown
      every block was ringed by its own square of streets, a subdivision or a complex inside each. Now many of
      the streets between two neighbouring blocks are not built:
@@ -836,7 +856,18 @@ Example: Flower beds in the suburbs: `{"name": "Flower beds", "kind": "scatter",
   `road_network_pcg_preset(net_id, preset="<name>", replace=true)` applies it; its `options` come back so the
   next `road_network_generate` can use them. `road_network_preset_delete(preset, confirm=true)` removes one.
   The Layers section of the panel lists them too (Use, delete, save this world's layers as one).
-- A park block (`kind` park) is trees only: no layer builds on its road frontage either.
+- **Parks are parks, never a slab.** A park block (`kind` park) and a planned park (a row of a layer with role
+  `park`) hold trees in groves with open lawns between them and a row of trees round the edge, a walk round it
+  and paths across it in 6 m pieces (`citygen.park_paths`, grounds `path`), benches along the paths (`bench`),
+  playgrounds, and by size a pond and playing fields (`citygen._park`; `urban.ARCHETYPES` for planned ones).
+  They are built-in layers: `Park trees` (`pcg_layers.park_trees`, planned parks; a park block's trees are in
+  `Garden trees`), `Park paths`, `Park benches`, `Playgrounds`, `Ponds and tanks`, `Sports fields`. A park's
+  own lot row places nothing and levels nothing: it lies on the ground as the land does. No layer builds on a
+  park block's road frontage either.
+- **One big park in the centre district** (`citygen.central_park`): a city of 1 km radius or more has a
+  rectangle of its centre district's blocks (2 by 3; 2 by 4 from 1.8 km) with no street through it and a
+  street all the way round, about 60 % of the way from the middle of that district to its edge, never across
+  a main axis or a freeway. The block the streets leave is a park block. Its place is the city's own draw.
 - A layer: `kind` scatter (Surface Sampler, `density` per 100 m2) | along_roads | buildings (Spline Sampler on
   the road actors, `spacing_m`, both sides at `setback_m`, facing the road); `where` outside | everywhere |
   cities | downtown | normal | housing (rings from each city's districts) | industrial | shipyards (every

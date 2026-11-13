@@ -26,10 +26,11 @@ WALK = 150.0  # its sidewalk strip each side
 BULB = 1000.0  # cul-de-sac turnaround radius
 STALL_W, STALL_D, AISLE = 260.0, 550.0, 650.0
 TYPES = {  # name: (group, weight per district ring)
-    "grid": ("subdivision", {"housing": 2, "normal": 1}),
-    "loop": ("subdivision", {"housing": 2, "normal": 1}),
+    # (in the suburbs the curving kinds are drawn most: a ring of small grids read as squares at a city's edge)
+    "grid": ("subdivision", {"housing": 1, "normal": 1}),
+    "loop": ("subdivision", {"housing": 3, "normal": 1}),
     "cul_de_sac": ("subdivision", {"housing": 3}),
-    "organic": ("subdivision", {"housing": 2}),
+    "organic": ("subdivision", {"housing": 4}),
     "branch": ("subdivision", {"housing": 4, "normal": 1}),  # a winding street through the block, cul-de-sacs off it
     # a whole superblock (BIG_SIDE): one winding street through it, cul-de-sacs off both sides; never drawn by lot
     "collector": ("subdivision", {}),

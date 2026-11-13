@@ -757,7 +757,7 @@ def site_layers(cities: list, ground) -> dict:
             z = round(ground(x, y) or 0)
             if box[0] == 1:  # 1 m unit slabs, stretched to the part
                 grounds.setdefault(kind, []).append([x, y, z, yaw, sx, sy, 1.0])
-            else:  # fixed pieces (towers) stand in its middle
+            else:  # fixed pieces (towers, benches) stand in its middle
                 grounds.setdefault(kind, []).append([x, y, z, yaw, 1.0, 1.0, 1.0])
         for x, y, yaw, sx, sy in priv.get("parking") or []:
             lots.append([x, y, round(ground(x, y) or 0), yaw, sx, sy, 1.0])
@@ -803,9 +803,13 @@ GROUNDS = {"apron": ("SM_Kit_Apron", [1, 1, 0.1], "mix:fg-dim:bg:0.35"),
            "yard": ("SM_Kit_UtilityYard", [1, 1, 0.05], "mix:fg-dim:bg:0.5"),
            "pond": ("SM_Kit_Pond", [1, 1, 0.05], "mix:blue:bg:0.3"),
            "tower": ("SM_Kit_WaterTower", [12, 12, 30], "fg-dim"),
-           "telecom": ("SM_Kit_TelecomMast", [3.2, 3.2, 40], "fg-dim")}
+           "telecom": ("SM_Kit_TelecomMast", [3.2, 3.2, 40], "fg-dim"),
+           # a park's own (citygen.park_paths): its paths in pieces, each on its own ground, and the benches along them
+           "path": ("SM_Kit_PathSlab", [1, 1, 0.08], "mix:fg-dim:bg:0.3"),
+           "bench": ("SM_Prop_Bench", [1.94, 0.67, 1.11], "fg-dim")}
 GROUND_NAMES = {"apron": "Service aprons", "field": "Sports fields", "playground": "Playgrounds", "pool": "Pools",
-                "yard": "Utility yards", "pond": "Ponds and tanks", "tower": "Towers", "telecom": "Telecom masts"}
+                "yard": "Utility yards", "pond": "Ponds and tanks", "tower": "Towers", "telecom": "Telecom masts",
+                "path": "Park paths", "bench": "Park benches"}
 
 
 def junction_corners(juncs: list, setback_m: float, corners: int) -> list:
@@ -2047,15 +2051,19 @@ def _lot_ground(layer: dict, sample_z, x: float, y: float, yaw: float, w_m: floa
     return pad, found, paths
 
 
-FOUND_MAX_M = 4.0  # nothing is built where the land falls further than this away under it: the lot is planted
+FOUND_MAX_M = 6.0  # a house or a mansion is not built where the land falls further than this away under it ...
+PODIUM_MAX_M = 14.0  # ... anything bigger stands on a podium (its foundation, storeys deep) down to this
+SMALL_ROLES = ("house", "mansion")  # (a house on a wall taller than itself reads as a cliff of concrete; a tower on a
+# four-storey podium is a city on a hill. At 4 m for everything, a hilly world lost four buildings in ten and its
+# centre was blocks of trees with a tower here and there: 1,913 of 4,811 on the owner's Valley, Nov 13 2026)
 PLANT_EVERY_CM = 800.0  # ... with a tree about every 8 m
 
 
-def leave_out_deep(placed: dict, max_m: float = FOUND_MAX_M) -> tuple:
-    """Take out every building that would stand on a foundation deeper than `max_m` (its foundation_m, measured on
-    the cut ground): nobody builds where the land drops more than a storey under the floor, and a wall that tall
-    reads as a cliff of concrete. Parks stay (planted ground, no slab), and so does a site the planner chose: a
-    city keeps its one hospital even on a steep lot.
+def leave_out_deep(placed: dict, max_m: float | None = None) -> tuple:
+    """Take out every building that would stand on a foundation deeper than its kind allows (its foundation_m,
+    measured on the cut ground): FOUND_MAX_M for a house or a mansion, PODIUM_MAX_M for everything bigger, which
+    stands on a podium on a slope (`max_m`: one limit for all). Parks stay (planted ground, no slab), and so does
+    a site the planner chose: a city keeps its one hospital even on a steep lot.
     Returns (footprints taken out [(x, y, yaw, width_m, depth_m)] for plant_lots, planned sites kept though deep,
     {layer: how many it lost})."""
     gone, kept_sites, lost = [], 0, {}
@@ -2063,8 +2071,9 @@ def leave_out_deep(placed: dict, max_m: float = FOUND_MAX_M) -> tuple:
         if v.get("kind") != "buildings" or v.get("role") == "park":
             continue
         keep = []
+        limit = max_m if max_m is not None else FOUND_MAX_M if v.get("role") in SMALL_ROLES else PODIUM_MAX_M
         for p in v.get("points") or []:
-            if len(p) > 9 and p[9] > max_m:
+            if len(p) > 9 and p[9] > limit:
                 if len(p) > 12 and p[12]:
                     kept_sites += 1
                 else:
@@ -2117,13 +2126,67 @@ def pads(previewed: dict, margin_cm: float = 400.0) -> list:
                 a = math.radians(p[3])
                 out.append((p[0], p[1], math.cos(a), math.sin(a), p[5] * 50 + margin_cm / 2, p[4] * 50 + margin_cm / 2, p[2]))
             continue
-        if v.get("kind") != "buildings":
-            continue
+        if v.get("kind") != "buildings" or v.get("role") == "park":
+            continue  # (a park lies on the ground as it is: a levelled park was a green table on the hillside)
         for p in v["points"]:
             if len(p) > 9:
                 a = math.radians(p[3])
                 out.append((p[0], p[1], math.cos(a), math.sin(a), p[7] * 50 + margin_cm / 2, p[8] * 50 + margin_cm / 2, p[2]))
     return out
+
+
+PARK_TREE_CM = 700.0  # a planned park's trees: one about every 7 m where a grove stands ...
+
+
+def park_trees(placed: dict, cities: list, ground) -> dict:
+    """The built-in layer 'Park trees': what a planned park (a row of a layer with role 'park') really is. Trees in
+    groves with open lawns between them, standing on the ground as it lies, kept off the park's own playground,
+    pond, field, car park, paths and benches (the city's grounds and car parks) and off every building. A park
+    was drawn as one flat green slab the size of its lot, level, hanging over the hillside (Nov 13 2026)."""
+    slabs = _Rects()
+    for c in cities:
+        priv = c.get("private") or {}
+        for row in (priv.get("parking") or []) + (priv.get("grounds") or []):
+            f = math.radians(row[2])
+            thing = GROUNDS.get(row[5], (0, [1])) if len(row) > 5 else (0, [1])
+            half = (row[4] * 50 + 150, row[3] * 50 + 150) if thing[1][0] == 1 else (150.0, 150.0)
+            slabs.add((row[0], row[1], math.cos(f), math.sin(f), *half))
+    for layer in placed.values():
+        if layer.get("kind") == "buildings" and layer.get("role") != "park":
+            for p in layer.get("points") or []:
+                if len(p) > 8:
+                    f = math.radians(p[3])
+                    slabs.add((p[0], p[1], math.cos(f), math.sin(f), p[7] * 50 + 200, p[8] * 50 + 200))
+    rows = []
+    for layer in placed.values():
+        if layer.get("kind") != "buildings" or layer.get("role") != "park":
+            continue
+        for p in layer.get("points") or []:
+            if len(p) < 9:
+                continue
+            x, y, yaw, w, d = p[0], p[1], p[3], p[7] * 100, p[8] * 100
+            fx, fy = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+            rnd = random.Random(f"parktrees:{round(x)}:{round(y)}")
+            waves = [(rnd.uniform(2500.0, 5500.0), rnd.uniform(0, 6.283), rnd.uniform(0, 6.283)) for _ in range(3)]
+            nu, nv = max(1, int(d // PARK_TREE_CM)), max(1, int(w // PARK_TREE_CM))
+            for i in range(nu):
+                for j in range(nv):
+                    u = -d / 2 + (i + 0.5 + rnd.uniform(-0.35, 0.35)) * d / nu
+                    v = -w / 2 + (j + 0.5 + rnd.uniform(-0.35, 0.35)) * w / nv
+                    scale, turn = round(0.85 + rnd.random() * 0.5, 2), round(rnd.uniform(0, 360))
+                    tx, ty = x + fx * u - fy * v, y + fy * u + fx * v
+                    edge = i in (0, nu - 1) or j in (0, nv - 1)  # the trees round its edge always stand
+                    if not edge and sum(math.sin(tx / lam + a) * math.sin(ty / lam * 1.3 + b) for lam, a, b in waves) <= 0.0:
+                        continue  # a lawn
+                    if slabs.hit((tx, ty, 1.0, 0.0, 1.0, 1.0), 0.0):
+                        continue
+                    z = ground(tx, ty)
+                    if z is not None:
+                        rows.append([round(tx), round(ty), round(z), turn, scale])
+    if not rows:
+        return {}
+    return {"Park trees": {"kind": "scatter", "role": "tree", "count": len(rows), "shown": len(rows), "points": rows,
+                           "radius_cm": 250, "meshes": [], "build": "", "row": "x, y, z, yaw, scale"}}
 
 
 def _demo() -> None:
@@ -2230,6 +2293,15 @@ def _demo() -> None:
     slab = {"kind": "site", "role": "site", "mesh": "SM_Kit_ParkingLot", "box_m": [1, 1, 0.08], "points": [[0, 0, 0, 0.0, 30.0, 20.0, 1.0]]}
     assert clear_buildings({**lot_trees(), "Complex parking": slab}) == {"Trees": 1}
     assert clear_buildings({**lot_trees(), "Paved lots": {**slab, "planted": True}}) == {}
+    # a planned park is trees in groves on the ground as it lies, off its own playground and paths; it levels nothing
+    park_c = {**cities[0], "private": {"grounds": [[0, 0, 0.0, 20.0, 14.0, "playground", "neighbourhood_park"],
+                                                   [0, 2000, 0.0, 60.0, 3.0, "path", "neighbourhood_park"]], "parking": []}}
+    green = {"Parks": {"kind": "buildings", "role": "park", "points": [[0, 0, 0, 0, 1.0, 1.0, 0, 80.0, 60.0, 0.0, [], []]]}}
+    grown = park_trees(green, [park_c], lambda x, y: 0.1 * x)["Park trees"]["points"]
+    assert 15 < len(grown) < 0.8 * (80 * 60 / 49), ("groves and lawns", len(grown))
+    assert all(abs(t[0]) <= 3000 and abs(t[1]) <= 4000 and abs(t[2] - 0.1 * t[0]) <= 1 for t in grown), "inside the park, each on its own ground"
+    assert not any(abs(t[0]) < 1000 and abs(t[1]) < 700 for t in grown) and not any(abs(t[0]) < 3000 and abs(t[1] - 2000) < 150 for t in grown)
+    assert not pads(green), "a park levels nothing"
     # the city centre stands on concrete, lot by lot: a downtown lot is paved at its building's level, an empty one
     # at the ground's, a house's lot and a suburb's are not; the ground is levelled under each, to its own edge
     core = {**cities[0], "blocks": [[0, 0, "parcels", "downtown", [(-6000, -6000), (6000, -6000), (6000, 6000), (-6000, 6000)], 0]],
@@ -2341,14 +2413,18 @@ def _demo() -> None:
     assert len(parked["Mansions"]["points"]) >= len(plain["Mansions"]["points"]) - len(in_sq(plain)) - 1
     shop = clean({"name": "S", "kind": "buildings", "role": "shop"})
     assert _lot_ground(shop, lambda x, y: 0.0, 0, 0, 0.0, 20, 15)[2][0][0] == 18.0, "a shop fronts the street full width"
-    # nothing is built on a foundation deeper than 4 m: the house goes and its lot is planted; a park and a
-    # planned site stay
+    # a house is not built on a foundation deeper than 6 m: it goes and its lot is planted; a park and a planned
+    # site stay; a tower stands on a podium down to 14 m
     deep = {"Houses": {"kind": "buildings", "role": "house", "count": 3, "shown": 3, "points": [
-                [0, 0, 0, 0, 1, 7, 0, 16, 24, 4.5, [], []], [5000, 0, 0, 0, 1, 7, 0, 12, 12, 4.0, [], []],
+                [0, 0, 0, 0, 1, 7, 0, 16, 24, 6.5, [], []], [5000, 0, 0, 0, 1, 7, 0, 12, 12, 6.0, [], []],
                 [9000, 0, 0, 0, 1, 7, 0, 12, 12, 9.0, [], [], "hospital"]]},
+            "Towers": {"kind": "buildings", "role": "skyscraper", "count": 2, "shown": 2, "points": [
+                [20000, 0, 0, 0, 1, 90, 0, 32, 32, 13.5, [], []], [30000, 0, 0, 0, 1, 90, 0, 32, 32, 14.5, [], []]]},
             "Parks": {"kind": "buildings", "role": "park", "count": 1, "shown": 1, "points": [[0, 9000, 0, 0, 1, 0, 0, 40, 40, 12.0, [], []]]}}
     out_lots, sites, lost = leave_out_deep(deep)
-    assert out_lots == [(0, 0, 0, 16, 24)] and sites == 1 and lost == {"Houses": 1} and deep["Houses"]["count"] == 2
+    assert out_lots == [(0, 0, 0, 16, 24), (30000, 0, 0, 32, 32)] and sites == 1 and lost == {"Houses": 1, "Towers": 1}, (out_lots, lost)
+    assert deep["Houses"]["count"] == 2 and [p[0] for p in deep["Towers"]["points"]] == [20000], "the tower on a 13.5 m podium stands"
+    out_lots = out_lots[:1]
     assert len(deep["Parks"]["points"]) == 1
     assert plant_lots(deep, out_lots, lambda x, y: 50.0) == 6 and deep["Infill trees"]["count"] == 6
     assert all(abs(t[0]) <= 1350 and abs(t[1]) <= 950 and t[2] == 50 for t in deep["Infill trees"]["points"])

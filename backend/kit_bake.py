@@ -299,7 +299,6 @@ MAX_FLOORS = 40  # ponytail: caps instances on the tallest towers; floors above 
 SETS_PER_FLOOR = 8  # furniture sets per storey, the ones nearest the windows (what you see through glass)
 FLAT = {"parking": "SM_Kit_ParkingLot"}  # lots that are ground, not buildings: stretched to the lot, never up
 TREE_PIT_ROLES = ("street_tree",)  # trees planted in paving get a pit, never straight into the concrete
-PARK_TREE_M = 4.0  # a park is a dense grove: a tree about every 4 m (jittered, 85 % filled), a path slab through it
 SCALE_RANGE = (0.5, 2.0)  # a kit mesh is stretched at most this much to fit its lot
 
 
@@ -346,9 +345,8 @@ def bake(previewed: dict, root: str, interiors: bool = True) -> tuple:
             _own(groups, layer["meshes"], pts, layer.get("kind"), root)
             baked[name] = len(pts)
         elif layer.get("kind") == "buildings" and role == "park":
-            trees = 0
-            for p in pts:
-                trees += _grove(groups, root, p)
+            # a park is what stands in it: the 'Park trees', 'Park paths', 'Park benches' and 'Playgrounds' layers
+            # (pcg_layers.park_trees, citygen.park_paths), each baked as its own layer. Its lot row places nothing.
             baked[name] = len(pts)
         elif layer.get("kind") == "buildings" and role in FLAT:
             for p in pts:
@@ -666,28 +664,7 @@ def own_meshes(previewed: dict) -> list:
                    for layer in previewed.values() for m in layer.get("meshes") or []})
 
 
-def _grove(groups: dict, root: str, p: list) -> int:
-    """A park lot filled with trees on a jittered grid (deterministic per lot), plus a path across it."""
-    x, y, z, yaw = p[0], p[1], p[2], p[3]
-    w = (p[7] if len(p) > 7 else 40) * 100
-    d = (p[8] if len(p) > 8 else 40) * 100
-    fx, fy = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
-    step = PARK_TREE_M * 100
-    made = 0
-    for i in range(int(d // step)):
-        for j in range(int(w // step)):
-            seed = abs(int(x) * 31 + int(y) * 17 + i * 7919 + j * 104729)
-            if seed % 100 >= 85 or abs(j - w / step / 2 + 0.5) < 0.6:  # some gaps; the middle row is the path
-                continue
-            u = -d / 2 + (i + 0.5) * step + (seed % 97 - 48) / 48 * step * 0.35
-            v = -w / 2 + (j + 0.5) * step + (seed % 89 - 44) / 44 * step * 0.35
-            mesh = PROPS["tree"][seed % len(PROPS["tree"])]
-            s = round(0.8 + (seed % 50) / 100, 2)
-            groups.setdefault(path(mesh, root), []).append([round(x + fx * u - fy * v), round(y + fy * u + fx * v), z,
-                                                            seed % 360, s, s, s])
-            made += 1
-    groups.setdefault(path("SM_Kit_PathSlab", root), []).append([x, y, z, yaw, round(d / 100, 2), 2.5, 1.0])
-    return made
+
 
 
 FOUND_COURSE_M = 0.5  # the plinth course a building stands on: this tall ...
@@ -786,10 +763,12 @@ def _demo() -> None:
                      "points": [[0, 0, 0, 0, 1, 9, 0, 15, 24, 1.0, [], []]]}}
     gm = bake(blds, "/R")[0]
     assert gm["/G/SM_MyShop.SM_MyShop"][0][4:7] == [2.0, 1.0, 1.0] and path("SM_Kit_Plinth", "/R") in gm, gm
-    park = {"Parks": {"kind": "buildings", "role": "park", "points": [[0, 0, 0, 0, 1, 0, 0, 40, 40, 0, []]]}}
+    park = {"Parks": {"kind": "buildings", "role": "park", "points": [[0, 0, 0, 0, 1, 0, 0, 40, 40, 0, []]]},
+            "Park paths": {"kind": "site", "role": "site", "mesh": "SM_Kit_PathSlab", "box_m": [1, 1, 0.08], "points": [[0, 0, 0, 0.0, 6.0, 3.0, 1.0]]},
+            "Park benches": {"kind": "site", "role": "site", "mesh": "SM_Prop_Bench", "box_m": [1.94, 0.67, 1.11], "points": [[0, 200, 0, 0.0, 1.0, 1.0, 1.0]]}}
     g3, b3, _ = bake(park, "/R")
-    trees = sum(len(v) for k, v in g3.items() if "SM_V4_Tree" in k)
-    assert 55 <= trees <= 90 and b3 == {"Parks": 1}, ("a 40 m park is a dense grove", trees)
+    assert b3 == {"Parks": 1, "Park paths": 1, "Park benches": 1} and set(g3) == {path("SM_Kit_PathSlab", "/R"), path("SM_Prop_Bench", "/R")}, \
+        ("a park's lot places nothing itself: its paths, benches and trees are layers of their own", sorted(g3))
     # interiors: a 110 m tower has many lit floors, a stair core every storey, one car, desks inside its outline
     gt, _, _ = bake({"T": {"kind": "buildings", "role": "skyscraper", "points": [[0, 0, 500, 90, 1, 110, 0, 32, 32, 0, []]]}}, "/R")
     plates = [r for k in ("SM_Kit_FloorRound", "SM_Kit_FloorPlate", "SM_Kit_FloorSolid") for r in gt.get(path(k, "/R"), [])]

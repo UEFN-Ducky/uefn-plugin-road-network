@@ -53,6 +53,26 @@ OUT_SHARE = 0.3  # ... and out over the water by no more than this share of the 
 SLAB_CM = 10000.0  # the platform's paving comes in slabs no bigger than this
 WALL_DEEP_CM = 2000.0  # a quay wall goes down to the bed, or this far under the water where the bed is deeper
 SLIP_TOP = 3000.0  # a slipway starts this far behind the quay
+PIER_CM = (9000.0, 2600.0)  # a pier: this far out from the quay (the dredged basin's width), this wide ...
+PIER_EVERY_CM = 12000.0  # ... one about every 120 m of open quay, a ship moored along it
+
+
+def piers(site: dict) -> list:
+    """Where a settled yard's piers leave the quay (u of each): along its open quay (past the graving docks'
+    stretch), never at a dock's mouth or under the floating dry dock; none for a yacht yard or a breaker's beach."""
+    L, kind = site["L"], site["type"]
+    if site.get("z") is None or kind in ("recycling", "yacht"):
+        return []
+    u0 = -L / 2 + (L * 0.6 if site.get("docks") else 0)
+    taken = [(d["u"], DOCK_W / 2 + 1500) for d in site.get("docks") or []]
+    if kind in ("repair", "naval"):
+        taken.append((L * 0.25, 13000.0))  # (the floating dry dock moored off the quay)
+    out, u = [], u0 + PIER_EVERY_CM / 2
+    while u <= L / 2 - PIER_CM[1] - 1500:
+        if not any(abs(u - c) < half + PIER_CM[1] / 2 for c, half in taken):
+            out.append(u)
+        u += PIER_EVERY_CM
+    return out
 # the yards with a production line (steel store -> fabrication -> assembly -> dock or quay): how deep their
 # fabrication halls are, and the depth the rows need one behind the other
 FAB_DEPTH = {"commercial": 5000.0, "naval": 5000.0, "offshore": 7000.0, "repair": 4500.0}
@@ -321,7 +341,10 @@ def build(site: dict, ground, sea: float, nodes: dict | None = None) -> dict:
         bed = max(bed, sea - WALL_DEEP_CM)
         rows.append([round(x), round(y), round(bed), yaw, 10, 1, round((top - bed) / 100, 2), "quay_wall"])
 
-    gate_u = L / 2 - 9000
+    # its gate: at the back corner; moved along the back edge, or into a side (gate_side: +1 / -1, gate_v), where
+    # its road could not leave from there (citygen.port_roads)
+    gate_u = float(site.get("gate_u", L / 2 - 9000))
+    gate_side, gate_v = site.get("gate_side"), float(site.get("gate_v") or 0.0)
     line = rows_of(kind, D) or {}
     v_back = line.get("back", D - 2500)
     # 0. the platform: paved from edge to edge. On its sides and its back a wall wherever it stands above what
@@ -333,15 +356,20 @@ def build(site: dict, ground, sea: float, nodes: dict | None = None) -> dict:
         rim += [(u + 500.0, D, None, yaw_u) for u in range(int(-L / 2), int(L / 2), 1000)]
         for u, v, beside, yaw in rim:
             g = ground(*(_w(f, beside, v) if beside is not None else _w(f, u, D + 2000)))
+            if beside is not None and gate_side and (u > 0) == (gate_side > 0) and abs(v - (gate_v - 950)) < 1500:
+                continue  # the gate in its side stays open
             if v < 2000:  # the ground ends under the paving just behind the quay (shaped's lip): closed by a wall
                 wall(u, v, yaw, min(g if g is not None else sea, sea - DREDGE_CM))
             elif g is None or g < P - 100:
                 wall(u, v, yaw, g if g is not None else sea - 800)
-            elif not (beside is None and abs(u - gate_u) < 1500):  # (the gate stays open)
+            elif not (beside is None and not gate_side and abs(u - gate_u) < 1500):  # (the gate stays open)
                 row(u, v, "fence", 10, 1, 1, yaw=yaw)
     # 1. administration, gate, employee parking (the back corner, outside the heavy zone)
     hall(L / 2 - 3500, D - 2500, 4000, 2500, "civic", "administration")
-    row(gate_u, D - 300, "gatehouse")
+    if gate_side:
+        row(gate_side * (L / 2 - 400), gate_v, "gatehouse", yaw=yaw_v)
+    else:
+        row(gate_u, D - 300, "gatehouse")
     if P is None:
         slab(L / 2 - 16000, L / 2 - 8000, D - 5000, D - 600, "hardstand")
         if kind == "naval":  # secure perimeter
@@ -478,7 +506,8 @@ def build(site: dict, ground, sea: float, nodes: dict | None = None) -> dict:
             row((u0 + L / 2) / 2, side_v, "crane_rail", (L / 2 - u0) / 100, 1, 1)
         for a in range(max(1, int((L / 2 - u0) // 8000))):
             row(u0 + 4000 + a * 8000, 1500, "portal_crane", yaw=yaw_w)
-        if kind in ("commercial", "naval", "repair", "offshore"):
+        if kind in ("commercial", "naval", "repair", "offshore") and not piers(site):
+            # (ships alongside the quay: a yard with piers moors them at its piers instead)
             for a in range(max(1, int((L / 2 - u0) // 22000))):
                 row(u0 + 11000 + a * 22000, -1800, "ship_hull", 1.6, 1, 1, yaw=yaw_u, zz=sea - 600)
         flow["outfitting quay"] = 1500
@@ -487,6 +516,27 @@ def build(site: dict, ground, sea: float, nodes: dict | None = None) -> dict:
         for a in (-1, 1):
             x, y = _w(f, -L / 2 + 1500 + a * 800, -2500)
             rows.append([round(x), round(y), round(sea - 60), yaw_u, 2.6, 2.2, 1.6, "tug"])
+    # 7. piers: a port is not one straight edge. From the open quay (clear of the docks' mouths, the slipways and
+    # the floating dock) a pier runs out over the dredged basin about every 220 m: a deck at the platform's level,
+    # walled down to the bed on both sides and across its end, a crane on it.
+    if piers(site):
+        reach, wide = min(PIER_CM[0], BASIN_CM), PIER_CM[1]
+        bed = sea - DREDGE_CM
+        for a, u in enumerate(piers(site)):
+            for k in range(int(reach // 1000)):  # the deck, in 10 m slabs, and a wall along each side of it
+                v = -(k + 0.5) * 1000
+                row(u, v, "pier_deck", wide / 100, 10)
+                for side in (-1, 1):
+                    x, y = _w(f, u + side * wide / 2, v)
+                    rows.append([round(x), round(y), round(bed), yaw_v, 10, 1, round((top - bed) / 100, 2), "pier_wall"])
+            n_end = math.ceil(wide / 1000)  # ... and across its end
+            for b in range(n_end):
+                x, y = _w(f, u - wide / 2 + (b + 0.5) * wide / n_end, -reach)
+                rows.append([round(x), round(y), round(bed), yaw_u, round(wide / n_end / 100, 2), 1, round((top - bed) / 100, 2), "pier_wall"])
+            row(u, -reach * 0.55, "portal_crane", yaw=yaw_u)
+            if kind != "fishing" or a % 2 == 0:  # a ship at its berth along the pier, bow to the quay
+                row(u + wide / 2 + 1300, -reach * 0.5, "ship_hull", 0.6, 0.8, 0.7, yaw=yaw_v, zz=sea - 400)
+        flow.setdefault("piers", 0.0)
     # launch basin: nothing else in the water in front of the docks
     report = validate(site, rows, flow, checks)
     if P is not None:
@@ -549,6 +599,21 @@ def _demo() -> None:
     assert not any(a < u < b and c < 5000 < d for a, b, c, d in slabs for u, _, _ in openings(s)), "docks stay open"
     paved = [r for r in out["rows"] if r[7] == "hardstand"]
     assert len(paved) == len(slabs) and {r[2] for r in paved} == {250}
+    # its piers: out over the basin from the open quay, never across a dock's mouth, decked at the platform's
+    # level and walled to the bed on both sides and the end
+    decks, pier_walls = [r for r in out["rows"] if r[7] == "pier_deck"], [r for r in out["rows"] if r[7] == "pier_wall"]
+    assert len(decks) == 3 * 9 and {r[2] for r in decks} == {250}, ("three piers on its 360 m of open quay", len(decks))
+    assert len({round(uv(s, r[0], r[1])[0]) for r in decks}) == 3 and len(piers({**s, "type": "yacht"})) == 0
+    berthed = [r for r in out["rows"] if r[7] == "ship_hull" and uv(s, r[0], r[1])[1] < -1000 and r[4] == 0.6]
+    assert len(berthed) == 3 and not [r for r in out["rows"] if r[7] == "ship_hull" and r[4] == 1.6], "a ship at each pier, none along the quay"
+    assert all(-9000 <= uv(s, r[0], r[1])[1] < 0 for r in decks), "every deck slab is out over the water"
+    assert not any(abs(uv(s, r[0], r[1])[0] - d["u"]) < DOCK_W / 2 + 1000 for r in decks for d in s["docks"]), "no pier across a dock's mouth"
+    assert len(pier_walls) == len(decks) // 9 * 21 and all(abs(r[2] + r[6] * 100 - 260) < 1.5 for r in pier_walls), len(pier_walls)
+    # a yard entered from its side (water behind it): the gap in its edge is there, and its back is fenced right across
+    sided = [r for r in build({**s, "gate_side": -1, "gate_v": 20950.0}, lambda x, y: 4000.0, 0.0)["rows"] if r[7] == "fence"]
+    assert not [r for r in sided if uv(s, r[0], r[1])[0] < -s["L"] / 2 + 100 and abs(uv(s, r[0], r[1])[1] - 20000) < 1500], "the gap in its side"
+    back_gate = len([r for r in out["rows"] if r[7] == "fence"])
+    assert len(sided) == back_gate + 2 - 2, ("two more along the back, two fewer in the side", len(sided), back_gate)
     assert all(r[2] == 250 for r in out["rows"] if r[7] in ("tower_crane", "portal_crane", "steel_stack", "fence", "containers"))
     # its edges: a fence where it meets the land (the gate stays open), a wall along the quay but not across a
     # dock's mouth, and a wall closing the first 20 m of each side behind the quay

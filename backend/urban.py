@@ -170,7 +170,7 @@ ARCHETYPES = {
     "yard": [("building", -0.45, -0.1, 0.1, 0.5), ("yard", -0.05, 0.45, 0.1, 0.95)],
     "park": [("building", -0.5, 0.5, 0.0, 1.0), ("playground", -0.2, 0.2, 0.35, 0.65)],
     "big_park": [("parking", -0.48, 0.0, 0.02, 0.2), ("building", -0.5, 0.5, 0.22, 1.0),
-                 ("field", 0.05, 0.45, 0.4, 0.95), ("playground", -0.4, -0.1, 0.4, 0.7)],
+                 ("field", 0.05, 0.45, 0.4, 0.95), ("playground", -0.4, -0.1, 0.4, 0.7), ("pond", -0.42, -0.08, 0.76, 0.95)],
     "sports": [("parking", -0.48, 0.2, 0.02, 0.22), ("building:civic", 0.25, 0.48, 0.02, 0.22),
                ("field", -0.45, -0.02, 0.27, 0.97), ("field", 0.02, 0.45, 0.27, 0.97)],
     "stadium": [("parking", -0.48, 0.48, 0.02, 0.18), ("building", -0.3, 0.3, 0.22, 0.8),
@@ -355,6 +355,14 @@ def develop(spec: dict, site: _Site, ftype: str) -> dict:
         else:
             out["grounds"].append([round(cx), round(cy), round(site.yaw(1, 0), 1), round(w / 100, 2),
                                    round(d / 100, 2), kind, ftype])
+    if spec["role"] == "park" and spec["arch"] in ("park", "big_park"):
+        # a park has paths and benches: a walk round it and across it, round what stands in it (citygen.park_paths)
+        import random
+        from . import citygen
+        solid = [(u0, u1, v0, v1) for kind, u0, u1, v0, v1 in parts if not kind.startswith("building")]
+        rows, _lines = citygen.park_paths(site.w, site.yaw(1, 0), site.L / 2, site.D / 2, solid,
+                                          random.Random(f"park:{round(site.cx)}:{round(site.cy)}"))
+        out["grounds"] += [[*r[:6], ftype] for r in rows]
     return out
 
 
@@ -733,6 +741,8 @@ def _demo() -> None:
     roles = {r[7] for r in out["lots"] if r[8] is True}
     assert {"school", "fire_station", "police", "shop", "park"} <= roles, roles
     assert out["parking"] and out["stalls"], "sites come with their parking"
+    kinds_ = [g[5] for g in out["grounds"] if g[6] in ("neighbourhood_park", "community_park")]
+    assert kinds_.count("path") > 20 and "bench" in kinds_ and "playground" in kinds_, ("a park has paths, benches and a playground", sorted(set(kinds_)))
     # a site is its own land: no street runs through a car park or a planned building, and no lot that is not
     # the site's lies under one
     def on(row, x, y, half_a, half_b, m=0.0):

@@ -1858,7 +1858,9 @@ def register(api) -> None:
         pads = pl.pads(placed, cg.pad_margin(terrain)) if cut and not final else []
         scan = st.grid_sampler(terrain)
         ground = cg.imported_ground(terrain, pads=pads) if cut else (lambda x, y: scan(x, y) or 0.0)
-        rows = [(name, r) for name, v in placed.items() if v.get("kind") == "buildings" for r in v["points"] if len(r) > 9]
+        # (not a park: it is planted ground that lies as the land does, with nothing to fit)
+        rows = [(name, r) for name, v in placed.items() if v.get("kind") == "buildings" and v.get("role") != "park"
+                for r in v["points"] if len(r) > 9]
         moves, before, after = cg.settle(ground, [(name, r[0], r[1], r[3], r[7], r[8], r[2], r[9]) for name, r in rows])
         for k, (z, found) in moves.items():
             r = rows[k][1]
@@ -2009,7 +2011,8 @@ def register(api) -> None:
                 else:
                     fit_ter, fit = cut_and_fit()
             if fit:
-                fit["left_out"] = {"deeper_than_m": pl.FOUND_MAX_M, "buildings": len(lots), "planned_sites_kept": sites,
+                fit["left_out"] = {"deeper_than_m": {"house, mansion": pl.FOUND_MAX_M, "any other": pl.PODIUM_MAX_M},
+                                   "buildings": len(lots), "planned_sites_kept": sites,
                                    "by_layer": lost}
             if lots:
                 fit["left_out"]["trees"] = pl.plant_lots(placed, lots, fit["ground"], terrain.get("sea"))
@@ -2033,6 +2036,7 @@ def register(api) -> None:
             stands_on = (fit or {}).get("ground") or (lambda x, y: ground(x, y) or 0.0)
             # the city centre stands on concrete, not grass: laid last, on the ground as the lots left it
             placed.update(pl.paved_lots(cities, placed, stands_on))
+            placed.update(pl.park_trees(placed, cities, stands_on))  # a planned park is trees in groves, not a slab
             cols, caps = cg.bridge_piers(decks, stands_on)
             # ... a cable-stayed or suspension bridge on its two towers, each astride the deck with its stay cables;
             # the deck those cables carry needs no piers

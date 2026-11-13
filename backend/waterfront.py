@@ -85,6 +85,9 @@ KINDS = {
     "dock_gate": ("SM_Kit_Seawall", [1, 0.6, 1], "mix:red:fg-dim:0.5", "Dock gates"),
     "gatehouse": ("SM_Kit_Gatehouse", [8, 6, 4], "fg-dim", "Gatehouses"),
     "quay_wall": ("SM_Kit_Seawall", [1, 0.6, 1], "mix:fg-dim:bg:0.25", "Shipyard quay walls"),
+    # a port's piers (shipyard.build): a deck out over the water, walled down to the bed on its three sides
+    "pier_deck": ("SM_Kit_Apron", [1, 1, 0.1], "mix:fg-dim:bg:0.4", "Port piers"),
+    "pier_wall": ("SM_Kit_Seawall", [1, 0.6, 1], "mix:fg-dim:bg:0.25", "Pier walls"),
     "tug": ("SM_Kit_Boat", [9, 3, 2], "mix:fg:blue:0.15", "Tugboats"),
     "tug_float": ("SM_Kit_FloatDock", [1, 1, 0.5], "mix:fg-dim:bg:0.15", "Tug stations"),
 }
@@ -92,8 +95,8 @@ KINDS = {
 # stands (a quay wall on the bed, a ship afloat, a gantry over its dock, a fence on the platform's very edge)
 YARD_KINDS = ("ship_hull", "goliath", "portal_crane", "tower_crane", "crane_rail", "keel", "hardstand", "steel_stack",
               "rail", "float_drydock", "tank", "fence", "boat_lift", "offshore_module", "slipway", "scrap", "dock_gate",
-              "gatehouse", "quay_wall", "tug", "tug_float")
-NO_PAD = ("hardstand", "crane_rail", "tug_float")  # ... and these level no ground under them (pcg_layers.pads)
+              "gatehouse", "quay_wall", "tug", "tug_float", "pier_deck", "pier_wall")
+NO_PAD = ("hardstand", "crane_rail", "tug_float", "pier_deck", "pier_wall")  # ... and these level no ground under them (pcg_layers.pads)
 TYPES = ("natural", "beach", "residential", "commercial", "marina", "industrial", "public")
 
 # ------------------------------------------------------------------ ShoreWorks: the made shore
