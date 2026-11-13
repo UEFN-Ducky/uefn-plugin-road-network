@@ -3132,7 +3132,9 @@ def join_private(roads: dict, access: dict, folder: str) -> tuple:
 
 
 LINK_REACH_CM = 600.0  # a walkway / driveway / sidewalk end this far past a host's edge is tied to it
-SNAP_CM = 150.0  # ... onto the host's own point when one is this close, instead of a new one
+# ... onto the host's own point when one is this close along it, instead of a new one: the link draws nothing, so
+# it may run aslant. At 1.5 m every driveway split its street once more (a street point per house, both sides)
+SNAP_CM = 2500.0
 
 
 def join_links(roads: dict, extra: list, folder: str) -> tuple:
@@ -3193,11 +3195,22 @@ def join_links(roads: dict, extra: list, folder: str) -> tuple:
             continue
         _d, host, t, px, py = best
         a, b = rp[host["a"]], rp[host["b"]]
+        # the driveway / walkway itself reaches the host's edge (its own mesh fills the gap; the link drew nothing
+        # and the slab ended metres out on the grass), along its own line when that heads for the host
+        own_seg = at[e][0]
+        o = rp[own_seg["b"] if own_seg["a"] == e else own_seg["a"]]
+        ux, uy = E["x"] - o["x"], E["y"] - o["y"]
+        ul = math.hypot(ux, uy) or 1.0
+        if _d > half(host) + 30 and _d > 1:
+            c = (ux * (px - E["x"]) + uy * (py - E["y"])) / (ul * _d)
+            if c >= 0.5:
+                s_ = (_d - half(host)) / c
+                E["x"], E["y"] = E["x"] + ux / ul * s_, E["y"] + uy / ul * s_
+                E["z"] = a["z"] + (b["z"] - a["z"]) * t
+                st.retangent(rp, own_seg)
         L = math.hypot(b["x"] - a["x"], b["y"] - a["y"])
-        if t * L <= SNAP_CM:
-            h = a
-        elif (1 - t) * L <= SNAP_CM:
-            h = b
+        if min(t, 1 - t) * L <= SNAP_CM:
+            h = a if t * L <= (1 - t) * L else b
         else:  # split the host there: two halves of the same piece, one shared point
             pz = a["z"] + (b["z"] - a["z"]) * t
             h = _point(next(nid), px, py, pz, a["yaw"], a.get("w", half(host)))

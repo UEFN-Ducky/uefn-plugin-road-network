@@ -63,6 +63,23 @@ def test_join_private():
             assert "bRaiseTerrain=False" in s["lines"], "a link shapes nothing"
     back2 = cg.unjoin_private(net)
     assert (len(back2["points"]), len(back2["segments"])) == before, "links come out again too"
+    # the driveway's own mesh reaches the street's edge: no gap of grass for the mesh-less link to bridge
+    dw = cg.ROAD_MESH["DW"]
+    ends = [net_p for s in net["segments"] if s["mesh"] == dw for net_p in net["points"] if net_p["i"] in (s["a"], s["b"])]
+    assert min(abs(p["y"]) for p in ends) <= half + 31, [round(p["y"]) for p in ends]
+    # ten driveways a side along one street: the street gets a few shared points, never one per driveway
+    many = cg.build_actor({**{f"n{k}": [10000 + k * 1600, half + 400] for k in range(10)},
+                           **{f"f{k}": [10000 + k * 1600, half + 2000] for k in range(10)},
+                           **{f"s{k}": [10000 + k * 1600, -half - 400] for k in range(10)},
+                           **{f"g{k}": [10000 + k * 1600, -half - 2000] for k in range(10)}},
+                          [[f"n{k}", f"f{k}", "DW"] for k in range(10)] + [[f"s{k}", f"g{k}", "DW"] for k in range(10)],
+                          FLAT, "/Game/X/Roads")
+    street = cg.build_actor({0: [0, 0], 1: [100000, 0]}, [[0, 1, "4L", [[x, 0] for x in range(5000, 100000, 5000)]]],
+                            FLAT, "/Game/X/Roads")
+    net2, links2 = cg.join_links(street, [many], "/Game/X/Roads")
+    assert links2 == 20, links2
+    on_street = [p for p in net2["points"] if abs(p["y"]) < 1]
+    assert len(on_street) <= len(street["points"]) + 2, (len(on_street), len(street["points"]))
     print("join_private ok:", len(joined["points"]), "points,", len(waiting), "pieces waiting")
 
 
