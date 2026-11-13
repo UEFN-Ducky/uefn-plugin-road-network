@@ -75,13 +75,13 @@ function drawLoading() {
 // ------------------------------------------------------------------ state
 const GEN_DEFAULTS = {
   name: "Valley", cities: 3, size_km: 6, relief_m: 60, seed: 7, ground: "new",
-  hill_km: 2, roughness: 0.5, detail: 5, ridges: 0, peaks: 0, flatten_m: 300, sea_m: -1000, water_depth_m: 12, terrace_m: 0,
+  hill_km: 2, roughness: 0.5, detail: 5, ridges: 0, peaks: 0, flatten_m: 300, sea_m: -1000, water_depth_m: 12, terrace_m: 0, smooth: 0.5, landscape_px: 2017,
   block_m: 100, block_ratio: 1, wobble: 0.12, follow_hills: 0.8, green_lots: 0, prune: 0.22, downtown: 0.4, normal: 0.75, highway: "4L", highway_curve: 0.08,
   core_roads: "4L", neighbourhood_roads: "2S", suburb_roads: "2L", one_way_core: "no", interchange: "direct", overpasses: "yes",
   city_size: 1, city_gap_m: 300, freeways: "yes", waterfront: "yes", canals: "none", shipyards: "auto",
   airports: "auto", military_base: "no", wind_deg: 240, city_ground: "natural",
 };
-const OPTION_KEYS = ["hill_km", "roughness", "detail", "ridges", "peaks", "flatten_m", "sea_m", "water_depth_m", "terrace_m", "block_m", "block_ratio", "wobble", "follow_hills", "green_lots",
+const OPTION_KEYS = ["hill_km", "roughness", "detail", "ridges", "peaks", "flatten_m", "sea_m", "water_depth_m", "terrace_m", "smooth", "landscape_px", "block_m", "block_ratio", "wobble", "follow_hills", "green_lots",
   "prune", "downtown", "normal", "highway", "highway_curve", "core_roads", "neighbourhood_roads", "suburb_roads", "one_way_core",
   "interchange", "overpasses", "city_size", "city_gap_m", "freeways", "waterfront", "canals", "shipyards", "airports", "military_base", "wind_deg", "city_ground"];
 const VIEW_DEFAULTS = { zx: 1, pcg: true, terrain: true, water: true, districts: true, points: false, look: "natural", sunAz: 135, sunEl: 52, shadows: true };
@@ -1657,7 +1657,13 @@ function buildPanes() {
     section("Shape", sl("hill_km", "Hill size", 0.3, 10, 0.1, (v) => `${v.toFixed(1)} km`),
       sl("roughness", "Roughness", 0.2, 0.8, 0.02, pct), sl("detail", "Detail", 1, 8, 1, (v) => `${v} layers`),
       sl("ridges", "Mountain ridges", 0, 1, 0.05, pct, "0 = rolling hills, 100 % = sharp crests"),
-      sl("peaks", "Peaks", 0, 1, 0.05, pct, "Wide low valleys with tall sharp peaks")),
+      sl("peaks", "Peaks", 0, 1, 0.05, pct, "Wide low valleys with tall sharp peaks"),
+      sl("smooth", "Smoothness", 0, 1, 0.05, pct, "0 = raw noise, 100 % = soft rolling hills with no sharp little bumps")),
+    // UEFN caps every landscape in a level together at 2048 x 2048 samples: 2017 (32 x 63 quads + 1) is the most that fits
+    section("Landscape for UEFN", sl("landscape_px", "Resolution", 505, 4033, 504, (v) => {
+      const mpp = (state.gen.size_km || 6) * 1000 / (v - 1);
+      return `${v} × ${v} · ${mpp.toFixed(1)} m a pixel${v * v > 2048 * 2048 ? " · ABOVE UEFN LIMIT" : ""}`;
+    }, "More pixels = finer cuts and smoother slopes. UEFN refuses more than 2048 × 2048 in total: 2017 is the most it takes")),
     section("Water and steps", h("div", { class: "rn-hint" }, "Hill height and water level are on the World tab."),
       sl("water_depth_m", "Lake depth", 0, 80, 1, m, "How far lake beds drop below the water line"),
       sl("terrace_m", "Terraces", 0, 50, 1, (v) => v ? m(v) : "Off"),

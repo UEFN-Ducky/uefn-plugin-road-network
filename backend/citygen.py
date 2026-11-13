@@ -73,13 +73,37 @@ def walk_of(half: float) -> float:
     return next((w for k, w in WALK.items() if abs(HALF[k] - half) < 1), 0.0)
 
 
+def _cubic_taps(n_from: int, n_to: int) -> list:
+    """For each of n_to fine cells: four (coarse index, Catmull-Rom weight) taps over n_from coarse cell centres."""
+    out = []
+    for k in range(n_to):
+        f = max(0.0, min(n_from - 1.0, (k + 0.5) * n_from / n_to - 0.5))
+        i = min(n_from - 2, int(f)) if n_from > 1 else 0
+        t = f - i
+        w = (((-t + 2) * t - 1) * t / 2, ((3 * t - 5) * t * t + 2) / 2, ((-3 * t + 4) * t + 1) * t / 2, (t - 1) * t * t / 2)
+        out.append([(max(0, min(n_from - 1, i + d)), w[d + 1]) for d in (-1, 0, 1, 2)])
+    return out
+
+
 def refine(ter: dict, grid: int) -> dict:
-    """The same terrain on a finer grid (bilinear), so roads can be cut into it a landscape pixel at a time."""
-    s = st.grid_sampler(ter)
-    (x0, y0), (x1, y1) = ter["min"], ter["max"]
-    cw, ch = (x1 - x0) / grid, (y1 - y0) / grid
-    return {**ter, "grid": grid, "heights": [[round(s(x0 + (i + 0.5) * cw, y0 + (j + 0.5) * ch) or 0.0, 1)
-                                              for i in range(grid)] for j in range(grid)]}
+    """The same terrain on a finer grid, so roads can be cut into it a landscape pixel at a time. Bicubic
+    (Catmull-Rom): bilinear left a crease on every coarse cell edge, hills looked cut from flat facets.
+    A cell with no ground (None, off a scan) stays None."""
+    H, n = ter["heights"], ter["grid"]
+    if any(v is None for r in H for v in r):  # ponytail: scans with holes keep the bilinear sampler
+        s = st.grid_sampler(ter)
+        (x0, y0), (x1, y1) = ter["min"], ter["max"]
+        cw, ch = (x1 - x0) / grid, (y1 - y0) / grid
+        return {**ter, "grid": grid, "heights": [[round(s(x0 + (i + 0.5) * cw, y0 + (j + 0.5) * ch) or 0.0, 1)
+                                                  for i in range(grid)] for j in range(grid)]}
+    taps = _cubic_taps(n, grid)  # separable: along x for every coarse row, then along y
+    wide = [[sum(r[a] * w for a, w in tp) for tp in taps] for r in H]
+    cols = list(zip(*wide))
+    out = [[0.0] * grid for _ in range(grid)]
+    for i, col in enumerate(cols):
+        for j, tp in enumerate(taps):
+            out[j][i] = round(sum(col[a] * w for a, w in tp), 1)
+    return {**ter, "grid": grid, "heights": out}
 LOOP_PIECE = "SM_Road_Loop_Big"  # trumpet loop (point piece)
 CLOVER_PIECE = "SM_Road_Freeway_Cloverleaf"  # in NeonSkyscrapers RoadKit: import it before using cloverleaf
 # per-district road choices (the panel's Roads tab)
@@ -217,6 +241,10 @@ OPTIONS = {
     "flatten_m": (300.0, 0.0, 2000.0), # blend from a city's plateau back to the hills
     "sea_m": (-1000.0, -1000.0, 200.0),  # lowlands below this become flat lake beds (-1000 = off)
     "terrace_m": (0.0, 0.0, 50.0),     # step the hills into terraces (0 = smooth)
+    "smooth": (0.5, 0.0, 1.0),         # rounds the hills off: 0 = raw noise .. 1 = soft, rolling
+    # the heightmap's pixels a side (snapped to 63 quads x components + 1). UEFN caps ALL landscapes together at
+    # 2048 x 2048 samples: 2017 is the most that fits
+    "landscape_px": (2017, 505, 4033),
     "ridges": (0.0, 0.0, 1.0),         # 0 rolling hills .. 1 sharp mountain ridges
     "peaks": (0.0, 0.0, 1.0),          # 0 even hills .. 1 wide low valleys with tall sharp peaks
     "water_depth_m": (12.0, 0.0, 80.0),  # how deep lake beds drop below the water line
@@ -425,6 +453,9 @@ def terrain(seed: int, size_cm: float, relief_cm: float, cities: list, grid: int
     xs = [lo[0] + size_cm * (i + 0.5) / grid for i in range(grid)]
     ys = [lo[1] + size_cm * (j + 0.5) / grid for j in range(grid)]
     noise = [[fbm(x / feature, y / feature) for x in xs] for y in ys]
+    for _ in range(round(o["smooth"] * 4)):  # 3x3 box passes: the octaves' sharp little bumps rounded off
+        noise = [[sum(noise[b][a] for b in (max(0, j - 1), j, min(grid - 1, j + 1))
+                      for a in (max(0, i - 1), i, min(grid - 1, i + 1))) / 9 for i in range(grid)] for j in range(grid)]
     # Layered noise averages out (5 octaves span about 0.3..0.7, not 0..1), so "60 m hills" came out
     # ~ +-20 m and looked flat: stretch the grid to the full -relief..+relief.
     n_lo = min(min(r) for r in noise)
@@ -684,15 +715,22 @@ def grade_to_roads(ter: dict, actors: dict, locked: set | None = None) -> dict:
     return {**ter, "heights": rows}
 
 
-HEIGHTMAP_RES = 1009  # 16 components x 63 quads + 1
+HEIGHTMAP_RES = 2017  # 32 components x 63 quads + 1; the world being worked on sets its own (landscape_res)
+UEFN_MAX_SAMPLES = 2048 * 2048  # UEFN: every landscape in the level together, at most this many height samples
 
 
-def heightmap_px(ter: dict, res: int = HEIGHTMAP_RES) -> float:
+def landscape_res(opts: dict | None) -> int:
+    """The heightmap side a world asked for, snapped to 63 quads x whole components + 1."""
+    return 63 * max(8, round((options(opts)["landscape_px"] - 1) / 63)) + 1
+
+
+def heightmap_px(ter: dict, res: int = 0) -> float:
     """One heightmap pixel in cm: the finest step the imported landscape has."""
+    res = res or HEIGHTMAP_RES
     return max(ter["max"][0] - ter["min"][0], ter["max"][1] - ter["min"][1]) / (res - 1)
 
 
-def pad_margin(ter: dict, res: int = HEIGHTMAP_RES) -> float:
+def pad_margin(ter: dict, res: int = 0) -> float:
     """How much wider (cm, both sides together) a lot's pad is cut than the building: a pixel a side, so every
     landscape quad under the building has all four corners exactly at pad height after import."""
     return max(400.0, 2 * heightmap_px(ter, res) + 100)
@@ -706,15 +744,17 @@ def _pixel(ter: dict, res: int, pads: list | None):
                                                                    lo[1] + (hi[1] - lo[1]) * j / (res - 1)) * 128 / 100))))
 
 
-def heightmap_rows(ter: dict, res: int = HEIGHTMAP_RES, pads: list | None = None) -> list:
+def heightmap_rows(ter: dict, res: int = 0, pads: list | None = None) -> list:
     """The landscape UEFN gets: res x res 16-bit samples, lots levelled in."""
+    res = res or HEIGHTMAP_RES
     px = _pixel(ter, res, pads)
     return [[px(i, j) for i in range(res)] for j in range(res)]
 
 
-def imported_ground(ter: dict, res: int = HEIGHTMAP_RES, pads: list | None = None):
+def imported_ground(ter: dict, res: int = 0, pads: list | None = None):
     """z(x, y) of the imported landscape exactly as UEFN builds it: bilinear between the heightmap's samples
     (computed only where asked, so checking every building costs a few thousand samples, not a million)."""
+    res = res or HEIGHTMAP_RES
     (x0, y0), (x1, y1) = ter["min"], ter["max"]
     px, memo = _pixel(ter, res, pads), {}
 
@@ -803,11 +843,11 @@ def settle(ground, buildings: list) -> tuple:
     return moves, before, after
 
 
-def heightmap_png(ter: dict, res: int = HEIGHTMAP_RES, pads: list | None = None, rows: list | None = None) -> tuple:
+def heightmap_png(ter: dict, res: int = 0, pads: list | None = None, rows: list | None = None) -> tuple:
     """16-bit greyscale PNG of the terrain for Landscape > Import, plus the import settings
     (Z scale 100: 1 unit = 100/128 cm, so +-256 m fits). pads: lots levelled into it."""
     lo, hi = ter["min"], ter["max"]
-    rows = rows or heightmap_rows(ter, res, pads)
+    rows = rows or heightmap_rows(ter, res or HEIGHTMAP_RES, pads)
     res = len(rows)
     raw = bytearray()
     for vals in rows:
@@ -821,7 +861,9 @@ def heightmap_png(ter: dict, res: int = HEIGHTMAP_RES, pads: list | None = None,
     # Landscape mode's New > Location is the landscape's centre, not its corner; 1009 = 16 components x 63 quads + 1
     return png, {"resolution": f"{res} x {res}", "location": [round((lo[0] + hi[0]) / 2), round((lo[1] + hi[1]) / 2), 0],
                  "scale": [round(scale, 3), round(scale, 3), 100.0],
-                 "components": f"{(res - 1) // 63} x {(res - 1) // 63}, 63 quads, 1 section"}
+                 "components": f"{(res - 1) // 63} x {(res - 1) // 63}, 63 quads, 1 section",
+                 "metres_per_pixel": round(scale / 100, 2),
+                 "uefn_limit": f"{res * res:,} of {UEFN_MAX_SAMPLES:,} samples (2048 x 2048)"}
 
 
 # ------------------------------------------------------------------ cities
@@ -5821,6 +5863,14 @@ def _demo() -> None:
     assert steps["heights"], "terraces build"
     png, settings = heightmap_png(ter, res=65)
     assert png[:8] == b"\x89PNG\r\n\x1a\n" and settings["scale"][2] == 100.0
+    # landscape size: snapped to whole 63-quad components, 2017 by default (the most UEFN's 2048 x 2048 cap takes)
+    assert landscape_res({}) == 2017 and landscape_res({"landscape_px": 1000}) == 1009 and 2017 ** 2 <= UEFN_MAX_SAMPLES
+    assert landscape_res({"landscape_px": 2600}) ** 2 > UEFN_MAX_SAMPLES
+    # bicubic refine: a plane stays a plane (no creases), and the coarse samples are kept
+    ramp = {"min": [0, 0], "max": [1000, 1000], "grid": 8, "heights": [[i * 10.0 + j for i in range(8)] for j in range(8)]}
+    fr = refine(ramp, 32)
+    assert all(abs(fr["heights"][j][i] - ((i + 0.5) / 4 - 0.5) * 10 - ((j + 0.5) / 4 - 0.5)) < 0.2
+               for j in range(6, 26) for i in range(6, 26)), "a plane refines to the same plane"  # (inside: taps clamp at the border)
     # a keep zone (the cinema): flat at its own height, no city on it, the highway goes round it
     keep = keep_zones([{"name": "Cinema", "x0": -10000, "y0": -12000, "x1": 14000, "y1": 11000, "z": 1341}, {"bad": 1}])
     assert len(keep) == 1

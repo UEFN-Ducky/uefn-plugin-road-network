@@ -1544,6 +1544,11 @@ def register(api) -> None:
         ter = (data.get(f"net.{src}.scan") or {}).get("terrain") or {}
         if not ter.get("heights"):
             return {"ok": False, "error": f"{src!r} has no stored ground scan. Generate the world again."}
+        res = cg.landscape_res(doc["generated"].get("options"))
+        if res * res > cg.UEFN_MAX_SAMPLES:
+            return {"ok": False, "error": f"Landscape resolution {res} x {res} ({res * res:,} samples) is above UEFN's "
+                                          f"limit of 2048 x 2048 ({cg.UEFN_MAX_SAMPLES:,}): UEFN refuses to import it. "
+                                          f"Set it to 2017 or lower (Terrain > Landscape) and generate again."}
         if not doc["generated"].get("heightmap"):  # from now on the buildings are fitted to this landscape
             doc["generated"]["heightmap"] = True
             data.put(f"net.{nid}", doc)
@@ -1936,10 +1941,12 @@ def register(api) -> None:
         # the ground the buildings stand on: this world's own heightmap (lots cut in) once it has one; a world laid
         # over another's landscape keeps that landscape as scanned until its heightmap is made
         cut = not gen.get("ground_from") or bool(gen.get("heightmap"))
+        # ponytail: one world is worked on at a time (the cache has one entry too), so its landscape size is global
+        cg.HEIGHTMAP_RES = cg.landscape_res(gen.get("options"))
         # (without each city's plan report: the placement reads its lots, never the report, and the report's wording
         # alone changes on the rebuild after an edit)
         key = hashlib.sha1(pickle.dumps([nid, docs, [{k: v for k, v in c.items() if k != "plan"} for c in cities],
-                                         terrain, actors, keep, cut], protocol=5)).hexdigest()
+                                         terrain, actors, keep, cut, cg.HEIGHTMAP_RES], protocol=5)).hexdigest()
         if _PREVIEW_CACHE.get("key") != key:  # ponytail: one entry, the world being looked at
             ground = st.grid_sampler(terrain) if terrain.get("heights") else (lambda x, y: 0.0)
             ground = cg.on_made(cities, ground)  # (a shipyard's platform and a made shore: at their own levels)
@@ -1993,7 +2000,7 @@ def register(api) -> None:
                 # ground was cut down to streets that were no longer there, 100 m off after a new seed. Every
                 # block with a complex in it became a pit, and the preview kept it (its key never saw them).
                 plans = private_plans(nid, cities)
-                rk = hashlib.sha1(pickle.dumps([terrain, actors, [s for _c, s in plans],
+                rk = hashlib.sha1(pickle.dumps([cg.HEIGHTMAP_RES, terrain, actors, [s for _c, s in plans],
                                                 [(c.get("shipyards"), c.get("shores")) for c in cities]],
                                                protocol=5)).hexdigest()
                 if _GROUND.get("key") != rk:
@@ -2366,9 +2373,10 @@ def register(api) -> None:
         fine = _PREVIEW_CACHE.get("ter") or {}
         if not heights or fine.get("grid") != cg.HEIGHTMAP_RES or not ter.get("heights"):
             return out  # no ground of its own yet (laid over another world's landscape, no heightmap made)
-        grid = cg.HEIGHTMAP_RES // 2  # two landscape pixels a cell: light enough to redraw, still shows every cut
+        k = max(2, cg.HEIGHTMAP_RES // 504)  # landscape pixels a cell side: ~500 cells, light enough to redraw
+        grid = cg.HEIGHTMAP_RES // k
         (x0, y0), (x1, y1) = ter["min"], ter["max"]
-        span = 2 * grid / cg.HEIGHTMAP_RES
+        span = k * grid / cg.HEIGHTMAP_RES
         if _EXACT.get("ground_key") != (_PREVIEW_CACHE.get("key"), grid):
             H = fine["heights"]
             cw, ch = (x1 - x0) * span / grid, (y1 - y0) * span / grid
@@ -2378,7 +2386,7 @@ def register(api) -> None:
             def cell(j, i):
                 # A cell with a road in it shows the road's level, not the mean with the pad or bank beside it: the
                 # panel's cells are 20 m, as wide as a street, and the averaged ground lay over half the carriageway
-                four = ((2 * j, 2 * i), (2 * j, 2 * i + 1), (2 * j + 1, 2 * i), (2 * j + 1, 2 * i + 1))
+                four = [(k * j + a, k * i + b) for a in range(k) for b in range(k)]
                 vals = [H[a][b] for a, b in four if (a, b) in locked] or [H[a][b] for a, b in four]
                 return round(sum(vals) / len(vals))
             rows = [[cell(j, i) if known(x0 + (i + 0.5) * cw, y0 + (j + 0.5) * ch) is not None else None
@@ -3290,7 +3298,8 @@ def register(api) -> None:
         [{name, x, y, radius_m, style}] in cm, or empty to rebuild the cities already in this world.
         ground_from: an existing network whose ground scan the roads follow instead (no heightmap).
         options: JSON, any of: terrain hill_km, roughness (0.2-0.8), detail (octaves 1-8), ridges (0-1),
-        flatten_m, sea_m (lake level, -1000 = off), terrace_m; roads block_m (a block's short side), block_ratio
+        flatten_m, sea_m (lake level, -1000 = off), terrace_m, smooth (0-1: rounds the
+        hills off), landscape_px (heightmap pixels a side, default 2017: UEFN takes at most 2048 x 2048); roads block_m (a block's short side), block_ratio
         (1 = square blocks, up to 3 = three times as long as wide), wobble (0-0.45: 0 = dead straight streets,
         higher = the streets between main roads bow in smooth curves), green_lots (0-0.6: share of every block's
         lots planted with trees instead of built on), prune (0-0.5), downtown / normal (ring shares), highway
