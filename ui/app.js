@@ -1726,6 +1726,10 @@ const ASSET_OPTS = [
   ["fortnite", "Fortnite pieces", "Fortnite's own props and buildings", "world"],
   ["mixed", "Mixed", "Our kit first, Fortnite for anything missing", "mixed"],
 ];
+const TREE_OPTS = [
+  ["kit", "Our own trees", "The kit's trees, placed by PCG as instances", "layers"],
+  ["fortnite", "Fortnite trees", "Fortnite's own tree props in the cities, the ones players can chop: each one is an actor. The forest outside stays our own trees", "world"],
+];
 const WHERE_OPTS = [
   ["outside", "Outside the cities", "Countryside between towns", "terrain"],
   ["everywhere", "Everywhere", "Whole map, cities too", "world"],
@@ -1803,12 +1807,18 @@ function renderPcgPane() {
     if (out.ok === false) return showError(out.error);
     state.assetSet = out.asset_set;
   } }).el;
+  const trees = choices({ label: "City trees", value: state.trees || "kit", options: TREE_OPTS, onChange: async (v) => {
+    const out = await rpc("pcg_assets", { net_id: state.net, trees: v });
+    if (out.ok === false) return showError(out.error);
+    state.trees = out.trees;
+  } }).el;
   const place = button("Push city to UEFN", "upload", onPcgPlace, "primary",
     "Builds the city as PCG in the open UEFN level, 400 m tile by tile: only the tiles you changed are rebuilt");
   place.style.width = "100%";
   pane.replaceChildren(
     section("What it's built from", pieces, h("div", { class: "rn-hint", style: "margin-top: 6px" },
-      "Every layer is built from the project's own kit (layers with meshes of their own keep them).")),
+      "Every layer is built from the project's own kit (layers with meshes of their own keep them)."),
+      h("div", { style: "margin-top: 8px" }, trees)),
     section("Placement layers", head, h("div", { class: "rn-hint", style: "margin: 8px 0" },
       "Layers place in order: each one keeps clear of the roads and the layers you tick under Keep clear of.")),
     ...(cards.length ? cards : [h("div", { class: "dk-empty" }, h("div", { class: "dk-empty__title" }, "No layers yet"), "Add the starter layers or a new one.")]),
@@ -1925,6 +1935,7 @@ async function loadLayers() {
   state.presets = sets.ok === false ? [] : sets.items || [];
   renderLayerList();
   state.assetSet = assets.ok === false ? "own" : assets.asset_set;
+  state.trees = assets.ok === false ? "kit" : assets.trees || "kit";
   const pane = $("pane-pcg");
   if (pane && pane.contains(document.activeElement) && document.activeElement !== document.body) {
     // the person is typing or dragging in a layer card: redraw once they leave it, never under their hands

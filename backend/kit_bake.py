@@ -300,6 +300,21 @@ SETS_PER_FLOOR = 8  # furniture sets per storey, the ones nearest the windows (w
 FLAT = {"parking": "SM_Kit_ParkingLot"}  # lots that are ground, not buildings: stretched to the lot, never up
 TREE_PIT_ROLES = ("street_tree",)  # trees planted in paving get a pit, never straight into the concrete
 SCALE_RANGE = (0.5, 2.0)  # a kit mesh is stretched at most this much to fit its lot
+# Fortnite's own trees, placed as props: actors a player can chop. PCG cannot instance their meshes (UEFN's asset
+# reference policy refuses every Fortnite tree mesh in a spawner), so each of these trees is one actor in the
+# level: right for a city's trees (streets, parks, gardens), never for the forest. role -> [(prop, height cm)]
+_FN_TREES = "/Game/Creative/Environments/ApolloTrees/"
+_FN_PARK_TREE = "/Game/Creative/BuildingActors/Props/CP_Neo_Park_Tree_01"
+TREE_PROPS = {
+    "street_tree": [(_FN_PARK_TREE, 1079), (_FN_TREES + "CP_Apollo_Tree_Birch_Small_NoSnow", 804)],
+    "tree": [(_FN_TREES + "CP_Tree_Apollo_Medium_Frontier", 1344), (_FN_TREES + "CP_Apollo_Tree_Birch_Large_NoSnow", 1851),
+             (_FN_TREES + "CP_Apollo_PineTree_Large2_NoSnow", 1354), (_FN_PARK_TREE, 1079),
+             (_FN_TREES + "CP_Apollo_DarkPine_01_NoSnow", 1398), (_FN_TREES + "CP_Apollo_Tree_Birch_Small_NoSnow", 804)],
+}
+TREE_PROP_SCALE = (0.6, 1.3)  # a prop tree is scaled to the height the plan gave its spot, within this
+TREE_PROPS_MAX = 6000  # a world places at most this many: every one is an actor in the level's memory budget
+PUBLIC_TREES = ("Street trees", "Park trees", "Interchange trees")  # these come first; the others share the rest
+PROP_RECIPE = "props-1"  # how a tile of props is placed: a change here places every tile again
 
 
 def _size(name: str) -> tuple:
@@ -327,9 +342,10 @@ def path(name: str, root: str) -> str:
 _BAKE = {"interiors": True}  # ponytail: one switch for the bake in progress; bakes run one at a time
 
 
-def bake(previewed: dict, root: str, interiors: bool = True) -> tuple:
+def bake(previewed: dict, root: str, interiors: bool = True, props: dict | None = None) -> tuple:
     """(groups {mesh path: [[x, y, z, yaw, sx, sy, sz]]}, {layer: points baked}, [layers with no kit piece]).
-    interiors=False: building shells only (no floors, stair cores or furniture)."""
+    interiors=False: building shells only (no floors, stair cores or furniture). props: a dict to fill with the
+    city's trees as Fortnite props instead of kit trees ({layer: [[prop, x, y, z, yaw, scale]]}, see TREE_PROPS)."""
     _BAKE["interiors"] = interiors
     lo, hi = SCALE_RANGE
     groups: dict = {}
@@ -385,9 +401,19 @@ def bake(previewed: dict, root: str, interiors: bool = True) -> tuple:
             baked[name] = 0  # every junction's mesh carries its own sidewalk corners: no loose pads on top of them
         elif role in PROPS:
             opts = PROPS[role]
+            # a city's trees as Fortnite's own props (when `props` is given): each one an actor, scaled to the
+            # height the plan gave its spot. The forest (a foliage layer) is far too many for actors: it stays
+            # instanced kit trees.
+            real = TREE_PROPS.get(role) if props is not None and layer.get("kind") != "foliage" else None
             for p in pts:
                 s = p[4] if len(p) > 4 else 1.0
-                groups.setdefault(path(opts[_pick(opts, p[0], p[1])], root), []).append([p[0], p[1], p[2], p[3], s, s, s])
+                kit = opts[_pick(opts, p[0], p[1])]
+                if real:
+                    prop, tall = real[_pick(real, p[0], p[1])]
+                    fit = max(TREE_PROP_SCALE[0], min(TREE_PROP_SCALE[1], KIT[kit][6] * s / tall))
+                    props.setdefault(name, []).append([prop, p[0], p[1], p[2], p[3], round(fit, 2)])
+                else:
+                    groups.setdefault(path(kit, root), []).append([p[0], p[1], p[2], p[3], s, s, s])
                 if role in TREE_PIT_ROLES:
                     groups.setdefault(path("SM_Kit_TreePit", root), []).append([p[0], p[1], p[2], p[3], 1.0, 1.0, 1.0])
             baked[name] = len(pts)
@@ -436,6 +462,28 @@ def tile_diff(new: dict, stored: dict, force: bool = False) -> tuple:
     build = sorted(k for k, t in new.items() if force or (stored.get(k) or {}).get("hash") != t["hash"])
     remove = sorted(k for k in stored if k not in new)
     return build, remove, sorted(k for k in new if k not in build)
+
+
+def prop_tiles(props: dict, limit: int = 0) -> tuple:
+    """({tile key 'tx_ty': {'rows': [[prop, x, y, z, yaw, scale], ...], 'hash': sha1}}, {'placed', 'left_out'}):
+    a world's prop trees (bake's `props`) cut into TILE_CM squares, at most `limit` of them (0: TREE_PROPS_MAX).
+    Every one is an actor in the level, so the number is held: street, park and interchange trees
+    (PUBLIC_TREES) come first, and what the limit leaves is shared out among the others (gardens, infill),
+    thinned evenly by each tree's own position, so the same trees stay from build to build."""
+    limit = int(limit or 0) or TREE_PROPS_MAX
+    public = [r for n in props if n in PUBLIC_TREES for r in props[n]]
+    rest = [r for n in props if n not in PUBLIC_TREES for r in props[n]]
+    keep_public = min(1.0, limit / len(public)) if public else 1.0
+    keep_rest = min(1.0, max(0, limit - len(public)) / len(rest)) if rest else 1.0
+    roll = lambda r: (abs(int(r[1]) * 83492791 ^ int(r[2]) * 19349663) % 10000) / 10000
+    rows = [r for r in public if roll(r) < keep_public] + [r for r in rest if roll(r) < keep_rest]
+    out: dict = {}
+    for r in rows:
+        out.setdefault(f"{math.floor(r[1] / TILE_CM)}_{math.floor(r[2] / TILE_CM)}", {"rows": []})["rows"].append(r)
+    for t in out.values():
+        t["rows"].sort(key=lambda r: (r[1], r[2], r[0]))
+        t["hash"] = hashlib.sha1((PROP_RECIPE + json.dumps(t["rows"])).encode()).hexdigest()
+    return out, {"placed": len(rows), "left_out": len(public) + len(rest) - len(rows)}
 
 
 FLAG = "SM_Kit_Flagpole"
@@ -801,6 +849,30 @@ def _demo() -> None:
     gp = bake({"Street trees": {"kind": "along_roads", "role": "street_tree", "points": [[5, 6, 7, 30, 1.0]]},
                "Trees": {"kind": "foliage", "role": "tree", "points": [[9, 9, 0, 0, 1.0]]}}, "/R")[0]
     assert gp[path("SM_Kit_TreePit", "/R")] == [[5, 6, 7, 30, 1.0, 1.0, 1.0]], gp
+    # Fortnite trees: a city's trees become props (one actor each), scaled to the height the plan gave them; the
+    # pit under a street tree stays, and the forest stays instanced kit trees
+    town = {"Street trees": {"kind": "along_roads", "role": "street_tree", "points": [[5, 6, 7, 30, 1.0]]},
+            "Garden trees": {"kind": "scatter", "role": "tree", "points": [[100 * i, 50000 + 7 * i, 0, 0, 1.0] for i in range(400)]},
+            "Trees": {"kind": "foliage", "role": "tree", "points": [[9, 9, 0, 0, 1.0]]}}
+    real: dict = {}
+    gf = bake(town, "/R", props=real)[0]
+    assert set(real) == {"Street trees", "Garden trees"} and len(real["Garden trees"]) == 400, set(real)
+    assert gf[path("SM_Kit_TreePit", "/R")] == [[5, 6, 7, 30, 1.0, 1.0, 1.0]] and sum(len(v) for k, v in gf.items() if "SM_V4_Tree" in k) == 1
+    st = real["Street trees"][0]
+    assert st[0] in [c for c, _h in TREE_PROPS["street_tree"]] and st[1:5] == [5, 6, 7, 30], st
+    heights = dict(TREE_PROPS["tree"])
+    assert all(TREE_PROP_SCALE[0] <= r[5] <= TREE_PROP_SCALE[1] and 500 < heights[r[0]] * r[5] < 1400 for r in real["Garden trees"]), \
+        "every prop stands about as tall as the tree the plan drew"
+    assert len({r[0] for r in real["Garden trees"]}) > 3, "a mix of kinds"
+    assert bake(town, "/R")[0] != gf and "SM_V4_Tree" in "".join(bake(town, "/R")[0]), "without props: kit trees as before"
+    pt, info = prop_tiles(real)
+    assert info == {"placed": 401, "left_out": 0} and sum(len(t["rows"]) for t in pt.values()) == 401
+    assert set(pt) == {"0_0", "0_1"} and prop_tiles(real)[0]["0_1"]["hash"] == pt["0_1"]["hash"], set(pt)
+    few, info_few = prop_tiles(real, limit=101)
+    kept = [r for t in few.values() for r in t["rows"]]
+    assert st in kept and 60 < len(kept) < 140 and info_few["left_out"] == 401 - len(kept), "the street tree stays; gardens are thinned"
+    assert prop_tiles(real, limit=101)[0] == few and all(r in real["Garden trees"] or r == st for r in kept), "the same ones every time"
+    assert prop_tiles({}) == ({}, {"placed": 0, "left_out": 0})
     # modular: an L-shaped school on a hill, built from BuildingKit modules in the lot's frame (front = yaw)
     bk = lambda n: f"/R/WorldGen/{grammar.FOLDER}/{n}.{n}"
     lot = [10000, 0, 300, 90, 1, 11, FORM_NAMES.index("L"), 44, 36, 1.2, []]

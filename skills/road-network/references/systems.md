@@ -23,6 +23,19 @@ styles), `fortnite` (Fortnite's own props and buildings, found by search words p
 has a `role` (traffic_light, stop_sign, bench, skyscraper, factory, park...); the plan's `pieces[]` says where
 each role's pieces come from. The AI building it picks real assets and saves them on the layer.
 
+**Fortnite trees** (`road_network_pcg_assets(net_id, trees="fortnite", trees_max=N)`, the panel's City trees
+choice): a city's trees (Street trees, Park trees, Interchange trees, Garden trees, Infill trees) become Fortnite's
+own tree props, the ones a player can chop (`kit_bake.TREE_PROPS`: Neo park tree and small birch on streets;
+medium tree, large birch, pines in parks and gardens), each scaled to the height the plan gave its spot. A prop
+is an **actor**, not an instance: UEFN's asset reference policy refuses every Fortnite tree mesh in a Static Mesh
+Spawner, so PCG cannot place them. That is why the forest outside the cities (a `foliage` layer, 100,000+
+trees) always stays instanced kit trees, and why a world places at most `trees_max` props (6000 unless set):
+street, park and interchange trees first, garden and infill trees thinned evenly to what is left
+(`kit_bake.prop_tiles`; the result's `tree_props.left_out` says how many were dropped). `road_network_pcg_build`
+places them after the PCG tiles, in 400 m tiles of their own (labels `Tree <World> <tile> <n>`, outliner folder
+`City Builder/<World>/Trees`), 20 per editor call; only tiles whose trees changed are placed again, and a tile's
+old trees are found by label in the level. Back to `trees="kit"` and the next build removes them.
+
 ## A realistic city (how the layout is made)
 
 - **Transect zoning** (urban-design skill): core (short-block strict grid, 4-lane), neighbourhoods (looser grid, streets

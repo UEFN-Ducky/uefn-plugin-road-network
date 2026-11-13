@@ -177,6 +177,8 @@ the top part's roof is left out):
 
 - One graph `WorldGen/CityPCG/PCG_<World>_T<key>` and one volume `City Builder <World> <key>` per tile: 400 m city
   tiles (`tx_ty`) and 1.6 km nature tiles (`ntx_ty`: trees, bushes, rocks), **Generate On Demand** (never on load).
+- With Fortnite trees on (`road_network_pcg_assets trees="fortnite"`) the city's trees are not in these tiles:
+  they are Fortnite tree props placed as actors after the PCG tiles (see systems: Pieces). The tree pits stay.
 - Built in batches (`backend/pcg_batch.py`): one editor script per up to 8 tiles / 6000 points, run as a background
   job, memory metered per batch. A tile's old volume is found by its label in the level, never by a stored path.
 - Per kit mesh: `Create Points` nodes (world space, cull off, at most 1500 points each, transform = x, y, z, pitch,

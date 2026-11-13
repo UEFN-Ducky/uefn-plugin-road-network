@@ -766,6 +766,7 @@ def register(api) -> None:
 
     JUNCTIONS_PER_CALL = 8
     SAVE_BATCH = 40  # assets per save call
+    PROP_BATCH = 20  # prop trees placed per editor call (one call is one frame: a long loop of spawns freezes UEFN)
 
     def build_pieces(net_id: str = "", actor: str = "", rebuild: bool = False) -> dict:
         """Generate a plain-asphalt piece for every junction the kit has no piece for (rebuild: also
@@ -1763,9 +1764,17 @@ def register(api) -> None:
     def interiors_of(nid: str) -> bool:
         return (data.get(f"net.{nid}.assets") or {}).get("interiors", True) is not False
 
-    def pcg_assets(net_id: str = "", asset_set: str = "", interiors: str = "") -> dict:
-        """Which pieces a world's layers use: 'own' (the project's kit), 'fortnite' or 'mixed', and whether
-        buildings get interiors ('yes' / 'no'). Empty = read them."""
+    def trees_of(nid: str) -> str:
+        return "fortnite" if (data.get(f"net.{nid}.assets") or {}).get("trees") == "fortnite" else "kit"
+
+    def tree_props(nid: str):
+        """The dict kit_bake.bake fills with a world's prop trees, or None when its trees are the kit's."""
+        return {} if trees_of(nid) == "fortnite" else None
+
+    def pcg_assets(net_id: str = "", asset_set: str = "", interiors: str = "", trees: str = "", trees_max: int = 0) -> dict:
+        """Which pieces a world's layers use: 'own' (the project's kit), 'fortnite' or 'mixed', whether
+        buildings get interiors ('yes' / 'no'), and whether a city's trees are the kit's or Fortnite's own
+        tree props (trees 'kit' / 'fortnite', at most trees_max of them). Empty = read them."""
         nid = slug(net_id)
         doc = data.get(f"net.{nid}") if nid else None
         if not doc:
@@ -1774,18 +1783,32 @@ def register(api) -> None:
             return {"ok": False, "error": f"asset_set is one of {', '.join(pl.ASSET_SETS)}."}
         if interiors and str(interiors).lower() not in ("yes", "no", "true", "false"):
             return {"ok": False, "error": "interiors is yes or no."}
-        if asset_set or interiors:
+        if trees and str(trees).lower() not in ("kit", "fortnite"):
+            return {"ok": False, "error": "trees is kit or fortnite."}
+        trees_max = int(trees_max or 0)
+        if trees_max < 0 or trees_max > 50000:
+            return {"ok": False, "error": "trees_max is 1 to 50000 (0 leaves it as it is)."}
+        was = data.get(f"net.{nid}.assets") or {}
+        if asset_set or interiors or trees or trees_max:
             before = data.get(f"net.{nid}.assets")
             new = {"name": f"{doc.get('name', nid)} pieces", "asset_set": asset_set or asset_set_of(nid),
-                   "interiors": interiors_of(nid) if not interiors else str(interiors).lower() in ("yes", "true")}
+                   "interiors": interiors_of(nid) if not interiors else str(interiors).lower() in ("yes", "true"),
+                   "trees": str(trees).lower() if trees else trees_of(nid),
+                   "trees_max": trees_max or int(was.get("trees_max") or 0)}
             data.put(f"net.{nid}.assets", new)
             record("road_network_pcg_assets", "pcg-assets", nid, before,
                    [{"command": "road_network_pcg_assets", "params": {
                        "net_id": nid, "asset_set": (before or {}).get("asset_set", "own"),
-                       "interiors": "no" if (before or {}).get("interiors") is False else "yes"}}])
+                       "interiors": "no" if (before or {}).get("interiors") is False else "yes",
+                       "trees": "fortnite" if (before or {}).get("trees") == "fortnite" else "kit"}}])
             push({"what": "pcg", "id": nid})
         cur = asset_set_of(nid)
-        return {"ok": True, "id": nid, "asset_set": cur, "interiors": interiors_of(nid),
+        most = int((data.get(f"net.{nid}.assets") or {}).get("trees_max") or 0) or kit_bake.TREE_PROPS_MAX
+        return {"ok": True, "id": nid, "asset_set": cur, "interiors": interiors_of(nid), "trees": trees_of(nid),
+                "trees_max": most,
+                "trees_note": "fortnite: a city's trees (streets, parks, gardens) are Fortnite's own tree props, one "
+                              "actor each, at most trees_max of them; the forest stays instanced kit trees (UEFN "
+                              "refuses Fortnite tree meshes in PCG).",
                 "roles": {r: pl.asset_hint(r, cur) for r in pl.ROLES}}
 
     def world_actors(nid: str) -> list:
@@ -2360,7 +2383,7 @@ def register(api) -> None:
             return got
         if _EXACT.get("key") != _PREVIEW_CACHE.get("key"):  # ponytail: one entry, as the preview
             solid = {k: v for k, v in (got.get("layers") or {}).items() if v.get("kind") in ("buildings", "site", "walls")}
-            _EXACT.update(key=_PREVIEW_CACHE.get("key"), groups=kit_bake.bake(solid, "", interiors_of(nid))[0])
+            _EXACT.update(key=_PREVIEW_CACHE.get("key"), groups=kit_bake.bake(solid, "", interiors_of(nid), tree_props(nid))[0])
         r = float(radius_m) * 100
         meshes, rows, unknown = [], [], {}
         for path, rs in _EXACT["groups"].items():
@@ -2628,9 +2651,12 @@ def register(api) -> None:
         if "/WorldGen/Roads" in folder:
             got = pcg_preview(nid)
             if got.get("ok"):
-                groups = kit_bake.bake(got.get("layers") or {}, folder.split("/WorldGen/Roads")[0], interiors_of(nid))[0]
+                real = tree_props(nid)
+                groups = kit_bake.bake(got.get("layers") or {}, folder.split("/WorldGen/Roads")[0], interiors_of(nid), real)[0]
                 build, remove, keep = kit_bake.tile_diff(kit_bake.tiles(groups), state.get("tiles") or {}, False)
-                tiles = {"build": len(build), "remove": len(remove), "same": len(keep)}
+                most = int((data.get(f"net.{nid}.assets") or {}).get("trees_max") or 0)
+                pb, pr, pk = kit_bake.tile_diff(kit_bake.prop_tiles(real or {}, most)[0], state.get("props") or {}, False)
+                tiles = {"build": len(build) + len(pb), "remove": len(remove) + len(pr), "same": len(keep) + len(pk)}
         pushed_any = same or changed or state.get("tiles")
         behind = len(changed) + len(never) + tiles["build"] + tiles["remove"]
         return {"ok": True, "id": nid, "in_sync": behind == 0, "never_built": not pushed_any,
@@ -2672,11 +2698,15 @@ def register(api) -> None:
         got = pcg_preview(nid)
         if not got.get("ok"):
             return got
-        groups, baked, missing = kit_bake.bake(got.get("layers") or {}, root, interiors_of(nid))
+        real = tree_props(nid)
+        groups, baked, missing = kit_bake.bake(got.get("layers") or {}, root, interiors_of(nid), real)
         name = doc.get("name") or nid
         tag = re.sub(r"[^A-Za-z0-9]", "", name)
         new = kit_bake.tiles(groups)
         state = data.get(f"net.{nid}.pcg") or {"name": f"{name} / PCG tiles", "tiles": {}}
+        # the city's trees as Fortnite props: actors in tiles of their own, diffed like the PCG tiles
+        new_props, prop_info = kit_bake.prop_tiles(real or {}, int((data.get(f"net.{nid}.assets") or {}).get("trees_max") or 0))
+        p_build, p_remove, p_same = kit_bake.tile_diff(new_props, state.get("props") or {}, force)
         orphans = []
         try:  # pull: what is really in the level decides, never only what we remember
             present = {str(a.get("label") or "") for a in epic("EditorToolset.LevelToolset", "FindActors", {
@@ -2694,16 +2724,61 @@ def register(api) -> None:
         build, remove, same = kit_bake.tile_diff(new, state["tiles"], force)
         remove = sorted(set(remove) | set(orphans))
         if not confirm:
+            trees_line = "" if not (p_build or p_remove) else (
+                f" {prop_info['placed']} Fortnite tree props in {len(new_props)} tiles: {len(p_build)} tiles to place, "
+                f"{len(p_remove)} to remove.")
             return {"ok": False, "error": f"{name}: {len(build)} PCG tiles to (re)build, {len(remove)} to remove, "
                                           f"{len(same)} unchanged (left alone). {sum(baked.values())} buildings and "
-                                          f"street pieces on {len(groups)} kit meshes. Call again with confirm=true.",
+                                          f"street pieces on {len(groups)} kit meshes.{trees_line} "
+                                          f"Call again with confirm=true.",
                     "build": build, "remove": remove, "unchanged": len(same),
+                    "tree_props": {**prop_info, "tiles_to_place": len(p_build), "tiles_to_remove": len(p_remove),
+                                   "tiles_unchanged": len(p_same)},
                     "last_build": (last or {}).get("result")}
-        if not build and not remove:
+        if not build and not remove and not p_build and not p_remove:
             return {"ok": True, "id": nid, "note": "Nothing changed since the last build: every tile left as it is.",
                     "unchanged": len(same), "last_build": (last or {}).get("result")}
-        job = _PCG_JOBS[nid] = {"running": True, "stop": False, "done": 0, "total": len(build) + len(remove),
+        job = _PCG_JOBS[nid] = {"running": True, "stop": False, "done": 0,
+                                "total": len(build) + len(remove) + len(p_build) + len(p_remove),
                                 "started": time.time(), "result": None}
+
+        def place_props() -> dict:
+            """The prop trees' tiles: a tile's old trees go (found by their labels in the level), then its new
+            ones are placed, a handful per editor call. Kept after every tile, so a stop loses nothing."""
+            stem = lambda key: f"Tree {tag} {key} "  # (the space ends the key: tile 1_2 never matches 1_21)
+            folder_ = f"City Builder/{name}/Trees"
+            stored = state.setdefault("props", {})
+            placed = gone = 0
+            failed: set = set()
+            for key in p_remove + p_build:
+                if job["stop"]:
+                    return {"ok": False, "error": f"Stopped after {placed} trees.", "placed": placed}
+                rows = new_props[key]["rows"] if key in p_build else []
+                base = uefn_memory.uefn_gb()
+                sent = [[f"{stem(key)}{i}", *r] for i, r in enumerate(rows)]
+                first = True
+                for k in range(0, max(1, len(sent)), PROP_BATCH):
+                    r = listener_long("road_network_props", {"remove": [stem(key)] if first else [],
+                                                              "place": sent[k:k + PROP_BATCH], "folder": folder_})
+                    first = False
+                    if not r.get("ok"):
+                        raise ValueError(f"trees of tile {key}: {r.get('error') or r}")
+                    placed += int(r.get("placed") or 0)
+                    gone += int(r.get("removed") or 0)
+                    failed |= set(r.get("failed") or [])
+                if rows:
+                    stored[key] = {"hash": new_props[key]["hash"], "count": len(rows)}
+                else:
+                    stored.pop(key, None)
+                data.put(f"net.{nid}.pcg", state)
+                job["done"] += 1
+                push({"what": "progress", "id": nid, "title": "Planting the city's trees", "step": job["done"],
+                      "of": job["total"], "text": f"{placed} trees placed"})
+                uefn_memory.settle(base, slack=2.0, timeout=60)
+            return {"ok": True, "placed": placed, "removed": gone, "tiles": len(p_build), "removed_tiles": len(p_remove),
+                    "left_out": prop_info["left_out"], "could_not_place": sorted(failed),
+                    "note": "Fortnite's own tree props, one actor each, in the outliner folder "
+                            f"'{folder_}'. left_out: trees over the world's limit (road_network_pcg_assets trees_max)."}
 
         def work() -> dict:
             mats = None
@@ -2842,7 +2917,15 @@ def register(api) -> None:
                             cleaned.append(f.rsplit("/", 1)[1])
                     except (ConnectionError, RuntimeError, TimeoutError, ValueError):
                         pass  # left for the next build's clean-up: the city itself is built
+            try:
+                trees = place_props() if p_build or p_remove else {"ok": True, "placed": 0, "unchanged_tiles": len(p_same)}
+            except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
+                return {"ok": False, "error": f"The city is built; planting its trees stopped: {exc}", "built": done,
+                        "note": "Build again: finished tiles are kept and skipped.", "memory": uefn_memory.report(5)}
+            if not trees.get("ok"):
+                return {**trees, "built": done, "note": "Build again: finished tiles are kept and skipped."}
             return {"ok": True, "id": nid, "built_tiles": done, "old_graph_folders_removed": cleaned, "removed_tiles": gone, "unchanged_tiles": len(same),
+                    "tree_props": trees,
                     "legacy_removed": legacy_removed, "nodes": nodes, "meshes": len(groups), "built": baked,
                     "no_kit_piece": missing, "messages": messages[:20], "memory": uefn_memory.report(5)["worst"],
                     "collision": collision, "seconds": round(time.time() - job["started"]),
@@ -3430,7 +3513,7 @@ def register(api) -> None:
                           "source": "street_kit" if name.startswith(STREET_KIT_PREFIXES) else "road_kit"})
         got = pcg_preview(nid)
         layers = got.get("layers") or {} if got.get("ok") else {}
-        groups = kit_bake.bake(layers, root, interiors_of(nid))[0] if layers else {}
+        groups = kit_bake.bake(layers, root, interiors_of(nid), tree_props(nid))[0] if layers else {}
         for path, rows in sorted(groups.items()):
             name = path.rsplit(".", 1)[-1]
             src = "street_kit" if "/Kit/Street/" in path else "building_kit" if "/BuildingKit/" in path else \
@@ -3794,12 +3877,19 @@ def register(api) -> None:
         return safe(pcg_plan)(net_id, road_tag)
 
     @tool(intent=PCG_INTENT, listener=False)
-    def road_network_pcg_assets(net_id: str = "", asset_set: str = "", interiors: str = "") -> dict:
+    def road_network_pcg_assets(net_id: str = "", asset_set: str = "", interiors: str = "", trees: str = "",
+                                trees_max: int = 0) -> dict:
         """Which pieces City Builder uses for a world's layers: 'own' (the project's own kit: WorldGen/City,
         WorldGen/Kit, BuildingKit storeys), 'fortnite' (Fortnite's props and buildings) or 'mixed', and whether
         buildings get interiors (interiors 'yes' / 'no': floors, stair cores, furniture seen through windows).
-        Empty arguments read them, with where each role (traffic light, skyscraper, bench...) comes from."""
-        return safe(pcg_assets)(net_id, asset_set, interiors)
+        trees 'fortnite': a city's trees (street, park, garden, infill and interchange trees) are Fortnite's own
+        tree props, the ones players can chop, each placed as an actor by road_network_pcg_build; 'kit': the
+        kit's instanced trees. trees_max: the most prop trees a world places (6000 unless set): every one is an
+        actor in the level's memory budget, so street and park trees come first and garden trees are thinned to
+        what is left. The forest outside the cities always stays instanced kit trees: UEFN refuses Fortnite tree
+        meshes in PCG. Empty arguments read them, with where each role (traffic light, skyscraper, bench...)
+        comes from."""
+        return safe(pcg_assets)(net_id, asset_set, interiors, trees, trees_max)
 
     @tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_preview(net_id: str = "", layer_id: str = "", summary: bool = False) -> dict:
@@ -3852,7 +3942,8 @@ def register(api) -> None:
                            safe(preset_save)(name, net_id, layers, options, note))
     panel_rpc("preset_delete", lambda preset="", confirm=False: safe(preset_delete)(preset, confirm))
     panel_rpc("pcg_plan", lambda net_id="", road_tag="": safe(pcg_plan)(net_id, road_tag))
-    panel_rpc("pcg_assets", lambda net_id="", asset_set="", interiors="": safe(pcg_assets)(net_id, asset_set, interiors))
+    panel_rpc("pcg_assets", lambda net_id="", asset_set="", interiors="", trees="", trees_max=0:
+              safe(pcg_assets)(net_id, asset_set, interiors, trees, trees_max))
     panel_rpc("pcg_preview", lambda net_id="", layer_id="": safe(pcg_preview)(net_id, layer_id))
     panel_rpc("ground_fit", lambda net_id="": safe(ground_fit)(net_id))
     panel_rpc("pcg_exact", lambda net_id="", x=0.0, y=0.0, radius_m=400.0: safe(pcg_exact)(

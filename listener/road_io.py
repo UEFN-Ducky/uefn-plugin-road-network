@@ -1035,6 +1035,60 @@ def road_network_assets_exist(paths: list | None = None) -> dict:
     return {"ok": True, "exist": {p: bool(eal.does_asset_exist(p.split(".")[0])) for p in (paths or [])}}
 
 
+def _prop_class(path: str):
+    """The class the Content Drawer places for a Fortnite prop ('/Game/.../CP_X' -> CP_X_C), or None."""
+    for load in (lambda: unreal.EditorAssetLibrary.load_blueprint_class(path),
+                 lambda: unreal.load_class(None, f"{path}.{path.rsplit('/', 1)[-1]}_C")):
+        try:
+            cls = load()
+        except Exception:  # noqa: BLE001 - the next way of loading it is tried
+            cls = None
+        if cls is not None:
+            return cls
+    return None
+
+
+@register("road_network_props")
+def road_network_props(remove: list | None = None, place: list | None = None, folder: str = "") -> dict:
+    """Fortnite props as actors: a city's trees. remove: label stems; every actor in the level whose label starts
+    with one of them goes (found in the level as it is now, never by a stored path). place: [[label, prop path,
+    x, y, z, yaw, scale], ...], one actor each, put in the outliner folder `folder`. The caller sends a handful
+    per call: one editor call is one frame."""
+    actors = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    stems = tuple(s for s in (remove or []) if s)
+    removed = 0
+    if stems:
+        for actor in list(actors.get_all_level_actors()):
+            try:
+                if actor.get_actor_label().startswith(stems) and actors.destroy_actor(actor):
+                    removed += 1
+            except Exception:  # noqa: BLE001 - an actor that went away while we looked
+                continue
+    classes: dict = {}
+    placed, failed = 0, []
+    for label, prop, x, y, z, yaw, scale in place or []:
+        if prop not in classes:
+            classes[prop] = _prop_class(prop)
+        cls = classes[prop]
+        actor = None
+        if cls is not None:
+            at, turn = unreal.Vector(x, y, z), unreal.Rotator(roll=0.0, pitch=0.0, yaw=yaw)
+            try:
+                actor = unreal.EditorLevelLibrary.spawn_actor_from_class(cls, at, turn)
+            except Exception:  # noqa: BLE001 - the actor factory takes what the class call refuses
+                actor = unreal.EditorLevelLibrary.spawn_actor_from_object(cls, at, turn)
+        if actor is None:
+            failed.append(prop.rsplit("/", 1)[-1])
+            continue
+        actor.set_actor_label(label)
+        if folder:
+            actor.set_folder_path(folder)
+        if abs(scale - 1.0) > 1e-3:
+            actor.set_actor_scale3d(unreal.Vector(scale, scale, scale))
+        placed += 1
+    return {"ok": True, "removed": removed, "placed": placed, "failed": sorted(set(failed))}
+
+
 @register("road_network_save_assets")
 def road_network_save_assets(paths: list | None = None) -> dict:
     """Save these assets in ONE save_packages batch (its own editor frame, one progress window)."""
