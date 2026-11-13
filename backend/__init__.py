@@ -1809,7 +1809,11 @@ def register(api) -> None:
                 "trees_note": "fortnite: a city's trees (streets, parks, gardens) are Fortnite's own tree props, one "
                               "actor each, at most trees_max of them; the forest stays instanced kit trees (UEFN "
                               "refuses Fortnite tree meshes in PCG).",
-                "roles": {r: pl.asset_hint(r, cur) for r in pl.ROLES}}
+                "roles": {r: pl.asset_hint(r, cur) for r in pl.ROLES} | (
+                    {} if trees_of(nid) != "fortnite" else {
+                        "street_tree": "Fortnite's tree props (actors): Neo park tree, small birch",
+                        "tree": "in the cities Fortnite's tree props (actors): medium tree, birches, pines; the "
+                                "forest outside: own WorldGen/Kit V4 trees (instances)"})}
 
     def world_actors(nid: str) -> list:
         actors = []
