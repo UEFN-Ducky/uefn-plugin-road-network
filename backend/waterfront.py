@@ -35,6 +35,7 @@ for unit pieces), land buildings are lot rows [x, y, yaw, w, d, fx, fy, role, Tr
 from __future__ import annotations
 
 import math
+import zlib
 
 STEP = 2000.0  # shoreline sample spacing (cm)
 CHUNK = 5  # samples per classified stretch (100 m)
@@ -94,6 +95,135 @@ YARD_KINDS = ("ship_hull", "goliath", "portal_crane", "tower_crane", "crane_rail
               "gatehouse", "quay_wall", "tug", "tug_float")
 NO_PAD = ("hardstand", "crane_rail", "tug_float")  # ... and these level no ground under them (pcg_layers.pads)
 TYPES = ("natural", "beach", "residential", "commercial", "marina", "industrial", "public")
+
+# ------------------------------------------------------------------ ShoreWorks: the made shore
+# Where a city builds on its shore, the shore is made for what stands there, the way real waterfronts are: a quay
+# wall with a level promenade on top, a beach graded from the water up to a boardwalk, a lawn rising to a row of
+# houses. Behind it the land comes back to its own height as a bank. The planner decides stretch by stretch
+# (shores_for); citygen.cut_shores cuts the profile into the ground the landscape is made from, the streets are
+# laid on it, and every piece is built at its design level (never re-seated on whatever lies under it).
+QUAY_CM = 200.0  # a quay, its promenade and the boardwalk behind a beach stand this far above the water
+STEEP = 0.6  # a shore steeper than this in its first 30 m stays as it lies (a cliff) ...
+RISE_MAX_M = 18.0  # ... and so does one that stands this high 50 m inland: too much hill to cut for a promenade
+BANK = 0.5  # behind a made shore the land comes back to its own height no steeper than this
+BANK_MAX_CM = 6000.0
+WALL_DEEP_CM = 2000.0  # a quay wall goes down to the bed, or this far under the water where the bed is deeper
+TAPER = 3  # samples at each end of a stretch over which the made shore fades into the natural one
+MADE_MIN = 8  # samples (160 m): a shorter stretch is left as it lies
+# use -> how deep the made shore is, inland from the water line (cm)
+DEPTH = {"commercial": 5000.0, "marina": 4200.0, "public": 2400.0, "industrial": 2400.0, "beach": 5400.0,
+         "residential": 5800.0}
+BEACH_IN, BEACH_OUT, BEACH_RISE = 4000.0, 2000.0, 0.025  # sand from 20 m out to 40 m inland, rising 1 in 40
+# homes on the water: a low bulkhead at the water's edge, a lawn rising 30 m from it to the house row
+LAWN_IN, LAWN_CM, HOUSE_CM = 3000.0, 120.0, 450.0
+HOUSE_AT, HOUSE_LOT = 4300.0, (1700.0, 2400.0)  # the row's middle, and each lot (along the shore, deep)
+# what a city makes of the shore outside its core, a 300 m block at a time (each block's own draw)
+MIX = {"normal": ((0.35, "public"), (0.55, "beach"), (0.75, "marina"), (1.0, "residential")),
+       "housing": ((0.5, "residential"), (0.68, "beach"), (0.8, "marina"), (1.0, "public"))}
+BLOCK = 15  # samples in a block
+# these stand where they were built (afloat, on piles, on the bed, on a made shore), and these level no ground
+OWN_HEIGHT = ("deck", "float", "pile", "slip", "boat", "float_home", "stilt_house", "riprap", "seawall", "sand",
+              "promenade", "launch")
+NO_PAD += ("deck", "float", "riprap", "sand", "promenade", "launch")
+
+
+def _dice(*key) -> float:
+    """A draw in [0, 1) that belongs to its key: the same stretch of the same shore draws the same every run."""
+    return zlib.crc32(repr(key).encode()) / 4294967296.0
+
+
+def level_of(use: str, d: float) -> float:
+    """A made shore's height above the water d cm inland from the water line (0 <= d <= DEPTH[use])."""
+    if use == "beach":
+        return d * BEACH_RISE if d <= BEACH_IN else QUAY_CM
+    if use == "residential":
+        return LAWN_CM + (HOUSE_CM - LAWN_CM) * min(1.0, d / LAWN_IN)
+    return QUAY_CM
+
+
+def profile(use: str, d: float, z: float, sea: float) -> float:
+    """The ground of a made shore d cm inland from the water line (negative: out over the water), from what it
+    was (z). A quay: its wall at the water line (the bed 3 m down along it), level behind. A beach: sand from
+    BEACH_OUT in the water up to BEACH_IN, then the boardwalk a metre above it. Homes: a bulkhead at the water,
+    a lawn up to the house row. Behind any of them the land as it was, brought back to its own height as a bank no steeper than BANK."""
+    W = DEPTH[use]
+    if d > W:
+        if z < sea:
+            return z  # (water behind a spit stays water)
+        top = sea + level_of(use, W)
+        return max(top - BANK * (d - W), min(top + BANK * (d - W), z))
+    if d >= 0:
+        return sea + level_of(use, d)
+    if use == "beach":
+        return sea + d * BEACH_RISE if d >= -BEACH_OUT else z
+    if use == "residential":
+        return min(z, sea - 150.0) if d > -1000.0 else z  # (water at the bulkhead)
+    return min(z, sea - 300.0) if d > -1500.0 else z
+
+
+class Made:
+    """The made shores of some cities (city['shores']), to look a point up: which stretch it lies by, how far
+    inland of that stretch's water line, and how much of the made profile applies there (a stretch fades into
+    the natural shore over its last TAPER samples and past its ends)."""
+    CELL = 15000.0
+
+    def __init__(self, cities: list):
+        self.grid: dict = {}
+        self.rows: list = []
+        for c in cities:
+            for sh in c.get("shores") or []:
+                pts, n = sh["pts"], len(sh["pts"])
+                for k, p in enumerate(pts):
+                    t = min(1.0, min(k, n - 1 - k) / TAPER)
+                    row = (p[0], p[1], p[2], p[3], t * t * (3 - 2 * t), sh, p[4] if len(p) > 4 else 0.0)
+                    self.rows.append(row)
+                    self.grid.setdefault((int(p[0] // self.CELL), int(p[1] // self.CELL)), []).append(row)
+        self.n = len(self.rows)
+
+    def at(self, x: float, y: float):
+        """(stretch, cm inland of its water line, share of the made profile) for the nearest made shore, or None."""
+        if not self.n:
+            return None
+        cx, cy = int(x // self.CELL), int(y // self.CELL)
+        best, bd = None, 1e18
+        for i in (cx - 1, cx, cx + 1):
+            for j in (cy - 1, cy, cy + 1):
+                for q in self.grid.get((i, j), ()):
+                    dd = (x - q[0]) ** 2 + (y - q[1]) ** 2
+                    if dd < bd:
+                        best, bd = q, dd
+        if best is None:
+            return None
+        px, py, nx, ny, w, sh, clear = best
+        dx, dy = x - px, y - py
+        side = abs(-dx * ny + dy * nx)  # along the shore from that sample: past a stretch's end it fades out
+        if side > 1500.0:
+            w *= max(0.0, 1.0 - (side - 1500.0) / 2500.0)
+        self.clear = clear
+        return sh, -(dx * nx + dy * ny), w
+
+    def no_street(self, x: float, y: float) -> bool:
+        """Is this a place no street is laid: on a made shore where the land was cut down by more than 2 m for
+        it? A street there would stand on a ramp above the promenade (its own grade can't follow the bank)."""
+        got = self.at(x, y)
+        return bool(got and got[2] > 0.3 and -500.0 <= got[1] <= self.clear)
+
+    def level(self, x: float, y: float, z: float) -> float:
+        """The ground at a point once the shores are made, from what it was (z)."""
+        got = self.at(x, y)
+        if not got:
+            return z
+        sh, d, w = got
+        if w <= 0 or d < -2500.0 or d > DEPTH[sh["use"]] + sh.get("bank", 0.0) + 1500.0:
+            return z
+        return z + (profile(sh["use"], d, z, sh["sea"]) - z) * w
+
+    def shelf(self, x: float, y: float, margin: float = 0.0):
+        """The stretch whose made ground (water line to back edge) a point stands on, or None."""
+        got = self.at(x, y)
+        if got and got[2] > 0.5 and -margin <= got[1] <= DEPTH[got[0]["use"]] + margin:
+            return got[0]
+        return None
 
 
 # ------------------------------------------------------------------ ShorelineAnalyzer
@@ -282,6 +412,7 @@ def analyze(ter: dict) -> dict:
                             "depth30_m": round((sea - d30) / 100, 1) if d30 is not None else 0.0,
                             "depth80_m": round((sea - d80) / 100, 1) if d80 is not None else 0.0,
                             "slope": round(((land if land is not None else sea) - sea) / 3000, 3),
+                            "rise_m": round(((inland if inland is not None else sea) - sea) / 100, 1),
                             "flood": bool(inland is not None and inland - sea < FLOOD_CM)})
         b = body_at(samples[len(samples) // 2]["x"] + samples[len(samples) // 2]["nx"] * 3000,
                     samples[len(samples) // 2]["y"] + samples[len(samples) // 2]["ny"] * 3000)
@@ -293,26 +424,28 @@ def analyze(ter: dict) -> dict:
 
 
 # ------------------------------------------------------------------ WaterfrontPlanner
-def classify(s: dict, water_type: str, ring: str, industrial: bool, pop: int) -> str:
-    """One stretch's development type from its site and the district (the planner's rules)."""
-    gentle, steep = s["slope"] < 0.06, s["slope"] > 0.25
+def classify(s: dict, water_type: str, ring: str, industrial: bool, pop: int, dice: float = 0.5) -> str:
+    """One stretch's development type from its site and the district (the planner's rules). dice: the draw of
+    the 300 m block of shore it lies in, which picks from the district's mix (MIX) outside the core."""
+    gentle, cliff = s["slope"] < 0.06, s["slope"] > STEEP or s.get("rise_m", 0.0) > RISE_MAX_M
     deep, shallow = s["depth80_m"] >= 4.0, s["depth30_m"] < 2.0
     sheltered = s["shelter"] >= 0.5 or water_type in ("lake", "river")
     if ring == "outside":
         return "wetland" if gentle and shallow else "natural"
     if industrial and deep and water_type in ("ocean", "river", "lake") and pop >= 8000:
         return "industrial"
-    if steep:
+    if cliff:
         return "natural"
     if water_type == "ocean" and gentle and shallow and not sheltered:
         return "beach"
     if ring == "core":
         return "commercial"
-    if sheltered and s["depth80_m"] >= 2.5 and s["width_m"] >= 120:
-        return "marina"
-    if ring == "housing":
-        return "residential"
-    return "public"
+    kind = next((k for share, k in MIX.get(ring, MIX["housing"]) if dice < share), "public")
+    if kind == "marina" and not (sheltered and s["depth80_m"] >= 2.5 and s["width_m"] >= 120):
+        kind = "public"
+    if kind == "beach" and (water_type == "river" or s["width_m"] < 150):
+        kind = "public"  # (a beach looks out over open water)
+    return kind
 
 
 class _Out:
@@ -342,15 +475,17 @@ def _piles(out, ground, x0, y0, dx, dy, length, half, deck_z, step=600.0):
                 out.row(px, py, bed, 0, 1, 1, (deck_z - bed) / 100, "pile")
 
 
-def pier(out, ground, sea, s, length, width=PIER_W, z_top=None, why="pier"):
-    """A fixed pier on piles straight out along the water normal."""
+def pier(out, ground, sea, s, length, width=PIER_W, z_top=None, why="pier", back=0.0):
+    """A fixed pier on piles straight out along the water normal, starting `back` cm inland of the water line
+    (a beach pier leaves from the boardwalk and crosses the sand)."""
     nav = max(2000.0, s["width_m"] * 100 * NAV_SHARE)
     length = min(length, nav)
     z = (sea + DECK_ABOVE) if z_top is None else z_top
-    x0, y0 = s["x"], s["y"]
-    cx, cy = x0 + s["nx"] * length / 2, y0 + s["ny"] * length / 2
-    out.row(cx, cy, z - 30, _yaw(s["nx"], s["ny"]), length / 100, width / 100, 1, "deck")
-    _piles(out, ground, x0, y0, s["nx"], s["ny"], length, width / 2 - 30, z)
+    x0, y0 = s["x"] - s["nx"] * back, s["y"] - s["ny"] * back
+    total = length + back
+    out.row(x0 + s["nx"] * total / 2, y0 + s["ny"] * total / 2, z - 30, _yaw(s["nx"], s["ny"]), total / 100,
+            width / 100, 1, "deck")
+    _piles(out, ground, s["x"], s["y"], s["nx"], s["ny"], length, width / 2 - 30, z)
     out.checks.append(("pier", length <= nav + 1, f"{why}: {round(length / 100)} m of {s['width_m']} m water"))
     return length
 
@@ -420,7 +555,8 @@ def segments_for(city: dict, analysis: dict, ring_of, industrial, population: in
             mid = part[len(part) // 2]
             inside = math.hypot(mid["x"] - city["x"], mid["y"] - city["y"]) < R * 1.05
             ring = ring_of(mid["x"], mid["y"]) if inside else "outside"
-            kind = classify(mid, sh["type"], ring, bool(industrial and industrial(mid["x"], mid["y"])), population)
+            kind = classify(mid, sh["type"], ring, bool(industrial and industrial(mid["x"], mid["y"])), population,
+                            _dice(city.get("seed"), city.get("name"), sh["id"], k // BLOCK))
             if segments and segments[-1]["shore"] == sh["id"] and segments[-1]["type"] == kind:
                 segments[-1]["samples"] += part
             else:
@@ -430,11 +566,76 @@ def segments_for(city: dict, analysis: dict, ring_of, industrial, population: in
     return segments
 
 
+def shores_for(city: dict, analysis: dict, ring_of, industrial, population: int = 0, ground=None,
+               taken: set | None = None) -> list:
+    """ShoreWorks planner: the stretches of the city's shore that are made for what is built on them, as
+    [{use, water, sea, bank, pts: [[x, y, nx, ny], ...]}] (city['shores']). A stretch is made when its use builds
+    (DEPTH), it is MADE_MIN samples long and no shipyard has it; marinas past the city's count become waterfront
+    park. bank: how far behind the made shore the land needs to come back to its own height (from `ground`).
+    taken: samples another city has already made (and the ones made here are added)."""
+    from . import shipyard
+    sea = analysis.get("sea")
+    if sea is None:
+        return []
+    yards = (city.get("shipyards") or []) + (city.get("shipyards_near") or [])
+    free = lambda s: not any(shipyard.reserved(y, s["x"], s["y"], 4000) for y in yards) and \
+        (taken is None or (s["x"], s["y"]) not in taken)
+    out, marinas = [], 0
+    segs = segments_for(city, analysis, ring_of, industrial, population)
+    for seg in sorted(segs, key=lambda g: (-g["length_m"], g["shore"], g["samples"][0]["x"], g["samples"][0]["y"])):
+        use = seg["type"]
+        if use not in DEPTH:
+            continue
+        runs, cur = [], []
+        for s in seg["samples"]:  # the longest run of it no yard or neighbour has
+            if free(s):
+                cur.append(s)
+            else:
+                runs.append(cur)
+                cur = []
+        run = max(runs + [cur], key=len)
+        if len(run) < MADE_MIN:
+            continue
+        if use == "marina":
+            if marinas >= max(1, population // 25000):
+                use = "public"
+            else:
+                marinas += 1
+        out.append({"use": use, "water": seg["water"], "sea": sea, "bank": 0.0, "run": run})
+        if taken is not None:
+            taken.update((s["x"], s["y"]) for s in run)
+    # every city on open water has a beach: with none drawn, its gentlest park or row of homes becomes one
+    if out and not any(sh["use"] == "beach" for sh in out):
+        can = [sh for sh in out if sh["use"] in ("public", "residential") and sh["water"] != "river"
+               and sorted(s["width_m"] for s in sh["run"])[len(sh["run"]) // 2] >= 150]
+        if can:
+            min(can, key=lambda sh: (sum(s["slope"] for s in sh["run"]) / len(sh["run"]), -len(sh["run"])))["use"] = "beach"
+    for sh in out:
+        use, run = sh["use"], sh.pop("run")
+        W, top = DEPTH[use], sea + level_of(use, DEPTH[use])
+        made_at = lambda d: sea + level_of(use, d) if d <= W else top + BANK * (d - W)
+        clear = [0.0] * len(run)
+        if ground:
+            def high(b):
+                zs = [ground(s["x"] - s["nx"] * (W + b), s["y"] - s["ny"] * (W + b)) for s in run]
+                return max([abs(z - top) for z in zs if z is not None and z >= sea] + [0.0])
+            while sh["bank"] < BANK_MAX_CM and high(sh["bank"]) > BANK * sh["bank"] + 50:
+                sh["bank"] += 500.0
+            for k, s in enumerate(run):  # how far in the land is cut down by more than 2 m: no street there
+                for d in range(0, int(W + sh["bank"]) + 1, 500):
+                    z = ground(s["x"] - s["nx"] * d, s["y"] - s["ny"] * d)
+                    if z is not None and z - made_at(d) > 200:
+                        clear[k] = d + 1500.0
+        sh["pts"] = [[s["x"], s["y"], s["nx"], s["ny"], clear[k]] for k, s in enumerate(run)]
+    return out
+
+
 def plan(city: dict, analysis: dict, lots: list, ring_of, industrial, ground, nodes: dict | None = None,
          population: int = 0) -> dict:
     """WaterfrontPlanner + generators for one city: classified segments, structures (rows), land buildings
-    (lot rows), the lots kept, and the validator report. The city's shipyards (city['shipyards'], planned with
-    the streets) are built here too: they take their stretch of shore instead of a plain port."""
+    (lot rows), the lots kept, and the validator report. Everything is built on the city's made shores
+    (city['shores'], planned before the streets; worked out here when a caller has none), at their design
+    levels. The city's shipyards (city['shipyards']) are built here too: they take their stretch of shore."""
     from . import shipyard
     sea = analysis.get("sea")
     out = _Out()
@@ -443,26 +644,24 @@ def plan(city: dict, analysis: dict, lots: list, ring_of, industrial, ground, no
     segments = segments_for(city, analysis, ring_of, industrial, population)
     yards = city.get("shipyards") or []
     off_limits = yards + (city.get("shipyards_near") or [])  # its own yards and a neighbouring city's
-    in_yard = lambda s: any(shipyard.reserved(y, s["x"], s["y"], 3000) for y in off_limits)
-    # no private lot on the public water's edge; residential keeps its yards but not in the water margin
-    public = [s for seg in segments if seg["type"] in ("commercial", "beach", "public", "industrial", "marina")
-              for s in seg["samples"]]
+    made = city.get("shores")
+    if made is None:
+        made = shores_for(city, analysis, ring_of, industrial, population, ground)
+    look = Made([{"shores": made}])
+    sample = {(s["x"], s["y"]): s for sh in analysis["shores"] for s in sh["samples"]}
     allp = [s for seg in segments for s in seg["samples"]]
+    gall: dict = {}
+    for s in allp:  # 50 m cells: a lot only looks at the shore samples near it
+        gall.setdefault((int(s["x"] // 5000), int(s["y"] // 5000)), []).append(s)
 
-    def grid_of(pts):  # 50 m cells: a lot only looks at the shore samples near it
-        g: dict = {}
-        for s in pts:
-            g.setdefault((int(s["x"] // 5000), int(s["y"] // 5000)), []).append(s)
-        return g
-    gpub, gall = grid_of(public), grid_of(allp)
-
-    def too_close(x, y, g, d):
+    def too_close(x, y, d):
         r = int(d // 5000) + 1
         cx, cy = int(x // 5000), int(y // 5000)
         return any(math.hypot(s["x"] - x, s["y"] - y) < d
-                   for i in range(cx - r, cx + r + 1) for j in range(cy - r, cy + r + 1) for s in g.get((i, j), ()))
-    keep = [r for r in lots if not too_close(r[0], r[1], gpub, SETBACK + max(r[3], r[4]) / 2)
-            and not too_close(r[0], r[1], gall, 1000 + max(r[3], r[4]) / 2)]
+                   for i in range(cx - r, cx + r + 1) for j in range(cy - r, cy + r + 1) for s in gall.get((i, j), ()))
+    # no lot of the street grid on a made shore (what stands there is planned here), nor at the water's very edge
+    keep = [r for r in lots if not look.shelf(r[0], r[1], max(r[3], r[4]) / 2 + 300)
+            and not too_close(r[0], r[1], 1000 + max(r[3], r[4]) / 2)]
     devs = []
 
     def building(s, back, w, d, role, why):
@@ -475,106 +674,121 @@ def plan(city: dict, analysis: dict, lots: list, ring_of, industrial, ground, no
             far = min(math.hypot(p[0] - x, p[1] - y) for p in nodes.values())
             out.checks.append(("access", far <= 15000, f"{why}: street {round(far / 100)} m away"))
 
-    def along(seg, every):
-        S = seg["samples"]
+    def along(S, every):
         return S[1:-1:max(1, int(every // STEP))] or S[len(S) // 2:len(S) // 2 + 1]
+
+    def edge(a, b):  # between two neighbouring samples: the middle, the way the shore runs, how long
+        return ((a["x"] + b["x"]) / 2, (a["y"] + b["y"]) / 2, _yaw(b["x"] - a["x"], b["y"] - a["y"]),
+                math.dist((a["x"], a["y"]), (b["x"], b["y"])))
+
+    def quay(S, wide, top=QUAY_CM, deep=300.0):  # the wall at the water line, and the paving on top of it
+        for a, b in zip(S, S[1:]):
+            mx, my, yaw, L = edge(a, b)
+            bed = ground(mx + a["nx"] * 500, my + a["ny"] * 500)
+            bed = max(min(bed if bed is not None else sea - deep, sea - deep), sea - WALL_DEEP_CM)
+            out.row(mx, my, bed, yaw, L / 100 * 1.05, 1, (sea + top + 10 - bed) / 100, "seawall")
+            if wide:
+                out.row(mx - a["nx"] * (wide / 2 + 60), my - a["ny"] * (wide / 2 + 60), sea + QUAY_CM, yaw,
+                        L / 100 * 1.08, wide / 100, 1, "promenade")
 
     marinas = 0
     ferry_done = False
-    for seg in sorted(segments, key=lambda g: -g["length_m"]):
-        S, t = seg["samples"], seg["type"]
-        if any(in_yard(s) for s in S[len(S) // 3: 2 * len(S) // 3 + 1]):
-            continue  # a shipyard's own quay
-        z_land = lambda s: ground(s["x"] - s["nx"] * 1000, s["y"] - s["ny"] * 1000) or sea
-        if t in ("commercial", "industrial"):  # quay seawall: only where the city meets the water hard
-            for a, b in zip(S, S[1:]):
-                L = math.dist((a["x"], a["y"]), (b["x"], b["y"]))
-                bed = min(ground(a["x"] + a["nx"] * 500, a["y"] + a["ny"] * 500) or sea - 300, sea - 300)
-                out.row((a["x"] + b["x"]) / 2, (a["y"] + b["y"]) / 2, bed, _yaw(b["x"] - a["x"], b["y"] - a["y"]),
-                        L / 100, 1, (max(z_land(a), sea + 100) - bed) / 100, "seawall")
-        if t in ("commercial", "public", "beach"):  # promenade / boardwalk along the water
-            for a, b in zip(S, S[1:]):
-                L = math.dist((a["x"], a["y"]), (b["x"], b["y"]))
-                mx, my = (a["x"] + b["x"]) / 2 - a["nx"] * 600, (a["y"] + b["y"]) / 2 - a["ny"] * 600
-                if t == "beach":  # boardwalk on short piles behind the sand
-                    mx, my = (a["x"] + b["x"]) / 2 - a["nx"] * 3500, (a["y"] + b["y"]) / 2 - a["ny"] * 3500
-                    zt = (ground(mx, my) or sea) + 60
-                    out.row(mx, my, zt - 30, _yaw(b["x"] - a["x"], b["y"] - a["y"]), L / 100, 4, 1, "deck")
-                else:
-                    out.row(mx, my, z_land(a), _yaw(b["x"] - a["x"], b["y"] - a["y"]), L / 100, 8, 1, "promenade")
+    for sh in sorted(made, key=lambda g: -len(g["pts"])):
+        S = [sample[(p[0], p[1])] for p in sh["pts"] if (p[0], p[1]) in sample]
+        S = S[TAPER:len(S) - TAPER]  # where the whole made profile stands
+        if len(S) < 2:
+            continue
+        t, W, B, length_m = sh["use"], DEPTH[sh["use"]], sh.get("bank", 0.0), round(len(S) * STEP / 100)
+        mid = S[len(S) // 2]
         if t == "commercial":
-            for s in along(seg, 30000):
-                pier(out, ground, sea, s, 6000, 600, why="public pier")
-            for s in along(seg, 6000)[:12]:
-                building(s, 2200, 1600, 1400, "shop", "waterfront restaurant")
-            devs.append({"type": "waterfront shopping district", "length_m": seg["length_m"]})
-            if not ferry_done and population >= 15000 and seg["water"] in ("ocean", "river", "lake"):
-                s = S[len(S) // 2]
-                building(s, 3500, 4000, 2500, "transit", "ferry terminal")
-                L = pier(out, ground, sea, s, 5000, 800, why="ferry pier")
-                out.row(s["x"] + s["nx"] * (L + 600), s["y"] + s["ny"] * (L + 600), sea + FREEBOARD - 50,
-                        _yaw(s["tx"], s["ty"]), 30, 6, 1, "float")
+            quay(S, W - 400)  # paved from the wall to the back of the shops: a city's waterfront is a plaza
+            for s in along(S, 30000):
+                pier(out, ground, sea, s, 6000, 600, z_top=sea + QUAY_CM, why="public pier")
+            ferry = None
+            if not ferry_done and population >= 15000 and sh["water"] in ("ocean", "river", "lake") and len(S) >= 6:
+                ferry = mid
+                building(ferry, 3000, 4000, 2500, "transit", "ferry terminal")
+                L = pier(out, ground, sea, ferry, 5000, 800, z_top=sea + QUAY_CM, why="ferry pier")
+                out.row(ferry["x"] + ferry["nx"] * (L + 600), ferry["y"] + ferry["ny"] * (L + 600), sea + FREEBOARD - 50,
+                        _yaw(ferry["tx"], ferry["ty"]), 30, 6, 1, "float")
                 ferry_done = True
-        elif t == "marina" and marinas < max(1, population // 25000):
+            for s in along(S, 6000)[:12]:
+                if not ferry or math.hypot(s["x"] - ferry["x"], s["y"] - ferry["y"]) > 4500:
+                    building(s, 2600, 1600, 1400, "shop", "waterfront restaurant")
+            devs.append({"type": "waterfront shopping district", "length_m": length_m})
+        elif t == "marina":
+            quay(S, W - 400)
             s = max(S, key=lambda q: q["depth80_m"] + q["shelter"] * 5)
-            n_slips = marina(out, ground, sea, s, seg["water"], s["shelter"] >= 0.5 or seg["water"] != "ocean")
+            n_slips = marina(out, ground, sea, s, sh["water"], s["shelter"] >= 0.5 or sh["water"] != "ocean")
             if n_slips:
                 marinas += 1
-                building(s, 2500, 2400, 1600, "shop", "marina building (office, boat rental, cafe)")
+                building(s, 2700, 2400, 1600, "shop", "marina building (office, boat rental, cafe)")
                 devs.append({"type": "marina village", "slips": n_slips, "x": s["x"], "y": s["y"]})
+            else:
+                devs.append({"type": "waterfront park", "length_m": length_m})
         elif t == "beach":
-            for a in S[::2]:  # sand from 25 m inland to 15 m out
-                out.row(a["x"] - a["nx"] * 500, a["y"] - a["ny"] * 500, sea - 20, _yaw(a["tx"], a["ty"]),
-                        STEP * 2 / 100, 40, 1, "sand")
-            if seg["length_m"] >= 200:
-                s = S[len(S) // 2]
-                building(s, 7000, 3600, 2400, "office", "beach resort hotel")
-                out.row(s["x"] - s["nx"] * 5000 + s["tx"] * 2500, s["y"] - s["ny"] * 5000 + s["ty"] * 2500,
-                        ground(s["x"], s["y"]) or sea, _yaw(s["tx"], s["ty"]), 25, 12, 1, "deck")  # pool deck
-                if seg["length_m"] >= 400:
-                    pier(out, ground, sea, s, 15000, 800, why="boardwalk pier")
-                    building(S[len(S) // 4], 5000, 1400, 1200, "shop", "beach club")
-                devs.append({"type": "beach resort", "length_m": seg["length_m"]})
+            for a, b in zip(S, S[1:]):
+                mx, my, yaw, L = edge(a, b)
+                for dc in (-500.0, 500.0, 1500.0, 2500.0, 3500.0):  # sand in 10 m bands, each at the beach's height there
+                    out.row(mx - a["nx"] * dc, my - a["ny"] * dc, sea + dc * BEACH_RISE - 10, yaw, L / 100 * 1.12, 10, 1, "sand")
+                # a low wall holds the boardwalk a metre above the sand
+                out.row(mx - a["nx"] * BEACH_IN, my - a["ny"] * BEACH_IN, sea + BEACH_IN * BEACH_RISE - 20, yaw, L / 100 * 1.1, 1,
+                        (QUAY_CM + 30 - BEACH_IN * BEACH_RISE) / 100, "seawall")
+                out.row(mx - a["nx"] * (BEACH_IN + 650), my - a["ny"] * (BEACH_IN + 650), sea + QUAY_CM, yaw,
+                        L / 100 * 1.12, 12, 1, "promenade")
+            for s in (S[0], S[-1]):  # a rock groyne at each end holds the sand
+                for k in range(5):
+                    dd = 1200.0 - k * 900
+                    out.row(s["x"] - s["nx"] * dd, s["y"] - s["ny"] * dd, sea - 250, _yaw(s["nx"], s["ny"]), 9, 4, 3.3, "riprap")
+            if len(S) >= 8:
+                building(mid, W + B + 2600, 3600, 2400, "office", "beach resort hotel")
+                if len(S) >= 14:
+                    pier(out, ground, sea, mid, 9000, 600, z_top=sea + QUAY_CM, why="beach pier", back=BEACH_IN)
+                    building(S[len(S) // 4], W + B + 1800, 1400, 1200, "shop", "beach club")
+            devs.append({"type": "beach resort" if len(S) >= 8 else "beach", "length_m": length_m})
         elif t == "residential":
-            if seg["length_m"] >= 400 and marinas < 2 and seg["water"] != "ocean":
+            quay(S, 0, LAWN_CM, 150.0)  # a low bulkhead holds the lawn at the water's edge
+            shared = len(S) >= 18 and marinas < 2 and sh["water"] != "ocean"
+            homes, last = 0, None
+            for s in S:  # a row of homes square to the shore, each with its lawn down to the water
+                x, y = s["x"] - s["nx"] * HOUSE_AT, s["y"] - s["ny"] * HOUSE_AT
+                if last and math.hypot(x - last[0], y - last[1]) < HOUSE_LOT[0] + 50:
+                    continue  # (a bay turns them toward each other: one fewer)
+                last, homes = (x, y), homes + 1
+                front = HOUSE_AT - HOUSE_LOT[1] / 2
+                out.lots.append([round(x), round(y), round(_yaw(s["nx"], s["ny"]), 1), round(HOUSE_LOT[0]), round(HOUSE_LOT[1]),
+                                 round(s["x"] - s["nx"] * front), round(s["y"] - s["ny"] * front), "house", False])
+                if not shared and homes % 3 == 2:  # a few private docks, never one per house
+                    pier(out, ground, sea, s, 1200, 250, z_top=sea + 100, why="private dock")
+            if shared:
                 s = max(S, key=lambda q: q["depth80_m"])
-                n_slips = marina(out, ground, sea, s, seg["water"], True, slips_wanted=30)
+                n_slips = marina(out, ground, sea, s, sh["water"], True, slips_wanted=30)
                 if n_slips:  # one compact community marina instead of a dock behind every house
                     marinas += 1
                     devs.append({"type": "community marina", "slips": n_slips})
-            elif seg["water"] == "ocean" and all(q["depth30_m"] < 2.5 for q in S[:3]):
-                s = S[len(S) // 2]  # fishing village: a walkway out with stilt houses both sides
-                L = pier(out, ground, sea, s, 9000, 300, why="stilt walkway")
-                for m in range(1, int(L // 2200)):
-                    for side in (-1, 1):
-                        hx = s["x"] + s["nx"] * m * 2200 + s["tx"] * side * 900
-                        hy = s["y"] + s["ny"] * m * 2200 + s["ty"] * side * 900
-                        out.row(hx, hy, sea + STILT_FLOOR, _yaw(s["nx"], s["ny"]), 1, 1, 1, "stilt_house")
-                        _piles(out, ground, hx - s["nx"] * 400, hy - s["ny"] * 400, s["nx"], s["ny"], 800, 350,
-                               sea + STILT_FLOOR, 400)
-                devs.append({"type": "fishing village (stilt houses)"})
-            else:
-                for s in along(seg, 6000):  # a few private docks, never one per house
-                    pier(out, ground, sea, s, 1500, 250, why="private dock")
-                devs.append({"type": "private docks", "count": len(along(seg, 6000))})
+            devs.append({"type": "homes on the water", "count": homes, "length_m": length_m})
         elif t == "industrial":
-            for s in along(seg, 6000):  # container cranes straddle the quay edge
-                out.row(s["x"] - s["nx"] * 800, s["y"] - s["ny"] * 800, z_land(s), _yaw(s["tx"], s["ty"]), 1, 1, 1, "crane")
-            s = S[len(S) // 2]
-            yx, yy = s["x"] - s["nx"] * 6000, s["y"] - s["ny"] * 6000
-            out.row(yx, yy, z_land(s), _yaw(s["tx"], s["ty"]), min(300, seg["length_m"]) * 0.9, 80, 1, "yard")
+            quay(S, 0)
+            for s in along(S, 6000):  # container cranes straddle the quay edge
+                out.row(s["x"] - s["nx"] * 800, s["y"] - s["ny"] * 800, sea + QUAY_CM, _yaw(mid["tx"], mid["ty"]), 1, 1, 1, "crane")
+            back = W + B + 4500
+            yx, yy = mid["x"] - mid["nx"] * back, mid["y"] - mid["ny"] * back
+            yz = ground(yx, yy)
+            yz = sea + QUAY_CM if yz is None or yz < sea + QUAY_CM else yz
+            out.row(yx, yy, yz, _yaw(mid["tx"], mid["ty"]), min(300, length_m) * 0.9, 80, 1, "yard")
             for a in range(-3, 4):
                 for b in range(-2, 3):
-                    out.row(yx + s["tx"] * a * 1400 + s["nx"] * b * 1000, yy + s["ty"] * a * 1400 + s["ny"] * b * 1000,
-                            z_land(s), _yaw(s["tx"], s["ty"]), 1, 1, 1, "containers")
-            building(s, 12000, 6000, 3000, "warehouse", "port warehouse")
-            devs.append({"type": "container port", "length_m": seg["length_m"]})
+                    out.row(yx + mid["tx"] * a * 1400 + mid["nx"] * b * 1000, yy + mid["ty"] * a * 1400 + mid["ny"] * b * 1000,
+                            yz, _yaw(mid["tx"], mid["ty"]), 1, 1, 1, "containers")
+            building(mid, back + 7000, 6000, 3000, "warehouse", "port warehouse")
+            devs.append({"type": "container port", "length_m": length_m})
         elif t == "public":
-            s = S[len(S) // 2]
-            pier(out, ground, sea, s, 4000, 300, why="fishing pier")
-            devs.append({"type": "waterfront park", "length_m": seg["length_m"]})
-        elif t == "wetland":
-            for a in S[::2]:
+            quay(S, 600)
+            pier(out, ground, sea, mid, 4000, 300, z_top=sea + QUAY_CM, why="fishing pier")
+            devs.append({"type": "waterfront park", "length_m": length_m})
+    for seg in segments:  # outside the city, flat shallow shores stay marsh
+        if seg["type"] == "wetland":
+            for a in seg["samples"][::2]:
                 out.row(a["x"], a["y"], sea - 40, _yaw(a["tx"], a["ty"]), STEP * 2 / 100, 20, 1, "wetland")
     # shipyards: dedicated industrial districts (their land is theirs, no city lot inside), and nothing else of
     # the waterfront stands on one or in the basin along its quay
@@ -604,11 +818,14 @@ def plan(city: dict, analysis: dict, lots: list, ring_of, industrial, ground, no
     counts: dict = {}
     for seg in segments:
         counts[seg["type"]] = counts.get(seg["type"], 0) + seg["length_m"]
+    made_m: dict = {}
+    for sh in made:
+        made_m[sh["use"]] = made_m.get(sh["use"], 0) + round(len(sh["pts"]) * STEP / 100)
     return {"lots": keep + out.lots, "rows": out.rows,
             "segments": [{"type": g["type"], "water": g["water"], "length_m": g["length_m"],
                           "from": [g["samples"][0]["x"], g["samples"][0]["y"]],
                           "to": [g["samples"][-1]["x"], g["samples"][-1]["y"]]} for g in segments],
-            "developments": devs, "shoreline_m": counts, "report": report, "shipyards": yard_reports}
+            "developments": devs, "shoreline_m": counts, "made_m": made_m, "report": report, "shipyards": yard_reports}
 
 
 def validate(out: _Out, segments: list) -> dict:
@@ -641,7 +858,8 @@ def layers(cities: list) -> dict:
         out[name] = {"kind": "site", "role": "site", "mesh": mesh, "box_m": box, "tint": tint, "count": len(rows),
                      "shown": len(rows), "points": rows, "meshes": [], "row": "x, y, z, yaw, sx, sy, sz",
                      # (a yard's paving and crane rails level nothing: citygen.cut_yards made the whole platform)
-                     **({"pad": False} if kind in NO_PAD else {}), **({"keep_z": True} if kind in YARD_KINDS else {})}
+                     **({"pad": False} if kind in NO_PAD else {}),
+                     **({"keep_z": True} if kind in YARD_KINDS or kind in OWN_HEIGHT else {})}
     return out
 
 
@@ -656,6 +874,10 @@ def bridge_kind(span_cm: float, kind: str) -> tuple:
     if span_cm <= 150000:
         return "cable-stayed bridge", 3000.0
     return "suspension bridge", 4500.0
+
+
+def got_rows(got: dict, kind: str) -> list:
+    return [r for r in got["rows"] if r[7] == kind]
 
 
 def _demo() -> None:
@@ -717,6 +939,51 @@ def _demo() -> None:
     # buildings face the water and replaced the lots under them
     wb = [r for r in got["lots"] if r[8] is True]
     assert wb and len(got["lots"]) < len(lots) + len(wb)
+    # the made shore. Every stretch that is built on is long enough to make and knows how far in no street goes
+    made = shores_for(city, a, ring, industrial, 30000, ground)
+    uses = {sh["use"] for sh in made}
+    assert {"commercial", "beach", "industrial"} <= uses and all(len(sh["pts"]) >= MADE_MIN and len(sh["pts"][0]) == 5 for sh in made), uses
+    assert shores_for(city, a, ring, industrial, 30000, ground, {(p[0], p[1]) for sh in made for p in sh["pts"]}) == [], "a neighbour has them"
+    # ... its profile: a quay level with 3 m of water at the wall, a beach from under the water up to its boardwalk,
+    # a lawn up to the homes, and behind each the land brought back as a bank
+    assert profile("commercial", 2500, 900.0, 0.0) == QUAY_CM and profile("commercial", -500, -40.0, 0.0) == -300.0
+    assert profile("commercial", 5400, 900.0, 0.0) == QUAY_CM + BANK * 400 and profile("commercial", 5400, 250.0, 0.0) == 250.0
+    assert profile("commercial", 5100, 50.0, 0.0) == QUAY_CM - BANK * 100 and profile("commercial", 5400, -50.0, 0.0) == -50.0
+    assert [profile("beach", d, 700.0, 0.0) for d in (-2400, -2000, 0, 4000, 4100)] == [700.0, -50.0, 0.0, 100.0, QUAY_CM]
+    assert [profile("residential", d, 700.0, 0.0) for d in (-1100, -100, 0, 1500, 3000, 5000)] == [700.0, -150.0, LAWN_CM, 285.0, HOUSE_CM, HOUSE_CM]
+    # ... looked up from any point: how far in, and fading out past the ends of the stretch
+    look = Made([{"shores": [{"use": "public", "sea": 0.0, "bank": 0.0, "pts": [[0, y, 1.0, 0.0, 0.0] for y in range(0, 20001, 2000)]}]}])
+    spot = look.at(-1200, 10100)
+    assert spot[1] == 1200 and spot[2] == 1.0 and look.shelf(-1200, 10100) and not look.shelf(-2500, 10100) and not look.shelf(300, 10100)
+    assert look.at(-1200, 100)[2] == 0.0 and 0 < look.at(-1200, 2000)[2] < 1 and look.at(-1200, 24500)[2] == 0.0
+    assert look.level(-1200, 10100, 900.0) == QUAY_CM and look.level(-1200, 100, 900.0) == 900.0 and Made([]).level(0, 0, 5.0) == 5.0
+    # everything at the water stands at its own height: promenades on the quay, sand at the beach's height band by
+    # band, boats and floating docks afloat, and none of them levels any ground
+    got = plan(city, a, lots, ring, industrial, ground, nodes, 30000)
+    assert {r[2] for r in got_rows(got, "promenade")} == {round(QUAY_CM)}
+    sand = sorted({r[2] for r in got_rows(got, "sand")})
+    assert sand == [round(d * BEACH_RISE - 10) for d in (-500, 500, 1500, 2500, 3500)], sand
+    assert {r[2] for r in got_rows(got, "boat")} == {-40} and {r[2] for r in got_rows(got, "slip")} == {0}
+    tops = {round((r[2] + r[6] * 100) / 10) * 10 for r in got_rows(got, "seawall")}
+    assert tops == {QUAY_CM + 10, LAWN_CM + 10}, ("every wall ends at its promenade or its lawn", tops)
+    flags = layers([{"private": {"water": got["rows"]}}])
+    assert all(flags[n].get("keep_z") for n in ("Boats", "Floating docks", "Piers and boardwalks", "Beaches", "Promenades", "Seawalls and quays"))
+    assert all(flags[n].get("pad") is False for n in ("Piers and boardwalks", "Floating docks", "Beaches", "Promenades"))
+    # homes on the water stand in a row square to the shore, a lot apart, and no street-grid lot is left on a made shore
+    homes = [r for r in got["lots"] if r[7] == "house"]
+    assert len(homes) >= 8 and all(r[8] is False and r[3:5] == [1700, 2400] for r in homes)
+    for r in homes:
+        s_ = min((q for sh in a["shores"] for q in sh["samples"]), key=lambda q: math.hypot(q["x"] - r[5], q["y"] - r[6]))
+        assert abs((r[2] - _yaw(s_["nx"], s_["ny"]) + 180) % 360 - 180) < 12, "a home faces the water"
+    assert min(math.hypot(p[0] - q[0], p[1] - q[1]) for k, p in enumerate(homes) for q in homes[k + 1:]) >= HOUSE_LOT[0]
+    grid_lots = [r for r in got["lots"] if r[7] == ""]
+    look = Made([{"shores": made}])
+    assert grid_lots and not any(look.shelf(r[0], r[1]) for r in grid_lots)
+    # a city on a lake alone still gets its beach, whatever its blocks drew
+    lake_city = {"name": "Lakeside", "x": -20000, "y": 60000, "radius": 80000, "seed": 1}
+    for seed in range(4):
+        lake_made = shores_for({**lake_city, "seed": seed}, a, lambda x, y: "housing", None, 9000, ground)
+        assert lake_made and "beach" in {sh["use"] for sh in lake_made}, (seed, [sh["use"] for sh in lake_made])
     # shipyards: planned on the deep industrial shore before the streets, built as a district with docks
     from . import shipyard
     city["shipyards"] = shipyard.sites(city, segments_for(city, a, ring, industrial, 90000), 90000)

@@ -1174,7 +1174,7 @@ def _city_sig(c: dict) -> tuple:
     changed. Each part: {a row as text: where that row is ((x, y) or a polygon or a line)}."""
     num = lambda v: round(float(v), 2) if isinstance(v, (int, float)) and not isinstance(v, bool) else v
     frame = zlib.crc32(repr([num(c.get(k)) for k in ("x", "y", "radius", "seed", "spin")]
-                            + [c.get(k) for k in ("shape", "districts", "shipyards")]).encode())
+                            + [c.get(k) for k in ("shape", "districts", "shipyards", "shores")]).encode())
     parts = ({repr(r): [r[:2]] for r in c.get("lots") or []},
              {repr(b): b[4] for b in c.get("blocks") or [] if len(b) > 4},
              {repr(z): z[0] for z in c.get("rezoned") or []},
@@ -1316,8 +1316,9 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
              for c in cities for b in c.get("blocks") or [] if len(b) > 4 and b[2] == "park" and len(b[4]) > 2]
     # a shipyard's platform and the bank round it are the yard's: only its own pieces, a layer drawn for an area
     # there, or a layer set to the shipyards stand on them (no forest on the hardstand, no street lamp in a dock)
-    from . import shipyard
+    from . import shipyard, waterfront
     yards = [s for c in cities for s in c.get("shipyards") or [] if s.get("z") is not None]
+    shores = waterfront.Made(cities)  # ... and a made shore (quay, beach, lawn) is the waterfront plan's
     infill: list = []  # lots left empty because a building would stand on another or on a street: planted instead
     plan_roles = {row[7] for c in cities for row in c.get("lots") or [] if len(row) > 8 and row[8] is True}
     planned = lambda layer: layer["role"] in PLANNED_ROLES and layer["role"] in plan_roles
@@ -1490,6 +1491,8 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                 if yards and not lot_role and not layer["area"] and layer["where"] != "shipyards" and \
                         any(shipyard.reserved(s, x, y, 500) for s in yards):
                     continue  # a shipyard's own land
+                if shores.n and not lot_role and not layer["area"] and shores.shelf(x, y, 300):
+                    continue  # a made shore: its promenade, sand and lawns stay clear
                 if parks and building and not lot and \
                         any(x0 <= x <= x1 and y0 <= y <= y1 and inside(poly, x, y) for poly, x0, y0, x1, y1 in parks):
                     continue  # a park block: nothing is built on it

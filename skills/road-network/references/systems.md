@@ -327,23 +327,37 @@ layer's spacing; that spacing only applies to scattered lots.
   - shelter (rays from the water hitting land within 400 m);
   - depth 30 m and 80 m out, water width along N, land slope, flood exposure.
   Waterbodies are typed ocean / lake / river by size, contact with the map edge, and shape.
-- **WaterfrontPlanner (`plan`):** every 100 m of a city's shore gets one use from depth, slope, shelter, water type
-  and district: natural, wetland, beach, residential, commercial, marina, industrial, public. Then the generators
-  build each use:
+- **WaterfrontPlanner (`classify`, `segments_for`):** every 100 m of a city's shore gets one use from depth,
+  slope, shelter, water type and district: natural, wetland, beach, residential, commercial, marina,
+  industrial, public. The core is commercial. Outside it each 300 m block of shore draws from its district's
+  mix (`MIX`: homes, beach, marina, park), so a city's shore is varied. Only a cliff stays natural: steeper
+  than 0.6 in its first 30 m, or more than 18 m high 50 m inland. Steep banks are no longer left empty.
+- **ShoreWorks, the made shore (`shores_for`, `profile`, `Made`, `citygen.plan_shores` / `cut_shores`):** where a
+  city builds on its shore, the shore is shaped for what stands there, before the streets are laid. A stretch
+  is made when it is at least 160 m long and no shipyard has it. `city['shores']` keeps each one
+  ({use, water, bank, pts}).
 
-  | Use | What it gets |
-  |---|---|
-  | Commercial | quay seawall, promenade, piers, waterfront restaurants, ferry terminal on big water |
-  | Marina | main pier, floating branches, slips with boats, gangway, launch, marina building; floating homes when sheltered, a rock breakwater on open sea |
-  | Beach | sand, boardwalk on piles, resort hotel, pool deck, beach club, long pier |
-  | Residential | one shared community marina on long shores (EPA: compact, not a dock per house), else a few private docks; stilt-house fishing village on shallow sea |
-  | Industrial | container port: quay, cranes, container stacks, yard, warehouses |
-  | Public | waterfront park, fishing pier |
-  | Wetland | reeds; natural stays natural |
+  | Use | The ground it gets (cm above the water, by distance inland) | What stands on it |
+  |---|---|---|
+  | Commercial | quay wall at the water line, level at 200 for 50 m, paved to the back | restaurants facing the water, piers, ferry terminal on big water |
+  | Marina | the same for 42 m | main pier, floating branches, slips with boats, gangway, launch, marina building; floating homes when sheltered |
+  | Public | the same for 24 m, a 6 m promenade | fishing pier |
+  | Beach | sand rising 1 in 40 from 20 m out in the water to 40 m inland, then a boardwalk at 200 | sand in 10 m bands, a low wall and the boardwalk, a rock groyne at each end, resort hotel, beach club and pier on a long one |
+  | Residential | a low bulkhead at 120, a lawn rising to 450 at 30 m, level to 58 m | a row of homes square to the shore, a few private docks or one shared marina |
+  | Industrial | quay for 24 m | container cranes; yard, stacks and warehouse behind |
 
-  There are no seawalls except on commercial and industrial quays.
-- **Foundations:** pilings from the bed to the deck (piers, boardwalks, stilt houses at 3.5 m flood
-  elevation); floating at Z_water + freeboard (docks, homes); quay walls.
+  Behind every made shore the land comes back to its own height as a bank no steeper than 0.5 (`bank`). A
+  stretch fades into the natural shore over its last 60 m. Every city on a lake or the sea gets at least one
+  beach: with none drawn, its gentlest park or row of homes becomes one.
+- **Streets and the made shore:** streets are laid on the made ground. Where the land was cut down by more than
+  2 m for it, no street runs (it would stand on a ramp above the promenade): streets end at the top of the bank.
+  A bridge keeps both its ends. No street-grid lot stays on a made shore, and no other layer places there.
+- **Heights:** everything at the water stands where it was built and levels no ground: piers on piles, floating
+  docks, boats, slips, floating homes, quay walls, breakwaters, sand, promenades (`OWN_HEIGHT`, `NO_PAD`).
+  Earlier they were re-seated on the ground under them, which had been raised to them: a pier became a strip
+  of land and a marina's boats stood metres above the water.
+- **Foundations:** pilings from the bed to the deck (piers, stilt houses at 3.5 m flood elevation); floating at
+  Z_water + freeboard (docks, homes); quay walls down to the bed, 20 m at most.
 - **Pieces:** rows [x, y, z, yaw, sx, sy, sz, kind] become built-in site layers (Piers and boardwalks, Floating
   docks, Pilings, Boat slips, Boats, Seawalls and quays, Breakwaters, Beaches, Wetlands, Promenades, Port cranes,
   Container stacks, Port yards, Boat launches, Stilt houses, Floating homes, Bridge towers). The street kit

@@ -1093,6 +1093,12 @@ def register(api) -> None:
             ter = cg.cut_yards(ter, towns, whole=True)
             wet = cg.wet_from(ter)
             water = waterfront.analyze(ter)
+        # ... and so is the shore a city builds on: where it gets a quay, a beach or homes on the water it is made
+        # for that (cut into the ground with the yards), and the streets are laid on it as it will be
+        cg.plan_shores(towns, water, opts, lambda x, y, t=ter: st.sample_grid(t, x, y))
+        shores = waterfront.Made(towns)
+        if shores.n and sea_level is not None:
+            road_ground = lambda x, y: max(shores.level(x, y, st.sample_grid(ter, x, y) or 0.0), sea_level + 150)
         # airports too: site (flat, dry, into the wind, outside the cities), then the streets keep clear of them
         airports = cg.plan_airports(towns, lambda x, y: st.sample_grid(ter, x, y), wet, keep,
                                     (tuple(ter["min"]), tuple(ter["max"])), opts) if ter.get("heights") else []
@@ -1758,7 +1764,7 @@ def register(api) -> None:
                                          terrain, actors, keep, cut], protocol=5)).hexdigest()
         if _PREVIEW_CACHE.get("key") != key:  # ponytail: one entry, the world being looked at
             ground = st.grid_sampler(terrain) if terrain.get("heights") else (lambda x, y: 0.0)
-            ground = cg.on_yards(cities, ground)  # (a shipyard's platform is level right to its edges)
+            ground = cg.on_made(cities, ground)  # (a shipyard's platform and a made shore: at their own levels)
             # the whole city, unit by unit: what no change can reach is put back as it stood (pl.PreviewMemo), so an
             # edit to one city places that city again and leaves every other building and tree where it was
             memo = _PREVIEW_MEMO.setdefault(nid, pl.PreviewMemo())
@@ -1803,7 +1809,8 @@ def register(api) -> None:
                 # block with a complex in it became a pit, and the preview kept it (its key never saw them).
                 plans = private_plans(nid, cities)
                 rk = hashlib.sha1(pickle.dumps([terrain, actors, [s for _c, s in plans],
-                                                [c.get("shipyards") for c in cities]], protocol=5)).hexdigest()
+                                                [(c.get("shipyards"), c.get("shores")) for c in cities]],
+                                               protocol=5)).hexdigest()
                 if _GROUND.get("key") != rk:
                     locked: set = set()
                     # (first of all every shipyard's platform, exact to the pixel: citygen.cut_yards. Its graving
@@ -1811,7 +1818,8 @@ def register(api) -> None:
                     # side, and the ground under the halls beside it went with that)
                     settled = any(y.get("z") is not None for c in cities for y in c.get("shipyards") or [])
                     dock = cg.ROAD_MESH["DK"].split("/")[-1]
-                    roads = cg.grade_to_roads(cg.cut_yards(cg.refine(terrain, cg.HEIGHTMAP_RES), cities), {
+                    roads = cg.grade_to_roads(cg.cut_shores(cg.cut_yards(cg.refine(terrain, cg.HEIGHTMAP_RES), cities),
+                                                            cities), {
                         str(k): {"points": p, "segments": [g for g in s if not (
                             settled and str(g.get("mesh") or "").split("/")[-1] == dock)]}
                         for k, (p, s) in enumerate(actors)}, locked)

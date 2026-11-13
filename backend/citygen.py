@@ -1077,6 +1077,62 @@ def plan_shipyards(cities: list, water: dict, opts: dict | None = None, ground=N
             c.pop("shipyards_near", None)
 
 
+def plan_shores(cities: list, water: dict, opts: dict | None = None, ground=None) -> None:
+    """ShoreWorks for every city, before its streets: sets city['shores'], the stretches of shore that are made
+    for what is built on them (waterfront.shores_for). The bigger city first: a stretch two cities reach is the
+    bigger one's. cut_shores cuts them into the ground and the streets are laid on them (waterfront.Made)."""
+    from . import waterfront
+    o = options(opts)
+    taken: set = set()
+    for c in sorted(cities, key=lambda c: (-float(c["radius"]), str(c.get("name") or ""))):
+        c["shores"] = []  # (always set: the waterfront plan builds on these and never works out its own)
+        if city_options(c, o)["waterfront"] != "yes" or not water or water.get("sea") is None:
+            continue
+        ring_of, industrial = zoning(c, o)
+        pop = round(math.pi * (c["radius"] / 100000) ** 2 * 4800)
+        c["shores"] = waterfront.shores_for(c, water, ring_of, industrial, pop, ground, taken)
+
+
+def cut_shores(ter: dict, cities: list) -> dict:
+    """Every made shore cut into the fine terrain the landscape is made from (waterfront.profile): the quay's
+    level promenade with water at its wall, the beach from the water up to its boardwalk, the lawn up to the
+    homes, and the bank behind each back to the land as it was."""
+    from . import waterfront
+    look = waterfront.Made(cities)
+    if not look.n or (ter or {}).get("sea") is None or not ter.get("heights"):
+        return ter
+    grid, (x0, y0), (x1, y1) = ter["grid"], ter["min"], ter["max"]
+    cw, ch = (x1 - x0) / grid, (y1 - y0) / grid
+    rows = [list(r) for r in ter["heights"]]
+    seen: set = set()
+    for px, py, _nx, _ny, _w, sh, _clear in look.rows:
+        reach = waterfront.DEPTH[sh["use"]] + sh.get("bank", 0.0) + 2500.0
+        for j in range(max(0, int((py - reach - y0) / ch)), min(grid, int((py + reach - y0) / ch) + 1)):
+            for i in range(max(0, int((px - reach - x0) / cw)), min(grid, int((px + reach - x0) / cw) + 1)):
+                if (j, i) in seen:
+                    continue
+                seen.add((j, i))
+                z = rows[j][i]
+                if z is not None:
+                    rows[j][i] = round(look.level(x0 + (i + 0.5) * cw, y0 + (j + 0.5) * ch, z), 1)
+    return {**ter, "heights": rows}
+
+
+def on_made(cities: list, ground):
+    """`ground` with everything a city makes of it: a shipyard's platform (on_yards) and its made shores. What is
+    built there stands at the level it was designed for, whatever the coarse terrain says."""
+    from . import waterfront
+    base = on_yards(cities, ground)
+    look = waterfront.Made(cities)
+    if not look.n:
+        return base
+
+    def at(x, y):
+        z = base(x, y)
+        return look.level(x, y, z) if z is not None else z
+    return at
+
+
 def on_yards(cities: list, ground):
     """`ground`, but a point on a settled shipyard's platform answers the platform's level. The coarse terrain is
     only level where whole cells lie on a platform (cut_yards), and a hall at its edge stands on it all the same."""
@@ -1274,6 +1330,18 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
         wet = water_of(city, o, wet)
     if wet:  # streets cross water on bridges (one edge bank to bank), the rest stop at the shore
         nodes, edges = over_water(*cross_water(nodes, edges, wet), wet, bridges=bridges, stubs=False)
+    if city.get("shores"):
+        # no street on a made shore where the land was cut down for it: it ends at the top of the bank, above
+        # the promenade (laid there it stood on a ramp 10 m over the quay). A bridge keeps both its ends: a
+        # crossing is never cut off for a promenade.
+        from . import waterfront
+        look = waterfront.Made([city])
+        spans = {n for e in edges if len(e) > 3 and e[3] for n in e[:2]}
+        drop = {n for n, p in nodes.items() if n not in spans and look.no_street(p[0], p[1])}
+        if drop:
+            edges = [e for e in edges if e[0] not in drop and e[1] not in drop]
+            used = {n for e in edges for n in e[:2]}
+            nodes = {n: p for n, p in nodes.items() if n in used}
     # freeways last: every street that water, canals, an airport or a shipyard took is gone by now, so an
     # interchange whose cross road is gone is dropped before any street is cut for its ramps
     fw = freeway_plan(city, o)
@@ -2101,7 +2169,7 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
         pop = round(len(out["lots"]) * 9)  # a rough count for the port / ferry thresholds; urban.plan counts properly
         wf = waterfront.plan(city, water, out["lots"], ring_of, industrial, ground, nodes, pop)
         out["lots"], out["water"] = wf["lots"], wf["rows"]
-        out["waterfront"] = {k: wf[k] for k in ("segments", "developments", "shoreline_m", "report", "shipyards")}
+        out["waterfront"] = {k: wf[k] for k in ("segments", "developments", "shoreline_m", "made_m", "report", "shipyards")}
     if o["planner"] == "yes" and out["lots"]:
         from . import urban
         barriers = [(p, q) for ln in fw.lines for p, q in zip(ln["points"], ln["points"][1:])]
@@ -3510,6 +3578,31 @@ def _demo() -> None:
     level = on_yards(town, lambda x, y: 3000.0)
     assert (level(-100, 19900), level(-19900, -19900), level(100, 0), level(-20100, 0), level(-100, 20100)) == \
         (250.0, 250.0, 3000.0, 3000.0, 3000.0) and on_yards([], level) is level
+    # a made shore cut into the terrain. The water lies at x > 0 and the land stands 6 m over it: a quay gets its
+    # level promenade with 3 m of water at the wall, a beach runs from half a metre under the water up to its
+    # boardwalk, homes get a lawn up to their row, and behind each the land comes back as a bank
+    from . import waterfront as _wf
+    bluff = {"min": [-20000, -20000], "max": [20000, 20000], "grid": 80, "sea": 0.0,
+             "heights": [[600.0 if i < 40 else -800.0 for i in range(80)] for _ in range(80)]}
+    line = [[0, y, 1.0, 0.0] for y in range(-18000, 18001, 2000)]
+    cell = lambda use, i: cut_shores(bluff, [{"name": "S", "shores": [{"use": use, "sea": 0.0, "bank": 1000.0, "pts": line}]}])["heights"][40][i]
+    assert (cell("commercial", 39), cell("commercial", 31), cell("commercial", 40), cell("commercial", 44)) == (200.0, 200.0, -800.0, -800.0)
+    assert cell("commercial", 29) == 200 + 0.5 * 250 and cell("commercial", 20) == 600.0, "the bank, then the land as it was"
+    assert cut_shores({**bluff, "heights": [[600.0 if i < 40 else -100.0 for i in range(80)] for _ in range(80)]},
+                      [{"name": "S", "shores": [{"use": "public", "sea": 0.0, "bank": 0.0, "pts": line}]}])["heights"][40][40] == -300.0
+    assert (cell("beach", 41), cell("beach", 39), cell("beach", 33), cell("beach", 31)) == (-18.8, 6.2, 81.2, 200.0), cell("beach", 41)
+    assert (cell("residential", 39), cell("residential", 30), cell("residential", 40)) == (147.5, 450.0, -800.0)
+    assert cut_shores(bluff, []) is bluff and cut_shores(bluff, [{"name": "S"}]) is bluff
+    # a stretch fades into the natural shore at its ends: nothing is made past them
+    ends = cut_shores(bluff, [{"name": "S", "shores": [{"use": "commercial", "sea": 0.0, "bank": 0.0, "pts": line[6:13]}]}])["heights"]
+    assert ends[40][35] == 200.0 and ends[5][35] == 600.0 and 200.0 < ends[32][35] < 600.0, (ends[40][35], ends[32][35], ends[5][35])
+    # what is built there stands at the made level, and a street stays off where the land was cut down for it
+    made_z = on_made([{"name": "S", "shores": [{"use": "commercial", "sea": 0.0, "bank": 1000.0, "pts": [p + [3000.0] for p in line]}]}],
+                     lambda x, y: 600.0 if x < 0 else -800.0)
+    assert made_z(-2500, 0) == 200.0 and made_z(-15000, 0) == 600.0 and on_made([], made_z) is made_z
+    look = _wf.Made([{"shores": [{"use": "commercial", "sea": 0.0, "bank": 1000.0, "pts": [p + [3000.0] for p in line]}]}])
+    assert look.no_street(-2500, 0) and not look.no_street(-3500, 0) and not look.no_street(-2500, 19500)
+    assert look.shelf(-4900, 0)["use"] == "commercial" and look.shelf(-5200, 0) is None and look.shelf(100, 0) is None
     # ... and into the coarse terrain the roads are planned on: only cells wholly on the platform or in its basin
     coarse = {**hillside, "grid": 8, "heights": [[3000.0 if i < 4 else -200.0 for i in range(8)] for _ in range(8)]}
     rough = cut_yards(coarse, town, whole=True)["heights"]
