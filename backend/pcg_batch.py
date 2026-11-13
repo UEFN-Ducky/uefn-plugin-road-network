@@ -34,7 +34,7 @@ async def build(j, placed):
     for g in j['drop_graphs']:
         if await t('EditorToolset.AssetToolset.Exists', {'path': g}):
             await t('EditorToolset.AssetToolset.Delete', {'path': g})
-    if not j['meshes']:
+    if not j['meshes'] and not j.get('chains'):
         return {'removed': True}
     graph = await t(P + 'CreateGraph', {'name': j['graph_name'], 'path': j['graph_folder']})
     for k, m in enumerate(j['meshes']):
@@ -53,6 +53,40 @@ async def build(j, placed):
                 'jsonParams': json.dumps({'pointsToCreate': pts, 'coordinateSpace': 'World',
                                           'bCullPointsOutsideVolume': False})})
             await t(P + 'ConnectNodePins', {'fromNode': made, 'fromPinLabel': 'Out', 'toNode': spawn, 'toPinLabel': 'In'})
+    # roads (road_pcg): per mesh, every chain is a Create Points node feeding ONE Create Spline -> Spline Sampler
+    # (the mesh's tile length) -> Create Spline -> Spawn Spline Mesh: PCG runs a node once per input data, so each
+    # chain is its own spline and each sampled step one bent tile. Collision on: a spline mesh has none by default.
+    lanes = {}
+    for c in j.get('chains') or []:
+        lanes.setdefault(c['mesh'], []).append(c)
+    for k, (mesh, cs) in enumerate(sorted(lanes.items())):
+        y = (len(j['meshes']) + k) * 200
+        name = mesh.rsplit('/', 1)[1]
+        line = await t(P + 'AddNode', {'graph': graph, 'nativeNodeType': 'Create Spline', 'nodeName': 'Line%d' % k,
+                                       'xPositionIdx': 250, 'yPositionIdx': y, 'jsonParams': json.dumps({'bLinear': True})})
+        step = await t(P + 'AddNode', {
+            'graph': graph, 'nativeNodeType': 'Spline Sampler', 'nodeName': 'Step%d' % k, 'xPositionIdx': 500,
+            'yPositionIdx': y, 'jsonParams': json.dumps({'samplerParams': {
+                'mode': 'Distance', 'distanceIncrement': cs[0]['step'], 'bFitToCurve': True, 'bUnbounded': True}})})
+        bend = await t(P + 'AddNode', {'graph': graph, 'nativeNodeType': 'Create Spline', 'nodeName': 'Bend%d' % k,
+                                       'xPositionIdx': 750, 'yPositionIdx': y, 'jsonParams': json.dumps({'bLinear': False})})
+        lay = await t(P + 'AddNode', {
+            'graph': graph, 'nativeNodeType': 'Spawn Spline Mesh', 'nodeName': 'Road%d' % k, 'nodeTitle': name,
+            'xPositionIdx': 1000, 'yPositionIdx': y, 'jsonParams': json.dumps({
+                'splineMeshDescriptor': {'staticMesh': mesh + '.' + name, 'bodyInstance': {
+                    'collisionProfileName': 'BlockAll', 'collisionEnabled': 'QueryAndPhysics'}},
+                'splineMeshParams': {'forwardAxis': 'X'}})})
+        for c, n in enumerate(cs):
+            pts = [{'transform': {'location': {'x': p[0], 'y': p[1], 'z': p[2]}, 'rotation': {'pitch': 0, 'yaw': 0, 'roll': 0},
+                                  'scale': {'x': 1, 'y': 1, 'z': 1}}} for p in n['pts']]
+            made = await t(P + 'AddNode', {
+                'graph': graph, 'nativeNodeType': 'Create Points', 'nodeName': 'Run%d_%d' % (k, c), 'xPositionIdx': 0,
+                'yPositionIdx': y + c * 30, 'jsonParams': json.dumps({'pointsToCreate': pts, 'coordinateSpace': 'World',
+                                                                      'bCullPointsOutsideVolume': False})})
+            await t(P + 'ConnectNodePins', {'fromNode': made, 'fromPinLabel': 'Out', 'toNode': line, 'toPinLabel': 'In'})
+        await t(P + 'ConnectNodePins', {'fromNode': line, 'fromPinLabel': 'Out', 'toNode': step, 'toPinLabel': 'Spline'})
+        await t(P + 'ConnectNodePins', {'fromNode': step, 'fromPinLabel': 'Out', 'toNode': bend, 'toPinLabel': 'In'})
+        await t(P + 'ConnectNodePins', {'fromNode': bend, 'fromPinLabel': 'Out', 'toNode': lay, 'toPinLabel': 'In'})
     await t(P + 'SetGraphDescription', {'graph': graph, 'description': j['description']})
     vol = await t(P + 'SpawnGraphInstance', {
         'graph': graph, 'name': j['label'],
@@ -86,7 +120,7 @@ async def run():
 
 
 def points(job: dict) -> int:
-    return sum(len(m["rows"]) for m in job["meshes"])
+    return sum(len(m["rows"]) for m in job["meshes"]) + sum(len(c["pts"]) * 20 for c in job.get("chains") or [])
 
 
 def batches(jobs: list, max_points: int = MAX_POINTS, max_tiles: int = MAX_TILES) -> list:
@@ -146,6 +180,12 @@ def _demo() -> None:
     assert calls.count("AddNode") == 1 + 3 and calls.count("ConnectNodePins") == 3, calls  # 3200 points = 3 chunks
     assert calls.count("Delete") == 2 and calls.count("SetProperties") == 2 and calls[-3] == "ExecuteGraphInstance", calls
     assert calls.count("RemoveFromScene") == 1 and calls[0] == "FindActors", "only the exact label's volume goes"
+    calls.clear()  # a road tile: two chains of one mesh share one spline chain of nodes
+    road = {**job("r", 0), "meshes": [], "chains": [{"mesh": "/R/SM_Road", "step": 1000.0, "pts": [[0, 0, 50], [9000, 0, 50]]},
+                                                    {"mesh": "/R/SM_Road", "step": 1000.0, "pts": [[0, 900, 50], [0, 9000, 50]]}]}
+    exec(compile(script([road]), "<road script>", "exec"), ns)
+    assert asyncio.run(ns["run"]())["r"]["volume"] == "/L.Vol_City r"
+    assert calls.count("AddNode") == 4 + 2 and calls.count("ConnectNodePins") == 2 + 3, calls
     print("pcg batch ok", len(script([job("0_0", 3200)])), "chars for 3200 points")
 
 

@@ -2691,6 +2691,96 @@ def register(api) -> None:
 
     _PCG_JOBS: dict = {}  # world id -> the build job running (or last run) for it
 
+    def roads_pcg(net_id: str = "", confirm: bool = False, force: bool = False, actors: str = "") -> dict:
+        """Every stored road actor (or a comma list) into the open level as PCG road tiles: spline meshes bent along
+        the roads (BlockAll), junction and interchange pieces on their nodes. No landscape splines, no clipboard:
+        the terrain must already be graded to the roads (the generated heightmap is). Only changed tiles rebuild."""
+        from . import road_pcg
+        nid = slug(net_id)
+        doc = data.get(f"net.{nid}") if nid else None
+        if not doc:
+            return {"ok": False, "error": f"No road network {net_id!r}."}
+        folder = road_folder()
+        if "/WorldGen/Roads" not in folder:
+            return {"ok": False, "error": "Couldn't find the project's WorldGen folder (import the road kit first)."}
+        root = folder.split("/WorldGen/Roads")[0]
+        name = doc.get("name") or nid
+        tag = re.sub(r"[^A-Za-z0-9]", "", name)
+        want = {a.strip() for a in actors.split(",") if a.strip()}
+        acts = {}
+        for aslug, head in actor_docs(nid).items():
+            label = str(head.get("label") or aslug)
+            if " before kit" in label or (want and label not in want):
+                continue
+            _h, pts, segs = load_actor(nid, aslug)
+            if segs:
+                p2, s2 = st.straighten(pts, segs)  # a point only where a road turns: straight from corner to corner
+                acts[label] = {"points": p2, "segments": s2}
+        if not acts:
+            return {"ok": False, "error": "No road actors to push (generate the world first)."}
+        tiles = road_pcg.tile_jobs(acts)
+        state = data.get(f"net.{nid}.roads_pcg") or {"name": f"{name} / PCG roads", "tiles": {}}
+        hashes = {k: hashlib.sha1(json.dumps(v, sort_keys=True).encode()).hexdigest() for k, v in tiles.items()}
+        build = sorted(k for k in tiles if force or (state["tiles"].get(k) or {}).get("hash") != hashes[k])
+        remove = sorted(k for k in state["tiles"] if k not in tiles)
+        runs = sum(len(t["chains"]) for t in tiles.values())
+        nodes_ = sum(len(r) for t in tiles.values() for r in t["pieces"].values())
+        if not confirm:
+            return {"ok": False, "error": f"{name}: {len(tiles)} road tiles ({len(build)} to build, {len(remove)} to "
+                                          f"remove), {runs} road runs, {nodes_} junction / interchange pieces. "
+                                          f"Call again with confirm=true.",
+                    "build": build, "remove": remove, "actors": sorted(acts)}
+        label = f"City Builder Roads {name}"
+
+        def job(key: str) -> dict:
+            t = tiles.get(key) or {"chains": [], "pieces": {}}
+            graph_path = f"{root}/WorldGen/CityPCGRoads/PCG_Roads_{tag}_T{key.replace('-', 'm')}"
+            meshes = [{"mesh": f"{m}.{m.rsplit('/', 1)[1]}", "title": m.rsplit("/", 1)[1], "rows": rows,
+                       "selector": {"meshes": [f"{m}.{m.rsplit('/', 1)[1]}"], "templateDescriptor": {"descriptor": {
+                           "bodyInstance": {"collisionProfileName": "BlockAll", "collisionEnabled": "QueryAndPhysics"}}}}}
+                      for m, rows in sorted(t["pieces"].items())]
+            i, j = (int(v) for v in key.split("_"))
+            size = road_pcg.TILE_CM
+            old = (state["tiles"].get(key) or {}).get("graph_path")
+            return {"key": key, "find": label, "label": f"{label} {key}", "meshes": meshes, "chains": t["chains"],
+                    "graph_path": graph_path, "graph_name": graph_path.rsplit("/", 1)[1],
+                    "graph_folder": graph_path.rsplit("/", 1)[0],
+                    "drop_graphs": sorted({g for g in (old, graph_path) if g}),
+                    "description": f"City Builder world {name}, road tile {key}: roads as spline meshes and junction "
+                                   f"pieces. Rebuilt by road_network_roads_pcg.",
+                    "centre": [(i + 0.5) * size, (j + 0.5) * size], "half": size / 2 + 5000.0}
+
+        done, gone = [], []
+        try:
+            for batch in pcg_batch.batches([job(k) for k in remove + build], max_tiles=6):
+                base = uefn_memory.uefn_gb()
+                out = epic("editor_toolset.toolsets.programmatic.ProgrammaticToolset", "execute_tool_script",
+                           {"script": {"language": "Python", "content": pcg_batch.script(batch)}}, timeout=900)
+                res = out.get("returnValue") if isinstance(out, dict) else out
+                res = json.loads(res) if isinstance(res, str) else (res or {})
+                for j_ in batch:
+                    r = res.get(j_["key"])
+                    if r is None:
+                        continue
+                    if r.get("error"):
+                        data.put(f"net.{nid}.roads_pcg", state)
+                        return {"ok": False, "error": f"road tile {j_['key']}: {r['error']}", "built": done}
+                    if r.get("removed"):
+                        state["tiles"].pop(j_["key"], None)
+                        gone.append(j_["key"])
+                    else:
+                        state["tiles"][j_["key"]] = {"hash": hashes[j_["key"]], "graph_path": j_["graph_path"],
+                                                     "volume": r["volume"]}
+                        done.append(j_["key"])
+                data.put(f"net.{nid}.roads_pcg", state)
+                uefn_memory.settle(base, slack=2.0, timeout=60)
+        except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
+            data.put(f"net.{nid}.roads_pcg", state)
+            return {"ok": False, "error": f"Stopped after {len(done)} road tiles: {exc}", "built": done,
+                    "note": "Run again: finished tiles are kept and skipped."}
+        return {"ok": True, "id": nid, "built_tiles": done, "removed_tiles": gone, "runs": runs,
+                "pieces": nodes_, "memory": uefn_memory.report(5)["worst"]}
+
     def pcg_build(net_id: str = "", confirm: bool = False, force: bool = False, wait: bool = True,
                   stop: bool = False) -> dict:
         """The world's previewed city as PCG in the open UEFN level, in tiles (one graph + volume each).
@@ -3159,6 +3249,15 @@ def register(api) -> None:
     def road_network_copy_text(net_id: str = "", actor: str = "") -> dict:
         """Put one road actor's spline text on the clipboard for a manual paste in the Splines tool."""
         return safe(copy_text)(net_id, actor)
+
+    @tool(intent=INTENT, listener=True)
+    def road_network_roads_pcg(net_id: str = "", confirm: bool = False, force: bool = False, actors: str = "") -> dict:
+        """Push the roads as PCG (the way to put roads in UEFN): every road actor becomes spline meshes bent along
+        it with BlockAll collision, plus its junction / interchange pieces, in 800 m road tiles labelled
+        'City Builder Roads <world> <tile>'. No landscape splines, no clipboard; the terrain must already be graded
+        to the roads (import the world's heightmap first). confirm=false is a dry run; only changed tiles rebuild,
+        force=true rebuilds all; actors = a comma list to push only those."""
+        return safe(roads_pcg)(net_id, confirm, force, actors)
 
     @tool(intent=INTENT, listener=True)
     def road_network_reimport(net_id: str = "", actor: str = "", confirm: bool = False) -> dict:
@@ -3698,8 +3797,10 @@ def register(api) -> None:
                         "(builds them); interiors -> road_network_pcg_assets(interiors='yes'|'no'); missing art -> "
                         "road_network_piece_manifest specs in Blender or AI 3D, or Fortnite "
                         "pieces; collision -> set it on each mesh as `collision` says before the city build; doors "
-                        "-> the door prefabs as `doors` says (scenegraph skill), placed by PCG; roads -> "
-                        "road_network_import_all; city -> road_network_pcg_build; lighter detail -> "
+                        "-> the door prefabs as `doors` says (scenegraph skill), placed by PCG; terrain -> "
+                        "import road_network_heightmap's PNG as a new landscape (already graded to the roads); roads -> "
+                        "road_network_roads_pcg (PCG spline meshes + junction pieces, never landscape splines); "
+                        "city -> road_network_pcg_build; lighter detail -> "
                         "lower the foliage layers' density with road_network_pcg_layer_save; read road_network_memory "
                         "after every step.")}
 
