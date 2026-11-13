@@ -277,6 +277,20 @@ class Plan:
             self.add(bld, gk, g)
         self.interchanges = ics
 
+    def low_points(self) -> list:
+        """Where this layer is too low to pass over a street: [[x, y, half width]], one about every 15 m along its
+        ramps, frontage roads and at-grade freeway (never a road's joining end). For the neighbouring cities
+        (citygen.share_freeways): their streets give way to these as this city's own do."""
+        seen, out = set(), []
+        for pts in self._grid.values():
+            for px, py, pz, half, near_end in pts:
+                key = (round(px / 500), round(py / 500))
+                if pz >= CLEAR_CM or near_end or key in seen:
+                    continue
+                seen.add(key)
+                out.append([round(px), round(py), round(half)])
+        return out
+
     def blocked(self, x, y, r=0.0, low_only=False):
         """Does anything of the freeway layer come within r of (x, y)? low_only: only parts too low to pass
         over a street (lift < CLEAR_CM, not a road's joining end) count, as for a street; lots count all."""
@@ -308,6 +322,47 @@ def reserved(city: dict):
     # (and the land of a bigger city this one overlaps: its freeway ends at that city's edge)
     return lambda x, y: (any(airport.inside(a, x, y, 3000) for a in aps)
                          or any(shipyard.inside(y_, x, y, 2000) for y_ in yards) or cg.yielded(city, x, y, 5000.0))
+
+
+def shore_reach(city: dict, o: dict, wet, taken=None) -> dict | None:
+    """How far each of the city's freeways may run from the middle of its line: {'ns': [back cm, ahead cm], 'ew':
+    [...], 'stack': is the stack's place free}; None with nothing in its way or no freeway. plan() ends the
+    freeway there, back at grade, as at the map's edge. Two things stop one:
+    - open water with no land beyond. It crosses a river or a bay to the far shore, but it never runs out over a
+      lake to end in the water (Kingsport's did: 1.35 km of viaduct to nowhere, Nov 12 2026).
+    - a neighbouring city's land (`taken(x, y)`): it ends before that city's edge and never runs through it
+      (Northgate's ran on through Riverton and took most of its streets).
+    The lines here are plan()'s own: keep the two in step."""
+    from . import citygen as cg
+    R = city["radius"]
+    if not (wet or taken) or o.get("freeways", "yes") != "yes" or R < FW_MIN_R:
+        return None
+    bx, by = cg.block_xy(o)
+    turn = math.radians(cg.orientation(city))
+    c, s = math.cos(turn), math.sin(turn)
+    W = lambda lx, ly: (city["x"] + c * lx - s * ly, city["y"] + s * lx + c * ly)
+    off_x, off_y = (round(o["downtown"] * R / bx) + 0.5) * bx, (round(o["downtown"] * R / by) + 0.5) * by
+    end = 1.3 * R + 1.6 * LEVEL_CM / MAX_GRADE["freeway"] + 20000
+    out: dict = {}
+    for name, normal_axis, at, axis in (("ns", (1.0, 0.0), off_x, (0.0, 1.0)), ("ew", (0.0, 1.0), -off_y, (1.0, 0.0))):
+        px, py = W(normal_axis[0] * at, normal_axis[1] * at)
+        dx, dy = c * axis[0] - s * axis[1], s * axis[0] + c * axis[1]
+        reach = []
+        for sign in (-1.0, 1.0):
+            dry, t = 0.0, 0.0
+            while t <= end:
+                x, y = px + dx * sign * t, py + dy * sign * t
+                if taken and taken(x, y):
+                    break
+                if not wet or not wet(x, y):
+                    dry = t
+                t += 1000.0
+            reach.append(round(end + 50000.0 if dry >= end - 1000.0 else dry))  # land right to its end: no limit
+        out[name] = reach
+    sx, sy = W(off_x, -off_y)
+    out["stack"] = not any((wet and wet(sx + ax, sy + ay)) or (taken and taken(sx + ax, sy + ay))
+                           for ax, ay in ((0, 0), (40000, 0), (-40000, 0), (0, 40000), (0, -40000)))
+    return out
 
 
 def plan(city: dict, o: dict) -> Plan:
@@ -361,6 +416,9 @@ def plan(city: dict, o: dict) -> Plan:
         px, py = W(normal_axis[0] * at, normal_axis[1] * at)
         dx, dy = c * axis[0] - s * axis[1], s * axis[0] + c * axis[1]
         back, ahead = room(px, py, -dx, -dy), room(px, py, dx, dy)
+        shore = (city.get("fw_shore") or {}).get(name)
+        if shore:  # only open water beyond: the freeway ends at the shore (shore_reach), as at the map's edge
+            back, ahead = min(back, shore[0]), min(ahead, shore[1])
         reach_of[name] = (back, ahead)
         sides_of[name] = tuple(span if r >= end + 2000 else max(0.0, min(span, r - fade - 2000)) for r in (back, ahead))
     for name, normal_axis, at, axis in mains:
@@ -423,7 +481,8 @@ def plan(city: dict, o: dict) -> Plan:
             done.append(t)
     sx, sy = W(*stack_at)
     near_edge = box and min(room(sx, sy, 1, 0), room(sx, sy, -1, 0), room(sx, sy, 0, 1), room(sx, sy, 0, -1)) < STACK_FLY + 20000
-    if two and not (hard and hard(sx, sy)) and not near_edge:  # its flyovers reach 1.15 km out: all on the map
+    if two and not (hard and hard(sx, sy)) and not near_edge and (city.get("fw_shore") or {}).get("stack", True):
+        # (its flyovers reach 1.15 km out: all on the map, and on land)
         cx, cy = W(*stack_at)
         f = Frame(cx, cy, -s, c)  # a along the north-south freeway (upper), b along the east-west one
         ns = lambda a: lift(a + stack_at[1], a, sides_of["ns"])

@@ -1091,6 +1091,10 @@ def register(api) -> None:
         airports = cg.plan_airports(towns, lambda x, y: st.sample_grid(ter, x, y), wet, keep,
                                     (tuple(ter["min"]), tuple(ter["max"])), opts) if ter.get("heights") else []
         airport_builds: dict = {}
+        # a freeway ends at the shore when only open water lies beyond it, and each city's streets give way to its
+        # neighbours' ramps where those reach over its land
+        cg.shore_plan(towns, opts, wet)
+        cg.share_freeways(towns, opts)
         progress(2, "Laying roads, freeways, bridges and runways")
         actors = cg.generate(towns, road_ground, folder, int(seed), opts, keep, wet, bridges, airports, airport_builds)
         if not base:  # our own terrain is cut and filled to the roads (a scanned landscape never is)

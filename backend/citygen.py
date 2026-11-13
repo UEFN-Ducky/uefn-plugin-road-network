@@ -1233,6 +1233,11 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
         edges = [e for e in edges if not fw.street_blocked(nodes[e[0]], nodes[e[1]], HALF.get(e[2], 500.0))]
         used = {n for e in edges for n in e[:2]}
         nodes = {n: p for n, p in nodes.items() if n in used}
+    if city.get("fw_near"):  # ... and to a neighbouring city's ramps and frontage roads where they reach over its land
+        cut = _near_cuts(city)
+        edges = [e for e in edges if not cut(nodes[e[0]], nodes[e[1]], HALF.get(e[2], 500.0))]
+        used = {n for e in edges for n in e[:2]}
+        nodes = {n: p for n, p in nodes.items() if n in used}
     # a street keeps one width between junctions: where two blocks of different kinds meet at a plain point
     # (no side street left there) the narrower takes the wider's kind, so no road steps in width mid-block
     at: dict = {}
@@ -1782,7 +1787,7 @@ def freeway_plan(city: dict, opts: dict | None = None):
     from . import freeways
     o = city_options(city, opts)
     key = repr((city.get("name"), city["x"], city["y"], city["radius"], city.get("seed"), city.get("map"),
-                city.get("turn"), city.get("shape"), city.get("yield_to"),
+                city.get("turn"), city.get("shape"), city.get("yield_to"), city.get("fw_shore"),
                 [o[k] for k in ("freeways", "block_m", "block_ratio", "downtown", "normal", "collector_every", "core_roads",
                                 "neighbourhood_roads", "canals")],
                 [(a.get("center"), a.get("heading"), a.get("type")) for a in city.get("airports") or []],
@@ -2112,20 +2117,51 @@ def gate(nodes: dict, city: dict, toward: tuple):
 JOIN_MAX_CM = 60000.0  # cities whose edges are closer than this (600 m) are joined by streets
 JOIN_ROADS = 5  # ... this many where they touch, one where they are at the limit: the closer, the more
 JOIN_LONGEST_CM = 45000.0  # a joining street is never longer than the gap plus this
+JOIN_GRADE = 0.08  # ... never steeper than this from one city's level to the other's
+JOIN_OFF_IC_CM = 15000.0  # ... and never starts within 150 m of a freeway interchange
 
 
-def joins(cities: list, graphs: list, opts: dict | None = None, wet=None, keep: list | None = None) -> list:
+def joins(cities: list, graphs: list, opts: dict | None = None, wet=None, keep: list | None = None, ground=None) -> list:
     """Streets between cities that lie close together or touch: the closer two cities are, the more streets run
     from one to the other (JOIN_ROADS where they touch, one at JOIN_MAX_CM), spread across the side where they
-    face each other. Each joins a street corner at the edge of one city to one of the other, straight, never
-    through water or a keep zone. Returns [(i, j, node of i, node of j, [mid x, mid y])]: each city lays its own
-    half, from its corner to the middle."""
+    face each other. Each joins a street corner at the edge of one city to one of the other, straight. One is
+    built only where a real street could be: never through or beside water, a keep zone, a freeway's ramps or
+    an interchange (of any city), and never steeper than JOIN_GRADE from one city's level to the other's.
+    Returns [(i, j, node of i, node of j, [mid x, mid y])]: each city lays its own half, from its corner to the
+    middle (level_joins then makes the two halves one even street)."""
+    o = options(opts)
     out = []
     edge_nodes = []
     for nodes, edges in graphs:
         used = {n for e in edges for n in e[:2]}
         edge_nodes.append([(n, nodes[n]) for n in nodes if n in used and isinstance(n, tuple) and len(n) == 2
                            and isinstance(n[0], int)])
+    plans = [freeway_plan(c, o) for c in cities]
+    half = HALF.get(CITY_STREET.get(o["neighbourhood_roads"], o["neighbourhood_roads"]), 875.0)
+
+    def fits(p, q, L) -> bool:
+        ux, uy = (q[0] - p[0]) / L, (q[1] - p[1]) / L
+        steps = max(2, int(L // 500))
+        for t in range(steps + 1):
+            x, y = p[0] + (q[0] - p[0]) * t / steps, p[1] + (q[1] - p[1]) * t / steps
+            # the street, its sidewalks and the houses along it: dry 30 m to either side as well
+            if wet and (wet(x, y) or wet(x - uy * 3000, y + ux * 3000) or wet(x + uy * 3000, y - ux * 3000)):
+                return False
+            if t % 4 == 0 and in_keep(keep, x, y, 2000):
+                return False
+        for fw in plans:
+            if not fw.lines:
+                continue
+            if fw.street_blocked(p[:2], q[:2], half):
+                return False  # a ramp or an at-grade freeway would cut it
+            if any(min(math.dist(p[:2], ic["at"]), math.dist(q[:2], ic["at"])) < JOIN_OFF_IC_CM for ic in fw.interchanges):
+                return False  # a corner inside an interchange is no place for one more street
+        if ground:  # the two cities may stand on different levels: a street, not a ski jump
+            za, zb = ground(p[0], p[1]), ground(q[0], q[1])
+            if za is not None and zb is not None and abs(za - zb) / L > JOIN_GRADE:
+                return False
+        return True
+
     for i in range(len(cities)):
         for j in range(i + 1, len(cities)):
             a, b = cities[i], cities[j]
@@ -2149,27 +2185,82 @@ def joins(cities: list, graphs: list, opts: dict | None = None, wet=None, keep: 
             taken: set = set()
             for k in range(n):
                 at = wide * ((k + 0.5) / n - 0.5)
-                near_a = sorted((r for r in mine if abs(r[1] - at) <= slot / 2), key=lambda r: -r[0])[:4]
-                near_b = sorted((r for r in theirs if abs(r[1] - at) <= slot / 2), key=lambda r: r[0])[:4]
-                best = None
-                for ra in near_a:
-                    for rb in near_b:
-                        L = math.dist(ra[3][:2], rb[3][:2])
-                        if (ra[2], rb[2]) in taken or not 1500.0 <= L <= max(0.0, gap) + JOIN_LONGEST_CM or rb[0] <= ra[0]:
-                            continue
-                        if best is None or L < best[0]:
-                            best = (L, ra, rb)
-                if not best:
-                    continue
-                L, ra, rb = best
-                p, q = ra[3], rb[3]
-                steps = max(2, int(L // 2000))
-                line = [(p[0] + (q[0] - p[0]) * t / steps, p[1] + (q[1] - p[1]) * t / steps) for t in range(steps + 1)]
-                if (wet and any(wet(x, y) for x, y in line)) or any(in_keep(keep, x, y, 2000) for x, y in line):
-                    continue
-                taken.add((ra[2], rb[2]))
-                out.append((i, j, ra[2], rb[2], [round((p[0] + q[0]) / 2), round((p[1] + q[1]) / 2)]))
+                near_a = sorted((r for r in mine if abs(r[1] - at) <= slot / 2), key=lambda r: -r[0])[:5]
+                near_b = sorted((r for r in theirs if abs(r[1] - at) <= slot / 2), key=lambda r: r[0])[:5]
+                pairs = sorted(((math.dist(ra[3][:2], rb[3][:2]), ra, rb) for ra in near_a for rb in near_b
+                                if ra[2] not in taken and rb[2] not in taken and rb[0] > ra[0]), key=lambda r: r[0])
+                for L, ra, rb in pairs:  # the shortest pair of corners a street can really run between
+                    if not 1500.0 <= L <= max(0.0, gap) + JOIN_LONGEST_CM or not fits(ra[3], rb[3], L):
+                        continue
+                    p, q = ra[3], rb[3]
+                    taken.update((ra[2], rb[2]))
+                    out.append((i, j, ra[2], rb[2], [round((p[0] + q[0]) / 2), round((p[1] + q[1]) / 2)]))
+                    break
     return out
+
+
+def level_joins(actors: dict, cities: list, rows: list) -> int:
+    """The two halves of a joining street meet at ONE height. Each city's roads are graded on their own, and two
+    cities on different levels (each on its own flattened ground, say) left a step in the middle of every joining
+    street, up to 24 m (Nov 12 2026). The street now runs at one even grade from one city's corner to the other's:
+    both halves end at the height that grade gives the middle. Returns how many streets were levelled."""
+    done = 0
+    for i, j, _ni, _nj, mid in rows:
+        halves = []
+        for c in (cities[i], cities[j]):
+            a = actors.get(f"{c['name']} Roads")
+            end = next((p for p in (a or {}).get("points", ()) if abs(p["x"] - mid[0]) < 2 and abs(p["y"] - mid[1]) < 2), None)
+            segs = [s for s in a["segments"] if end["i"] in (s["a"], s["b"])] if end else []
+            if len(segs) != 1:
+                break  # (not laid after all: the water took it)
+            by = {p["i"]: p for p in a["points"]}
+            far = by[segs[0]["b"] if segs[0]["a"] == end["i"] else segs[0]["a"]]
+            halves.append((by, end, far, segs[0], math.hypot(far["x"] - end["x"], far["y"] - end["y"])))
+        if len(halves) != 2:
+            continue
+        (by_a, end_a, far_a, seg_a, len_a), (by_b, end_b, far_b, seg_b, len_b) = halves
+        end_a["z"] = end_b["z"] = far_a["z"] + (far_b["z"] - far_a["z"]) * len_a / ((len_a + len_b) or 1.0)
+        st.retangent(by_a, seg_a)
+        st.retangent(by_b, seg_b)
+        done += 1
+    return done
+
+
+def share_freeways(cities: list, opts: dict | None = None) -> None:
+    """Each city learns where its neighbours' freeways, ramps and frontage roads run low over its land (sets
+    city['fw_near']: [[x, y, half width]] every few metres along them, within the city's reach): its own streets
+    give way to those as they do to its own freeway, so no street is laid through a neighbour's ramp."""
+    for c in cities:
+        c.pop("fw_near", None)
+    for c in cities:
+        low = freeway_plan(c, opts).low_points()
+        for u in cities:
+            if u is c or not low:
+                continue
+            reach = u["radius"] * 1.3 + 30000
+            rows = [[x, y, h] for x, y, h in low if math.hypot(x - u["x"], y - u["y"]) < reach]
+            if rows:
+                u.setdefault("fw_near", []).extend(rows)
+
+
+def _near_cuts(city: dict):
+    """(p, q, half) -> True when a neighbour's low freeway part (city['fw_near']) runs over or into the street."""
+    cells: dict = {}
+    for x, y, h in city.get("fw_near") or ():
+        cells.setdefault((int(x // 5000), int(y // 5000)), []).append((x, y, h))
+
+    def cut(p, q, half: float) -> bool:
+        L = math.dist(p[:2], q[:2])
+        n = max(1, int(L // 1000))
+        for k in range(n + 1):
+            x, y = p[0] + (q[0] - p[0]) * k / n, p[1] + (q[1] - p[1]) * k / n
+            for gx in (int(x // 5000) - 1, int(x // 5000), int(x // 5000) + 1):
+                for gy in (int(y // 5000) - 1, int(y // 5000), int(y // 5000) + 1):
+                    for px, py, h in cells.get((gx, gy), ()):
+                        if math.hypot(px - x, py - y) < half + 200 + h:
+                            return True
+        return False
+    return cut
 
 
 JOIN_LOT_D_CM = 3000.0  # a house lot along a joining street: 16 m of frontage, 30 m deep
@@ -2202,6 +2293,21 @@ def join_lots(city: dict, cities: list, opts: dict | None = None, wet=None, keep
                 yaw = math.degrees(math.atan2(-ux * s, uy * s))  # +X faces the street
                 lots.append([round(cx), round(cy), round(yaw, 1), round(LOT_W_CM), round(JOIN_LOT_D_CM), round(fx), round(fy), "", False])
     return lots, corridors
+
+
+def shore_plan(cities: list, opts: dict | None = None, wet=None) -> None:
+    """Where each city's freeways must end: at the shore when only open water lies beyond, and before a
+    neighbouring city's land (sets city['fw_shore'], see freeways.shore_reach). Before the streets: the freeway
+    plan and everything laid round it follow."""
+    from . import freeways
+    for c in cities:
+        others = [u for u in cities if u is not c and math.hypot(u["x"] - c["x"], u["y"] - c["y"]) < (u["radius"] + c["radius"]) * 1.3 + 400000]
+        taken = (lambda x, y, c=c, others=others: zone_share(c, x, y) > 1.0 and any(zone_share(u, x, y) <= 1.02 for u in others))             if others else None
+        got = freeways.shore_reach(c, city_options(c, opts), wet, taken) if wet or taken else None
+        if got:
+            c["fw_shore"] = got
+        else:
+            c.pop("fw_shore", None)
 
 
 def links(cities: list) -> list:
@@ -2527,7 +2633,8 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
     for c in cities:
         c.pop("joins", None)
     join_kind = CITY_STREET.get(o["neighbourhood_roads"], o["neighbourhood_roads"])
-    for k, (i, j, ni, nj, mid) in enumerate(joins(cities, graphs, o, wet, keep)):
+    join_rows = joins(cities, graphs, o, wet, keep, ground)
+    for k, (i, j, ni, nj, mid) in enumerate(join_rows):
         joined.add((i, j))
         for me, other, node in ((i, j, ni), (j, i, nj)):
             nodes, edges = graphs[me]
@@ -2649,6 +2756,7 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
     if wet or any(canal_lines(c, o) for c in cities):  # cross roads added after city_graph bridge or stop too
         graphs = [over_water(n, e, water_of(c, o, wet), bridges=bridges, stubs=False) for c, (n, e) in zip(cities, graphs)]
     out = {f"{c['name']} Roads": build_actor(n, e, ground, folder) for c, (n, e) in zip(cities, graphs)}
+    level_joins(out, cities, join_rows)  # each city graded its half on its own: the two meet at one height
     for ap in airports or []:  # airports: the airside graph (runways + taxiways) and the landside roads
         from . import airport
         city_nodes = next((n for c, (n, _e) in zip(cities, graphs) if c["name"] == ap["city"]), {})
@@ -3310,6 +3418,46 @@ def _demo() -> None:
         assert p[0] < mid[0] < q[0] and math.dist(p, q) < 8000 + JOIN_LONGEST_CM and abs(mid[1]) < 60000, (p, mid, q)
     assert len({(ni, nj) for _i, _j, ni, nj, _m in close}) == len(close), "each street joins its own two corners"
     assert not joins(cs, gs, {"freeways": "no"}, wet=lambda x, y: 60000 < x < 68000), "never through water"
+    assert len(joins(cs, gs, {"freeways": "no"}, wet=lambda x, y: y > 20000)) < len(close), "nor along a shore"
+    # two cities on different levels: joined while a street can climb it, not when it would be a ski jump
+    assert len(joins(cs, gs, {"freeways": "no"}, ground=lambda x, y: 0.0 if x < 64000 else 1200.0)) == len(close)
+    assert not joins(cs, gs, {"freeways": "no"}, ground=lambda x, y: 0.0 if x < 64000 else 6000.0), "too steep to join"
+    # ... and its two halves, each graded with its own city, meet at one height: an even grade corner to corner
+    halves = {"A Roads": {"points": [_point(0, 0, 0, 1700, 0, 875), _point(1, 20000, 0, 1650, 0, 875)],
+                          "segments": [_segment(2, 0, 1, "2S", "/G")]},
+              "B Roads": {"points": [_point(0, 50000, 0, -1300, 0, 875), _point(1, 20000, 0, -500, 0, 875)],
+                          "segments": [_segment(2, 0, 1, "2S", "/G")]}}
+    assert level_joins(halves, cs, [(0, 1, None, None, [20000, 0])]) == 1
+    za, zb = halves["A Roads"]["points"][1]["z"], halves["B Roads"]["points"][1]["z"]
+    assert za == zb and abs(za - (1700 - 3000 * 0.4)) < 1e-6, (za, zb)
+    assert level_joins(halves, cs, [(0, 1, None, None, [99999, 0])]) == 0, "a street the water took is left alone"
+    # a neighbour's ramp running low over this city's land: the street it would cut gives way
+    cut = _near_cuts({"fw_near": [[5000, 0, 650]]})
+    assert cut((5000, -3000), (5000, 3000), 525.0) and cut((3800, -3000), (3800, 3000), 525.0)
+    assert not cut((9000, -3000), (9000, 3000), 525.0) and not _near_cuts({})((0, 0), (1, 1), 500.0)
+    # a freeway never runs out over a lake to end in the water: it stops at the shore, back at grade; a river with
+    # land beyond it is crossed as before
+    from . import freeways as _fw
+    lake_city = {"name": "Lake", "x": 0, "y": 0, "radius": 120000, "seed": 4, "style": "grid", "turn": 0.0}
+    lake = lambda x, y: y > 60000
+    shore_plan([lake_city], None, lake)
+    assert lake_city["fw_shore"]["ns"][1] <= 60000 < lake_city["fw_shore"]["ns"][0], lake_city["fw_shore"]
+    held_back = freeway_plan(lake_city)
+    assert held_back.lines and max(p[1] for ln in held_back.lines if ln["cls"] == "freeway" for p in ln["points"]) <= 60000
+    assert min(p[1] for ln in held_back.lines if ln["cls"] == "freeway" for p in ln["points"]) < -150000, "the dry end runs on"
+    river_city = dict(lake_city, name="River")
+    river_city.pop("fw_shore")
+    shore_plan([river_city], None, lambda x, y: 60000 < y < 66000)
+    assert min(river_city["fw_shore"]["ns"]) > 150000, "land beyond the water: the freeway bridges it"
+    assert _fw.shore_reach(lake_city, options(), None) is None and "fw_shore" not in (shore_plan([river_city], None, None) or river_city)
+    # ... and it ends before a neighbouring city's land: none of it runs through the other city
+    host = {"name": "Host", "x": 0, "y": 0, "radius": 120000, "seed": 4, "style": "grid", "turn": 0.0}
+    guest = {"name": "Guest", "x": 48000, "y": 190000, "radius": 60000, "seed": 9, "style": "grid", "shape": [1.0] * SHAPE_POINTS}
+    through = [p for ln in freeway_plan(dict(host)).lines if ln["cls"] == "freeway" for p in ln["points"] if zone_share(guest, p[0], p[1]) <= 1.0]
+    shore_plan([host, guest], None, None)
+    after = [p for ln in freeway_plan(host).lines if ln["cls"] == "freeway" for p in ln["points"]]
+    assert through and after and not any(zone_share(guest, p[0], p[1]) <= 1.0 for p in after), (len(through), len(after))
+    assert "fw_shore" not in guest or guest["fw_shore"], "the small one has no freeway to limit"
     # ... and the land along a joining street fills in with house lots, outside both cities' own edges
     cs2 = [{**cs[0], "joins": [[60000, 0, 80000, 0]]}, {**cs[1], "x": 220000}]
     jl, corridors = join_lots(cs2[0], cs2)

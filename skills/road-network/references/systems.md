@@ -247,6 +247,9 @@ Three layers on one road graph: regional (`Highways`, city to city), urban freew
 BEFORE the blocks) and local streets (`<City> Roads`). Per city, `freeways.plan`:
 - **Mainlines:** from 600 m radius a north-south freeway on the city grid, mid-block at the edge of downtown
   (never on a street); from 2 km radius an east-west one too, and a **directional stack** where they cross.
+- **Ends at the shore:** a freeway crosses a river or a bay to the land beyond, but with only open water ahead it
+  ends at the shore, back at grade (`freeways.shore_reach`, kept on the city as `fw_shore` by
+  `citygen.shore_plan` before the streets are laid). No stack is built where its place is in the water.
 - **Levels from clearance, not offsets:** `LEVEL_CM` 7.5 m (5.5 m vehicles + deck). Streets level 0, freeway
   viaduct level 1 over the whole city (streets keep running under it, ED deck mesh), back to grade outside it at 4 %.
   At a stack the north-south freeway is level 2 and the left-turn flyovers are levels 3 and 4.
@@ -454,8 +457,18 @@ After an edit to one city, that city is placed again and everything else is put 
   tie). The smaller city's streets, lots and freeways stop 30 m short of the bigger one's edge, so no street is
   laid on another and nothing is built twice. The layers read the shared land as the bigger city's districts.
 - Cities whose edges are closer than 600 m are joined street to street (`citygen.joins`): five streets where
-  they touch, one at 600 m, spread across the side where they face each other, never through water or a keep
-  zone. Each city lays its own half to the middle. No highway runs between two cities joined this way.
+  they touch, one at 600 m, spread across the side where they face each other. Each joins the shortest pair of
+  street corners a real street can run between: never through water or within 30 m of it, never through a keep
+  zone, a ramp or an at-grade freeway of any city, never from a corner within 150 m of an interchange
+  (`JOIN_OFF_IC_CM`), and never steeper than 8 % from one city's level to the other's (`JOIN_GRADE`). A slot
+  with no such pair gets no street. No highway runs between two cities joined this way.
+- Each city lays its own half of a joining street to the middle and grades it with its own roads, so
+  `citygen.level_joins` then sets both halves' ends to one height: the street runs at one even grade from
+  corner to corner. Two cities on different levels never leave a step in the middle.
+- A city's streets give way to a neighbour's ramps, frontage roads and at-grade freeway where those reach over
+  its land (`citygen.share_freeways` sets the city's `fw_near` from the neighbour's `Plan.low_points`), the
+  same as to its own. A freeway ends before a neighbouring city's land (`citygen.shore_plan`): it never runs
+  through the neighbour and takes its streets.
 - The land along a joining street fills in with house lots (`citygen.join_lots`), and that corridor counts as
   housing for every layer (the city's `rezoned`), so no forest grows there.
 
