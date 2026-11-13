@@ -1611,6 +1611,7 @@ const WHERE_OPTS = [
   ["normal", "Normal city", "Between downtown and housing", "mixed"],
   ["housing", "Housing", "Outer ring of each city", "pin"],
   ["industrial", "Industrial zone", "One wedge of each city's outer rings", "wrench"],
+  ["shipyards", "Shipyards", "On every shipyard's paved platform", "wrench"],
 ];
 const BUILDING_FORMS = [["box", "Block"], ["slab", "Slab"], ["tower", "Tower"], ["podium_tower", "Podium + tower"],
   ["stepped", "Stepped"], ["round", "Round"], ["round_podium", "Podium + round"], ["twin", "Twin towers"], ["spire", "Spire"],

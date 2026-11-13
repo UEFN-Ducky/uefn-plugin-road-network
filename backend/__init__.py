@@ -1086,7 +1086,13 @@ def register(api) -> None:
         bridges: list = []
         progress(1, "Reading the shorelines, siting shipyards and airports")
         water = waterfront.analyze(ter)  # ShorelineAnalyzer: waterbodies and shorelines for the planner
-        cg.plan_shipyards(towns, water, opts)  # shipyards are districts: planned before the streets
+        # shipyards are districts: planned before the streets. On a world that makes its own ground every yard
+        # is one level platform at the water, cut into the terrain here (the shore is then the yard's quay)
+        cg.plan_shipyards(towns, water, opts, None if base else (lambda x, y, t=ter: st.sample_grid(t, x, y)))
+        if not base and any(y.get("z") is not None for t in towns for y in t.get("shipyards") or []):
+            ter = cg.cut_yards(ter, towns, whole=True)
+            wet = cg.wet_from(ter)
+            water = waterfront.analyze(ter)
         # airports too: site (flat, dry, into the wind, outside the cities), then the streets keep clear of them
         airports = cg.plan_airports(towns, lambda x, y: st.sample_grid(ter, x, y), wet, keep,
                                     (tuple(ter["min"]), tuple(ter["max"])), opts) if ter.get("heights") else []
@@ -1752,6 +1758,7 @@ def register(api) -> None:
                                          terrain, actors, keep, cut], protocol=5)).hexdigest()
         if _PREVIEW_CACHE.get("key") != key:  # ponytail: one entry, the world being looked at
             ground = st.grid_sampler(terrain) if terrain.get("heights") else (lambda x, y: 0.0)
+            ground = cg.on_yards(cities, ground)  # (a shipyard's platform is level right to its edges)
             # the whole city, unit by unit: what no change can reach is put back as it stood (pl.PreviewMemo), so an
             # edit to one city places that city again and leaves every other building and tree where it was
             memo = _PREVIEW_MEMO.setdefault(nid, pl.PreviewMemo())
@@ -1795,11 +1802,19 @@ def register(api) -> None:
                 # ground was cut down to streets that were no longer there, 100 m off after a new seed. Every
                 # block with a complex in it became a pit, and the preview kept it (its key never saw them).
                 plans = private_plans(nid, cities)
-                rk = hashlib.sha1(pickle.dumps([terrain, actors, [s for _c, s in plans]], protocol=5)).hexdigest()
+                rk = hashlib.sha1(pickle.dumps([terrain, actors, [s for _c, s in plans],
+                                                [c.get("shipyards") for c in cities]], protocol=5)).hexdigest()
                 if _GROUND.get("key") != rk:
                     locked: set = set()
-                    roads = cg.grade_to_roads(cg.refine(terrain, cg.HEIGHTMAP_RES), {
-                        str(k): {"points": p, "segments": s} for k, (p, s) in enumerate(actors)}, locked)
+                    # (first of all every shipyard's platform, exact to the pixel: citygen.cut_yards. Its graving
+                    # docks are cut with it, straight-walled: laid as a road a dock was graded 30 m out to either
+                    # side, and the ground under the halls beside it went with that)
+                    settled = any(y.get("z") is not None for c in cities for y in c.get("shipyards") or [])
+                    dock = cg.ROAD_MESH["DK"].split("/")[-1]
+                    roads = cg.grade_to_roads(cg.cut_yards(cg.refine(terrain, cg.HEIGHTMAP_RES), cities), {
+                        str(k): {"points": p, "segments": [g for g in s if not (
+                            settled and str(g.get("mesh") or "").split("/")[-1] == dock)]}
+                        for k, (p, s) in enumerate(actors)}, locked)
                     public = roads
                     private = private_streets(plans, public)
                     if private:  # after the public roads, which keep every cell of their own where the two meet
@@ -1853,6 +1868,8 @@ def register(api) -> None:
             if fit:
                 fit["roads"] = road_fit(fit["ground"], actors, terrain)
                 for name, v in placed.items():  # the developments' pieces stand on the cut ground too (stalls on their slab)
+                    if v.get("keep_z"):
+                        continue  # (a shipyard's: built at the platform's level, on the bed or afloat)
                     if name == "Garden trees" or v.get("kind") == "site" and v.get("role") == "site":
                         # (an apron lies on its road's sidewalk: the ground there is ROAD_SINK_CM under the road)
                         up = 9 if v.get("mesh") == "SM_Kit_ParkingStall" else cg.ROAD_SINK_CM + 6 if v.get("on_road") else 0
@@ -3526,7 +3543,7 @@ def register(api) -> None:
     def road_network_pcg_layer_save(net_id: str = "", layer: str = "", layer_id: str = "") -> dict:
         """Create or change one PCG layer (the person's own or an AI's: layers are data, never plugin code).
         layer: JSON {name, kind (scatter | foliage | along_roads | at_junctions | buildings), where (outside |
-        cities | downtown | normal | housing | industrial | everywhere), meshes [{path, weight}] (Content Browser
+        cities | downtown | normal | housing | industrial | shipyards | everywhere), meshes [{path, weight}] (Content Browser
         paths: a layer WITH meshes places exactly those, weighted; without, the kit piece for its role), density
         (per 100 m2), cover (forest share), reach (city radii), spacing_m, setback_m, scale_min, scale_max,
         sink_cm, footprint, road_clear_m, avoid_roads, avoid [earlier layer names], self_prune, upright,

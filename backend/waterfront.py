@@ -83,7 +83,16 @@ KINDS = {
     "scrap": ("SM_Kit_ScrapPile", [16, 16, 5], "mix:red:bg:0.5", "Scrap yards"),
     "dock_gate": ("SM_Kit_Seawall", [1, 0.6, 1], "mix:red:fg-dim:0.5", "Dock gates"),
     "gatehouse": ("SM_Kit_Gatehouse", [8, 6, 4], "fg-dim", "Gatehouses"),
+    "quay_wall": ("SM_Kit_Seawall", [1, 0.6, 1], "mix:fg-dim:bg:0.25", "Shipyard quay walls"),
+    "tug": ("SM_Kit_Boat", [9, 3, 2], "mix:fg:blue:0.15", "Tugboats"),
+    "tug_float": ("SM_Kit_FloatDock", [1, 1, 0.5], "mix:fg-dim:bg:0.15", "Tug stations"),
 }
+# a shipyard's own pieces keep the height the yard built them at: the cut ground under a piece is not where it
+# stands (a quay wall on the bed, a ship afloat, a gantry over its dock, a fence on the platform's very edge)
+YARD_KINDS = ("ship_hull", "goliath", "portal_crane", "tower_crane", "crane_rail", "keel", "hardstand", "steel_stack",
+              "rail", "float_drydock", "tank", "fence", "boat_lift", "offshore_module", "slipway", "scrap", "dock_gate",
+              "gatehouse", "quay_wall", "tug", "tug_float")
+NO_PAD = ("hardstand", "crane_rail", "tug_float")  # ... and these level no ground under them (pcg_layers.pads)
 TYPES = ("natural", "beach", "residential", "commercial", "marina", "industrial", "public")
 
 
@@ -433,7 +442,8 @@ def plan(city: dict, analysis: dict, lots: list, ring_of, industrial, ground, no
         return {"lots": lots, "rows": [], "segments": [], "developments": [], "report": None, "shipyards": []}
     segments = segments_for(city, analysis, ring_of, industrial, population)
     yards = city.get("shipyards") or []
-    in_yard = lambda s: any(shipyard.inside(y, s["x"], s["y"], 3000) for y in yards)
+    off_limits = yards + (city.get("shipyards_near") or [])  # its own yards and a neighbouring city's
+    in_yard = lambda s: any(shipyard.reserved(y, s["x"], s["y"], 3000) for y in off_limits)
     # no private lot on the public water's edge; residential keeps its yards but not in the water margin
     public = [s for seg in segments if seg["type"] in ("commercial", "beach", "public", "industrial", "marina")
               for s in seg["samples"]]
@@ -566,15 +576,25 @@ def plan(city: dict, analysis: dict, lots: list, ring_of, industrial, ground, no
         elif t == "wetland":
             for a in S[::2]:
                 out.row(a["x"], a["y"], sea - 40, _yaw(a["tx"], a["ty"]), STEP * 2 / 100, 20, 1, "wetland")
-    # shipyards: dedicated industrial districts (their land is theirs, no city lot inside)
+    # shipyards: dedicated industrial districts (their land is theirs, no city lot inside), and nothing else of
+    # the waterfront stands on one or in the basin along its quay
+    if off_limits:
+        theirs = lambda x, y: any(shipyard.reserved(s, x, y, 1000) or shipyard.zone(s, *shipyard.uv(s, x, y)) == "basin"
+                                  for s in off_limits)
+        out.rows = [r for r in out.rows if not theirs(r[0], r[1])]
+        out.lots = [b for b in out.lots if not theirs(b[0], b[1])]
+        keep = [q for q in keep if not any(shipyard.reserved(s, q[0], q[1], 4000) for s in off_limits)]
     yard_reports = []
     for y in yards:
         got = shipyard.build(y, ground, sea, nodes)
         out.rows += got["rows"]
         out.lots += got["lots"]
-        keep = [q for q in keep if not shipyard.inside(y, q[0], q[1], 1000)]
+        # (a lot's own pad would stand in the bank's way: 40 m clear of the yard's land)
+        keep = [q for q in keep if not shipyard.reserved(y, q[0], q[1], 4000)]
         yard_reports.append({"type": y["type"], "docks": len(y.get("docks") or []), "site_m": [round(y["L"] / 100),
-                             round(y["D"] / 100)], "flow_m": got["flow"], "report": got["report"]})
+                             round(y["D"] / 100)], "flow_m": got["flow"], "report": got["report"],
+                             **({"platform": shipyard.outline(y), "out_over_water_m": round(y.get("out", 0) / 100)}
+                                if y.get("z") is not None else {})})
         devs.append({"type": f"{y['type']} shipyard", "docks": len(y.get("docks") or [])})
     # claimed land: no lot under a new waterfront building
     for b in out.lots:
@@ -619,7 +639,9 @@ def layers(cities: list) -> dict:
     for kind, rows in by.items():
         mesh, box, tint, name = KINDS[kind]
         out[name] = {"kind": "site", "role": "site", "mesh": mesh, "box_m": box, "tint": tint, "count": len(rows),
-                     "shown": len(rows), "points": rows, "meshes": [], "row": "x, y, z, yaw, sx, sy, sz"}
+                     "shown": len(rows), "points": rows, "meshes": [], "row": "x, y, z, yaw, sx, sy, sz",
+                     # (a yard's paving and crane rails level nothing: citygen.cut_yards made the whole platform)
+                     **({"pad": False} if kind in NO_PAD else {}), **({"keep_z": True} if kind in YARD_KINDS else {})}
     return out
 
 

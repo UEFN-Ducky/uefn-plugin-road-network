@@ -114,7 +114,7 @@ ROLE_FORMS = {
 # Roles the urban planner places (urban.py): their layers build only on the planned sites, never at random
 PLANNED_ROLES = ("mall", "hospital", "school", "police", "fire_station", "park", "gas_station", "civic", "utility",
                  "transit")
-WHERE = ("outside", "cities", "downtown", "normal", "housing", "industrial", "everywhere")
+WHERE = ("outside", "cities", "downtown", "normal", "housing", "industrial", "shipyards", "everywhere")
 INDUSTRIAL_SPREAD = 75.0  # degrees: each city's industrial zone is one wedge of its outer rings
 
 # name: (default, min, max)
@@ -400,6 +400,9 @@ def masks(cities: list, where: str) -> tuple:
     Rings come from each city's districts; the industrial wedge is cut out of normal and housing."""
     if where == "everywhere" or not cities:
         return None, []
+    if where == "shipyards":  # every shipyard's paved platform
+        from . import shipyard
+        return [shipyard.outline(y) for c in cities for y in c.get("shipyards") or []], []
     r = {c["name"]: rings(c) for c in cities}
     wedges = [_wedge(c) for c in cities]
     if where == "outside":
@@ -977,6 +980,10 @@ def _where_test(where: str, cities: list):
     outline reaches from a city skips that city's outline (most forest candidates are)."""
     if where == "everywhere" or not cities:
         return lambda x, y: True
+    if where == "shipyards":
+        from . import shipyard
+        yards = [s for c in cities for s in c.get("shipyards") or []]
+        return lambda x, y: any(shipyard.zone(s, *shipyard.uv(s, x, y)) == "platform" for s in yards)
     # a block the person rezoned (city 'rezoned': [[polygon, zone]]) is that zone whatever ring it lies in
     # (the bigger city first: where two overlap, the land is the bigger one's, citygen.yield_plan)
     rows = [(c, c["x"], c["y"], *rings(c),
@@ -1167,7 +1174,7 @@ def _city_sig(c: dict) -> tuple:
     changed. Each part: {a row as text: where that row is ((x, y) or a polygon or a line)}."""
     num = lambda v: round(float(v), 2) if isinstance(v, (int, float)) and not isinstance(v, bool) else v
     frame = zlib.crc32(repr([num(c.get(k)) for k in ("x", "y", "radius", "seed", "spin")]
-                            + [c.get(k) for k in ("shape", "districts")]).encode())
+                            + [c.get(k) for k in ("shape", "districts", "shipyards")]).encode())
     parts = ({repr(r): [r[:2]] for r in c.get("lots") or []},
              {repr(b): b[4] for b in c.get("blocks") or [] if len(b) > 4},
              {repr(z): z[0] for z in c.get("rezoned") or []},
@@ -1307,6 +1314,10 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
     # builds along road frontage (mansions, offices) leaves them alone too
     parks = [(b[4], min(p[0] for p in b[4]), min(p[1] for p in b[4]), max(p[0] for p in b[4]), max(p[1] for p in b[4]))
              for c in cities for b in c.get("blocks") or [] if len(b) > 4 and b[2] == "park" and len(b[4]) > 2]
+    # a shipyard's platform and the bank round it are the yard's: only its own pieces, a layer drawn for an area
+    # there, or a layer set to the shipyards stand on them (no forest on the hardstand, no street lamp in a dock)
+    from . import shipyard
+    yards = [s for c in cities for s in c.get("shipyards") or [] if s.get("z") is not None]
     infill: list = []  # lots left empty because a building would stand on another or on a street: planted instead
     plan_roles = {row[7] for c in cities for row in c.get("lots") or [] if len(row) > 8 and row[8] is True}
     planned = lambda layer: layer["role"] in PLANNED_ROLES and layer["role"] in plan_roles
@@ -1398,6 +1409,19 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                     yaw = math.degrees(math.atan2(-ny, -nx))
                     cs.append((x + nx * back, y + ny * back, yaw, progress, side))
             units = [(("t", *t), tile_box(t), cs) for t, cs in sorted(by_tile.items())]
+            if building:
+                # ... and, first, every lot a plan drew for exactly this kind of building (a shipyard's fabrication
+                # halls and warehouses, a port's sheds): built there, at that size. These layers place big sites
+                # along the roads and never looked at lots, so such a hall was never built at all.
+                drawn = []
+                for c in cities:
+                    cs = [(r[0], r[1], r[2], "lot", r[3], r[4], r[5], r[6], r[7], True,
+                           r[9] if len(r) > 9 and isinstance(r[9], str) else "")
+                          for r in c.get("lots") or [] if len(r) > 8 and r[8] is True and r[7] == layer["role"]]
+                    if cs:
+                        drawn.append((("p", str(c.get("name"))), (min(k[0] for k in cs) - 20000, min(k[1] for k in cs) - 20000,
+                                                                  max(k[0] for k in cs) + 20000, max(k[1] for k in cs) + 20000), cs))
+                units = drawn + units
         spacing = layer["spacing_m"] * 100
         r_base = BASE_RADIUS[layer["kind"]] * layer["footprint"]
         if building:  # its lot, not a fixed size: a skyscraper needs far more room than a shop
@@ -1463,6 +1487,9 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                     continue  # (a neighbourhood's own lots are already in the right place)
                 if layer["area"] and not inside(layer["area"], x, y):
                     continue  # outside the area this layer was drawn for
+                if yards and not lot_role and not layer["area"] and layer["where"] != "shipyards" and \
+                        any(shipyard.reserved(s, x, y, 500) for s in yards):
+                    continue  # a shipyard's own land
                 if parks and building and not lot and \
                         any(x0 <= x <= x1 and y0 <= y <= y1 and inside(poly, x, y) for poly, x0, y0, x1, y1 in parks):
                     continue  # a park block: nothing is built on it
@@ -1678,6 +1705,8 @@ def pads(previewed: dict, margin_cm: float = 400.0) -> list:
     for v in previewed.values():
         if v.get("on_road"):
             continue  # lies on a road's own sidewalk: nothing to level
+        if v.get("pad") is False:
+            continue  # (a shipyard's paving: its whole platform is levelled already, citygen.cut_yards)
         if v.get("kind") == "site" and v.get("role") == "site" and list((v.get("box_m") or [0, 0])[:2]) == [1, 1]:
             # a development's slab (car park, apron, field, pool, yard): level under it too, or it lies half
             # buried on a slope with its stalls draped over the hill beside it

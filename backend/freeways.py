@@ -316,12 +316,12 @@ def reserved(city: dict):
     """(x, y) -> True on land the city has given to an airport or a shipyard (freeways keep off it)."""
     from . import airport, shipyard
     from . import citygen as cg
-    aps, yards = city.get("airports") or [], city.get("shipyards") or []
+    aps, yards = city.get("airports") or [], (city.get("shipyards") or []) + (city.get("shipyards_near") or [])
     if not aps and not yards and not city.get("yield_to"):
         return None
     # (and the land of a bigger city this one overlaps: its freeway ends at that city's edge)
     return lambda x, y: (any(airport.inside(a, x, y, 3000) for a in aps)
-                         or any(shipyard.inside(y_, x, y, 2000) for y_ in yards) or cg.yielded(city, x, y, 5000.0))
+                         or any(shipyard.reserved(y_, x, y, 2000) for y_ in yards) or cg.yielded(city, x, y, 5000.0))
 
 
 def shore_reach(city: dict, o: dict, wet, taken=None) -> dict | None:

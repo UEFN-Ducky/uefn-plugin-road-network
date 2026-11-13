@@ -365,6 +365,32 @@ Shipyards are **dedicated industrial districts**, not waterfront lots. `citygen.
 streets: it uses the classified shoreline (`waterfront.segments_for`) and an estimated population. City streets
 inside a campus are removed, and no city lot stays inside one.
 
+**Every yard is one level rectangle at the water** (`shipyard.settle`, on worlds that make their own ground):
+made ground with a straight quay, 2.5 m above the water, paved from edge to edge.
+- It reaches out over the water by up to 30 % of the water's width and inland only to where the land has risen
+  12 m above it. A yard under a hill is mostly made ground in front of the hill, not a pit dug into it.
+- `citygen.cut_yards` cuts it into the terrain (`shipyard.shaped`): level on the platform, a basin dredged 9 m
+  deep for 90 m along the quay, the land beside it cut back to a bank no steeper than 0.6. The yard keeps that
+  bank as its own land (`bank`, up to 80 m): no street, lot or tree on it.
+- The paving is PCG: 'Yard hardstand' slabs of up to 100 m (`shipyard.paving`), open only over the docks and
+  slipways. Everything else of the yard stands on them at the platform's level, and keeps the height the yard
+  built it at (`keep_z`): a quay wall stands on the bed, a ship floats, a gantry spans its dock.
+- Each graving dock is cut with the platform as a straight-walled basin 12 m deep, never graded like a road.
+- The rows lie one behind the other with a lane between (`shipyard.rows_of`): docks and assembly yard, 25 m,
+  fabrication halls, store row (warehouse, steel stacks, machine shop), back row (administration, gate, tanks,
+  substation, fire station). A production yard is at least 260 m deep so they fit; a dock is as long as the
+  rows leave, up to 300 m. No hall stands on a dock, the rail siding or another hall.
+- The halls are lots a plan drew (role factory, warehouse, civic, utility, fire_station, footprint true). A
+  building layer of big sites (Factories, Warehouses, Office blocks) builds every such lot of its role first,
+  then its sites along the roads. A lot row is width across its front, then depth.
+- A neighbouring city keeps off the yard too (`shipyards_near`): no street, lot or waterfront piece of its own.
+- Its edges: the quay wall along the water, a wall on any side where the platform stands above what lies
+  beside it, a security fence wherever it meets the land (the gate stays open).
+- On the hardstand: hull sections and container stacks in the assembly yard, boats laid up ashore in a yacht
+  yard, cold boxes in a fishing yard. Each from the yard's own dice, so they stay put from run to run.
+- To put more on a yard, add a layer with `where` shipyards (every yard's platform) or draw the layer an
+  `area` on one. Every other layer keeps off the yard's land.
+
 | Yard type | Picked when | What it gets |
 |---|---|---|
 | commercial | at least 600 m of deep (6 m+) industrial shore, 40k+ people | 1-3 graving docks, panel line, steel fabrication, paint and blasting, assembly yard, outfitting quay |
@@ -388,16 +414,16 @@ UFC 4-213-10:
 
 Supporting pieces: substation, yard fire station and fuel tanks.
 
-- **Docks:** each graving dock is a straight DK spline in `<City> Docks`, laid 12 m down so the landscape spline
-  digs the basin. Each one runs from inland to 30 m past the shore.
+- **Docks:** each graving dock is a straight DK spline in `<City> Docks`, laid 12 m under the platform so the
+  landscape spline digs the basin. Each one runs from inland to 30 m past the quay.
 - **Validator:** docks open onto water, launch basins are clear, the flow runs steel → fabrication → assembly →
   quay, administration is outside the heavy zone, and floating docks stay within the navigation share.
 - **Pieces:** Ships, Goliath gantry cranes, Portal cranes, Tower cranes, Crane rails, Keel blocks, Yard hardstand,
   Steel storage, Rail sidings, Floating dry docks, Fuel tanks, Security fences, Boat lifts, Offshore jackets,
   Slipways, Scrap yards, Dock gates, Gatehouses. Halls are footprint lots: factory, warehouse, civic, utility,
   fire_station.
-- **Results:** `road_network_waterfront` returns each city's `shipyards` (type, docks, site size,
-  production-flow distances, validator).
+- **Results:** `road_network_waterfront` returns each city's `shipyards` (type, docks, site size, the
+  platform's corners, how far it stands out over the water, production-flow distances, validator).
 
 ## Airports (`backend/airport.py`, options `airports`, `military_base`, `wind_deg`)
 Airports are planned at world level **before the streets** (`citygen.plan_airports`).
@@ -644,7 +670,8 @@ Example: Flower beds in the suburbs: `{"name": "Flower beds", "kind": "scatter",
 - A park block (`kind` park) is trees only: no layer builds on its road frontage either.
 - A layer: `kind` scatter (Surface Sampler, `density` per 100 m2) | along_roads | buildings (Spline Sampler on
   the road actors, `spacing_m`, both sides at `setback_m`, facing the road); `where` outside | everywhere |
-  cities | downtown | normal | housing (rings from each city's districts); `avoid_roads`, `avoid` = earlier
+  cities | downtown | normal | housing (rings from each city's districts) | industrial | shipyards (every
+  shipyard's paved platform); `avoid_roads`, `avoid` = earlier
   layers it keeps clear of; `footprint` = bounds scale for pruning; `collision` off for dense scatter.
 - `road_network_pcg_plan(net_id)` = ONE graph for every layer: native nodes in data-flow order with their
   settings, wires, graph params (`<Layer>Meshes` SoftObjectPath array, `<Layer>Seed`, `<Layer>Density`),

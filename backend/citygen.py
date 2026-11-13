@@ -1048,8 +1048,10 @@ def plan_airports(cities: list, ground, wet, keep: list | None, bounds: tuple, o
     return aps
 
 
-def plan_shipyards(cities: list, water: dict, opts: dict | None = None) -> None:
-    """ShipyardPlanner for every city, before its streets: sets city['shipyards'] (campuses + their docks)."""
+def plan_shipyards(cities: list, water: dict, opts: dict | None = None, ground=None) -> None:
+    """ShipyardPlanner for every city, before its streets: sets city['shipyards'] (campuses + their docks).
+    ground (the terrain as it lies, on a world that makes its own): every yard is settled on it as one level
+    platform at the water (shipyard.settle); cut_yards then cuts those into the terrain."""
     from . import shipyard
     from . import waterfront
     o = options(opts)
@@ -1062,6 +1064,73 @@ def plan_shipyards(cities: list, water: dict, opts: dict | None = None) -> None:
         pop = round(math.pi * (c["radius"] / 100000) ** 2 * 4800)  # ~4,800 people per km2 before the lots exist
         segs = waterfront.segments_for(c, water, ring_of, industrial, pop)
         c["shipyards"] = shipyard.sites(c, segs, pop, o)
+        if ground is not None:
+            for y in c["shipyards"]:
+                shipyard.settle(y, ground, water["sea"])
+    # a yard is off limits to the city next door as well: its streets, lots and waterfront keep off it
+    for c in cities:
+        near = [y for u in cities if u is not c for y in u.get("shipyards") or [] if y.get("z") is not None
+                and math.hypot(y["frame"]["x"] - c["x"], y["frame"]["y"] - c["y"]) < c["radius"] * 1.3 + y["L"] + y["D"]]
+        if near:
+            c["shipyards_near"] = near
+        else:
+            c.pop("shipyards_near", None)
+
+
+def on_yards(cities: list, ground):
+    """`ground`, but a point on a settled shipyard's platform answers the platform's level. The coarse terrain is
+    only level where whole cells lie on a platform (cut_yards), and a hall at its edge stands on it all the same."""
+    from . import shipyard
+    yards = [(s, s["frame"]["x"] + s["frame"]["vx"] * s["D"] / 2, s["frame"]["y"] + s["frame"]["vy"] * s["D"] / 2,
+              (s["L"] / 2) ** 2 + (s["D"] / 2) ** 2)
+             for c in cities for s in c.get("shipyards") or [] if s.get("z") is not None]
+    if not yards:
+        return ground
+
+    def at(x, y):
+        for s, cx, cy, r2 in yards:
+            if (x - cx) ** 2 + (y - cy) ** 2 <= r2 and shipyard.zone(s, *shipyard.uv(s, x, y)) == "platform":
+                return s["z"]
+        return ground(x, y)
+    return at
+
+
+def cut_yards(ter: dict, cities: list, whole: bool = False) -> dict:
+    """Every settled shipyard's platform cut into the terrain (shipyard.shaped): level ground at the water, a
+    basin dredged along its quay, the land beside it cut back to a bank. On the fine grid the landscape is made
+    from, a cell at a time. whole=True is for the coarse terrain the roads and lots are planned on: there only a
+    cell that lies wholly on a platform, or wholly in its basin, changes, so nothing of a yard reaches past its
+    own edges however big the cells are (the fine cut makes the edges exact)."""
+    from . import shipyard
+    yards = [y for c in cities for y in c.get("shipyards") or [] if y.get("z") is not None]
+    sea = (ter or {}).get("sea")
+    if not yards or sea is None or not ter.get("heights"):
+        return ter
+    grid, (x0, y0), (x1, y1) = ter["grid"], ter["min"], ter["max"]
+    cw, ch = (x1 - x0) / grid, (y1 - y0) / grid
+    lip = 0.0 if whole else min(1.5 * max(cw, ch), 1500.0)
+    rows = [list(r) for r in ter["heights"]]
+    for s in yards:
+        f, L, D = s["frame"], s["L"], s["D"]
+        cx, cy = f["x"] + f["vx"] * D / 2, f["y"] + f["vy"] * D / 2
+        reach = math.hypot(L / 2, D / 2) + shipyard.BASIN_CM + 20000 + max(cw, ch)
+        for j in range(max(0, int((cy - reach - y0) / ch)), min(grid, int((cy + reach - y0) / ch) + 1)):
+            y = y0 + (j + 0.5) * ch
+            for i in range(max(0, int((cx - reach - x0) / cw)), min(grid, int((cx + reach - x0) / cw) + 1)):
+                z = rows[j][i]
+                if z is None:
+                    continue
+                x = x0 + (i + 0.5) * cw
+                if whole:
+                    zones = {shipyard.zone(s, *shipyard.uv(s, x + a * cw, y + b * ch))
+                             for a in (-0.49, 0.49) for b in (-0.49, 0.49)}
+                    if zones == {"platform"}:
+                        rows[j][i] = s["z"]
+                    elif zones == {"basin"}:
+                        rows[j][i] = min(z, sea - shipyard.DREDGE_CM)
+                else:
+                    rows[j][i] = round(shipyard.shaped(s, *shipyard.uv(s, x, y), z, sea, lip), 1)
+    return {**ter, "heights": rows}
 
 
 def water_of(city: dict, opts: dict | None, wet):
@@ -1170,11 +1239,14 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
             todo.extend(adj.get(n, []))
         edges = [e for e in edges if e[0] in seen]
         nodes = {n: p for n, p in nodes.items() if n in seen}
-    yards = city.get("shipyards") or []
+    yards = (city.get("shipyards") or []) + (city.get("shipyards_near") or [])
     fields = city.get("airports") or []
     if yards or fields:  # shipyards and airports are dedicated districts with their own roads
         from . import airport, shipyard
-        drop = {n for n, p in nodes.items() if any(shipyard.inside(y, p[0], p[1], -2000) for y in yards)
+        # (a settled yard is a walled platform with its bank round it: no street on either, nor 15 m from them)
+        drop = {n for n, p in nodes.items()
+                if any(shipyard.reserved(y, p[0], p[1], 1500) if y.get("z") is not None
+                       else shipyard.inside(y, p[0], p[1], -2000) for y in yards)
                 or any(airport.inside(a, p[0], p[1], 3000) for a in fields)}
         edges = [e for e in edges if e[0] not in drop and e[1] not in drop]
         used = {n for e in edges for n in e[:2]}
@@ -1791,7 +1863,8 @@ def freeway_plan(city: dict, opts: dict | None = None):
                 [o[k] for k in ("freeways", "block_m", "block_ratio", "downtown", "normal", "collector_every", "core_roads",
                                 "neighbourhood_roads", "canals")],
                 [(a.get("center"), a.get("heading"), a.get("type")) for a in city.get("airports") or []],
-                [(y.get("frame"), y.get("L"), y.get("D")) for y in city.get("shipyards") or []]))
+                [(y.get("frame"), y.get("L"), y.get("D"), y.get("bank"))
+                 for y in (city.get("shipyards") or []) + (city.get("shipyards_near") or [])]))
     if key not in _FW_CACHE:
         if len(_FW_CACHE) > 32:
             _FW_CACHE.clear()
@@ -2781,7 +2854,10 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
                 dn.update(n_)
                 de += e_
             if de:
-                out[f"{c['name']} Docks"] = build_actor(dn, de, lambda x, y: ground(x, y) - shipyard.DOCK_DEPTH_CM, folder)
+                # (12 m under the yard's platform; a yard that was never settled: under the ground as it lies)
+                level = lambda x, y, yards=c["shipyards"]: next(
+                    (s["z"] for s in yards if s.get("z") is not None and shipyard.inside(s, x, y, 4000)), ground(x, y))
+                out[f"{c['name']} Docks"] = build_actor(dn, de, lambda x, y: level(x, y) - shipyard.DOCK_DEPTH_CM, folder)
     for c in cities:  # canals: laid at the channel bed so the spline lowers the ground into them
         lines = canal_lines(c, o)
         if lines:
@@ -3419,6 +3495,29 @@ def _demo() -> None:
     assert len({(ni, nj) for _i, _j, ni, nj, _m in close}) == len(close), "each street joins its own two corners"
     assert not joins(cs, gs, {"freeways": "no"}, wet=lambda x, y: 60000 < x < 68000), "never through water"
     assert len(joins(cs, gs, {"freeways": "no"}, wet=lambda x, y: y > 20000)) < len(close), "nor along a shore"
+    # a shipyard's platform cut into the terrain: level on it, 9 m of water along its quay (the ground ends 15 m
+    # behind the quay line, under the paving), the hill behind and beside it cut back to a bank, the rest as it was
+    yard = {"type": "repair", "frame": {"x": 0, "y": 0, "ux": 0.0, "uy": 1.0, "vx": -1.0, "vy": 0.0}, "L": 40000.0,
+            "D": 20000, "z": 250.0, "docks": []}
+    hillside = {"min": [-40000, -40000], "max": [40000, 40000], "grid": 80, "sea": 0.0,
+                "heights": [[3000.0 if i < 40 else -200.0 for i in range(80)] for _ in range(80)]}
+    town = [{"name": "Y", "shipyards": [yard]}]
+    cut = cut_yards(hillside, town)["heights"]
+    assert (cut[40][29], cut[40][38], cut[40][39], cut[40][40], cut[40][19], cut[40][0], cut[60][29]) == \
+        (250.0, 250.0, -900.0, -900.0, 550.0, 3000.0, 550.0), (cut[40][29], cut[40][38], cut[40][39], cut[40][40], cut[40][19])
+    assert cut[40][60] == -200.0 and cut[40][45] == -900.0, "shallow water past the basin stays"
+    assert cut_yards(hillside, [{"name": "N", "shipyards": [{**yard, "z": None}]}]) is hillside and cut_yards(hillside, []) is hillside
+    level = on_yards(town, lambda x, y: 3000.0)
+    assert (level(-100, 19900), level(-19900, -19900), level(100, 0), level(-20100, 0), level(-100, 20100)) == \
+        (250.0, 250.0, 3000.0, 3000.0, 3000.0) and on_yards([], level) is level
+    # ... and into the coarse terrain the roads are planned on: only cells wholly on the platform or in its basin
+    coarse = {**hillside, "grid": 8, "heights": [[3000.0 if i < 4 else -200.0 for i in range(8)] for _ in range(8)]}
+    rough = cut_yards(coarse, town, whole=True)["heights"]
+    assert [rough[4][i] for i in range(8)] == [3000.0, 3000.0, 250.0, 250.0, -200.0, -200.0, -200.0, -200.0], rough[4]
+    finer = cut_yards({**hillside, "grid": 16, "heights": [[3000.0 if i < 8 else -200.0 for i in range(16)] for _ in range(16)]},
+                      town, whole=True)["heights"]
+    assert (finer[8][7], finer[8][8], finer[8][9]) == (250.0, -900.0, -200.0), "the basin: 90 m out from the quay"
+    assert rough[1][2] == 3000.0 and rough[2][2] == 250.0 and rough[6][3] == 3000.0, "a cell half off the platform is left"
     # two cities on different levels: joined while a street can climb it, not when it would be a ski jump
     assert len(joins(cs, gs, {"freeways": "no"}, ground=lambda x, y: 0.0 if x < 64000 else 1200.0)) == len(close)
     assert not joins(cs, gs, {"freeways": "no"}, ground=lambda x, y: 0.0 if x < 64000 else 6000.0), "too steep to join"
