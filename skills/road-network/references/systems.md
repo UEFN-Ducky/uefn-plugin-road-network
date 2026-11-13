@@ -161,7 +161,26 @@ A plain spline point there smoothed a 90 degree turn into a wide arc that looped
 meshes are crossings, not discs: each arm out to its mouth with curved kerb returns between arms
 (`_junction_geometry`); the panel draws them the same way.
 
+## History: undo and redo (`backend/history.py`)
+Every change to a world can be taken back, the person's and a ducky's alike.
+- **How it records:** everything the plugin stores goes through one data store, and `history.Recorder` stands in
+  front of it. Each panel call and each tool call is a step. The first time a step writes or deletes one of a
+  world's docs or files, what it was before is kept. A step that changed nothing leaves no trace.
+- **One action, one step:** a city edit (move, turn, reshape, resize, add, remove) and the rebuild that follows it
+  are one step. Several edits rebuilt together are one step with all their names.
+- **Undo** writes back exactly what was there (cities, roads, ground, layers) and keeps what it replaced, so
+  **redo** can put it back. A new change after an undo clears what could be redone.
+- **Where it lives:** on this PC only, in the plugin's own folder (`history/<world>/`, a gzipped file a step, the
+  last 40). Nothing of it is stored with the world or sent to a team.
+- **Not steps:** calls that only push the world into UEFN or note what was pushed (`NOT_STEPS`). Undo never touches
+  UEFN: the panel shows what is then waiting to be pushed.
+- **In the panel:** Undo and Redo in the map toolbar, Ctrl+Z and Ctrl+Y (or Ctrl+Shift+Z), and the History list at
+  the bottom of the left sidebar: click a step to go back to before it. Panel calls `history`, `undo`, `redo`.
+
 ## The panel
+- **Nothing changes until you let go.** A city, a handle, a road point or a slider follows the pointer while it is
+  held and is saved on release. Escape while holding puts it back where it was and saves nothing.
+
 City Builder is the BLUEPRINT; an AI builds it in UEFN with UEFN's own systems (landscape splines for roads,
 paths and access; PCG tiles for the city). The panel has no push buttons: the header's "Build in UEFN with AI"
 sends the world to a chat (`road_network_send_note`, kind 'build') with the job: `road_network_import_all` then

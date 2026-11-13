@@ -246,6 +246,15 @@
                border-radius: 999px; padding: 2px 8px; font: inherit; font-size: 11px; cursor: pointer; }
     .rn-mini:hover { color: var(--fg); background: var(--bg-hover); }
     .rn-mini:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+    .rn-hist__row { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: transparent; color: var(--fg); font: inherit;
+                    font-size: 12px; padding: 5px 8px; border-radius: var(--radius-sm); cursor: pointer; text-align: left; }
+    .rn-hist__row:hover { background: var(--bg-hover); }
+    .rn-hist__row:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; }
+    .rn-hist__row.is-redo { color: var(--muted); }
+    .rn-hist__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rn-hist__at { font-size: 11px; color: var(--muted); white-space: nowrap; }
+    .rn-hist__now { font-size: 11px; color: var(--muted); padding: 4px 8px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); margin: 2px 0; }
+    .rn-tool:disabled { opacity: 0.4; cursor: default; }
     .rn-city { border-radius: var(--radius-sm); }
     .rn-city__row { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: transparent; color: var(--fg); font: inherit;
                     font-size: 13px; padding: 6px 8px; border-radius: var(--radius-sm); cursor: pointer; text-align: left; }
@@ -326,6 +335,10 @@
           <div class="rn-list" id="actors"><div class="rn-hint">Open a world.</div></div>
           <div class="rn-section">Pull from UEFN</div>
           <div class="rn-pull" id="pullRow"></div>
+        </div>
+        <div id="leftHistory" class="rn-left-block">
+          <div class="rn-section">History</div>
+          <div class="rn-list" id="historyList"><div class="rn-hint">Open a world.</div></div>
         </div>
         <div id="nets" hidden></div>
       </div>

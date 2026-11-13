@@ -27,8 +27,14 @@ function call(method, params = {}, timeoutMs = 0) {
 // reads answer in seconds; a rebuild, a push into UEFN or a city preview can take minutes
 const RPC_WAIT = { generate: 0, import_all: 0, reimport: 0, pull: 0, pcg_build: 0, repair: 0, drape: 0, scan_ground: 0, tune: 0,
   heightmap: 0, pcg_preview: 600000, sync: 300000, city_add: 300000, city_save: 300000, city_delete: 300000 };
+const hist = { undo: [], redo: [], busy: false, timer: 0 };  // this world's history: the steps to undo, the steps to redo
+// calls that change nothing: every other one may have added a step to the world's history
+const RPC_READS = new Set(["history", "geometry", "get", "list", "stats", "cities", "holds", "hold", "release", "version", "chats",
+  "generate_options", "pcg_layers", "pcg_preview", "pcg_plan", "pcg_assets", "pcg_exact", "ground_fit", "presets", "projects",
+  "build_brief", "check", "copy_text", "sync", "note_draft", "send_note"]);
 const rpc = (method, params = {}) => call("plugin.call", { method, params }, RPC_WAIT[method] ?? 90000)
-  .catch((err) => ({ ok: false, error: err.message }));
+  .catch((err) => ({ ok: false, error: err.message }))
+  .then((out) => { if (!RPC_READS.has(method) && method !== "undo" && method !== "redo") historySoon(); return out; });
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const $ = (id) => document.getElementById(id);
 const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue("--" + name).trim();
@@ -430,7 +436,11 @@ renderer.domElement.addEventListener("pointerdown", (e) => {
   }
   if (e.button === 0 && state.tool === "city" && !e.shiftKey) {  // Edit city: one of its handles, else the city itself
     const hnd0 = handleUnder(e), hnd = hnd0 && heldElsewhere(hnd0.c) ? null : hnd0, hit = hnd0 ? null : cityUnder(e);
-    if (hnd) drag.handle = hnd;
+    if (hnd) {  // (as it stands now, for Escape)
+      const c = hnd.c;
+      hnd.was = { turn_deg: c.turn_deg, spin: c.spin, shape: c.shape && [...c.shape], angle: c.districts?.industrial?.angle };
+      drag.handle = hnd;
+    }
     else if (hit) { drag.cityCand = hit; drag.cityMove = true; }
     if (hnd || hit) renderer.domElement.style.cursor = "grab";
   }
@@ -2391,6 +2401,7 @@ async function loadGeometry(keep, quiet = false) {
   $("labels").innerHTML = "";
   buildScene();
   showError("");
+  loadHistory();
 }
 // A whole city is several MB: the terrain comes first, then each actor in pages of PAGE points
 // and segments, so no single reply nears the panel bridge's 1 MB line.
@@ -3128,6 +3139,60 @@ async function showVersion() {
 // ------------------------------------------------------------------ map tools: point or draw, tell an AI
 const note = { kind: "", points: [], chats: null };
 // the map tool bar: the same bar as the Workflows canvas (icon buttons, tool tips, a zoom readout)
+// ------------------------------------------------------------------ history: undo, redo, go back
+// The backend keeps what every step changed (on this PC only) and puts it back exactly: the world's cities, roads,
+// ground and layers as they were. UEFN is not touched; what is then waiting to be pushed shows as usual.
+function historySoon() {
+  clearTimeout(hist.timer);
+  hist.timer = setTimeout(loadHistory, 400);
+}
+async function loadHistory() {
+  if (!state.net) { hist.undo = []; hist.redo = []; renderHistory(); return; }
+  const net = state.net, got = await rpc("history", { net_id: net });
+  if (net !== state.net || got.ok === false) return;
+  hist.undo = got.undo || [];
+  hist.redo = got.redo || [];
+  renderHistory();
+}
+async function stepHistory(back, steps = 1) {
+  const list = back ? hist.undo : hist.redo;
+  if (hist.busy || !state.net || !list.length || state.generating || edits.running || edits.list.length) return;
+  hist.busy = true;
+  const name = list[list.length - 1].label;
+  busy(back ? "Undoing" : "Redoing", { text: steps > 1 ? `${steps} steps…` : `${name}…` });
+  const got = await rpc(back ? "undo" : "redo", { net_id: state.net, steps });
+  hist.busy = false;
+  busy("");
+  if (got.ok === false) { showError(got.error); return; }
+  hist.undo = got.undo || [];
+  hist.redo = got.redo || [];
+  renderHistory();
+  cancelDrag();
+  await loadNets(false);  // (the step may have been the one that made the world, or its cities)
+  if (currentNet()) await loadGeometry(true);
+}
+const ago = (at) => {
+  const s = Math.max(0, Date.now() / 1000 - at);
+  return s < 90 ? "just now" : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`;
+};
+function renderHistory() {
+  const host = $("historyList");
+  if (host) {
+    const row = (ent, cls, title, go) => {
+      const b = h("button", { type: "button", class: `rn-hist__row ${cls}`, title }, icon(cls === "is-redo" ? "redo" : "clock", 14),
+        h("span", { class: "rn-hist__name" }, ent.label), h("span", { class: "rn-hist__at" }, ago(ent.at)));
+      b.addEventListener("click", go);
+      return b;
+    };
+    const redo = hist.redo.map((ent, i) => row(ent, "is-redo", `Redo up to here: ${ent.label}`, () => stepHistory(false, hist.redo.length - i)));
+    const undo = [...hist.undo].reverse().map((ent, i) => row(ent, "", `Go back to before this: ${ent.label}`, () => stepHistory(true, i + 1)));
+    host.replaceChildren(...(redo.length || undo.length ? [...redo,
+      ...(redo.length ? [h("div", { class: "rn-hist__now" }, "The world as it is now")] : []), ...undo]
+      : [h("div", { class: "rn-hint" }, state.net ? "Nothing to go back to yet. Every change you make is listed here." : "Open a world.")]));
+  }
+  renderTools();
+}
+
 function renderTools() {
   const tool = (id, ic, hint, key) => {
     const b = h("button", { type: "button", class: "rn-tool", "aria-pressed": state.tool === id ? "true" : "false",
@@ -3154,6 +3219,12 @@ function renderTools() {
     tool("area", "pen", "Draw round an area, then tell an AI what to do there", "A"),
     ...(currentNet()?.generated ? [tool("addcity", "plus", "Add a city: click where it goes", "C")] : []),
     ...(hasNote ? [act("x", clearNote, "Remove the pin or area")] : []),
+    h("span", { class: "rn-sep" }),
+    ...[["undo", true, hist.undo, "Undo", "Ctrl+Z"], ["redo", false, hist.redo, "Redo", "Ctrl+Y"]].map(([ic, back, list, word, key]) => {
+      const b = act(ic, () => stepHistory(back), list.length ? `${word}: ${list[list.length - 1].label}` : `Nothing to ${word.toLowerCase()}`, key);
+      b.disabled = !list.length;
+      return b;
+    }),
     h("span", { class: "rn-sep" }),
     act("frame", () => frame(), "Fit the whole world", "F"),
     zoom,
@@ -3183,7 +3254,9 @@ function toggleHelp() {
     row("Left drag", "Orbit (Pointer) / pan (Hand)"),
     row("Hold right mouse", "Fly: look around"), row("+ W A S D, Q / E", "Fly: move, down / up (Shift: faster)"),
     row("+ Wheel", "Fly: speed"), row("Shift / middle drag", "Pan"), row("Wheel", "Zoom"),
-    row("V H E M P A C", "Pointer, Hand, Edit city, Move road, Pin, Area, Add city"), row("F / T", "Fit / top view"), row("Esc", "Back to Pointer"));
+    row("V H E M P A C", "Pointer, Hand, Edit city, Move road, Pin, Area, Add city"), row("F / T", "Fit / top view"),
+    row("Ctrl+Z / Ctrl+Y", "Undo / redo your last change"),
+    row("Esc", "While dragging: cancel, nothing changes. Else back to Pointer"));
   box.hidden = false;
   if (!pop) $("view").parentElement.append(box);
 }
@@ -3210,7 +3283,14 @@ function setTool(id) {
 }
 window.addEventListener("keydown", (e) => {
   if (e.target.closest?.("input, textarea, [contenteditable]")) return;  // typing, not shortcuts
-  if (e.key === "Escape") { showInspect(null); if (cancelCityDrag()) return; if (state.tool !== "select") setTool("select"); $("toolHelp")?.setAttribute("hidden", ""); return; }
+  // Escape while something is held (a city, a handle, a road point, an area being drawn): it goes back to where
+  // it was and nothing is changed. Nothing is ever saved before the button is let go.
+  if (e.key === "Escape") { if (cancelDrag()) return; showInspect(null); if (state.tool !== "select") setTool("select"); $("toolHelp")?.setAttribute("hidden", ""); return; }
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && ["z", "y"].includes(e.key.toLowerCase())) {
+    e.preventDefault();
+    stepHistory(e.key.toLowerCase() === "z" && !e.shiftKey);  // Ctrl+Z undo; Ctrl+Y or Ctrl+Shift+Z redo
+    return;
+  }
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   const k = e.key.toLowerCase();
   if (fly.on) {  // flying: W A S D Q E move, never switch tools
@@ -3601,6 +3681,35 @@ function drawCityGhost(m) {
   marks.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(ring),
     new THREE.LineBasicMaterial({ color: accent, depthTest: false })));
   needsDraw = true;
+}
+function cancelDrag() {  // Esc: whatever is held goes back to where it was; true when something was held
+  if (!drag) return false;
+  if (drag.city) return cancelCityDrag();
+  if (drag.handle) {  // turning or shaping a city
+    const { c, was, moved } = drag.handle;
+    drag = null;
+    if (moved && was) {
+      Object.assign(c, { turn_deg: was.turn_deg, spin: was.spin });
+      if (was.shape) c.shape = was.shape; else delete c.shape;
+      if (c.districts?.industrial && was.angle != null) c.districts.industrial.angle = was.angle;
+      if (state.view.districts) { clear(groups.districts); drawDistricts(); }
+      renderWorldCity();
+    }
+    renderer.domElement.style.cursor = "";
+    drawCityMark();
+    needsDraw = true;
+    return true;
+  }
+  if (drag.ptCand && drag.ptTo) {  // moving a road point
+    drag = null;
+    clear(marks);
+    drawMarks();
+    renderer.domElement.style.cursor = "";
+    needsDraw = true;
+    return true;
+  }
+  if (drag.drawing) { drag = null; clearNote(); return true; }  // drawing an area
+  return false;
 }
 function cancelCityDrag() {  // Esc while dragging: the city stays where it was
   if (!drag?.city) return false;

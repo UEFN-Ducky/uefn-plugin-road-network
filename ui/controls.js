@@ -50,6 +50,9 @@ const PATHS = {
   lock: "M6 11h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1ZM8 11V8a4 4 0 0 1 8 0v3",
   panelLeft: "M4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1ZM9 4v16",
   panelRight: "M4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1ZM15 4v16",
+  undo: "M9 14 4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3",
+  redo: "M15 14l5-5-5-5M20 9H10a6 6 0 0 0 0 12h3",
+  clock: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM12 7v5l3.5 2",
 };
 
 export function icon(name, size = 16) {
@@ -115,9 +118,10 @@ export function slider({ label, min, max, step = 1, value, fmt, onChange, onInpu
     const r = track.getBoundingClientRect();
     return min + ((x - r.left) / (r.width || 1)) * (max - min);
   }
-  let dragging = false;
+  let dragging = false, held = v;  // held: where it stood when the drag began (Escape puts it back)
   track.addEventListener("pointerdown", (e) => {
     dragging = true;
+    held = v;
     track.setPointerCapture(e.pointerId);
     el.classList.add("is-dragging");
     el.focus();
@@ -128,6 +132,14 @@ export function slider({ label, min, max, step = 1, value, fmt, onChange, onInpu
   track.addEventListener("pointerup", end);
   track.addEventListener("pointercancel", end);
   el.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && dragging) {  // let go of nothing: it goes back to where it was and nothing is changed
+      e.preventDefault();
+      e.stopPropagation();
+      dragging = false;
+      el.classList.remove("is-dragging");
+      set(held, "input");
+      return;
+    }
     const big = (max - min) / 10;
     const keys = { ArrowRight: step, ArrowUp: step, ArrowLeft: -step, ArrowDown: -step, PageUp: big, PageDown: -big };
     if (e.key in keys) { e.preventDefault(); set(v + keys[e.key], true); }

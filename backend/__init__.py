@@ -14,6 +14,7 @@ docs until its next write.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import math
@@ -25,6 +26,7 @@ import threading
 import time
 
 from . import citygen as cg
+from . import history
 from . import holds as hd
 from . import kit_bake
 from . import pcg_batch
@@ -42,9 +44,60 @@ from . import airport
 CHUNK = 1000
 
 
+STEPS = {  # what a step is called in the history, by the call that made it
+    "generate": "Regenerate the world", "city_add": "Add a city", "city_delete": "Remove {city}",
+    "pipeline": "Run the pipeline again", "pcg_layer_save": "Change a layer", "pcg_layer_delete": "Remove a layer",
+    "pcg_preset": "Add layers", "move_point": "Move a road", "delete": "Delete the world",
+}
+
+
+# Calls that only push what the world already is into UEFN, or note what was pushed: no step of the world's history
+NOT_STEPS = ("history", "undo", "redo", "sync", "import_all", "reimport", "heightmap", "pcg_build", "pcg_place",
+             "build_pieces", "kit_materials", "hold", "release", "send_note", "note_draft")
+
+
+def step_label(name: str, k: dict) -> str:
+    """The words the history shows for one call: 'Move Northgate', 'Change a layer', 'Regenerate the world'."""
+    name = name.replace("road_network_", "")
+    city = str(k.get("city") or "").replace("-", " ").title() or "a city"
+    if name == "city_save":
+        what = ("Move" if k.get("x") is not None else "Turn" if k.get("turn_deg") is not None else "Reshape" if k.get("shape")
+                else "Resize" if k.get("radius_m") else "Change a block of" if k.get("zones") else "Change")
+        return f"{what} {city}"
+    return (STEPS.get(name) or name.replace("_", " ").capitalize()).format(city=city)
+
+
 def register(api) -> None:
-    data = api.data
+    # everything this plugin stores goes through `data`: history.Recorder remembers what each step changed, on
+    # this PC only (the plugin's own folder), so the panel can undo and redo it
+    data = history.Recorder(api.data, lambda: os.path.join(str(api.local_dir() if callable(api.local_dir) else api.local_dir), "history"))
     pid_ = api.plugin_id
+
+    def panel_rpc(name: str, fn) -> None:
+        """A panel call. Whatever it changes in a world is one step of that world's history."""
+        if name in NOT_STEPS:
+            return api.register_panel_rpc(name, fn)
+
+        @functools.wraps(fn)
+        def run(*a, **k):
+            # (a city edit is followed by the rebuild it asked for: the two are one step, history.Recorder.step)
+            with data.step(step_label(name, k), opens=name in ("city_save", "city_add", "city_delete"),
+                           joins=name in ("generate", "pipeline")):
+                return fn(*a, **k)
+        return api.register_panel_rpc(name, run)
+
+    def tool(**kw):
+        """An agent tool, the same way: what a ducky changes can be undone like what the person changed."""
+        def deco(fn):
+            if fn.__name__.replace("road_network_", "") in NOT_STEPS:
+                return api.tool(**kw)(fn)
+
+            @functools.wraps(fn)
+            def run(*a, **k):
+                with data.step(step_label(fn.__name__, k)):
+                    return fn(*a, **k)
+            return api.tool(**kw)(run)
+        return deco
 
     # ---------------------------------------------------------------- helpers
     def slug(text: str) -> str:
@@ -2770,57 +2823,57 @@ def register(api) -> None:
     # ---------------------------------------------------------------- MCP tools
     INTENT = r"\b(road network|city roads?|road splines?|interchange|road pieces?)\b"
 
-    @api.tool(intent=INTENT, listener=False)
+    @tool(intent=INTENT, listener=False)
     def road_network_projects() -> dict:
         """List the road network projects (each groups one city's networks)."""
         return safe(list_projects)()
 
-    @api.tool(intent=INTENT, listener=False)
+    @tool(intent=INTENT, listener=False)
     def road_network_project_save(project_id: str = "", name: str = "", description: str = "") -> dict:
         """Create or rename a road network project."""
         return safe(save_project)(project_id, name, description)
 
-    @api.tool(intent=INTENT, listener=False)
+    @tool(intent=INTENT, listener=False)
     def road_network_project_delete(project_id: str = "") -> dict:
         """Delete a road network project (its networks stay)."""
         return safe(delete_project)(project_id)
 
-    @api.tool(intent=INTENT, listener=False)
+    @tool(intent=INTENT, listener=False)
     def road_network_list(project: str = "") -> dict:
         """List saved city road networks, optionally only one project's."""
         return safe(list_networks)(project)
 
-    @api.tool(intent=INTENT, listener=False)
+    @tool(intent=INTENT, listener=False)
     def road_network_get(net_id: str = "") -> dict:
         """One road network: its settings and every road actor's piece counts."""
         return safe(get_network)(net_id)
 
-    @api.tool(intent=INTENT, listener=False)
+    @tool(intent=INTENT, listener=False)
     def road_network_save(net_id: str = "", name: str = "", project: str = "", terrain_mode: str = "") -> dict:
         """Create or update a road network (name, project, terrain_mode 'live' or 'layer')."""
         return safe(save_network)(net_id, name, project, terrain_mode)
 
-    @api.tool(intent=INTENT, listener=False)
+    @tool(intent=INTENT, listener=False)
     def road_network_delete(net_id: str = "") -> dict:
         """Delete a saved road network and all its stored roads (UEFN is not touched)."""
         return safe(delete_network)(net_id)
 
-    @api.tool(intent=INTENT, listener=True)
+    @tool(intent=INTENT, listener=True)
     def road_network_pull(net_id: str = "", name: str = "", project: str = "", actors: str = "") -> dict:
         """Read the city's road actors from the open UEFN level into a road network (all, or a comma list of labels)."""
         return safe(pull)(net_id, name, project, actors)
 
-    @api.tool(intent=INTENT, listener=False)
+    @tool(intent=INTENT, listener=False)
     def road_network_import_text(net_id: str = "", label: str = "", text: str = "") -> dict:
         """Add one road actor from spline clipboard text (BEGIN_SPLINES, copied in the Splines tool)."""
         return safe(import_text)(net_id, label, text)
 
-    @api.tool(intent=INTENT, listener=False)
+    @tool(intent=INTENT, listener=False)
     def road_network_stats(net_id: str = "") -> dict:
         """Which pieces a road network uses: road meshes, junction pieces, kit pieces, length."""
         return safe(stats)(net_id)
 
-    @api.tool(intent=INTENT, listener=False)
+    @tool(intent=INTENT, listener=False)
     def road_network_memory(last: int = 60, reset_guard: bool = False) -> dict:
         """UEFN's memory now and per editor call City Builder made (before / after / grew GB, seconds), the
         10 calls that grew it most, and whether the guard has stopped work (a call grew UEFN 6+ GB, or UEFN is
@@ -2829,24 +2882,24 @@ def register(api) -> None:
             uefn_memory._state["trip"] = None
         return {"ok": True, **uefn_memory.report(int(last))}
 
-    @api.tool(intent=INTENT, listener=False)
+    @tool(intent=INTENT, listener=False)
     def road_network_move_point(net_id: str = "", actor: str = "", index: int = -1, x: float = 0.0, y: float = 0.0, z: float = 0.0) -> dict:
         """Move one spline control point of a road actor to x, y, z (cm); attached tangents follow."""
         return safe(move_point)(net_id, actor, index, x, y, z)
 
-    @api.tool(intent=INTENT, listener=False)
+    @tool(intent=INTENT, listener=False)
     def road_network_check(net_id: str = "", actor: str = "") -> dict:
         """Find broken road data before it reaches UEFN: giant junction nodes (Width over 80 m),
         join links over 80 m and runaway tangents."""
         return safe(check)(net_id, actor)
 
-    @api.tool(intent=INTENT, listener=False)
+    @tool(intent=INTENT, listener=False)
     def road_network_repair(net_id: str = "", actor: str = "") -> dict:
         """Fix what road_network_check finds: drop the over-long join links and strip the giant junction
         piece off those nodes (they become plain shared points with a road width). Offline."""
         return safe(repair_actor)(net_id, actor)
 
-    @api.tool(intent=INTENT, listener=False)
+    @tool(intent=INTENT, listener=False)
     def road_network_tune(net_id: str = "", actor: str = "", thin_tolerance_cm: float = 50.0,
                           side_falloff: float = 800.0, end_falloff: float = 1000.0, width: float = 0.0,
                           paint_layer: str = "", mesh_offset_cm: float = -1.0,
@@ -2859,14 +2912,14 @@ def register(api) -> None:
         return safe(tune_actor)(net_id, actor, thin_tolerance_cm, side_falloff, end_falloff, width, paint_layer,
                                 mesh_offset_cm, height_tolerance_cm)
 
-    @api.tool(intent=INTENT, listener=False)
+    @tool(intent=INTENT, listener=False)
     def road_network_kit_convert(net_id: str = "", actor: str = "") -> dict:
         """Move a road actor onto the Fortnite Road1 kit (/Game/Creative/Environments/Meshes/Roads): tiles
         become Road1_Straight, fitting 3-way junctions become T_Section / Y_Split / Split with their mouths on
         the kit ends. Lists the 4+ way and unfit nodes that still need generated pieces. Offline."""
         return safe(kit_convert)(net_id, actor)
 
-    @api.tool(intent=INTENT, listener=True)
+    @tool(intent=INTENT, listener=True)
     def road_network_build_pieces(net_id: str = "", actor: str = "", rebuild: bool = False) -> dict:
         """Build plain-asphalt junction meshes (GeometryScript, in the project's WorldGen/Roads/Junctions/Kit
         folder) for every junction that has no piece, and put them on the nodes. With our own road kit they
@@ -2874,7 +2927,7 @@ def register(api) -> None:
         existing pieces in place (after a kit or material change). Mesh assets only; never the landscape."""
         return safe(build_pieces)(net_id, actor, rebuild)
 
-    @api.tool(intent=INTENT, listener=True)
+    @tool(intent=INTENT, listener=True)
     def road_network_kit_materials(net_id: str = "", street_kit: bool = True) -> dict:
         """Give the own kit (WorldGen/City + WorldGen/Kit meshes) textured materials that work on PCG
         instances: one MI of M_City_WorldPBR (world-aligned PBR, ISM + Nanite usage on) per old flat-colour
@@ -2882,13 +2935,13 @@ def register(api) -> None:
         street_kit=false skips (re)building the street kit and only fixes the kit meshes' materials."""
         return safe(kit_materials)(net_id, street_kit)
 
-    @api.tool(intent=INTENT, listener=False)
+    @tool(intent=INTENT, listener=False)
     def road_network_restore(net_id: str = "", actor: str = "", from_actor: str = "") -> dict:
         """Put a saved version of a road actor back (for example from_actor='City Roads before kit'). Offline;
         reimport to apply."""
         return safe(restore_actor)(net_id, actor, from_actor)
 
-    @api.tool(intent=INTENT, listener=False)
+    @tool(intent=INTENT, listener=False)
     def road_network_circle(net_id: str = "", actor: str = "", nodes: str = "", cx: float = 0.0, cy: float = 0.0,
                             fit_center: bool = True, radius: float = 0.0) -> dict:
         """Make a ring road a true circle. nodes: the ring's junction point ids (comma list). The centre is
@@ -2896,25 +2949,25 @@ def register(api) -> None:
         between two ring junctions becomes one arc segment. Offline; reimport to apply."""
         return safe(circle)(net_id, actor, nodes, cx, cy, fit_center, radius)
 
-    @api.tool(intent=INTENT, listener=True)
+    @tool(intent=INTENT, listener=True)
     def road_network_scan_ground(net_id: str = "", grid: int = 200) -> dict:
         """Re-read the terrain heights (read-only) for a network's 3D view and for drape. Run it while
         only the terrain is in the level."""
         return safe(scan_ground)(net_id, grid)
 
-    @api.tool(intent=INTENT, listener=False)
+    @tool(intent=INTENT, listener=False)
     def road_network_drape(net_id: str = "", actor: str = "", smooth: int = 4, all_points: bool = False) -> dict:
         """Put a road actor's live points onto the base ground (smoothed along the roads, junctions kept flat).
         all_points=true also drapes ground-level kit pieces and bridge ends (never use it on elevated decks).
         Works offline on the stored terrain scan: never touches UEFN or the landscape."""
         return safe(drape)(net_id, actor, smooth, all_points)
 
-    @api.tool(intent=INTENT, listener=False)
+    @tool(intent=INTENT, listener=False)
     def road_network_copy_text(net_id: str = "", actor: str = "") -> dict:
         """Put one road actor's spline text on the clipboard for a manual paste in the Splines tool."""
         return safe(copy_text)(net_id, actor)
 
-    @api.tool(intent=INTENT, listener=True)
+    @tool(intent=INTENT, listener=True)
     def road_network_reimport(net_id: str = "", actor: str = "", confirm: bool = False) -> dict:
         """Replace a road actor in the open UEFN level with the network's version: the old actor is
         removed and the new one pasted as live splines (the terrain itself is never written)."""
@@ -2922,7 +2975,7 @@ def register(api) -> None:
 
     GEN_INTENT = r"\b(generate|auto.?generat\w*|procedural)\b.*\b(city|cities|roads?|terrain|heightmap|world)\b"
 
-    @api.tool(intent=GEN_INTENT, listener=False)
+    @tool(intent=GEN_INTENT, listener=False)
     def road_network_generate(name: str = "", seed: int = 7, cities: str = "", size_km: float = 6.0,
                               relief_m: float = 60.0, ground_from: str = "", folder: str = "",
                               center_x: float = 0.0, center_y: float = 0.0, options: str = "") -> dict:
@@ -2941,7 +2994,7 @@ def register(api) -> None:
         options keep the world's last values. Offline: never touches UEFN or any terrain."""
         return safe(generate)(name, seed, cities, size_km, relief_m, ground_from, folder, center_x, center_y, options)
 
-    @api.tool(intent=GEN_INTENT, listener=False)
+    @tool(intent=GEN_INTENT, listener=False)
     def road_network_generate_options() -> dict:
         """Every generate option with its default and range (what the Terrain and Roads tabs show), and the
         design `rules` City Builder follows (where interchanges go, bridge heights, keep zones, lots, forests):
@@ -2949,7 +3002,7 @@ def register(api) -> None:
         return {"ok": True, "options": {k: {"default": d, "min": lo, "max": hi} for k, (d, lo, hi) in cg.OPTIONS.items()},
                 "highway": list(cg.HIGHWAYS), "styles": list(cg.STYLES), "rules": cg.RULES}
 
-    @api.tool(intent=GEN_INTENT, listener=False)
+    @tool(intent=GEN_INTENT, listener=False)
     def road_network_pipeline(net_id: str = "", run_from: str = "", confirm: bool = False) -> dict:
         """The city as separate systems, each consuming the one before (backend/pipeline.py): TerrainAnalyzer
         (heightmap, slope map, obstacles) -> UrbanPlanner (districts, orientation, density) -> RoadGenerator
@@ -2960,7 +3013,7 @@ def register(api) -> None:
         downstream, never what came before (e.g. 'buildings' keeps the roads, 'sidewalks' only the paths)."""
         return safe(pipeline_run)(net_id, run_from, confirm)
 
-    @api.tool(intent=GEN_INTENT, listener=False)
+    @tool(intent=GEN_INTENT, listener=False)
     def road_network_piece_manifest(check: bool = False) -> dict:
         """Every mesh a City Builder city is made of, with the spec to model it in Blender: name, folder, size
         in cm, pivot / facing / material-slot conventions, what places it (building role, layer, interior,
@@ -2979,7 +3032,7 @@ def register(api) -> None:
                     p["in_project"] = have.get(p["path"])
         return {"ok": True, **out}
 
-    @api.tool(intent=GEN_INTENT, listener=False)
+    @tool(intent=GEN_INTENT, listener=False)
     def road_network_describe(net_id: str = "") -> dict:
         """Start here: everything City Builder accepts, read from the code so it is never out of date. Layer
         kinds, where-zones, roles, building forms, build modes ('mesh' stretches one kit building to a lot,
@@ -3010,7 +3063,7 @@ def register(api) -> None:
                                     for k, v in layer_docs(nid).items()), key=lambda l: (l["order"] or 0, l["name"] or ""))
         return out
 
-    @api.tool(intent=GEN_INTENT, listener=False)
+    @tool(intent=GEN_INTENT, listener=False)
     def road_network_holds(net_id: str = "") -> dict:
         """Who is working on which city of a world right now: [{city, who, kind (person / ducky / teammate), mine,
         task, left_s}]. A city someone else holds can't be changed: road_network_city_save, city_delete and a
@@ -3019,7 +3072,7 @@ def register(api) -> None:
         own ducky may change the city that person has open. Look here before planning changes to several cities."""
         return safe(holds)(net_id)
 
-    @api.tool(intent=GEN_INTENT, listener=False)
+    @tool(intent=GEN_INTENT, listener=False)
     def road_network_hold(net_id: str = "", city: str = "", task: str = "", minutes: float = 0.0) -> dict:
         """Take a city before a longer job on it, so no one else changes it meanwhile: task says what you are doing
         in a few words (everyone sees it: "Builder (Ilya's ducky) · re-planning the harbour"), minutes how long
@@ -3027,18 +3080,18 @@ def register(api) -> None:
         Refused, with the holder's name, while someone else has the city. Let go with road_network_release."""
         return safe(hold)(net_id, city, task, minutes)
 
-    @api.tool(intent=GEN_INTENT, listener=False)
+    @tool(intent=GEN_INTENT, listener=False)
     def road_network_release(net_id: str = "", city: str = "") -> dict:
         """Let go of a city you hold (road_network_hold, or the hold your last change to it took), so the next
         person or ducky can change it at once instead of after two minutes."""
         return safe(release)(net_id, city)
 
-    @api.tool(intent=GEN_INTENT, listener=False)
+    @tool(intent=GEN_INTENT, listener=False)
     def road_network_cities(net_id: str = "") -> dict:
         """The cities of a generated world: centre, radius, road style, district rings and building sets."""
         return safe(list_cities)(net_id)
 
-    @api.tool(intent=GEN_INTENT, listener=False)
+    @tool(intent=GEN_INTENT, listener=False)
     def road_network_city_plan(net_id: str = "", city: str = "", facilities: bool = False) -> dict:
         """The urban planner's plan for one city (urban.py): population, households, jobs and age groups; the
         demand (retail, school seats); every facility the city got by category (commercial, education,
@@ -3064,7 +3117,7 @@ def register(api) -> None:
             return {"ok": True, "city": doc["name"], **p}
         return safe(run)()
 
-    @api.tool(intent=GEN_INTENT, listener=False)
+    @tool(intent=GEN_INTENT, listener=False)
     def road_network_city_add(net_id: str = "", name: str = "", x: float | None = None, y: float | None = None,
                               radius_m: float = 0.0, style: str = "") -> dict:
         """Add a city to a generated world: at x, y (cm, UE world) or, without them, on a free spot of the map;
@@ -3072,13 +3125,13 @@ def register(api) -> None:
         empty): it gets its own roads, services and waterfront, and highways join it to the other cities."""
         return safe(add_city)(net_id, name, x, y, radius_m, style)
 
-    @api.tool(intent=GEN_INTENT, listener=False)
+    @tool(intent=GEN_INTENT, listener=False)
     def road_network_city_delete(net_id: str = "", city: str = "", confirm: bool = False) -> dict:
         """Remove a city (and everything on it) from a generated world; confirm=true. Then generate again: the
         other cities' highways re-join without it. A world keeps at least one city."""
         return safe(delete_city)(net_id, city, confirm)
 
-    @api.tool(intent=GEN_INTENT, listener=False)
+    @tool(intent=GEN_INTENT, listener=False)
     def road_network_airports(net_id: str = "") -> dict:
         """The airports of a generated world (airport.py): per airport its type (general_aviation / regional /
         international / military), city, runway heading (into the wind_deg option), grading, every facility it
@@ -3096,7 +3149,7 @@ def register(api) -> None:
                                                           "too steep or wet, or airports is set to none."}
         return safe(run)()
 
-    @api.tool(intent=GEN_INTENT, listener=False)
+    @tool(intent=GEN_INTENT, listener=False)
     def road_network_waterfront(net_id: str = "", city: str = "") -> dict:
         """The water of a generated world (waterfront.py): waterbodies (ocean / lake / river, area, width),
         every bridge the roads needed (type by span: canal arch, beam, navigable girder, cable-stayed,
@@ -3118,7 +3171,7 @@ def register(api) -> None:
                     "bridges": w.get("bridges"), "cities": cities}
         return safe(run)()
 
-    @api.tool(intent=GEN_INTENT, listener=False)
+    @tool(intent=GEN_INTENT, listener=False)
     def road_network_city_save(net_id: str = "", city: str = "", name: str = "", style: str = "",
                                radius_m: float = 0.0, buildings: str = "", x: float | None = None,
                                y: float | None = None, features: str = "", turn_deg: float | None = None,
@@ -3138,36 +3191,54 @@ def register(api) -> None:
         with cities empty to rebuild its roads, freeways, airport, waterfront and everything on it."""
         return safe(save_city)(net_id, city, name, style, radius_m, buildings, x, y, features, turn_deg, shape, zones)
 
-    @api.tool(intent=GEN_INTENT, listener=False)
+    @tool(intent=GEN_INTENT, listener=False)
     def road_network_heightmap(net_id: str = "") -> dict:
         """Where a generated world's heightmap PNG is and the Landscape import settings (resolution,
         location, scale) to bring it in as a new landscape."""
         return safe(heightmap)(net_id)
 
-    @api.tool(intent=GEN_INTENT, listener=True)
+    @tool(intent=GEN_INTENT, listener=True)
     def road_network_import_all(net_id: str = "", confirm: bool = False, force: bool = False) -> dict:
         """Push roads into UEFN: build junction pieces, then paste every road actor that CHANGED since its last
         push (or is missing from the level) as live splines; unchanged actors are left alone. force=true pushes
         all. Ask the person first and keep their hands off UEFN while it runs."""
         return safe(import_all)(net_id, confirm, force)
 
-    api.register_panel_rpc("generate", lambda name="", seed=7, cities="", size_km=6.0, relief_m=60.0, ground_from="",
+    panel_rpc("generate", lambda name="", seed=7, cities="", size_km=6.0, relief_m=60.0, ground_from="",
                            folder="", center_x=0.0, center_y=0.0, options="": safe(generate)(
                                name, seed, cities, size_km, relief_m, ground_from, folder, center_x, center_y, options))
-    api.register_panel_rpc("generate_options", lambda: road_network_generate_options())
-    api.register_panel_rpc("cities", lambda net_id="": safe(list_cities)(net_id))
-    api.register_panel_rpc("hold", lambda net_id="", city="", task="", minutes=0.0: safe(hold)(net_id, city, task, minutes))
-    api.register_panel_rpc("release", lambda net_id="", city="": safe(release)(net_id, city))
-    api.register_panel_rpc("holds", lambda net_id="", teammates=None: safe(holds)(net_id, teammates))
-    api.register_panel_rpc("city_save", lambda net_id="", city="", name="", style="", radius_m=0.0, buildings="",
+    panel_rpc("generate_options", lambda: road_network_generate_options())
+
+    # ---------------------------------------------------------------- panel: history (undo, redo)
+    def history_list(net_id: str = "") -> dict:
+        nid = slug(net_id)
+        got = data.steps(nid)
+        return {"ok": True, "id": nid, "undo": got["undo"][-30:], "redo": got["redo"][-30:]}
+
+    @holds_the_world
+    def history_move(net_id: str = "", back: bool = True, steps: int = 1) -> dict:
+        """Undo (or redo) the last steps of a world: its docs and files go back to exactly what they were. UEFN is
+        not touched: the panel shows what is now waiting to be pushed."""
+        nid = slug(net_id)
+        done_ = data.undo(nid, steps) if back else data.redo(nid, steps)
+        return {**history_list(nid), "done": done_}
+
+    panel_rpc("history", lambda net_id="": safe(history_list)(net_id))
+    panel_rpc("undo", lambda net_id="", steps=1: safe(history_move)(net_id, True, steps))
+    panel_rpc("redo", lambda net_id="", steps=1: safe(history_move)(net_id, False, steps))
+    panel_rpc("cities", lambda net_id="": safe(list_cities)(net_id))
+    panel_rpc("hold", lambda net_id="", city="", task="", minutes=0.0: safe(hold)(net_id, city, task, minutes))
+    panel_rpc("release", lambda net_id="", city="": safe(release)(net_id, city))
+    panel_rpc("holds", lambda net_id="", teammates=None: safe(holds)(net_id, teammates))
+    panel_rpc("city_save", lambda net_id="", city="", name="", style="", radius_m=0.0, buildings="",
                            x=None, y=None, features="", turn_deg=None, shape="", zones="":
                            safe(save_city)(net_id, city, name, style, radius_m, buildings, x, y, features,
                                            turn_deg, shape, zones))
-    api.register_panel_rpc("heightmap", lambda net_id="": safe(heightmap)(net_id))
-    api.register_panel_rpc("city_add", lambda net_id="", name="", x=None, y=None, radius_m=0.0, style="":
+    panel_rpc("heightmap", lambda net_id="": safe(heightmap)(net_id))
+    panel_rpc("city_add", lambda net_id="", name="", x=None, y=None, radius_m=0.0, style="":
                            safe(add_city)(net_id, name, x, y, radius_m, style))
-    api.register_panel_rpc("city_delete", lambda net_id="", city="", confirm=False: safe(delete_city)(net_id, city, confirm))
-    api.register_panel_rpc("pipeline", lambda net_id="", run_from="", confirm=False: safe(pipeline_run)(net_id, run_from, confirm))
+    panel_rpc("city_delete", lambda net_id="", city="", confirm=False: safe(delete_city)(net_id, city, confirm))
+    panel_rpc("pipeline", lambda net_id="", run_from="", confirm=False: safe(pipeline_run)(net_id, run_from, confirm))
 
     # ---------------------------------------------------------------- panel: version, AI notes on the map
     def plugin_version() -> dict:
@@ -3497,23 +3568,23 @@ def register(api) -> None:
                      "with \"area\"), checked with road_network_pcg_preview.")
         return {"ok": True, "draft": "\n".join(lines) + "\n\nWhat I want here: "}
 
-    api.register_panel_rpc("note_draft", lambda net_id="", kind="pin", points="": safe(note_draft)(net_id, kind, points))
+    panel_rpc("note_draft", lambda net_id="", kind="pin", points="": safe(note_draft)(net_id, kind, points))
 
-    @api.tool(intent=GEN_INTENT, listener=False)
+    @tool(intent=GEN_INTENT, listener=False)
     def road_network_note_draft(net_id: str = "", kind: str = "pin", points: str = "") -> dict:
         """The text the City Builder panel puts in the chat's typing box for a pin (kind 'pin', one [x, y]), an
         area (kind 'area', an outline [[x, y], ...], cm) or a build (kind 'build'): where it is, what is there and
         how to act on it, ending where the person says what they want. Sends nothing."""
         return safe(note_draft)(net_id, kind, points)
-    api.register_panel_rpc("version", lambda: plugin_version())
-    api.register_panel_rpc("chats", lambda: safe(list_chats)())
-    api.register_panel_rpc("send_note", lambda net_id="", chat_id="", text="", kind="pin", points="":
+    panel_rpc("version", lambda: plugin_version())
+    panel_rpc("chats", lambda: safe(list_chats)())
+    panel_rpc("send_note", lambda net_id="", chat_id="", text="", kind="pin", points="":
                            safe(send_note)(net_id, chat_id, text, kind, points))
 
-    api.register_panel_rpc("sync", lambda net_id="": safe(sync_status)(net_id))
-    api.register_panel_rpc("build_brief", lambda net_id="", check=False: safe(build_brief)(net_id, check))
+    panel_rpc("sync", lambda net_id="": safe(sync_status)(net_id))
+    panel_rpc("build_brief", lambda net_id="", check=False: safe(build_brief)(net_id, check))
 
-    @api.tool(intent=GEN_INTENT, listener=False)
+    @tool(intent=GEN_INTENT, listener=False)
     def road_network_build_brief(net_id: str = "", check: bool = False) -> dict:
         """Start of every build in UEFN: everything this world needs (every road mesh the splines use and every kit
         mesh the PCG city places, how often, and where each comes from: street kit City Builder makes itself,
@@ -3523,34 +3594,34 @@ def register(api) -> None:
         work (open UEFN?, which pieces, how to make missing ones, scope, density, interiors, terrain, saving)."""
         return safe(build_brief)(net_id, check)
 
-    @api.tool(intent=GEN_INTENT, listener=False)
+    @tool(intent=GEN_INTENT, listener=False)
     def road_network_sync(net_id: str = "") -> dict:
         """Is UEFN behind this world? Road actors changed or never pushed, and PCG tiles to rebuild / remove,
         against what was last built (offline). The panel header shows it; generating again is never blocked."""
         return safe(sync_status)(net_id)
 
-    @api.tool(intent=GEN_INTENT, listener=False)
+    @tool(intent=GEN_INTENT, listener=False)
     def road_network_version() -> dict:
         """City Builder's version (the panel shows it at the foot of its sidebar)."""
         return plugin_version()
 
-    @api.tool(intent=GEN_INTENT, listener=False)
+    @tool(intent=GEN_INTENT, listener=False)
     def road_network_chats() -> dict:
         """The recent Ducky chats a map note (road_network_send_note) can be sent to."""
         return safe(list_chats)()
 
-    @api.tool(intent=GEN_INTENT, listener=False)
+    @tool(intent=GEN_INTENT, listener=False)
     def road_network_send_note(net_id: str = "", chat_id: str = "", text: str = "", kind: str = "pin", points: str = "") -> dict:
         """Send a note about a spot (kind 'pin', one [x, y]) or an area (kind 'area', an outline [[x, y], ...], cm)
         of a world to a Ducky chat (chat_id, or 'new'), with where it is, what is already there and how to act
         on it with City Builder (an area-limited PCG layer); or kind 'build' (no points): ask that chat to build
         the world in UEFN (landscape splines + PCG tiles, only what changed). The panel's tools call this."""
         return safe(send_note)(net_id, chat_id, text, kind, points)
-    api.register_panel_rpc("import_all", lambda net_id="", confirm=False, force=False: safe(import_all)(net_id, confirm, force))
+    panel_rpc("import_all", lambda net_id="", confirm=False, force=False: safe(import_all)(net_id, confirm, force))
 
     PCG_INTENT = r"\b(pcg|procedural|scatter|placement layers?|foliage|trees|rocks|street (trees|lamps))\b"
 
-    @api.tool(intent=PCG_INTENT, listener=False)
+    @tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_layers(net_id: str = "") -> dict:
         """A world's PCG placement layers (trees, bushes, rocks, street pieces, buildings, and any the person or an
         AI added): what each places, where, how dense, what it keeps clear of. Also `fields` (every setting with
@@ -3558,7 +3629,7 @@ def register(api) -> None:
         write a new layer with road_network_pcg_layer_save, no plugin code involved."""
         return safe(pcg_layers)(net_id)
 
-    @api.tool(intent=PCG_INTENT, listener=False)
+    @tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_layer_save(net_id: str = "", layer: str = "", layer_id: str = "") -> dict:
         """Create or change one PCG layer (the person's own or an AI's: layers are data, never plugin code).
         layer: JSON {name, kind (scatter | foliage | along_roads | at_junctions | buildings), where (outside |
@@ -3572,12 +3643,12 @@ def register(api) -> None:
         road_network_pcg_preview, then Push city (road_network_pcg_build) builds only the changed tiles."""
         return safe(pcg_layer_save)(net_id, layer, layer_id)
 
-    @api.tool(intent=PCG_INTENT, listener=False)
+    @tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_layer_delete(net_id: str = "", layer_id: str = "") -> dict:
         """Remove one PCG layer from a world (UEFN is not touched)."""
         return safe(pcg_layer_delete)(net_id, layer_id)
 
-    @api.tool(intent=PCG_INTENT, listener=False)
+    @tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_preset(net_id: str = "", preset: str = "full_city", reorder: bool = False, replace: bool = False) -> dict:
         """Apply a preset to a world: every layer it holds in one call. Built in: 'full_city' (16 building types,
         traffic lights / stop and street signs on junction corners, lamps, street trees, bus stops, benches, bins,
@@ -3588,14 +3659,14 @@ def register(api) -> None:
         options come back as `options`: pass them to road_network_generate to get its terrain and streets too."""
         return safe(pcg_preset)(net_id, preset, reorder, replace)
 
-    @api.tool(intent=PCG_INTENT, listener=False)
+    @tool(intent=PCG_INTENT, listener=False)
     def road_network_presets() -> dict:
         """Every City Builder preset: the built-in layer sets and the ones saved here by a person or an AI (name,
         how many layers, their names, the world options kept with it, its note). Apply one with
         road_network_pcg_preset."""
         return safe(presets)()
 
-    @api.tool(intent=PCG_INTENT, listener=False)
+    @tool(intent=PCG_INTENT, listener=False)
     def road_network_preset_save(name: str = "", net_id: str = "", layers: str = "", options: str = "", note: str = "") -> dict:
         """Make or change a preset on the fly: a named set of placement layers, kept with this plugin's data and
         usable on any world. layers: a JSON list of layers exactly as road_network_pcg_layer_save takes one (name,
@@ -3606,20 +3677,20 @@ def register(api) -> None:
         existing name replaces that preset. Apply it with road_network_pcg_preset(net_id, preset=name)."""
         return safe(preset_save)(name, net_id, layers, options, note)
 
-    @api.tool(intent=PCG_INTENT, listener=False)
+    @tool(intent=PCG_INTENT, listener=False)
     def road_network_preset_delete(preset: str = "", confirm: bool = False) -> dict:
         """Delete a saved City Builder preset (never a built-in one). Worlds it was applied to keep their layers.
         confirm=true to go ahead."""
         return safe(preset_delete)(preset, confirm)
 
-    @api.tool(intent=PCG_INTENT, listener=False)
+    @tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_plan(net_id: str = "", road_tag: str = "") -> dict:
         """The PCG graph that places a world's layers in UEFN: native nodes in data-flow order with their
         settings, the wires, the graph params, the road tag and the volume. Build it with Epic PCGToolset
         (skill pcg/graph_layers)."""
         return safe(pcg_plan)(net_id, road_tag)
 
-    @api.tool(intent=PCG_INTENT, listener=False)
+    @tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_assets(net_id: str = "", asset_set: str = "", interiors: str = "") -> dict:
         """Which pieces City Builder uses for a world's layers: 'own' (the project's own kit: WorldGen/City,
         WorldGen/Kit, BuildingKit storeys), 'fortnite' (Fortnite's props and buildings) or 'mixed', and whether
@@ -3627,21 +3698,21 @@ def register(api) -> None:
         Empty arguments read them, with where each role (traffic light, skyscraper, bench...) comes from."""
         return safe(pcg_assets)(net_id, asset_set, interiors)
 
-    @api.tool(intent=PCG_INTENT, listener=False)
+    @tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_preview(net_id: str = "", layer_id: str = "", summary: bool = False) -> dict:
         """Run a world's PCG layers offline with the graph's rules (district, off the roads, clear of earlier
         layers, no overlaps, nothing under water) and return where each would place things plus its count;
         the panel draws it in 3D. layer_id: just that layer. summary=true: only the count per layer."""
         return safe(pcg_preview)(net_id, layer_id, summary)
 
-    @api.tool(intent=PCG_INTENT, listener=False)
+    @tool(intent=PCG_INTENT, listener=False)
     def road_network_ground_fit(net_id: str = "") -> dict:
         """Is the ground right for the city as it is now? Buildings the ground would bury or leave floating and
         street points it would cover or leave in the air (all must be 0 before the heightmap is imported and the
         city pushed). The ground is re-cut from the layout on every change: lots level, roads cut and filled."""
         return safe(ground_fit)(net_id, False)
 
-    @api.tool(intent=PCG_INTENT, listener=False)
+    @tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_exact(net_id: str = "", x: float = 0.0, y: float = 0.0, radius_m: float = 400.0,
                                summary: bool = True) -> dict:
         """What road_network_pcg_build would place within radius_m of (x, y) (cm), before pushing: each building,
@@ -3650,7 +3721,7 @@ def register(api) -> None:
         size, and ground_fit (buildings the ground would bury or leave floating; must be 0 before a push)."""
         return safe(pcg_exact)(net_id, float(x), float(y), float(radius_m), summary)
 
-    @api.tool(intent=PCG_INTENT, listener=False)
+    @tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_build(net_id: str = "", confirm: bool = False, force: bool = False,
                                stop: bool = False) -> dict:
         """Build the world's previewed city in the open UEFN level as PCG of the project's own kit, in 400 m
@@ -3662,29 +3733,29 @@ def register(api) -> None:
         for progress (done / total) and the last result; stop=true stops it after the batch in flight."""
         return safe(pcg_build)(net_id, confirm, force, False, stop)
 
-    @api.tool(intent=PCG_INTENT, listener=False)
+    @tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_place(net_id: str = "", confirm: bool = False) -> dict:
         """One click: start an AI chat that builds the world's PCG layers in the open UEFN level from
         road_network_pcg_plan. Ask the person first."""
         return safe(pcg_place)(net_id, confirm)
 
-    api.register_panel_rpc("pcg_layers", lambda net_id="": safe(pcg_layers)(net_id))
-    api.register_panel_rpc("pcg_layer_save", lambda net_id="", layer="", layer_id="": safe(pcg_layer_save)(net_id, layer, layer_id))
-    api.register_panel_rpc("pcg_layer_delete", lambda net_id="", layer_id="": safe(pcg_layer_delete)(net_id, layer_id))
-    api.register_panel_rpc("pcg_preset", lambda net_id="", preset="full_city", reorder=False, replace=False:
+    panel_rpc("pcg_layers", lambda net_id="": safe(pcg_layers)(net_id))
+    panel_rpc("pcg_layer_save", lambda net_id="", layer="", layer_id="": safe(pcg_layer_save)(net_id, layer, layer_id))
+    panel_rpc("pcg_layer_delete", lambda net_id="", layer_id="": safe(pcg_layer_delete)(net_id, layer_id))
+    panel_rpc("pcg_preset", lambda net_id="", preset="full_city", reorder=False, replace=False:
                            safe(pcg_preset)(net_id, preset, reorder, replace))
-    api.register_panel_rpc("presets", lambda: safe(presets)())
-    api.register_panel_rpc("preset_save", lambda name="", net_id="", layers="", options="", note="":
+    panel_rpc("presets", lambda: safe(presets)())
+    panel_rpc("preset_save", lambda name="", net_id="", layers="", options="", note="":
                            safe(preset_save)(name, net_id, layers, options, note))
-    api.register_panel_rpc("preset_delete", lambda preset="", confirm=False: safe(preset_delete)(preset, confirm))
-    api.register_panel_rpc("pcg_plan", lambda net_id="", road_tag="": safe(pcg_plan)(net_id, road_tag))
-    api.register_panel_rpc("pcg_assets", lambda net_id="", asset_set="", interiors="": safe(pcg_assets)(net_id, asset_set, interiors))
-    api.register_panel_rpc("pcg_preview", lambda net_id="", layer_id="": safe(pcg_preview)(net_id, layer_id))
-    api.register_panel_rpc("ground_fit", lambda net_id="": safe(ground_fit)(net_id))
-    api.register_panel_rpc("pcg_exact", lambda net_id="", x=0.0, y=0.0, radius_m=400.0: safe(pcg_exact)(
+    panel_rpc("preset_delete", lambda preset="", confirm=False: safe(preset_delete)(preset, confirm))
+    panel_rpc("pcg_plan", lambda net_id="", road_tag="": safe(pcg_plan)(net_id, road_tag))
+    panel_rpc("pcg_assets", lambda net_id="", asset_set="", interiors="": safe(pcg_assets)(net_id, asset_set, interiors))
+    panel_rpc("pcg_preview", lambda net_id="", layer_id="": safe(pcg_preview)(net_id, layer_id))
+    panel_rpc("ground_fit", lambda net_id="": safe(ground_fit)(net_id))
+    panel_rpc("pcg_exact", lambda net_id="", x=0.0, y=0.0, radius_m=400.0: safe(pcg_exact)(
         net_id, float(x), float(y), float(radius_m)))
-    api.register_panel_rpc("pcg_place", lambda net_id="", confirm=False: safe(pcg_place)(net_id, confirm))
-    api.register_panel_rpc("pcg_build", lambda net_id="", confirm=False, force=False: safe(pcg_build)(net_id, confirm, force))
+    panel_rpc("pcg_place", lambda net_id="", confirm=False: safe(pcg_place)(net_id, confirm))
+    panel_rpc("pcg_build", lambda net_id="", confirm=False, force=False: safe(pcg_build)(net_id, confirm, force))
 
     @api.register_pipeline_node("road-network.pcg_plan")
     def node_pcg_plan(ctx: dict) -> dict:
@@ -3729,32 +3800,32 @@ def register(api) -> None:
         return safe(reimport)(str(cfg.get("net_id") or ""), str(cfg.get("actor") or ""), bool(cfg.get("confirm")))
 
     # ---------------------------------------------------------------- panel RPCs
-    api.register_panel_rpc("projects", lambda: safe(list_projects)())
-    api.register_panel_rpc("project_save", lambda project_id="", name="", description="": safe(save_project)(project_id, name, description))
-    api.register_panel_rpc("list", lambda project="": safe(list_networks)(project))
-    api.register_panel_rpc("get", lambda net_id="": safe(get_network)(net_id))
-    api.register_panel_rpc("save", lambda net_id="", name="", project="", terrain_mode="": safe(save_network)(net_id, name, project, terrain_mode))
-    api.register_panel_rpc("delete", lambda net_id="": safe(delete_network)(net_id))
-    api.register_panel_rpc("pull", lambda net_id="", name="", project="", actors="": safe(pull)(net_id, name, project, actors))
-    api.register_panel_rpc("stats", lambda net_id="": safe(stats)(net_id))
-    api.register_panel_rpc("geometry", lambda net_id="", actor="", offset=0, limit=0, terrain=True:
+    panel_rpc("projects", lambda: safe(list_projects)())
+    panel_rpc("project_save", lambda project_id="", name="", description="": safe(save_project)(project_id, name, description))
+    panel_rpc("list", lambda project="": safe(list_networks)(project))
+    panel_rpc("get", lambda net_id="": safe(get_network)(net_id))
+    panel_rpc("save", lambda net_id="", name="", project="", terrain_mode="": safe(save_network)(net_id, name, project, terrain_mode))
+    panel_rpc("delete", lambda net_id="": safe(delete_network)(net_id))
+    panel_rpc("pull", lambda net_id="", name="", project="", actors="": safe(pull)(net_id, name, project, actors))
+    panel_rpc("stats", lambda net_id="": safe(stats)(net_id))
+    panel_rpc("geometry", lambda net_id="", actor="", offset=0, limit=0, terrain=True:
                            safe(geometry)(net_id, actor, offset, limit, terrain))
-    api.register_panel_rpc("move_point", lambda net_id="", actor="", index=-1, x=0.0, y=0.0, z=0.0: safe(move_point)(net_id, actor, index, x, y, z))
-    api.register_panel_rpc("tune", lambda net_id="", actor="", thin_tolerance_cm=50.0, side_falloff=800.0,
+    panel_rpc("move_point", lambda net_id="", actor="", index=-1, x=0.0, y=0.0, z=0.0: safe(move_point)(net_id, actor, index, x, y, z))
+    panel_rpc("tune", lambda net_id="", actor="", thin_tolerance_cm=50.0, side_falloff=800.0,
                            end_falloff=1000.0, width=0.0, paint_layer="", mesh_offset_cm=-1.0: safe(tune_actor)(
                                net_id, actor, thin_tolerance_cm, side_falloff, end_falloff, width, paint_layer,
                                mesh_offset_cm))
-    api.register_panel_rpc("build_pieces", lambda net_id="", actor="", rebuild=False: safe(build_pieces)(net_id, actor, rebuild))
-    api.register_panel_rpc("kit_materials", lambda net_id="", street_kit=True: safe(kit_materials)(net_id, street_kit))
-    api.register_panel_rpc("kit_convert", lambda net_id="", actor="": safe(kit_convert)(net_id, actor))
-    api.register_panel_rpc("check", lambda net_id="", actor="": safe(check)(net_id, actor))
-    api.register_panel_rpc("repair", lambda net_id="", actor="": safe(repair_actor)(net_id, actor))
-    api.register_panel_rpc("scan_ground", lambda net_id="", grid=200: safe(scan_ground)(net_id, grid))
-    api.register_panel_rpc("drape", lambda net_id="", actor="", smooth=4, all_points=False: safe(drape)(net_id, actor, smooth, all_points))
-    api.register_panel_rpc("copy_text", lambda net_id="", actor="": safe(copy_text)(net_id, actor))
-    api.register_panel_rpc("reimport", lambda net_id="", actor="", confirm=False: safe(reimport)(net_id, actor, confirm))
+    panel_rpc("build_pieces", lambda net_id="", actor="", rebuild=False: safe(build_pieces)(net_id, actor, rebuild))
+    panel_rpc("kit_materials", lambda net_id="", street_kit=True: safe(kit_materials)(net_id, street_kit))
+    panel_rpc("kit_convert", lambda net_id="", actor="": safe(kit_convert)(net_id, actor))
+    panel_rpc("check", lambda net_id="", actor="": safe(check)(net_id, actor))
+    panel_rpc("repair", lambda net_id="", actor="": safe(repair_actor)(net_id, actor))
+    panel_rpc("scan_ground", lambda net_id="", grid=200: safe(scan_ground)(net_id, grid))
+    panel_rpc("drape", lambda net_id="", actor="", smooth=4, all_points=False: safe(drape)(net_id, actor, smooth, all_points))
+    panel_rpc("copy_text", lambda net_id="", actor="": safe(copy_text)(net_id, actor))
+    panel_rpc("reimport", lambda net_id="", actor="", confirm=False: safe(reimport)(net_id, actor, confirm))
 
-    @api.tool(intent=INTENT, listener=False)
+    @tool(intent=INTENT, listener=False)
     def road_network_geometry(net_id: str = "", actor: str = "", offset: int = 0, limit: int = 0,
                               terrain: bool = True) -> dict:
         """Control points and segments of a road network (what the 3D view draws); limit pages one actor."""
