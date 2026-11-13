@@ -152,8 +152,8 @@ situation and what to do. Keep it to what you couldn't have known.
   remade for the city. 'Ground under the cities: Natural' never changes the land; 'Flatten' levels the land under a
   city but never its lakes or sea (the plateau comes up from the shore). Never fill or move water for a city.
 - The person does not want a chequerboard (Nov 12 2026): main roads wander, and past downtown many streets
-  between two neighbouring blocks are simply not built, so subdivisions lie side by side. Only a Grid city is
-  ruled. Never bring back a ring of roads round every block to make a layout easier.
+  between two neighbouring blocks are simply not built, so subdivisions lie side by side (in a Grid city too:
+  only its streets stay ruled). Never bring back a ring of roads round every block to make a layout easier.
 - "Nothing is generated here" has four different causes; find which before changing anything: land no street
   rings (it gets lots along the street's open side), the middle of a block of plain lots (planted), a lot no
   layer fits (planted; downtown and industrial lots are built by the tower, office and warehouse layers), a keep

@@ -568,7 +568,7 @@ Roads define the city, blocks are what roads enclose, lots are cut from blocks, 
        a freeway;
      - a wobble of 3 % already gives most of it. Before, an Organic city with a low wobble still had a
        ruled main road on every fourth line, and every four of them made a square.
-   - **Streets left out** (`citygen._street_gaps`, with `superblocks`, never in a Grid city). Past downtown
+   - **Streets left out** (`citygen._street_gaps`, with `superblocks`, in a Grid city too). Past downtown
      every block was ringed by its own square of streets, a subdivision or a complex inside each. Now many of
      the streets between two neighbouring blocks are not built:
 
@@ -585,6 +585,9 @@ Roads define the city, blocks are what roads enclose, lots are cut from blocks, 
      two streets, a crossing's last two roads, the street that holds the network together.
    - **One network** (`citygen.one_network`): a bridge with no street at one of its ends is not built, and
      fewer than 8 junctions joined to nothing go with it.
+   - **Few bridges** (`citygen.few_bridges`): every street that reached the water once got its own bridge, a
+     dozen side by side over one lake. Now, shortest first: none crosses another, and a long one (over 300 m)
+     is built only if no other long one comes within 800 m of it. Creeks and rivers keep a bridge per street.
    - **Streets follow the hills** (`follow_hills`, 0 to 1, default 0.8; `citygen.plan_hills`, kept on the city
      as `hills`). On sloping ground the grid is eased onto the hill before any street is laid:
      - a street across a slope moves up or down it, round after round, toward the height of its neighbours

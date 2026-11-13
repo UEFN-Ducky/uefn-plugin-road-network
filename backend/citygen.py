@@ -1523,9 +1523,9 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
             return big[g]
         edges = [e for e in edges if (e[0][0] if e[1][0] == e[0][0] else e[0][1]) % ce == 0
                  or not superblock((e[0][0] // ce, e[0][1] // ce))]
-        if style != "grid":
-            edges = _street_gaps(city, o, nodes, ring, edges, {g for g, yes in big.items() if yes}, virtual,
-                                 [ic["at"] for ic in fwp.interchanges if ic.get("b_axis")])
+        # (in a Grid city as well: its streets stay ruled, but its subdivisions need no ring of roads each either)
+        edges = _street_gaps(city, o, nodes, ring, edges, {g for g, yes in big.items() if yes}, virtual,
+                             [ic["at"] for ic in fwp.interchanges if ic.get("b_axis")])
     hills = city.get("hills") if style != "grid" and o["follow_hills"] else None
     if hills:
         # no local street straight up a steep hillside: the ones that would climb steeper than STEEP_STREET are
@@ -1622,7 +1622,9 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
         nodes = {n: p for n, p in nodes.items() if n in used}
         wet = water_of(city, o, wet)
     if wet:  # streets cross water on bridges (one edge bank to bank), the rest stop at the shore
+        planned_before = len(bridges) if bridges is not None else 0
         nodes, edges = over_water(*cross_water(nodes, edges, wet), wet, bridges=bridges, stubs=False)
+        nodes, edges = few_bridges(nodes, edges, bridges, planned_before)
     if city.get("shores"):
         # no street on a made shore where the land was cut down for it: it ends at the top of the bank, above
         # the promenade (laid there it stood on a ramp 10 m over the quay). A bridge keeps both its ends: a
@@ -1881,6 +1883,45 @@ def _street_gaps(city: dict, o: dict, nodes: dict, ring: dict, edges: list, supe
             if virtual is not None:
                 virtual.append([e[0], e[1], list(nodes[e[0]][:2]), list(nodes[e[1]][:2])])
     return [e for e in edges if id(e) not in gone]
+
+
+LONG_BRIDGE_CM = 30000.0  # a bridge over 300 m from end to end is a long one ...
+BRIDGES_APART_CM = 80000.0  # ... and no two long ones come within 800 m of each other
+
+
+def few_bridges(nodes: dict, edges: list, bridges: list | None = None, since: int = 0) -> tuple:
+    """Every street that reached the water got its own bridge to the far bank. A city on a lake then had a
+    dozen bridges a kilometre long side by side, several fanning out to one landing and crossing each other in
+    the air: 15 km of bridge deck in a town with 60 km of streets (the owner's Valley, Nov 13 2026). Now, the
+    shortest first: a bridge is built only if it crosses no bridge built before it, and a long one (over
+    LONG_BRIDGE_CM) only if no other long one comes within BRIDGES_APART_CM of it anywhere along its length (so
+    never two to one landing, never two side by side over the same water). Creeks and rivers keep a bridge on
+    every street: those are short. The ones not built stop at the shore like any street with no crossing.
+    bridges: the world's list of planned bridges; the entries added from index `since` for bridges not built go."""
+    def crosses(p, q, a, b):
+        d = lambda o, u, v: (u[0] - o[0]) * (v[1] - o[1]) - (u[1] - o[1]) * (v[0] - o[0])
+        return d(p, q, a) * d(p, q, b) < 0 and d(a, b, p) * d(a, b, q) < 0
+    apart = lambda p, q, a, b: min(_dist_seg(p, a, b), _dist_seg(q, a, b), _dist_seg(a, p, q), _dist_seg(b, p, q))
+    spans = sorted((math.dist(nodes[e[0]][:2], nodes[e[1]][:2]), k) for k, e in enumerate(edges) if len(e) > 3 and e[3])
+    built, gone = [], set()
+    for length, k in spans:
+        p, q = nodes[edges[k][0]][:2], nodes[edges[k][1]][:2]
+        if any(crosses(p, q, a, b) or (length > LONG_BRIDGE_CM and other > LONG_BRIDGE_CM and apart(p, q, a, b) < BRIDGES_APART_CM)
+               for other, a, b in built):
+            gone.add(k)
+        else:
+            built.append((length, p, q))
+    if not gone:
+        return nodes, edges
+    if bridges is not None:
+        # (its own entry: on its line and running its way. One built right across it lies on its line too.)
+        lost = [(nodes[edges[k][0]][:2], nodes[edges[k][1]][:2]) for k in gone]
+        along = lambda b, p, q: abs(math.cos(math.radians(b.get("yaw", 0.0)) - math.atan2(q[1] - p[1], q[0] - p[0]))) > 0.95
+        bridges[since:] = [b for b in bridges[since:]
+                           if not any(_dist_seg((b["x"], b["y"]), p, q) < 500 and along(b, p, q) for p, q in lost)]
+    edges = [e for k, e in enumerate(edges) if k not in gone]
+    used = {n for e in edges for n in e[:2]}
+    return {n: p for n, p in nodes.items() if n in used}, edges
 
 
 LOOSE_MIN = 8  # a part of the street network that nothing joins to the rest is kept only with this many junctions
@@ -4135,14 +4176,21 @@ def _demo() -> None:
     mixed_n, _me = city_graph(dict(drifting, style="mixed"), {"wobble": 0.04, "freeways": "no", "prune": 0, "superblocks": "no"})
     assert all(math.dist(mixed_n[(i, j)], (i * block, j * block)) < 1.0 for i in range(-3, 4) for j in range(-3, 4)), "downtown stays a grid"
     assert max(math.dist(p, (n[0] * block, n[1] * block)) for n, p in mixed_n.items()) > 2000
-    # past downtown many of the streets between two neighbouring blocks are not built. Against the same city as a
-    # strict grid (which keeps them all): every street is either built or listed as left out, a fair share is
+    # past downtown many of the streets between two neighbouring blocks are not built. Against the same city
+    # with every one of them built: every street is either built or listed as left out, a fair share is
     # left out, none of them downtown or on an axis, the network is in one piece and no new dead end was made
     gap_city = {"x": 0, "y": 0, "radius": 150000, "seed": 5, "style": "organic", "turn": 0.0}
     gap_o = {"wobble": 0, "freeways": "no", "prune": 0, "planner": "no"}
     left_out: list = []
     gn2, ge2 = city_graph(gap_city, gap_o, virtual=left_out)
-    all_n, all_e = city_graph(dict(gap_city, style="grid"), gap_o)
+    every_gap = dict(GAPS)
+    GAPS.update({k: 0.0 for k in GAPS})
+    all_n, all_e = city_graph(gap_city, gap_o)
+    lay_all = city_layout(gap_city, gap_o)
+    GAPS.update(every_gap)
+    ruled: list = []  # a Grid city leaves streets out too, and keeps every street it builds on the grid's lines
+    rn_, re_ = city_graph(dict(gap_city, style="grid"), {**gap_o, "wobble": 0.3}, virtual=ruled)
+    assert len(ruled) > 40 and all(math.dist(p, (n[0] * block, n[1] * block)) < 1e-6 for n, p in rn_.items()), len(ruled)
     pair = lambda e: frozenset(e[:2])
     assert {pair(e) for e in ge2} | {pair(v) for v in left_out} == {pair(e) for e in all_e} and not {pair(e) for e in ge2} & {pair(v) for v in left_out}
     assert 0.08 * len(all_e) < len(left_out) < 0.4 * len(all_e), (len(left_out), len(all_e))
@@ -4166,7 +4214,7 @@ def _demo() -> None:
     assert city_graph(gap_city, gap_o)[1] == ge2, "the same streets whether or not the caller asks which were left out"
     # ... and the land is still parted along them: as many blocks as the strict grid has, each laid out on its
     # own ground; no lot fronts a street that is not there, and no block is left without a street
-    lay_gap, lay_all = city_layout(gap_city, gap_o), city_layout(dict(gap_city, style="grid"), gap_o)
+    lay_gap = city_layout(gap_city, gap_o)
     assert len(lay_gap["blocks"]) == len(lay_all["blocks"]), (len(lay_gap["blocks"]), len(lay_all["blocks"]))
     built = [(gn2[e[0]][:2], gn2[e[1]][:2]) for e in ge2]
     for r in lay_gap["lots"]:
@@ -4209,6 +4257,29 @@ def _demo() -> None:
     assert any(in_keep(kept_clear, r[0], r[1], 2000) for r in lay_gap["lots"]), "(lots were planned there)"
     beside = [b for b in lay_keep["blocks"] if any(in_keep(kept_clear, p[0], p[1], 2000) for p in b[4])]
     assert beside and all(b[2] in ("parcels", "park") for b in beside), "a block a keep zone reaches into is plain lots"
+    # few bridges: of five long ones side by side over a lake 150 m apart only the shortest is built; a second
+    # one a kilometre on is; none crosses another; a fan to one landing is one bridge; every creek keeps its own
+    deck = [[0, 0, 800, "BR"]]
+    lake_n, lake_e, plans = {}, [], []
+    for k in range(5):
+        lake_n[("a", k)], lake_n[("b", k)] = [k * 15000.0, 0.0], [k * 15000.0, 60000.0 + k * 1000.0]
+        lake_e.append([("a", k), ("b", k), "6S", deck])
+        plans.append({"x": k * 15000.0, "y": 30000.0 + k * 500.0, "yaw": 90.0})
+    lake_n[("a", 9)], lake_n[("b", 9)] = [200000.0, 0.0], [200000.0, 60000.0]
+    lake_e.append([("a", 9), ("b", 9), "6S", deck])
+    lake_n["x0"], lake_n["x1"] = [-30000.0, 20000.0], [150000.0, 21000.0]  # one right across the first five
+    lake_e.append(["x0", "x1", "6S", deck])
+    for k in range(3):  # three streets over a creek, 100 m apart
+        lake_n[("c", k)], lake_n[("d", k)] = [300000.0 + k * 10000.0, 0.0], [300000.0 + k * 10000.0, 6000.0]
+        lake_e.append([("c", k), ("d", k), "2S", deck])
+    lake_e.append([("a", 0), ("a", 1), "2S"])
+    few_n, few_e = few_bridges(lake_n, lake_e, plans, 0)
+    left = {(e[0], e[1]) for e in few_e if len(e) > 3}
+    assert left == {(("a", 0), ("b", 0)), (("a", 9), ("b", 9)), (("c", 0), ("d", 0)), (("c", 1), ("d", 1)), (("c", 2), ("d", 2))}, left
+    assert [p["x"] for p in plans] == [0.0] and ("b", 3) not in few_n and len(few_e) == 6, (plans, len(few_e))
+    fan_n = {"h": [0.0, 0.0], "l": [0.0, 90000.0], "m": [30000.0, 0.0], "r": [60000.0, 0.0]}
+    fan = few_bridges(fan_n, [[n, "l", "6S", deck] for n in ("h", "m", "r")])[1]
+    assert [e[0] for e in fan] == ["h"], "three bridges to one landing are one bridge"
     # one network: a bridge with a bare end is not built, a few streets joined to nothing go, a district stays
     net_n = {k: [k * 1000.0, 0.0] for k in range(13)}
     net_n.update({"far": [19000.0, 0.0], "x": [0.0, 9000.0], "y": [1000.0, 9000.0]})
