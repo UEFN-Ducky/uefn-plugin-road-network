@@ -161,9 +161,10 @@ def panel_width(tabs) -> int:
     return tabs[0] + tabs[1]
 
 
-def splines_spot(tabs) -> tuple:
-    """Window-relative centre of the Splines button for a panel whose tab strip runs tabs[0]..tabs[1]."""
-    cols = max(1, int((panel_width(tabs) - 13) // TOOL_DX))
+def splines_spot(tabs, cols_off: int = 0) -> tuple:
+    """Window-relative centre of the Splines button for a panel whose tab strip runs tabs[0]..tabs[1].
+    cols_off: one row width more or less than the estimate (a 340 px panel holds 5 buttons a row, not 6)."""
+    cols = max(1, int((panel_width(tabs) - 13) // TOOL_DX) + cols_off)
     return TOOL_X0 + TOOL_DX * (SPLINES_INDEX % cols), TOOL_Y0 + TOOL_DY * (SPLINES_INDEX // cols)
 
 
@@ -220,10 +221,15 @@ def _paste(user32, toggle_splines: bool) -> dict:
         tabs = landscape_tabs(user32, left, top)
         if tabs is None or tabs[2] != 0:
             return {"ok": False, "error": "Couldn't switch the Landscape panel to Manage; nothing was pasted."}
-    spot = splines_spot(tabs)
-    if not splines_active(user32, left, top, spot) and toggle_splines:
-        _click(user32, left + spot[0], top + spot[1])
+    # the estimated spot first, then one button more or fewer a row: the first that lights up is Splines
+    tries = list(dict.fromkeys(splines_spot(tabs, d) for d in (0, -1, 1)))
+    spot = next((s for s in tries if splines_active(user32, left, top, s)), tries[0])
+    for s in tries if toggle_splines and not splines_active(user32, left, top, spot) else ():
+        _click(user32, left + s[0], top + s[1])
         time.sleep(1.0)
+        if splines_active(user32, left, top, s):
+            spot = s
+            break
     if not splines_active(user32, left, top, spot):
         return {"ok": False, "error": f"The Splines tool didn't turn on (looked for it at {spot} in the window)."}
     tabs = landscape_tabs(user32, left, top)
