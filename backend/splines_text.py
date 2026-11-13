@@ -595,6 +595,90 @@ def retangent(by_i: dict, s: dict) -> None:
         s[key] = chord if f[0] * (q["x"] - p["x"]) + f[1] * (q["y"] - p["y"]) > 0 else -chord
 
 
+STRAIGHT_XY_CM = 150.0  # a run point this close to the straight line in plan is dropped...
+STRAIGHT_Z_CM = 200.0   # ...if it is also this close in height: long roads become one straight segment
+
+
+def straighten(points: list, segments: list, xy_tol: float = STRAIGHT_XY_CM, z_tol: float = STRAIGHT_Z_CM) -> tuple:
+    """Copies of (points, segments) with every run of plain road points cut to the fewest straight segments.
+    A run goes from one kept point (junction, piece, end, bridge / kind change) to the next through points
+    with exactly two segments of the same kind; a point stays only where the road really bends (further than
+    xy_tol off the straight line in plan, or z_tol in height). A road drawn through a point every few metres,
+    each draped on its own bump, waved; two points and one segment run straight (the Splines layer shapes the
+    ground to it)."""
+    pts = {p["i"]: dict(p) for p in points}
+    segs = [dict(s) for s in segments]
+    at: dict = {}
+    for s in segs:
+        at.setdefault(s["a"], []).append(s)
+        at.setdefault(s["b"], []).append(s)
+
+    def plain(i):
+        two = at.get(i, [])
+        p = pts[i]
+        return (len(two) == 2 and two[0]["lines"] == two[1]["lines"] and not any(l.startswith("Mesh=") for l in p.get("lines") or [])
+                and p.get("raise") == pts[two[0]["b"] if two[0]["a"] == i else two[0]["a"]].get("raise"))
+
+    def far(run, lo, hi):  # index of the run point furthest off the lo-hi line, and whether it is off it
+        a, b = pts[run[lo]], pts[run[hi]]
+        dx, dy = b["x"] - a["x"], b["y"] - a["y"]
+        L = math.hypot(dx, dy) or 1.0
+        best, worst = None, 0.0
+        for k in range(lo + 1, hi):
+            p = pts[run[k]]
+            t = max(0.0, min(1.0, ((p["x"] - a["x"]) * dx + (p["y"] - a["y"]) * dy) / (L * L)))
+            off_xy = abs((p["x"] - a["x"]) * dy - (p["y"] - a["y"]) * dx) / L
+            off_z = abs(p["z"] - (a["z"] + (b["z"] - a["z"]) * t))
+            score = max(off_xy / xy_tol, off_z / z_tol)
+            if score > worst:
+                best, worst = k, score
+        return best, worst > 1.0
+
+    def keep_of(run):
+        keep, stack = {0, len(run) - 1}, [(0, len(run) - 1)]
+        while stack:
+            lo, hi = stack.pop()
+            k, off = far(run, lo, hi)
+            if k is not None and off:
+                keep.add(k)
+                stack += [(lo, k), (k, hi)]
+        return sorted(keep)
+
+    done, new_segs, drop = set(), [], set()
+    for start in list(pts):
+        if plain(start):
+            continue
+        for s0 in list(at.get(start, [])):
+            if id(s0) in done:
+                continue
+            run, run_segs, cur, s = [start], [], start, s0
+            while True:
+                done.add(id(s))
+                run_segs.append(s)
+                cur = s["b"] if s["a"] == cur else s["a"]
+                run.append(cur)
+                if not plain(cur):
+                    break
+                s = next(x for x in at[cur] if x is not s)
+            if len(run) < 3:
+                new_segs.append(s0)
+                continue
+            keep = keep_of(run)
+            for u, v in zip(keep, keep[1:]):
+                tmpl = run_segs[u]
+                forward_ = tmpl["a"] == run[u]
+                ns = dict(tmpl, a=run[u] if forward_ else run[v], b=run[v] if forward_ else run[u])
+                new_segs.append(ns)
+            drop.update(run[k] for k in range(1, len(run) - 1) if k not in keep)
+    new_segs += [s for s in segs if id(s) not in done]  # loops of plain points stay as they were
+    out_pts = [p for i, p in pts.items() if i not in drop]
+    by_i = {p["i"]: p for p in out_pts}
+    for s in new_segs:
+        if s["a"] in by_i and s["b"] in by_i:
+            retangent(by_i, s)
+    return out_pts, [s for s in new_segs if s["a"] in by_i and s["b"] in by_i]
+
+
 def fit_3way(arm_angles: list) -> tuple:
     """Best kit piece for three arm directions: (piece, yaw, [end index per arm], error) or (None, ...)."""
     import itertools

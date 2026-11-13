@@ -667,7 +667,7 @@ def register(api) -> None:
         head, pts, segs = load_actor(nid, aslug)
         if not head:
             return None, None
-        return head, st.serialize(pts, segs, terrain=terrain)
+        return head, st.serialize(*st.straighten(pts, segs), terrain=terrain)  # long roads straight, not a point per bump
 
     def copy_text(net_id: str = "", actor: str = "") -> dict:
         head, text = text_for(net_id, actor)
