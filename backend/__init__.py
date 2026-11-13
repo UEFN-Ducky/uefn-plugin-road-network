@@ -181,21 +181,20 @@ def register(api) -> None:
             push({"what": "hold", "id": nid})
         return got
 
-    def holds(net_id: str = "") -> dict:
-        nid = slug(net_id)
+    def holds(net_id: str = "", teammates: str | None = None) -> dict:
+        """Who holds which city. teammates (the panel only, never a tool): its word on what teammates hold right
+        now, from the live group ([{city, who}], the whole list every time); a ducky can't say it, so a ducky
+        can't clear a teammate's hold."""
+        nid, who = slug(net_id), actor()
         with held_lock:
-            return {"ok": True, "id": nid, "holds": held_cities.all(nid, actor()), "live": team_live(),
+            if teammates is not None and who["kind"] == "person":
+                try:
+                    rows = json.loads(teammates) if str(teammates).strip() else []
+                except ValueError:
+                    rows = []
+                held_cities.said(nid, rows if isinstance(rows, list) else [])
+            return {"ok": True, "id": nid, "holds": held_cities.all(nid, who), "live": team_live(),
                     "panel_open": held_cities.panel_open(nid)}
-
-    def peer_holds(net_id: str = "", holds: str = "") -> dict:
-        """The panel's word on what teammates hold (their picks and their duckies), from the live group."""
-        try:
-            rows = json.loads(holds) if str(holds or "").strip() else []
-        except ValueError:
-            rows = []
-        with held_lock:
-            held_cities.said(slug(net_id), rows if isinstance(rows, list) else [])
-        return {"ok": True}
 
     def record(command: str, kind: str, ident: str, before, inverse: list) -> None:
         api.changeset.record(command=command, kind=kind, ident=ident, facet="record", before=before,
@@ -3119,8 +3118,7 @@ def register(api) -> None:
     api.register_panel_rpc("cities", lambda net_id="": safe(list_cities)(net_id))
     api.register_panel_rpc("hold", lambda net_id="", city="", task="", minutes=0.0: safe(hold)(net_id, city, task, minutes))
     api.register_panel_rpc("release", lambda net_id="", city="": safe(release)(net_id, city))
-    api.register_panel_rpc("holds", lambda net_id="": safe(holds)(net_id))
-    api.register_panel_rpc("peer_holds", lambda net_id="", holds="": safe(peer_holds)(net_id, holds))
+    api.register_panel_rpc("holds", lambda net_id="", teammates=None: safe(holds)(net_id, teammates))
     api.register_panel_rpc("city_save", lambda net_id="", city="", name="", style="", radius_m=0.0, buildings="",
                            x=None, y=None, features="", turn_deg=None, shape="", zones="":
                            safe(save_city)(net_id, city, name, style, radius_m, buildings, x, y, features,

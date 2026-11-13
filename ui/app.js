@@ -2675,7 +2675,7 @@ function relayHolds(force) {  // what teammates hold, for the backend: on a chan
   if (!force && text === toldPeers && Date.now() - toldAt < 10000) return;
   toldPeers = text;
   toldAt = Date.now();
-  rpc("peer_holds", { net_id: state.net, holds: text }).catch(() => {});
+  rpc("holds", { net_id: state.net, teammates: text }).catch(() => {});
 }
 setInterval(() => { if (liveReady && visible) { relayHolds(); if (state.cityPick) keepHold(); } }, 10000);
 const peerBusy = () => Object.values(peers).find((p) => p.state?.net === state.net && p.state.busy) || null;
