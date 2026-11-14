@@ -394,6 +394,7 @@ def road_network_build_junctions(folder: str = "", pieces: list | None = None) -
                                         + (["Sidewalk"] if walk[2] else []))
         lod = unreal.GeometryScriptMeshWriteLOD()
         unreal.GeometryScript_AssetUtils.copy_mesh_to_static_mesh_v2(dm, sm, opts, lod)
+        _lod_ready(sm)  # the copy leaves one LOD: the validator flags every junction without this
         out[name] = mouth
     return {"ok": not errors, "built": len(out), "mouths": out, "errors": errors[:20]}
 
@@ -987,6 +988,54 @@ def road_network_street_kit(root: str = "", rebuild: bool = False, plan: bool = 
         _save_batch(assets)
     return {"ok": not errors, "made": [m.get_name() for m in made], "errors": errors,
             "paths": [a.get_path_name().split(".")[0] for a in assets]}
+
+
+_LOD_STEPS = ((1.0, 1.0), (0.5, 0.3), (0.25, 0.1))  # (triangles kept, screen size) for LOD0..2
+_LOD_MIN_VERTS = 200  # the Valkyrie validator calls a one-LOD mesh above about this "complex"
+
+
+def _lod_ready(sm) -> bool:
+    """Give a complex one-LOD mesh LODs and a Min LOD of 1 on Low and Medium (ValkyrieValidator_StaticMesh asks
+    for both). Nanite and tiny meshes are left alone. True when it changed the mesh."""
+    sub = unreal.get_editor_subsystem(unreal.StaticMeshEditorSubsystem)
+    if sm.get_editor_property("nanite_settings").get_editor_property("enabled"):
+        return False
+    changed = False
+    if sub.get_lod_count(sm) < 2:
+        if sub.get_number_verts(sm, 0) < _LOD_MIN_VERTS:
+            return False
+        opts = unreal.StaticMeshReductionOptions()
+        opts.set_editor_property("auto_compute_lod_screen_size", False)
+        opts.set_editor_property("reduction_settings", [unreal.StaticMeshReductionSettings(
+            percent_triangles=t, screen_size=s) for t, s in _LOD_STEPS])
+        sub.set_lods(sm, opts)
+        changed = True
+    lows = dict(sm.get_min_lod_for_quality_levels()[0])
+    if lows.get(unreal.PerQualityLevels.LOW, 0) < 1 or lows.get(unreal.PerQualityLevels.MEDIUM, 0) < 1:
+        sm.set_min_lod_for_quality_levels({unreal.PerQualityLevels.LOW: 1, unreal.PerQualityLevels.MEDIUM: 1}, -1)
+        changed = True
+    return changed
+
+
+@register("road_network_lod_ready")
+def road_network_lod_ready(meshes: list | None = None, folder: str = "", offset: int = 0, limit: int = 40) -> dict:
+    """_lod_ready on these meshes, or on a slice of a folder's meshes (offset / limit: a few per call, each
+    LOD build is a mesh rebuild). Saves what it changed. Returns fixed, the folder's total and next offset."""
+    paths = [p.split(".")[0] for p in meshes or []]
+    total = len(paths)
+    if folder:
+        every = _kit_meshes(folder)
+        total = len(every)
+        paths = [p.split(".")[0] for p in every[int(offset):int(offset) + int(limit)]]
+    fixed = []
+    for path in paths:
+        sm = unreal.load_asset(path)
+        if isinstance(sm, unreal.StaticMesh) and _lod_ready(sm):
+            fixed.append(sm)
+    _save_batch(fixed)
+    nxt = int(offset) + len(paths)
+    return {"ok": True, "fixed": len(fixed), "checked": len(paths), "total": total,
+            "next_offset": nxt if folder and nxt < total else None}
 
 
 @register("road_network_collision_ready")

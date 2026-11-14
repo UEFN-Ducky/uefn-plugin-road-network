@@ -2982,7 +2982,13 @@ def register(api) -> None:
                     made_exact.append(m.split(".")[0])
             for k in range(0, len(made_exact), SAVE_BATCH):
                 listener_long("road_network_save_assets", {"paths": made_exact[k:k + SAVE_BATCH]})
-            collision = {"blocking_meshes": len(solid), "made_exact": [m.rsplit("/", 1)[-1] for m in made_exact],
+            # the project's own meshes: LODs + Low/Medium Min LOD, or UEFN's validator flags each one
+            mine = [m for m in used if m.startswith(f"{root}/")]
+            lods_added = 0
+            for k in range(0, len(mine), 20):
+                lods_added += int(listener_long("road_network_lod_ready", {"meshes": mine[k:k + 20]}).get("fixed") or 0)
+            collision = {"blocking_meshes": len(solid), "lods_added": lods_added,
+                         "made_exact": [m.rsplit("/", 1)[-1] for m in made_exact],
                          "no_collision": [m.rsplit(".", 1)[-1] for m in used if not kit_bake.blocks(m)],
                          "note": "Every placed mesh blocks players except no_collision (leaves, flat paint). made_exact "
                                  "had no collision shapes, so they collide by their own triangles now. Playtest it."}
