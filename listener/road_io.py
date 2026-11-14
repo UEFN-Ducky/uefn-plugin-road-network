@@ -395,6 +395,9 @@ def road_network_build_junctions(folder: str = "", pieces: list | None = None) -
         lod = unreal.GeometryScriptMeshWriteLOD()
         unreal.GeometryScript_AssetUtils.copy_mesh_to_static_mesh_v2(dm, sm, opts, lod)
         _lod_ready(sm)  # the copy leaves one LOD: the validator flags every junction without this
+        # no simple shapes come with the copy: without complex-as-simple cars (physics) fall through junctions
+        sm.get_editor_property("body_setup").set_editor_property(
+            "collision_trace_flag", unreal.CollisionTraceFlag.CTF_USE_COMPLEX_AS_SIMPLE)
         out[name] = mouth
     return {"ok": not errors, "built": len(out), "mouths": out, "errors": errors[:20]}
 

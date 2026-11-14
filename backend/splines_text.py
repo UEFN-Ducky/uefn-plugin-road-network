@@ -107,6 +107,15 @@ def set_terrain_flags(lines: list, on: bool) -> list:
     return out
 
 
+# Fortnite's default BlockAll is query-only: players stop, cars (physics) fall through road decks and junctions.
+# BlockAllPhysics is the named preset with physics on, so it survives every spline rebuild.
+SOLID = 'CollisionProfileName="BlockAllPhysics"'
+
+
+def _solid(lines: list) -> list:
+    return [ln for ln in lines if not ln.startswith("CollisionProfileName=")] + [SOLID]
+
+
 def serialize(points: list, segments: list, terrain: str = "") -> str:
     """Points + segments -> clipboard text. terrain 'off' forces Raise/Lower off everywhere."""
     out = ["BEGIN_SPLINES", "SPLINE LOCATION: X=0.000000 Y=0.000000 Z=0.000000"]
@@ -115,14 +124,14 @@ def serialize(points: list, segments: list, terrain: str = "") -> str:
         out.append(f'Begin Object Class={POINT_CLASS} Name="LandscapeSplineControlPoint_{p["i"]}"')
         out.append(f'   Location=(X={p["x"]:.3f},Y={p["y"]:.3f},Z={p["z"]:.3f})')
         out.append(f'   Rotation=(Pitch={p["pitch"]:.4f},Yaw={p["yaw"]:.4f},Roll={p["roll"]:.4f})')
-        out.extend("   " + line for line in lines)
+        out.extend("   " + line for line in _solid(lines))
         out.append("End Object")
     for s in sorted(segments, key=lambda q: q["i"]):
         lines = set_terrain_flags(s.get("lines") or [], False) if terrain == "off" else (s.get("lines") or [])
         out.append(f'Begin Object Class={SEGMENT_CLASS} Name="LandscapeSplineSegment_{s["i"]}"')
         out.append(f"   Connections(0)=(ControlPoint=\"{POINT_CLASS}'LandscapeSplineControlPoint_{s['a']}'\",TangentLen={s['ta']:.3f})")
         out.append(f"   Connections(1)=(ControlPoint=\"{POINT_CLASS}'LandscapeSplineControlPoint_{s['b']}'\",TangentLen={s['tb']:.3f})")
-        out.extend("   " + line for line in lines)
+        out.extend("   " + line for line in _solid(lines))
         out.append("End Object")
     out.append("END_SPLINES")
     return "\r\n".join(out)
@@ -999,6 +1008,8 @@ def _demo() -> None:
                         "MeshScale=(X=1,Y=1,Z=1)", "bRaiseTerrain=True"]
     segs3 = [seg(0, 0, 1, mesh=""), seg(1, 0, 2, mesh="")]
     assert problems(pts3, segs3)["giant_nodes"] and problems(pts3, segs3)["long_links"]
+    text3 = serialize(pts3, segs3)
+    assert text3.count(SOLID) == len(pts3) + len(segs3) and "BlockAll\"" not in text3, "every point and segment collides with cars"
     fix = repair(pts3, segs3)
     assert fix["left"] == {"giant_nodes": 0, "long_links": 0, "bad_tangents": 0}, fix
     assert [s["i"] for s in segs3] == [1] and pts3[0]["mesh"] == "" and pts3[0]["w"] == 1400.0
