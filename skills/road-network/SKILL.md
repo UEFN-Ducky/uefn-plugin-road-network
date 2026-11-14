@@ -127,7 +127,9 @@ situation and what to do. Keep it to what you couldn't have known.
   for progress (done / total), `stop=true` to stop. Trees, bushes and rocks sit in their own 1.6 km `n` tiles, so a
   nature setting never rebuilds buildings.
 - PCG's Static Mesh Spawner places instances with NO collision unless its descriptor says so (`bodyInstance`:
-  `collisionProfileName` AND `collisionEnabled`; the name alone does nothing). The build sets it per mesh and its
+  `collisionProfileName` AND `collisionEnabled`; the name alone does nothing). The profile is `Custom`: Fortnite's
+  `BlockAll` preset is query-only and overrides `collisionEnabled`, so players stop but cars (physics) drive through.
+  The build sets it per mesh and its
   result has `collision` (what blocks, what doesn't, what was made exact): read it out to the person, then count
   the components' collision in the level. Saying "collision is set" without that count was wrong once already.
 - Deleting an asset costs UEFN ~6 s each. A full rebuild writes graphs to a fresh `CityPCG_G<n>` folder and deletes

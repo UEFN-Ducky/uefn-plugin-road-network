@@ -2789,7 +2789,7 @@ def register(api) -> None:
             graph_path = f"{root}/WorldGen/CityPCGRoads/PCG_Roads_{tag}_T{key.replace('-', 'm')}"
             meshes = [{"mesh": f"{m}.{m.rsplit('/', 1)[1]}", "title": m.rsplit("/", 1)[1], "rows": rows,
                        "selector": {"meshes": [f"{m}.{m.rsplit('/', 1)[1]}"], "templateDescriptor": {"descriptor": {
-                           "bodyInstance": {"collisionProfileName": "BlockAll", "collisionEnabled": "QueryAndPhysics"}}}}}
+                           "bodyInstance": {"collisionProfileName": "Custom", "collisionEnabled": "QueryAndPhysics"}}}}}
                       for m, rows in sorted(t["pieces"].items())]
             i, j = (int(v) for v in key.split("_"))
             size = road_pcg.TILE_CM
@@ -3012,7 +3012,9 @@ def register(api) -> None:
                     # PCG's spawner places instances with NO collision unless told: say it per mesh
                     # (both fields: the profile name alone left the instances at No Collision)
                     solid_ = kit_bake.blocks(mesh)
-                    desc = {"bodyInstance": {"collisionProfileName": "BlockAll" if solid_ else "NoCollision",
+                    # 'Custom', never 'BlockAll': Fortnite's BlockAll preset is query-only, which overrides
+                    # collisionEnabled, so players were stopped and cars (physics) drove through buildings
+                    desc = {"bodyInstance": {"collisionProfileName": "Custom" if solid_ else "NoCollision",
                                              "collisionEnabled": "QueryAndPhysics" if solid_ else "NoCollision"}}
                     over = ((mats or {}).get("overrides") or {}).get(mesh)
                     if over and any(over):  # textured MIs as overrides: the kit mesh itself is never edited

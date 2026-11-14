@@ -76,7 +76,7 @@ async def build(j, placed):
             'graph': graph, 'nativeNodeType': 'Spawn Spline Mesh', 'nodeName': 'Road%d' % k, 'nodeTitle': name,
             'xPositionIdx': 1000, 'yPositionIdx': y, 'jsonParams': json.dumps({
                 'splineMeshDescriptor': {'staticMesh': mesh + '.' + name, 'bodyInstance': {
-                    'collisionProfileName': 'BlockAll', 'collisionEnabled': 'QueryAndPhysics'}},
+                    'collisionProfileName': 'Custom', 'collisionEnabled': 'QueryAndPhysics'}},  # BlockAll is query-only in Fortnite
                 'splineMeshParams': {'forwardAxis': 'X'}})})
         for c, n in enumerate(cs):
             pts = [{'transform': {'location': {'x': p[0], 'y': p[1], 'z': p[2]}, 'rotation': {'pitch': 0, 'yaw': 0, 'roll': 0},
