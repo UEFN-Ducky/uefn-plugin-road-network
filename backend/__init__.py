@@ -999,13 +999,21 @@ def register(api) -> None:
         path = heightmap_path(nid, png)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         for old in os.listdir(os.path.dirname(path)):  # one file per world: the last one made
-            if (old == f"{nid}.png" or (old.startswith(f"{nid}_") and len(old) == len(nid) + 13)) \
-                    and os.path.join(os.path.dirname(path), old) != path:
+            if (old == f"{nid}.png" or (old.startswith(f"{nid}_") and len(old) in (len(nid) + 13, len(nid) + 19))) \
+                    and os.path.join(os.path.dirname(path), old) not in (path, path[:-4] + "_paved.png"):
                 os.remove(os.path.join(os.path.dirname(path), old))
         with open(path + ".tmp", "wb") as fh:
             fh.write(png)
         os.replace(path + ".tmp", path)
-        return {"path": path, **settings}
+        # the paint layer under every road, junction, private street and lot: picked for a layer in the same import,
+        # so the ground there comes in painted (not grass) with no brush work
+        mask = cg.weightmap_png(ter, int(settings["resolution"].split(" x ")[0]),
+                                pl.surface_samples(world_actors(nid), list(city_docs(nid).values())), pads)
+        wpath = path[:-4] + "_paved.png"
+        with open(wpath + ".tmp", "wb") as fh:
+            fh.write(mask)
+        os.replace(wpath + ".tmp", wpath)
+        return {"path": path, "paint_layer_path": wpath, **settings}
 
     def _layout_doc(layout: dict) -> dict:
         return {"lots": layout["lots"], "hoods": layout["hoods"], "plan": layout.get("plan"),
@@ -1572,6 +1580,8 @@ def register(api) -> None:
         return {"ok": True, "id": nid, **hm, "ground_fit": fit_summary(),
                 "how": f"Landscape mode > Manage > New > Import from File: pick the PNG, resolution {hm['resolution']}, "
                        f"Location (the centre) {hm['location']}, Scale {hm['scale']}, components {hm['components']}. "
+                       f"Under Layers, give your road/dirt paint layer (not the grass one) the file {hm['paint_layer_path']}: "
+                       f"every road, junction and building lot comes in painted with it. "
                        f"It makes a new landscape; your current one is not touched. "
                        f"Every building lot is already levelled into it (cut and fill), so buildings sit flat on hills."}
 

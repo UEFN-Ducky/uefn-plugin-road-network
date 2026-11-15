@@ -843,20 +843,62 @@ def settle(ground, buildings: list) -> tuple:
     return moves, before, after
 
 
+def _grey_png(rows: list, bits: int) -> bytes:
+    """Greyscale PNG (8 or 16 bit) of square rows of samples."""
+    res = len(rows)
+    fmt = f">{res}H" if bits == 16 else f"{res}B"
+    raw = bytearray()
+    for vals in rows:
+        raw += b"\x00" + struct.pack(fmt, *vals)
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xffffffff)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", res, res, bits, 0, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(bytes(raw), 6)) + chunk(b"IEND", b""))
+
+
+def weightmap_rows(ter: dict, res: int, discs: list, pads: list) -> list:
+    """The paint-layer mask for Landscape > Import (same pixels as the heightmap): 255 under every road
+    (discs: (x, y, half width) cm, pcg_layers.surface_samples) and every levelled lot (pcg_layers.pads), 0 elsewhere."""
+    (x0, y0), (x1, y1) = ter["min"], ter["max"]
+    sx, sy = (res - 1) / (x1 - x0), (res - 1) / (y1 - y0)
+    rows = [bytearray(res) for _ in range(res)]
+
+    def box(x, y, r):
+        return (range(max(0, math.floor((x - r - x0) * sx)), min(res - 1, math.ceil((x + r - x0) * sx)) + 1),
+                range(max(0, math.floor((y - r - y0) * sy)), min(res - 1, math.ceil((y + r - y0) * sy)) + 1))
+    # ponytail: hard 0/255 edge (one pixel ~2 m); feather it here if the seam shows
+    for x, y, r in discs:
+        ii, jj = box(x, y, r)
+        for j in jj:
+            dy2 = (y0 + j / sy - y) ** 2
+            row = rows[j]
+            for i in ii:
+                if (x0 + i / sx - x) ** 2 + dy2 <= r * r:
+                    row[i] = 255
+    for x, y, c, s, hw, hd, *_z in pads:  # same frame as graded(): hd along (c, s), hw across
+        ii, jj = box(x, y, math.hypot(hw, hd))
+        for j in jj:
+            dy = y0 + j / sy - y
+            row = rows[j]
+            for i in ii:
+                dx = x0 + i / sx - x
+                if abs(dx * c + dy * s) <= hd and abs(-dx * s + dy * c) <= hw:
+                    row[i] = 255
+    return rows
+
+
+def weightmap_png(ter: dict, res: int, discs: list, pads: list) -> bytes:
+    return _grey_png(weightmap_rows(ter, res, discs, pads), 8)
+
+
 def heightmap_png(ter: dict, res: int = 0, pads: list | None = None, rows: list | None = None) -> tuple:
     """16-bit greyscale PNG of the terrain for Landscape > Import, plus the import settings
     (Z scale 100: 1 unit = 100/128 cm, so +-256 m fits). pads: lots levelled into it."""
     lo, hi = ter["min"], ter["max"]
     rows = rows or heightmap_rows(ter, res or HEIGHTMAP_RES, pads)
     res = len(rows)
-    raw = bytearray()
-    for vals in rows:
-        raw += b"\x00" + struct.pack(f">{res}H", *vals)
-
-    def chunk(kind: bytes, body: bytes) -> bytes:
-        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xffffffff)
-    png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", res, res, 16, 0, 0, 0, 0))
-           + chunk(b"IDAT", zlib.compress(bytes(raw), 6)) + chunk(b"IEND", b""))
+    png = _grey_png(rows, 16)
     scale = (hi[0] - lo[0]) / (res - 1)
     # Landscape mode's New > Location is the landscape's centre, not its corner; 1009 = 16 components x 63 quads + 1
     return png, {"resolution": f"{res} x {res}", "location": [round((lo[0] + hi[0]) / 2), round((lo[1] + hi[1]) / 2), 0],
@@ -5880,6 +5922,11 @@ def _demo() -> None:
     assert steps["heights"], "terraces build"
     png, settings = heightmap_png(ter, res=65)
     assert png[:8] == b"\x89PNG\r\n\x1a\n" and settings["scale"][2] == 100.0
+    # paint mask: a road disc and a turned lot are painted, the corner far from both is not
+    sq = {"min": [0, 0], "max": [6400, 6400]}
+    wm = weightmap_rows(sq, 65, [(1000, 1000, 300)], [(4000, 4000, 0.0, 1.0, 500, 1000, 0)])
+    assert wm[10][10] == 255 and wm[50][45] == 255 and wm[40][50] == 0 and wm[60][5] == 0, "roads and lots painted"
+    assert weightmap_png(sq, 65, [], [])[:8] == b"\x89PNG\r\n\x1a\n"
     # landscape size: snapped to whole 63-quad components, 2017 by default (the most UEFN's 2048 x 2048 cap takes)
     assert landscape_res({}) == 2017 and landscape_res({"landscape_px": 1000}) == 1009 and 2017 ** 2 <= UEFN_MAX_SAMPLES
     assert landscape_res({"landscape_px": 2600}) ** 2 > UEFN_MAX_SAMPLES

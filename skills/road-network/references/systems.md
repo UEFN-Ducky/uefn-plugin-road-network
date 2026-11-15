@@ -806,6 +806,9 @@ as team docs (chunks of 1000).
   (see Lakes drawn by hand); then generate again with cities empty.
 - `road_network_heightmap(net_id)`: PNG path and the Landscape import settings. The person imports
   it (Landscape > New > Import from File) as a NEW landscape; never write the existing terrain.
+  It also writes `paint_layer_path` (`<world>_<hash>_paved.png`, 8-bit, same pixels): in the same import's
+  Layers list give it to the road/dirt paint layer, so every road, junction, private street and lot comes in
+  painted instead of grass. Live roads can paint too: `road_network_tune(paint_layer=...)` sets `LayerName`.
 - `road_network_import_all(net_id, confirm=true)`: one click: Build pieces (junctions as wide as
   their roads) then Reimport for every actor. Ask first; hands off UEFN while it runs.
 - Generated junctions are `SM_Junc_Gen` points until Build pieces makes `SM_JK_<net>_<actor>_<node>`.
