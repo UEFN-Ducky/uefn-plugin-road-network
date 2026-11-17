@@ -811,6 +811,24 @@ def register(api) -> None:
         walk = lambda m: cg.walk_of(by_i[m]["w"]) or (KERB_ONLY_CM if "PrivateStreet" in road_of.get(m, "") else 0.0)  # noqa: E731
         # a dead end's turnaround: its outer radius (road_io._junction_geometry builds it to this)
         bulb = lambda arms: max(1000.0, by_i[arms[0]]["w"] + 500.0) if len(arms) == 1 else 0.0  # noqa: E731
+        # each turnaround sits on the live ground like the road points do: the ground under its round, as a plane
+        ground_of: dict = {}
+        ends = [(node, arms) for node, arms, _ in todo if len(arms) == 1]
+        if ends:
+            ring = [(0.0, 0.0)] + [(f * math.cos(k * math.pi / 4), f * math.sin(k * math.pi / 4))
+                                   for f in (0.5, 0.95) for k in range(8)]
+            try:
+                got = listener("road_network_ground_check", {"points": [
+                    [by_i[n]["x"] + u * bulb(arms), by_i[n]["y"] + v * bulb(arms), by_i[n]["z"]]
+                    for n, arms in ends for u, v in ring]}, timeout=300).get("points") or []
+            except (ConnectionError, RuntimeError, TimeoutError) as exc:
+                return {"ok": False, "error": f"UEFN didn't answer the ground check: {exc}"}
+            for k, (n, _arms) in enumerate(ends):
+                rows = got[k * len(ring):(k + 1) * len(ring)]
+                plane = st.fit_plane([(r["x"] - by_i[n]["x"], r["y"] - by_i[n]["y"], r["ground"])
+                                      for r in rows if r.get("ground") is not None])
+                if plane:
+                    ground_of[n] = plane
         built, unsaved = 0, []
         # a piece only slides its mouths along their own roads: a heightmap cut for these roads stays theirs
         net = data.get(f"net.{nid}") or {}
@@ -841,6 +859,8 @@ def register(api) -> None:
                             p = by_i[node]
                             p["w"] = bulb(arms) + 50.0
                             p["lines"] = st._set_line(p["lines"], "Width", f"{p['w']:.1f}")
+                            if node in ground_of:
+                                st.lay_on_ground(pts, segs, node, ground_of[node], cg.ROAD_SINK_CM)
                         unsaved.append(f"{folder}/{prefix}{node}")
                         built += 1
                 # saved as we go, a batch per call: left unsaved, hundreds of meshes all went out in the

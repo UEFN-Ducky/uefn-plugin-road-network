@@ -814,6 +814,46 @@ def cap_ends(points: list, segments: list, ends: list) -> int:
     return done
 
 
+def fit_plane(samples: list) -> tuple | None:
+    """Least-squares ground plane z = a x + b y + c through [(x, y, z)] (x, y relative to the piece)."""
+    if len(samples) < 3:
+        return None
+    n = len(samples)
+    sx = sum(s[0] for s in samples); sy = sum(s[1] for s in samples); sz = sum(s[2] for s in samples)  # noqa: E702
+    sxx = sum(s[0] * s[0] for s in samples); syy = sum(s[1] * s[1] for s in samples)  # noqa: E702
+    sxy = sum(s[0] * s[1] for s in samples)
+    sxz = sum(s[0] * s[2] for s in samples); syz = sum(s[1] * s[2] for s in samples)  # noqa: E702
+    m = [[sxx, sxy, sx, sxz], [sxy, syy, sy, syz], [sx, sy, n, sz]]
+    for c in range(3):  # Gauss-Jordan on the 3x3 normal equations
+        piv = max(range(c, 3), key=lambda r: abs(m[r][c]))
+        if abs(m[piv][c]) < 1e-9:
+            return None
+        m[c], m[piv] = m[piv], m[c]
+        m[c] = [v / m[c][c] for v in m[c]]
+        for r in range(3):
+            if r != c:
+                m[r] = [v - m[r][c] * w for v, w in zip(m[r], m[c])]
+    return m[0][3], m[1][3], m[2][3]
+
+
+def lay_on_ground(points: list, segments: list, node: int, plane: tuple, sink: float) -> None:
+    """Sit a turnaround on the ground like a road point: its node `sink` over the ground plane (a, b, c around the
+    node) and tilted with it, its mouth on the same plane so the street runs straight into it."""
+    a, b, c = plane
+    by_i = {p["i"]: p for p in points}
+    J = by_i[node]
+    J["z"] = c + sink
+    # UE rotator: +pitch lifts +X, +roll lowers +Y
+    J["pitch"], J["roll"] = math.degrees(math.atan(a)), -math.degrees(math.atan(b))
+    mouths = {s["b"] if s["a"] == node else s["a"] for s in segments if not s["mesh"] and node in (s["a"], s["b"])}
+    for m in mouths:
+        E = by_i[m]
+        E["z"] = c + a * (E["x"] - J["x"]) + b * (E["y"] - J["y"]) + sink
+    for s in segments:
+        if s["a"] in mouths or s["b"] in mouths:
+            retangent(by_i, s)
+
+
 def pending_nodes(points: list, segments: list, rebuild: bool = False) -> list:
     """Old fitted junction nodes (3+ arms) still waiting for a Road1-width piece: [(node, [mouths], [angles])].
     rebuild: also the nodes that already have a generated SM_JK_ piece (to regenerate it in place)."""
@@ -1169,6 +1209,13 @@ def _demo() -> None:
     place_generated(de, dseg, 2, [1], [1100.0], "/Game/x/Kit/SM_JK_2")
     assert de[1]["x"] == 3900.0 and de[2]["x"] == 5000.0 and not bad_tangents(de, dseg)
     assert cap_ends(de, dseg, [(2, 1)]) == 0, "a piece's own point is never capped again"
+    # ... and it sits on the ground like a road point: a 20 % slope rising east, the piece tilted with it
+    hill = [(x, y, 500.0 + 0.2 * x) for x in (-1000, 0, 1000) for y in (-1000, 0, 1000)]
+    pl_ = fit_plane(hill)
+    assert abs(pl_[0] - 0.2) < 1e-9 and abs(pl_[1]) < 1e-9 and abs(pl_[2] - 500) < 1e-6, pl_
+    lay_on_ground(de, dseg, 2, pl_, 10.0)
+    assert de[2]["z"] == 510.0 and abs(de[2]["pitch"] - math.degrees(math.atan(0.2))) < 1e-9 and de[2]["roll"] == 0
+    assert abs(de[1]["z"] - (510.0 - 0.2 * 1100.0)) < 1e-6, "the mouth lies on the same slope"
     print("drape ok", out)
 
 
