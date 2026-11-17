@@ -836,6 +836,32 @@ def fit_plane(samples: list) -> tuple | None:
     return m[0][3], m[1][3], m[2][3]
 
 
+PATH_PREFIX = "SM_Path_"  # driveways, walkways, sidewalks, private streets: laid on the ground point by point
+
+
+def path_points(points: list, segments: list) -> list:
+    """The plain points that only paths use (every segment on them a SM_Path_ piece): what drape_to sets on the
+    ground. A point a road, a junction link or a piece also uses keeps its own height."""
+    on: dict = {}
+    for s in segments:
+        for n in (s["a"], s["b"]):
+            on.setdefault(n, []).append(str(s["mesh"] or ""))
+    return [p for p in points if not p["mesh"] and on.get(p["i"])
+            and all(m.startswith(PATH_PREFIX) for m in on[p["i"]])]
+
+
+def drape_to(points: list, segments: list, heights: dict) -> int:
+    """Set these points on the ground: {point i: ground z}. Tangents follow. Returns how many moved."""
+    by_i = {p["i"]: p for p in points}
+    moved = {i for i, z in heights.items() if i in by_i and z is not None and abs(by_i[i]["z"] - z) > 0.5}
+    for i in moved:
+        by_i[i]["z"] = heights[i]
+    for s in segments:
+        if s["a"] in moved or s["b"] in moved:
+            retangent(by_i, s)
+    return len(moved)
+
+
 def lay_on_ground(points: list, segments: list, node: int, plane: tuple, sink: float) -> None:
     """Sit a turnaround on the ground like a road point: its node `sink` over the ground plane (a, b, c around the
     node) and tilted with it, its mouth on the same plane so the street runs straight into it."""
@@ -1216,6 +1242,11 @@ def _demo() -> None:
     lay_on_ground(de, dseg, 2, pl_, 10.0)
     assert de[2]["z"] == 510.0 and abs(de[2]["pitch"] - math.degrees(math.atan(0.2))) < 1e-9 and de[2]["roll"] == 0
     assert abs(de[1]["z"] - (510.0 - 0.2 * 1100.0)) < 1e-6, "the mouth lies on the same slope"
+    # a driveway off a street: only its own end goes onto the ground, the street point it starts from stays
+    dw = [pt(0, 0, 100), pt(1, 2000, 100), pt(2, 1000, 100), pt(3, 1000, 600)]
+    dws = [seg(0, 0, 1, mesh="SM_Road_TwoLane"), seg(1, 2, 3, mesh="SM_Path_Driveway_10m"), seg(2, 0, 2, mesh="SM_Road_TwoLane")]
+    assert [p["i"] for p in path_points(dw, dws)] == [3]
+    assert drape_to(dw, dws, {3: 140.0}) == 1 and dw[3]["z"] == 140.0 and dw[2]["z"] == 100
     print("drape ok", out)
 
 

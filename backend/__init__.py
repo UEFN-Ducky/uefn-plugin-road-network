@@ -788,6 +788,16 @@ def register(api) -> None:
                 " before kit" in str(h.get("label") or "") or str(h.get("label") or "").endswith((" Paths", " Access")))]
             terrain = (data.get(f"net.{nid}.scan") or {}).get("terrain") or {}
             capped = st.cap_ends(pts, segs, pl.dead_ends([(pts, segs)] + others, terrain)[0])
+            # every driveway, walkway and private street lies on the live ground, point by point (their points were
+            # set from the plan's lot pads and stood up to metres over the grass)
+            loose = st.path_points(pts, segs)
+            if loose:
+                try:
+                    got = listener("road_network_ground_check", {"points": [[p["x"], p["y"], p["z"]] for p in loose]},
+                                   timeout=600).get("points") or []
+                except (ConnectionError, RuntimeError, TimeoutError) as exc:
+                    return {"ok": False, "error": f"UEFN didn't answer the ground check: {exc}"}
+                st.drape_to(pts, segs, {p["i"]: r.get("ground") for p, r in zip(loose, got)})
         todo = st.pending_nodes(pts, segs, rebuild)
         if not todo:
             if gen:
