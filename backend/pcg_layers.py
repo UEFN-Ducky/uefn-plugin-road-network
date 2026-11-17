@@ -132,7 +132,7 @@ NUMBERS = {
     "sink_cm": (10.0, 0.0, 500.0),      # push into the ground so roots and bases never float
     "footprint": (0.8, 0.1, 2.0),       # bounds scale used for pruning and differences (1 = mesh bounds)
     "road_clear_m": (2.0, 0.0, 50.0),   # extra clearance past the road edge
-    "max_slope_deg": (32.0, 1.0, 90.0),  # scatter / foliage: nothing grows on ground steeper than this (banks, cliffs)
+    "max_slope_deg": (20.0, 1.0, 90.0),  # scatter / foliage: nothing grows on ground steeper than this (banks, cliffs)
     "width_m": (12.0, 1.0, 200.0),      # buildings: frontage along the road
     "depth_m": (12.0, 1.0, 200.0),      # buildings: depth away from the road
     "height_min_m": (6.0, 1.0, 600.0),  # buildings: height range (the preview draws it; pick meshes to match)
