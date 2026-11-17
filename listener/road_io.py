@@ -139,8 +139,18 @@ def road_network_scan(grid: int = 96, folder: str = "City/Elevated Pillars", j0:
                 g = _ground(x, y, ignore)
                 row.append(round(g, 1) if g is not None else None)
             heights.append(row)
-    return {"ok": True, "props": props, "j0": rows.start,
-            "terrain": {"min": lo, "max": hi, "grid": grid, "heights": heights}}
+    terrain = {"min": lo, "max": hi, "grid": grid, "heights": heights}
+    if rows.start == 0:
+        # the level's own water surface: the top of its water bodies (Creative water volumes, Water body actors),
+        # so a ground pulled from UEFN keeps the water exactly where it is there
+        tops = []
+        for a in unreal.GameplayStatics.get_all_actors_of_class(w, unreal.Actor):
+            if "waterbody" in a.get_class().get_name().lower():
+                origin, extent = a.get_actor_bounds(False)
+                tops.append(origin.z + extent.z)
+        if tops:
+            terrain["sea"] = round(max(tops), 1)
+    return {"ok": True, "props": props, "j0": rows.start, "terrain": terrain}
 
 
 @register("road_network_count")
