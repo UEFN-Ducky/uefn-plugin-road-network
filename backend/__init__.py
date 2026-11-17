@@ -406,6 +406,55 @@ def register(api) -> None:
         for f in data.files(prefix):
             data.delete_file(f["path"])
 
+    # ---------------------------------------------------------------- the ground, as UEFN has it
+    SCAN_GRID = 1024  # ~7 m a sample on a 7 km map: the landscape as the person shaped it in UEFN
+    SCAN_BAND = 40000  # traces per editor call: a fine scan comes in bands so UEFN never stalls on one frame
+
+    def scan_into(nid: str, name: str, grid: int = SCAN_GRID) -> dict:
+        """Read the landscape in the open UEFN level (heightfield only: roads, props, trees and water are skipped)
+        into net.<nid>.scan. A fine grid is stored as a world file, the doc keeps only its bounds."""
+        grid = max(16, min(int(grid or SCAN_GRID), 2048))
+        step = max(1, SCAN_BAND // grid)
+        first = listener("road_network_scan", {"grid": grid, "j0": 0, "j1": step}, timeout=600)
+        ter = dict(first.get("terrain") or {})
+        heights = list(ter.get("heights") or [])
+        for j0 in range(step, grid, step):
+            band = listener("road_network_scan", {"grid": grid, "j0": j0, "j1": j0 + step}, timeout=600)
+            heights += (band.get("terrain") or {}).get("heights") or []
+        if ter.get("min") is None or len(heights) != grid:
+            raise RuntimeError(f"the landscape scan came back with {len(heights)} of {grid} rows")
+        ter["heights"] = heights
+        doc = {"name": f"{name} / terrain and props", "props": first.get("props", []), "source": "uefn",
+               "scanned": time.time()}
+        if grid > 256:  # (a 1024 grid is ~7 MB: a world file, never a data doc)
+            path = f"world/{nid}/terrain.json"
+            sha = put_json_file(path, {"heights": heights})
+            doc["terrain"] = {**{k: v for k, v in ter.items() if k != "heights"}, "file": path, "sha": sha}
+        else:
+            doc["terrain"] = ter
+        data.put(f"net.{nid}.scan", doc)
+        return ter
+
+    def scan_terrain(nid: str) -> dict:
+        """The world's ground grid {min, max, grid, heights}, wherever it is stored (doc or world file)."""
+        ter = scan_terrain(nid) or {}
+        if ter.get("file") and not ter.get("heights"):
+            got = read_json_file(ter["file"], cache=True)
+            ter = {**ter, "heights": got.get("heights") or []}
+        return ter
+
+    def panel_terrain(nid: str, most: int = 512) -> dict:
+        """The ground for the 3D view: a fine scan thinned to at most `most` cells a side (display only)."""
+        ter = scan_terrain(nid)
+        n = int(ter.get("grid") or 0)
+        if n <= most or not ter.get("heights"):
+            return ter
+        s = -(-n // most)
+        while n % s:
+            s += 1
+        rows = [r[::s] for r in ter["heights"][::s]]
+        return {**ter, "grid": len(rows), "heights": rows}
+
     def actor_docs(nid: str) -> dict:
         # the heads only: items() under this prefix would read and decode every point and segment chunk too
         heads = [k for k in data.keys(f"net.{nid}.actor.") if k.count(".") == 3]
@@ -538,9 +587,7 @@ def register(api) -> None:
                 head = store_actor(nid, label, st.parse(text), doc["name"])
                 done[label] = head["stats"]
         try:
-            scan = listener("road_network_scan", {"grid": 200}, timeout=600)
-            data.put(f"net.{nid}.scan", {"name": f"{doc['name']} / terrain and props",
-                                          "props": scan.get("props", []), "terrain": scan.get("terrain", {})})
+            scan_into(nid, doc["name"])
         except (ConnectionError, RuntimeError, TimeoutError):
             pass
         doc["actors"] = sorted(set((doc.get("actors") or []) + list(done)))
@@ -615,7 +662,8 @@ def register(api) -> None:
                 out[aslug] = {"label": head.get("label"), "points_total": n_pts, "segments_total": n_segs,
                               "pts": [row(p) for p in pts], "segs": [seg(s) for s in segs]}
             scan = (data.get(f"net.{nid}.scan") or {}) if terrain else {}
-            return {"ok": True, "id": nid, "actors": out, "terrain": scan.get("terrain", {}), "props": scan.get("props", [])}
+            return {"ok": True, "id": nid, "actors": out, "terrain": panel_terrain(nid) if terrain else {},
+                    "props": scan.get("props", [])}
         got = get_network(net_id)
         if not got.get("ok"):
             return got
@@ -629,7 +677,8 @@ def register(api) -> None:
                           "pts": [row(p) for p in pts[lo:hi]], "segs": [seg(s) for s in segs[lo:hi]]}
         scan = (data.get(f"net.{nid}.scan") or {}) if terrain else {}
         # every road piece's cross-section: the panel draws each road as its real mesh is built
-        return {"ok": True, "id": nid, "actors": out, "terrain": scan.get("terrain", {}), "props": scan.get("props", []),
+        return {"ok": True, "id": nid, "actors": out, "terrain": panel_terrain(nid) if terrain else {},
+                "props": scan.get("props", []),
                 "profiles": rp.all_profiles(), "joins": road_joins(nid) if terrain else None}
 
     _JOINS: dict = {}  # ponytail: one entry, the world being looked at
@@ -687,7 +736,7 @@ def register(api) -> None:
         if not live:
             return {"ok": False, "error": f"{head['label']} has no live (Raise/Lower) points to drape."}
         # Offline: the ground comes from the network's stored terrain scan, never from UEFN.
-        terrain = (data.get(f"net.{nid}.scan") or {}).get("terrain") or {}
+        terrain = scan_terrain(nid) or {}
         ground = {}
         for p in live:
             g = st.sample_grid(terrain, p["x"], p["y"])
@@ -797,7 +846,7 @@ def register(api) -> None:
             # every street that ends gets a turnaround piece on its own spline (no PCG disc)
             others = [load_actor(nid, a)[1:] for a, h in actor_docs(nid).items() if a != aslug and not (
                 " before kit" in str(h.get("label") or "") or str(h.get("label") or "").endswith((" Paths", " Access")))]
-            terrain = (data.get(f"net.{nid}.scan") or {}).get("terrain") or {}
+            terrain = scan_terrain(nid) or {}
             capped = st.cap_ends(pts, segs, pl.dead_ends([(pts, segs)] + others, terrain)[0])
             # every driveway, walkway and private street lies on the live ground, point by point (their points were
             # set from the plan's lot pads and stood up to metres over the grass)
@@ -927,24 +976,25 @@ def register(api) -> None:
         push({"what": "actor", "id": nid, "label": head["label"]})
         return {**result, "label": head["label"], "problems": {k: len(v) for k, v in st.problems(pts, segs).items()}}
 
-    def scan_ground(net_id: str = "", grid: int = 200) -> dict:
-        """Re-read the terrain height grid (read-only traces) into the network's stored scan."""
+    def scan_ground(net_id: str = "", grid: int = 0) -> dict:
+        """Pull the landscape as it is in the open UEFN level (read-only traces, heightfield only) into the
+        world: the preview, ground fit, lots and the PCG push all stand on it from then on. Never writes the terrain."""
         nid = slug(net_id)
         doc = data.get(f"net.{nid}") if nid else None
         if not doc:
             return {"ok": False, "error": f"No road network {net_id!r}."}
         try:
-            scan = listener("road_network_scan", {"grid": int(grid)}, timeout=600)
+            terrain = scan_into(nid, doc["name"], int(grid or SCAN_GRID))
         except (ConnectionError, RuntimeError, TimeoutError) as exc:
             return {"ok": False, "error": f"UEFN didn't answer: {exc}"}
-        terrain = scan.get("terrain", {})
-        data.put(f"net.{nid}.scan", {"name": f"{doc['name']} / terrain and props",
-                                     "props": scan.get("props", []), "terrain": terrain})
         cells = [v for row in terrain.get("heights", []) for v in row if v is not None]
         push({"what": "network", "id": nid})
-        return {"ok": True, "id": nid, "grid": terrain.get("grid"), "cells": len(cells),
+        (x0, y0), (x1, y1) = terrain["min"], terrain["max"]
+        return {"ok": True, "id": nid, "grid": terrain.get("grid"), "cells": len(cells), "holes": terrain["grid"] ** 2 - len(cells),
+                "cell_m": round((x1 - x0) / terrain["grid"] / 100, 2),
                 "min_z": round(min(cells)) if cells else None, "max_z": round(max(cells)) if cells else None,
-                "note": "Scan with only the terrain in the level: pasted roads shape the ground and would be read too."}
+                "note": "The landscape as it is in UEFN now (heightfield only; roads, props, trees and water skipped). "
+                        "Never push a heightmap over it: that would undo the edits made in UEFN."}
 
     def reimport(net_id: str = "", actor: str = "", confirm: bool = False) -> dict:
         """Replace the actor in UEFN with this network's version (live splines, terrain untouched)."""
@@ -1176,7 +1226,7 @@ def register(api) -> None:
         size = max(1.0, min(20.0, float(size_km or 6))) * 100000.0
         base = None
         if ground_from:
-            base = (data.get(f"net.{slug(ground_from)}.scan") or {}).get("terrain")
+            base = scan_terrain(slug(ground_from))
             if not base or not base.get("heights"):
                 return {"ok": False, "error": f"Network {ground_from!r} has no ground scan. Rescan its ground first."}
             bounds = (tuple(base["min"]), tuple(base["max"]))
@@ -1414,7 +1464,7 @@ def register(api) -> None:
             return {"ok": False, "error": f"There is already a city called {name!r}."}
         if style and style not in cg.STYLES:
             return {"ok": False, "error": f"style is one of {', '.join(cg.STYLES)}."}
-        ter = (data.get(f"net.{nid}.scan") or {}).get("terrain") or {}
+        ter = scan_terrain(nid) or {}
         lo, hi = ter.get("min"), ter.get("max")
         radius = float(radius_m) * 100 if radius_m else 60000.0 * o["city_size"]
         wet = cg.wet_from(ter)
@@ -1631,7 +1681,7 @@ def register(api) -> None:
         # a world laid over an existing terrain rebuilds that terrain from its ground scan (the landscape it
         # was scanned from can be gone from the level: then the roads would have nothing to sit on)
         src = slug(doc["generated"].get("ground_from") or "") or nid
-        ter = (data.get(f"net.{src}.scan") or {}).get("terrain") or {}
+        ter = scan_terrain(src) or {}
         if not ter.get("heights"):
             return {"ok": False, "error": f"{src!r} has no stored ground scan. Generate the world again."}
         res = cg.landscape_res(doc["generated"].get("options"))
@@ -2039,7 +2089,7 @@ def register(api) -> None:
         docs = layer_docs(nid)
         if not docs:
             return {"ok": True, "id": nid, "layers": {}}
-        terrain = (data.get(f"net.{nid}.scan") or {}).get("terrain") or {}
+        terrain = scan_terrain(nid) or {}
         actors = world_actors(nid)
         cities = list(city_docs(nid).values())
         # Every layer avoids the ones before it, so one layer still needs the whole preview: compute it
@@ -2478,7 +2528,7 @@ def register(api) -> None:
         got = pcg_preview(nid, summary=True)
         if got.get("ok") is False:
             return got
-        ter = (data.get(f"net.{nid}.scan") or {}).get("terrain") or {}
+        ter = scan_terrain(nid) or {}
         out = {"ok": True, "id": nid, "grid": 0, "ground_fit": fit_summary()}
         if not heights:
             out["ramp_ends"] = loose_ends(nid, ter)
@@ -2535,7 +2585,7 @@ def register(api) -> None:
                "unknown": unknown, "ground_fit": fit_summary()}
         if summary:
             return {**out, "meshes": {m[0]: len(v) for m, v in zip(meshes, rows)}}
-        ter = (data.get(f"net.{nid}.scan") or {}).get("terrain") or {}
+        ter = scan_terrain(nid) or {}
         ground = (_PREVIEW_CACHE.get("fit") or {}).get("ground")
         if ground and ter.get("heights"):  # on the heightmap's own pixels: the landscape's real triangles
             (x0, y0), (x1, y1) = ter["min"], ter["max"]
@@ -2627,7 +2677,7 @@ def register(api) -> None:
         driveway of the previewed lots), stored like a road actor so Push roads pastes it when it changed."""
         doc = data.get(f"net.{nid}") or {}
         opts = (doc.get("generated") or {}).get("options")
-        ter = (data.get(f"net.{nid}.scan") or {}).get("terrain") or {}
+        ter = scan_terrain(nid) or {}
         ground = (lambda x, y: st.sample_grid(ter, x, y) or 0.0) if ter.get("heights") else (lambda x, y: 0.0)
         folder = road_folder()
         towns = list(city_docs(nid).values())
@@ -2686,7 +2736,7 @@ def register(api) -> None:
         if not doc:
             return {"ok": False, "error": f"No road network {net_id!r}."}
         towns = list(city_docs(nid).values())
-        ter = (data.get(f"net.{nid}.scan") or {}).get("terrain") or {}
+        ter = scan_terrain(nid) or {}
         gen = doc.get("generated") or {}
         ran, notes = [], []
         todo = pipeline.after(run_from) if run_from else []
@@ -3377,9 +3427,10 @@ def register(api) -> None:
         return safe(circle)(net_id, actor, nodes, cx, cy, fit_center, radius)
 
     @tool(intent=INTENT, listener=True)
-    def road_network_scan_ground(net_id: str = "", grid: int = 200) -> dict:
-        """Re-read the terrain heights (read-only) for a network's 3D view and for drape. Run it while
-        only the terrain is in the level."""
+    def road_network_scan_ground(net_id: str = "", grid: int = 0) -> dict:
+        """Pull the terrain from the open UEFN level into the world (read-only, heightfield only), so City
+        Builder stands everything on the ground exactly as it was shaped in UEFN. grid: samples a side
+        (default 1024, max 2048), read in bands."""
         return safe(scan_ground)(net_id, grid)
 
     @tool(intent=INTENT, listener=False)
@@ -3918,7 +3969,7 @@ def register(api) -> None:
                 "road_fit": (fit_summary() or {}).get("roads"),
                 # what joins what: every freeway / ramp / highway end against the road it lands on, and every place
                 # a road changes width with no junction (all should be 0; each row says where and by how much)
-                "connections": loose_ends(nid, (data.get(f"net.{nid}.scan") or {}).get("terrain") or {}),
+                "connections": loose_ends(nid, scan_terrain(nid) or {}),
                 "missing": {"street_kit": street_missing, "art": art_missing,
                             "paths": [n["path"] for n in missing][:200],
                             "unknown": None if uefn.get("online") else "call again with check=true while UEFN is open"},

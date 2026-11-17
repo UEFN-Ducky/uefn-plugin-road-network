@@ -101,11 +101,13 @@ def road_network_text_chunk(label: str = "", offset: int = 0, size: int = 700000
 
 
 @register("road_network_scan")
-def road_network_scan(grid: int = 96, folder: str = "City/Elevated Pillars") -> dict:
-    """Pillars and other placed road props, plus a terrain height grid for the 3D view."""
+def road_network_scan(grid: int = 96, folder: str = "City/Elevated Pillars", j0: int = 0, j1: int = -1) -> dict:
+    """Pillars and other placed road props, plus a terrain height grid for the 3D view.
+    j0 / j1: only rows j0..j1-1 of the grid (a fine scan comes in bands, one editor call each, so UEFN never
+    stalls on a million traces in one frame); props come with the first band only."""
     w = _world()
     props = []
-    for actor in unreal.GameplayStatics.get_all_actors_of_class(w, unreal.StaticMeshActor):
+    for actor in (unreal.GameplayStatics.get_all_actors_of_class(w, unreal.StaticMeshActor) if j0 == 0 else []):
         try:
             path = str(actor.get_folder_path())
         except Exception:
@@ -125,10 +127,11 @@ def road_network_scan(grid: int = 96, folder: str = "City/Elevated Pillars") -> 
         lo = [min(lo[0], origin.x - extent.x), min(lo[1], origin.y - extent.y)]
         hi = [max(hi[0], origin.x + extent.x), max(hi[1], origin.y + extent.y)]
     heights = []
-    grid = max(16, min(int(grid or 200), 256))
+    grid = max(16, min(int(grid or 200), 2048))
+    rows = range(max(0, int(j0)), grid if int(j1) < 0 else min(grid, int(j1)))
     if hi[0] > lo[0]:
         ignore: list = []
-        for j in range(grid):
+        for j in rows:
             row = []
             for i in range(grid):
                 x = lo[0] + (hi[0] - lo[0]) * (i + 0.5) / grid
@@ -136,7 +139,7 @@ def road_network_scan(grid: int = 96, folder: str = "City/Elevated Pillars") -> 
                 g = _ground(x, y, ignore)
                 row.append(round(g, 1) if g is not None else None)
             heights.append(row)
-    return {"ok": True, "props": props,
+    return {"ok": True, "props": props, "j0": rows.start,
             "terrain": {"min": lo, "max": hi, "grid": grid, "heights": heights}}
 
 
