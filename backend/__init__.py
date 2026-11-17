@@ -2236,6 +2236,25 @@ def register(api) -> None:
                         up = 9 if v.get("mesh") == "SM_Kit_ParkingStall" else cg.ROAD_SINK_CM + 6 if v.get("on_road") else 0
                         for p in v["points"]:
                             p[2] = round(fit["ground"](p[0], p[1]) + up)
+                # forest, bushes, rocks: on the cut ground too, and never on its banks. They were placed on the coarse
+                # scan, which has none of the slopes the cut makes (a flattened city's edge, a shore): trees stood on
+                # those banks, at the coarse height
+                g, own_layers = fit["ground"], {d.get("name"): pl.clean(d) for d in docs.values()}
+                for name, v in placed.items():
+                    lay = own_layers.get(name)
+                    if not lay or lay["kind"] not in pl.SCATTERED or v.get("keep_z"):
+                        continue
+                    lim = 600 * math.tan(math.radians(lay["max_slope_deg"])) if lay["max_slope_deg"] < 90 else None
+                    keep = []
+                    for p in v["points"]:
+                        if lim is not None and math.hypot(g(p[0] + 300, p[1]) - g(p[0] - 300, p[1]),
+                                                          g(p[0], p[1] + 300) - g(p[0], p[1] - 300)) > lim:
+                            continue
+                        p[2] = round(g(p[0], p[1]) - lay["sink_cm"])
+                        keep.append(p)
+                    if len(keep) != len(v["points"]):
+                        v["count"] = round(v["count"] * len(keep) / max(1, len(v["points"])))
+                        v["points"], v["shown"] = keep, len(keep)
             # real bridges: a pier bent every 30 m under every deck and elevated ramp, down to the ground it stands
             # on (the cut ground once there is one) or the lake bed
             decks = {str(k): {"points": p, "segments": s} for k, (p, s) in enumerate(actors)}
