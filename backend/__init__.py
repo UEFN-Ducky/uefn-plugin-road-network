@@ -777,6 +777,17 @@ def register(api) -> None:
         if not head:
             return {"ok": False, "error": f"No actor {actor!r} in network {net_id!r}."}
         gen = bool((data.get(f"net.{nid}") or {}).get("generated"))
+        # a piece only slides its mouths along their own roads, a turnaround and a path only settle onto the live
+        # ground: a heightmap cut for these roads stays theirs (read before anything here moves a point)
+        net = data.get(f"net.{nid}") or {}
+        hm_current = bool((net.get("generated") or {}).get("heightmap_roads")) and \
+            net["generated"]["heightmap_roads"] == roads_digest(nid)
+
+        def keep_heightmap() -> None:
+            if hm_current:
+                doc = data.get(f"net.{nid}")
+                doc["generated"]["heightmap_roads"] = roads_digest(nid)
+                data.put(f"net.{nid}", doc)
         capped = 0
         if gen:
             # roads drawn 10 cm up their points (worlds generated with 50 floated every road and kerb)
@@ -802,6 +813,7 @@ def register(api) -> None:
         if not todo:
             if gen:
                 store_actor(nid, head["label"], {"points": pts, "segments": segs}, head["name"].split(" / ")[0])
+                keep_heightmap()
             return {"ok": True, "label": head["label"], "built": 0,
                     "note": "No junction needs a generated piece."}
         folder = junction_folder(pts, segs)
@@ -840,10 +852,6 @@ def register(api) -> None:
                 if plane:
                     ground_of[n] = plane
         built, unsaved = 0, []
-        # a piece only slides its mouths along their own roads: a heightmap cut for these roads stays theirs
-        net = data.get(f"net.{nid}") or {}
-        hm_current = bool((net.get("generated") or {}).get("heightmap_roads")) and \
-            net["generated"]["heightmap_roads"] == roads_digest(nid)
         try:
             # few meshes per call: each mesh build opens a progress window that UEFN frees only when the
             # call's frame ends (see street_kit_build)
@@ -886,10 +894,7 @@ def register(api) -> None:
         finally:
             store_actor(nid, head["label"], {"points": pts, "segments": segs}, head["name"].split(" / ")[0])
             push({"what": "actor", "id": nid, "label": head["label"]})
-            if hm_current:
-                net = data.get(f"net.{nid}")
-                net["generated"]["heightmap_roads"] = roads_digest(nid)
-                data.put(f"net.{nid}", net)
+            keep_heightmap()
         record("road_network_build_pieces", "network", f"{nid}-{aslug}", None, [])
         return {"ok": True, "label": head["label"], "built": built, "folder": folder, "turnarounds": capped,
                 "problems": {k: len(v) for k, v in st.problems(pts, segs).items()}}
