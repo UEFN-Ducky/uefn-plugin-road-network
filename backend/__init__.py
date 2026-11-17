@@ -2994,8 +2994,12 @@ def register(api) -> None:
         return {"ok": True, "id": nid, "built_tiles": done, "removed_tiles": gone, "runs": runs,
                 "pieces": nodes_, "memory": uefn_memory.report(5)["worst"]}
 
+    def pick_tiles(tiles: str) -> set:
+        """Tile keys from what the person names: '2_1', 'n0_-1', '2_1, 2_2' or the volume label 'City Builder Valley 2_1'."""
+        return {m.group(0) for m in re.finditer(r"n?-?\d+_-?\d+", str(tiles or ""))}
+
     def pcg_build(net_id: str = "", confirm: bool = False, force: bool = False, wait: bool = True,
-                  stop: bool = False, nature_only: bool = False, city_only: bool = False) -> dict:
+                  stop: bool = False, nature_only: bool = False, city_only: bool = False, tiles: str = "") -> dict:
         """The world's previewed city as PCG in the open UEFN level, in tiles (one graph + volume each).
         Only tiles whose content changed since the last build are rebuilt, tiles gone from the plan are
         removed, and every other tile, the roads and the rest of the level are left alone: edit the plan,
@@ -3057,6 +3061,13 @@ def register(api) -> None:
             build = [k for k in build if not k.startswith("n")]
             remove = [k for k in remove if not k.startswith("n")]
             p_build, p_remove = [], []
+        pick = pick_tiles(tiles)
+        if pick:  # just these tiles (e.g. '2_1' or '2_1, 2_2'): every other tile stays as it is in the level
+            same = sorted(set(same) | {k for k in build if k not in pick})
+            build, remove = [k for k in build if k in pick], [k for k in remove if k in pick]
+            if force:  # a picked tile is rebuilt even when nothing in it changed
+                build = sorted(set(build) | {k for k in pick if k in new})
+            p_build, p_remove = [k for k in p_build if k in pick], [k for k in p_remove if k in pick]
         if not confirm:
             trees_line = "" if not (p_build or p_remove) else (
                 f" {prop_info['placed']} Fortnite tree props in {len(new_props)} tiles: {len(p_build)} tiles to place, "
@@ -4302,7 +4313,8 @@ def register(api) -> None:
 
     @tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_build(net_id: str = "", confirm: bool = False, force: bool = False,
-                               stop: bool = False, nature_only: bool = False, city_only: bool = False) -> dict:
+                               stop: bool = False, nature_only: bool = False, city_only: bool = False,
+                               tiles: str = "") -> dict:
         """Build the world's previewed city in the open UEFN level as PCG of the project's own kit, in 400 m
         tiles (one graph + volume each). Incremental: only tiles whose lots changed since the last build are
         rebuilt, tiles gone from the plan are removed, the rest of the city, the roads and the level are left
@@ -4311,8 +4323,10 @@ def register(api) -> None:
         in the background (batches of tiles, memory checked between them) and returns at once: call again
         for progress (done / total) and the last result; stop=true stops it after the batch in flight.
         nature_only=true builds and removes only the trees / bushes / rocks tiles: no city tile is touched.
-        city_only=true is the other way round: only city tiles; the forest tiles and the prop trees stay as they are."""
-        return safe(pcg_build)(net_id, confirm, force, False, stop, nature_only, city_only)
+        city_only=true is the other way round: only city tiles; the forest tiles and the prop trees stay as they are.
+        tiles='2_1' (or '2_1, 2_2', or the volume's label 'City Builder Valley 2_1'): only those tiles are built or
+        removed, one batch, every other tile left alone; with force=true they are rebuilt even if unchanged."""
+        return safe(pcg_build)(net_id, confirm, force, False, stop, nature_only, city_only, tiles)
 
     @tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_place(net_id: str = "", confirm: bool = False) -> dict:
