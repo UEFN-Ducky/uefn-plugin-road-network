@@ -634,12 +634,19 @@ def grade_to_roads(ter: dict, actors: dict, locked: set | None = None) -> dict:
         # never to the point-per-bump line they were drawn with: the two must meet everywhere
         pts_, segs_ = st.straighten(a["points"], a["segments"])
         by_i = {p["i"]: p for p in pts_}
+        links: dict = {}  # mesh-less links per point: a piece with one is a dead end's turnaround
+        for s in segs_:
+            if not s.get("mesh"):
+                for n in (s["a"], s["b"]):
+                    links[n] = links.get(n, 0) + 1
         for s in segs_:
             pa, pb = by_i.get(s["a"]), by_i.get(s["b"])
             mesh = (s.get("mesh") or "").split("/")[-1]
             if not pa or not pb:
                 continue
             half = HALF.get(next((k for k, m in ROAD_MESH.items() if m.split("/")[-1] == mesh), ""), 800.0)
+            if not mesh:  # a turnaround is graded round its whole width, like the road it ends (its Width)
+                half = max([half] + [float(p.get("w") or 0) for p in (pa, pb) if p.get("mesh") and links.get(p["i"]) == 1])
             if mesh in STRUCTURES:
                 # a deck or ramp stands free, but the ground may never rise through it: where a viaduct comes
                 # down to grade the hill under it is cut to DECK_CLEAR_CM below the deck (never filled up to it)
@@ -5034,6 +5041,19 @@ def _demo() -> None:
            if abs(p["z"] - st.sample_grid(ter, p["x"], p["y"])) < 2000]
     before = [abs(p["z"] - st.sample_grid(ter, p["x"], p["y"])) for c in cities for p in actors[f"{c['name']} Roads"]["points"]]
     assert sorted(off)[int(len(off) * 0.95)] < 150, ("graded ground meets the streets", max(off), max(before))
+    # a dead end's turnaround on a hillside: the ground is cut level across its whole round, not just the road's width
+    slope = {"grid": 40, "min": [-10000, -10000], "max": [10000, 10000], "heights": [[i * 50.0 for i in range(40)] for _ in range(40)]}
+    road = ROAD_MESH["2S"].split("/")[-1]
+    hill = {"T Roads": {"points": [{"i": 0, "x": -8000, "y": 0, "z": 0, "yaw": 0, "pitch": 0, "w": 875, "mesh": ""},
+                                   {"i": 1, "x": -1200, "y": 0, "z": 0, "yaw": 180, "pitch": 0, "w": 875, "mesh": ""},
+                                   {"i": 2, "x": 0, "y": 0, "z": 0, "yaw": 0, "pitch": 0, "w": 1425, "mesh": "SM_JK_2"}],
+                        "segments": [{"i": 0, "a": 0, "b": 1, "mesh": road, "ta": 6800, "tb": -6800},
+                                     {"i": 1, "a": 2, "b": 1, "mesh": "", "ta": 1200, "tb": -1200}]}}
+    for x in hill["T Roads"]["points"] + hill["T Roads"]["segments"]:
+        x["lines"] = []
+    hg = grade_to_roads(slope, hill)
+    assert all(abs(st.sample_grid(hg, 1000 * math.cos(a), 1000 * math.sin(a)) + ROAD_SINK_CM) < 60
+               for a in (0.0, 1.57, -1.57, 0.8)), "the turnaround's whole round is cut level"
     # the ground never covers a street between its points either (at a world's own grid, ~37 m a cell)
     fine = terrain(3, 400000, 6000, cities, grid=108)
     fa = generate(cities[:1], lambda x, y: st.sample_grid(fine, x, y) or 0.0, "/Game/X/WorldGen/Roads", seed=3)

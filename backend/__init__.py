@@ -764,7 +764,6 @@ def register(api) -> None:
         return {"ok": True, "label": head["label"], **result,
                 "problems": {k: len(v) for k, v in st.problems(pts, segs).items()}}
 
-    BULB_CHECK_CM, BULB_FIT_CM = 800.0, 60.0  # a turnaround is built only where the ground this far round is this flat
     KERB_ONLY_CM = 30.0  # a private street's kerb (SM_Path_PrivateStreet: asphalt to 3.4 m, kerb to 3.7 m)
     JUNCTIONS_PER_CALL = 8
     SAVE_BATCH = 40  # assets per save call
@@ -778,7 +777,7 @@ def register(api) -> None:
         if not head:
             return {"ok": False, "error": f"No actor {actor!r} in network {net_id!r}."}
         gen = bool((data.get(f"net.{nid}") or {}).get("generated"))
-        capped = opened = 0
+        capped = 0
         if gen:
             # roads drawn 10 cm up their points (worlds generated with 50 floated every road and kerb)
             for p in pts:
@@ -789,27 +788,11 @@ def register(api) -> None:
                 " before kit" in str(h.get("label") or "") or str(h.get("label") or "").endswith((" Paths", " Access")))]
             terrain = (data.get(f"net.{nid}.scan") or {}).get("terrain") or {}
             capped = st.cap_ends(pts, segs, pl.dead_ends([(pts, segs)] + others, terrain)[0])
-            # ... but only where the ground is flat under it: a flat round on a hillside is buried or floats, and
-            # the terrain is never written. Measured on the live landscape; those street ends stay open.
-            ends = st.end_nodes(pts, segs)
-            if ends:
-                ring = [(0.0, 0.0)] + [(BULB_CHECK_CM * math.cos(k * math.pi / 4), BULB_CHECK_CM * math.sin(k * math.pi / 4))
-                                       for k in range(8)]
-                try:
-                    got = listener("road_network_ground_check", {"points": [[p["x"] + dx, p["y"] + dy, p["z"]]
-                                                                           for p in ends for dx, dy in ring]}, timeout=300)
-                except (ConnectionError, RuntimeError, TimeoutError) as exc:
-                    return {"ok": False, "error": f"UEFN didn't answer the ground check: {exc}"}
-                rows = got.get("points") or []
-                off = [p["i"] for k, p in enumerate(ends) if any(
-                    r.get("below") is None or abs(r["below"]) > BULB_FIT_CM for r in rows[k * len(ring):(k + 1) * len(ring)])]
-                opened = st.uncap(pts, segs, off)
-                capped -= min(capped, opened)
         todo = st.pending_nodes(pts, segs, rebuild)
         if not todo:
             if gen:
                 store_actor(nid, head["label"], {"points": pts, "segments": segs}, head["name"].split(" / ")[0])
-            return {"ok": True, "label": head["label"], "built": 0, "left_open": opened,
+            return {"ok": True, "label": head["label"], "built": 0,
                     "note": "No junction needs a generated piece."}
         folder = junction_folder(pts, segs)
         if not folder:
@@ -826,6 +809,8 @@ def register(api) -> None:
                 road_of.setdefault(s["b"], hit.group(1))
         # a private street has no sidewalk but a kerb: its junctions and turnarounds get the kerb round them too
         walk = lambda m: cg.walk_of(by_i[m]["w"]) or (KERB_ONLY_CM if "PrivateStreet" in road_of.get(m, "") else 0.0)  # noqa: E731
+        # a dead end's turnaround: its outer radius (road_io._junction_geometry builds it to this)
+        bulb = lambda arms: max(1000.0, by_i[arms[0]]["w"] + 500.0) if len(arms) == 1 else 0.0  # noqa: E731
         built, unsaved = 0, []
         # a piece only slides its mouths along their own roads: a heightmap cut for these roads stays theirs
         net = data.get(f"net.{nid}") or {}
@@ -845,12 +830,17 @@ def register(api) -> None:
                      # the junction takes the asphalt, paint and sidewalk materials of its widest road's mesh,
                      # so it is the same colour as the road it joins (house streets and city streets differ)
                      "like": road_of.get(max(arms, key=lambda m: by_i[m]["w"]), ""),
+                     "bulb": bulb(arms),
                      "paint": not (aslug.endswith("airport"))}
                     for node, arms, angles in batch]}, timeout=600)
                 for node, arms, _ in batch:
                     dists = (out.get("mouths") or {}).get(f"{prefix}{node}")
                     if dists:
                         st.place_generated(pts, segs, node, arms, dists, f"{folder}/{prefix}{node}")
+                        if bulb(arms):  # a turnaround's Width is its whole round: the ground is graded to all of it
+                            p = by_i[node]
+                            p["w"] = bulb(arms) + 50.0
+                            p["lines"] = st._set_line(p["lines"], "Width", f"{p['w']:.1f}")
                         unsaved.append(f"{folder}/{prefix}{node}")
                         built += 1
                 # saved as we go, a batch per call: left unsaved, hundreds of meshes all went out in the
@@ -870,7 +860,7 @@ def register(api) -> None:
                 net["generated"]["heightmap_roads"] = roads_digest(nid)
                 data.put(f"net.{nid}", net)
         record("road_network_build_pieces", "network", f"{nid}-{aslug}", None, [])
-        return {"ok": True, "label": head["label"], "built": built, "folder": folder, "turnarounds": capped, "left_open": opened,
+        return {"ok": True, "label": head["label"], "built": built, "folder": folder, "turnarounds": capped,
                 "problems": {k: len(v) for k, v in st.problems(pts, segs).items()}}
 
     def restore_actor(net_id: str = "", actor: str = "", from_actor: str = "") -> dict:
