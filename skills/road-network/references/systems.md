@@ -296,7 +296,8 @@ before any layer is placed, and a building along road frontage or on a free lot 
 Parking: lot -> 17.5 m modules (5.5 stalls + 6.5 aisle + 5.5 stalls) -> 2.6 m stalls. Three networks:
 public roads ('<City> Roads'), private access ('<City> Access': PR private streets, DW / DD driveways as cubic
 Beziers garage -> kerb, double for wide houses), pedestrians ('<City> Paths': sidewalks, walkways). Built-in
-site layers (preview + Push city): Complex parking, Parking stalls, Turnarounds, Parking garages.
+site layers (preview + Push city): Complex parking, Parking stalls, Parking garages. Cul-de-sac bulbs are
+NOT a PCG layer: they are turnaround pieces on the road splines (see 'A cap on every street that ends').
 
 ## Freeways and interchanges (`backend/freeways.py`, option `freeways`)
 Three layers on one road graph: regional (`Highways`, city to city), urban freeways (`<City> Freeways`, planned
@@ -670,9 +671,15 @@ Roads define the city, blocks are what roads enclose, lots are cut from blocks, 
      two streets, a crossing's last two roads, the street that holds the network together.
    - **One network** (`citygen.one_network`): a bridge with no street at one of its ends is not built, and
      fewer than 8 junctions joined to nothing go with it.
-   - **A cap on every street that ends** (`pcg_layers.road_ends`, built-in layer Road ends): a dead end gets a
-     round paved turnaround 3.5 m wider than the road, at the road's height. None where the road goes on in
-     another actor, at a bridge, a ramp or a freeway's end, or at the edge of the map.
+   - **A cap on every street that ends** (`pcg_layers.dead_ends` -> `splines_text.cap_ends`, run by Build
+     pieces): a dead end (city street or private street) gets a 1-arm junction node on its spline, built like any
+     junction: a round deck of outer radius max(10 m, half width + 5 m), the street's own sidewalk (or a private
+     street's 30 cm kerb) carried round it, in the road mesh's own materials. Never a PCG disc (`road_ends` only
+     keeps PCG clear of it). None where the road goes on in another actor, at a bridge, a ramp or a freeway's
+     end, at the edge of the map, or on a stretch under 15 m.
+   - **Junctions take their road's materials** (`road_io._road_materials`): asphalt, white paint and sidewalk
+     come from the slots of the widest arm's road mesh (Build pieces passes it as `like`), so a house-street
+     junction is M_BK_Asphalt like its street, never the city M_Asphalt.
    - **Few bridges** (`citygen.few_bridges`): every street that reached the water once got its own bridge, a
      dozen side by side over one lake. Now no bridge crosses another. First come the bridges that join two
      parts of the city no street joins (a district on the far bank), shortest first; where two of those would
