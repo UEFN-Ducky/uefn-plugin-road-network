@@ -4172,12 +4172,15 @@ def links(cities: list) -> list:
 
 
 # ------------------------------------------------------------------ splines
+ROAD_OFFSET_CM = 10.0  # a road segment's mesh is drawn this far up its points (junction decks: road_io._OWN_DECK_Z)
+
+
 def _point(i, x, y, z, yaw, w, mesh="", lifted=False, piece=""):
     """A control point. lifted: on a bridge / ramp (never shapes the ground). piece: a mesh path that sits
     on the point (a trumpet loop, a cloverleaf)."""
     live = "False" if lifted else "True"
     lines = [f"Width={w:.1f}", f"bRaiseTerrain={live}", f"bLowerTerrain={live}", "SideFalloff=800.000000",
-             "EndFalloff=1000.000000"] + ([] if mesh else ["SegmentMeshOffset=50.0"])
+             "EndFalloff=1000.000000"] + ([] if mesh else [f"SegmentMeshOffset={ROAD_OFFSET_CM:.1f}"])
     if piece:
         name = piece.rsplit("/", 1)[-1]
         lines += [f"Mesh=\"/Script/Engine.StaticMesh'{piece}.{name}'\"", "MeshScale=(X=1.000000,Y=1.000000,Z=1.000000)"]

@@ -795,7 +795,7 @@ def cap_ends(points: list, segments: list, ends: list) -> int:
     for e, o in ends:
         E, B = by_i.get(e), by_i.get(o)
         road = next((s for s in segments if s["mesh"] and {s["a"], s["b"]} == {e, o}), None)
-        if not E or not B or road is None or E["mesh"]:
+        if not E or not B or road is None or E["mesh"] or E.get("open_end"):
             continue
         L = math.hypot(E["x"] - B["x"], E["y"] - B["y"])
         if L < CAP_MIN_CM:
@@ -812,6 +812,40 @@ def cap_ends(points: list, segments: list, ends: list) -> int:
         retangent(by_i, link)
         np_, ns, done = np_ + 1, ns + 1, done + 1
     return done
+
+
+def end_nodes(points: list, segments: list) -> list:
+    """The turnaround nodes: a junction piece (waiting or built) with one arm."""
+    deg: dict = {}
+    for s in segments:
+        if not s["mesh"]:
+            for n in (s["a"], s["b"]):
+                deg[n] = deg.get(n, 0) + 1
+    return [p for p in points if (p["mesh"] == END_PIECE or p["mesh"].startswith("SM_JK_")) and deg.get(p["i"]) == 1]
+
+
+def uncap(points: list, segments: list, nodes: list) -> int:
+    """Take these turnaround nodes off again (a flat round on a hillside would be buried or float, and the terrain
+    is never written): the street runs back to where it ended, and stays open (cap_ends skips it)."""
+    by_i = {p["i"]: p for p in points}
+    gone_p, gone_s, ends = set(), set(), set()
+    for n in nodes:
+        J = by_i.get(n)
+        links = [s for s in segments if not s["mesh"] and n in (s["a"], s["b"])]
+        if J is None or len(links) != 1:
+            continue
+        E = by_i[links[0]["b"] if links[0]["a"] == n else links[0]["a"]]
+        E["x"], E["y"], E["z"], E["open_end"] = J["x"], J["y"], J["z"], True
+        gone_p.add(n)
+        gone_s.add(links[0]["i"])
+        ends.add(E["i"])
+    points[:] = [p for p in points if p["i"] not in gone_p]
+    segments[:] = [s for s in segments if s["i"] not in gone_s]
+    by_i = {p["i"]: p for p in points}
+    for s in segments:
+        if s["a"] in ends or s["b"] in ends:
+            retangent(by_i, s)
+    return len(gone_p)
 
 
 def pending_nodes(points: list, segments: list, rebuild: bool = False) -> list:
@@ -1169,6 +1203,9 @@ def _demo() -> None:
     place_generated(de, dseg, 2, [1], [1100.0], "/Game/x/Kit/SM_JK_2")
     assert de[1]["x"] == 3900.0 and de[2]["x"] == 5000.0 and not bad_tangents(de, dseg)
     assert cap_ends(de, dseg, [(2, 1)]) == 0, "a piece's own point is never capped again"
+    assert [p["i"] for p in end_nodes(de, dseg)] == [2]
+    assert uncap(de, dseg, [2]) == 1 and len(de) == 2 and len(dseg) == 1 and de[1]["x"] == 5000.0
+    assert cap_ends(de, dseg, [(1, 0)]) == 0 and not bad_tangents(de, dseg), "an end taken off stays open"
     print("drape ok", out)
 
 

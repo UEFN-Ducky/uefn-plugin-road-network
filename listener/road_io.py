@@ -159,10 +159,11 @@ _U_ASPHALT, _U_SHOULDER = 0.27, 0.02
 _R1_MATERIAL = "/Game/Athena/Apollo/Environments/Landscape/Materials/MI_Apollo_Roads_Straight_NO_RVT"
 
 
-# Our own road kit (WorldGen/Roads): a flat deck at z 0 in M_Asphalt, drawn 50 cm up the point by the segments'
-# SegmentMeshOffset. A junction piece sits on its point with no offset, so it carries that 50 cm lift itself,
-# plus a hair so the road ends it overlaps never flicker, with planar UVs in metres.
-_OWN_DECK_Z = 52.0
+# Our own road kit (WorldGen/Roads): a flat deck at z 0 in M_Asphalt, drawn 10 cm up the point by the segments'
+# SegmentMeshOffset (citygen.ROAD_OFFSET_CM; 50 left every road and kerb floating over the graded ground).
+# A junction piece sits on its point with no offset, so it carries that lift itself, plus a hair so the road
+# ends it overlaps never flicker, with planar UVs in metres.
+_OWN_DECK_Z = 12.0
 _OWN_UV_CM = 400.0
 _OWN_SKIRT_Z = -330.0  # a straight wall down under every fillet, like the road tiles' 3 m skirt
 

@@ -764,6 +764,7 @@ def register(api) -> None:
         return {"ok": True, "label": head["label"], **result,
                 "problems": {k: len(v) for k, v in st.problems(pts, segs).items()}}
 
+    BULB_CHECK_CM, BULB_FIT_CM = 800.0, 60.0  # a turnaround is built only where the ground this far round is this flat
     KERB_ONLY_CM = 30.0  # a private street's kerb (SM_Path_PrivateStreet: asphalt to 3.4 m, kerb to 3.7 m)
     JUNCTIONS_PER_CALL = 8
     SAVE_BATCH = 40  # assets per save call
@@ -777,15 +778,39 @@ def register(api) -> None:
         if not head:
             return {"ok": False, "error": f"No actor {actor!r} in network {net_id!r}."}
         gen = bool((data.get(f"net.{nid}") or {}).get("generated"))
-        capped = 0
-        if gen:  # every street that ends gets a turnaround piece on its own spline (no PCG disc)
+        capped = opened = 0
+        if gen:
+            # roads drawn 10 cm up their points (worlds generated with 50 floated every road and kerb)
+            for p in pts:
+                if not p["mesh"] and any(ln.startswith("SegmentMeshOffset=") for ln in p["lines"]):
+                    p["lines"] = st._set_line(p["lines"], "SegmentMeshOffset", f"{cg.ROAD_OFFSET_CM:.1f}")
+            # every street that ends gets a turnaround piece on its own spline (no PCG disc)
             others = [load_actor(nid, a)[1:] for a, h in actor_docs(nid).items() if a != aslug and not (
                 " before kit" in str(h.get("label") or "") or str(h.get("label") or "").endswith((" Paths", " Access")))]
             terrain = (data.get(f"net.{nid}.scan") or {}).get("terrain") or {}
             capped = st.cap_ends(pts, segs, pl.dead_ends([(pts, segs)] + others, terrain)[0])
+            # ... but only where the ground is flat under it: a flat round on a hillside is buried or floats, and
+            # the terrain is never written. Measured on the live landscape; those street ends stay open.
+            ends = st.end_nodes(pts, segs)
+            if ends:
+                ring = [(0.0, 0.0)] + [(BULB_CHECK_CM * math.cos(k * math.pi / 4), BULB_CHECK_CM * math.sin(k * math.pi / 4))
+                                       for k in range(8)]
+                try:
+                    got = listener("road_network_ground_check", {"points": [[p["x"] + dx, p["y"] + dy, p["z"]]
+                                                                           for p in ends for dx, dy in ring]}, timeout=300)
+                except (ConnectionError, RuntimeError, TimeoutError) as exc:
+                    return {"ok": False, "error": f"UEFN didn't answer the ground check: {exc}"}
+                rows = got.get("points") or []
+                off = [p["i"] for k, p in enumerate(ends) if any(
+                    r.get("below") is None or abs(r["below"]) > BULB_FIT_CM for r in rows[k * len(ring):(k + 1) * len(ring)])]
+                opened = st.uncap(pts, segs, off)
+                capped -= min(capped, opened)
         todo = st.pending_nodes(pts, segs, rebuild)
         if not todo:
-            return {"ok": True, "label": head["label"], "built": 0, "note": "No junction needs a generated piece."}
+            if gen:
+                store_actor(nid, head["label"], {"points": pts, "segments": segs}, head["name"].split(" / ")[0])
+            return {"ok": True, "label": head["label"], "built": 0, "left_open": opened,
+                    "note": "No junction needs a generated piece."}
         folder = junction_folder(pts, segs)
         if not folder:
             return {"ok": False, "error": "Couldn't find the project's road folder from the road pieces."}
@@ -845,7 +870,7 @@ def register(api) -> None:
                 net["generated"]["heightmap_roads"] = roads_digest(nid)
                 data.put(f"net.{nid}", net)
         record("road_network_build_pieces", "network", f"{nid}-{aslug}", None, [])
-        return {"ok": True, "label": head["label"], "built": built, "folder": folder, "turnarounds": capped,
+        return {"ok": True, "label": head["label"], "built": built, "folder": folder, "turnarounds": capped, "left_open": opened,
                 "problems": {k: len(v) for k, v in st.problems(pts, segs).items()}}
 
     def restore_actor(net_id: str = "", actor: str = "", from_actor: str = "") -> dict:
