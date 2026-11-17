@@ -2099,7 +2099,10 @@ def register(api) -> None:
         gen = (data.get(f"net.{nid}") or {}).get("generated") or {}
         # the ground the buildings stand on: this world's own heightmap (lots cut in) once it has one; a world laid
         # over another's landscape keeps that landscape as scanned until its heightmap is made
-        cut = not gen.get("ground_from") or bool(gen.get("heightmap"))
+        # ... and a world whose ground was pulled from UEFN stands on it exactly as it is there: no road grading, no
+        # lot pads cut over it (the person shapes that landscape in UEFN; City Builder never writes it)
+        cut = (not gen.get("ground_from") or bool(gen.get("heightmap"))) and \
+            (data.get(f"net.{nid}.scan") or {}).get("source") != "uefn"
         # ponytail: one world is worked on at a time (the cache has one entry too), so its landscape size is global
         cg.HEIGHTMAP_RES = cg.landscape_res(gen.get("options"))
         # (without each city's plan report: the placement reads its lots, never the report, and the report's wording
