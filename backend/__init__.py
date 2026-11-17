@@ -2914,7 +2914,7 @@ def register(api) -> None:
                 "pieces": nodes_, "memory": uefn_memory.report(5)["worst"]}
 
     def pcg_build(net_id: str = "", confirm: bool = False, force: bool = False, wait: bool = True,
-                  stop: bool = False) -> dict:
+                  stop: bool = False, nature_only: bool = False) -> dict:
         """The world's previewed city as PCG in the open UEFN level, in tiles (one graph + volume each).
         Only tiles whose content changed since the last build are rebuilt, tiles gone from the plan are
         removed, and every other tile, the roads and the rest of the level are left alone: edit the plan,
@@ -2967,6 +2967,10 @@ def register(api) -> None:
             pass  # UEFN not reachable: diff against what was pushed last
         build, remove, same = kit_bake.tile_diff(new, state["tiles"], force)
         remove = sorted(set(remove) | set(orphans))
+        if nature_only:  # only the forest's 'n' tiles: every city tile stays exactly as it is in the level
+            same = sorted(set(same) | {k for k in build if not k.startswith("n")})
+            build = [k for k in build if k.startswith("n")]
+            remove = [k for k in remove if k.startswith("n")]
         if not confirm:
             trees_line = "" if not (p_build or p_remove) else (
                 f" {prop_info['placed']} Fortnite tree props in {len(new_props)} tiles: {len(p_build)} tiles to place, "
@@ -4209,15 +4213,16 @@ def register(api) -> None:
 
     @tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_build(net_id: str = "", confirm: bool = False, force: bool = False,
-                               stop: bool = False) -> dict:
+                               stop: bool = False, nature_only: bool = False) -> dict:
         """Build the world's previewed city in the open UEFN level as PCG of the project's own kit, in 400 m
         tiles (one graph + volume each). Incremental: only tiles whose lots changed since the last build are
         rebuilt, tiles gone from the plan are removed, the rest of the city, the roads and the level are left
         alone, so editing the city plan never means deleting everything. Without confirm it reports how many
         tiles would change. force=true rebuilds every tile. Ask the person first. confirm=true starts the build
         in the background (batches of tiles, memory checked between them) and returns at once: call again
-        for progress (done / total) and the last result; stop=true stops it after the batch in flight."""
-        return safe(pcg_build)(net_id, confirm, force, False, stop)
+        for progress (done / total) and the last result; stop=true stops it after the batch in flight.
+        nature_only=true builds and removes only the trees / bushes / rocks tiles: no city tile is touched."""
+        return safe(pcg_build)(net_id, confirm, force, False, stop, nature_only)
 
     @tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_place(net_id: str = "", confirm: bool = False) -> dict:
