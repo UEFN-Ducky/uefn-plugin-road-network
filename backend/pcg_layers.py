@@ -132,6 +132,7 @@ NUMBERS = {
     "sink_cm": (10.0, 0.0, 500.0),      # push into the ground so roots and bases never float
     "footprint": (0.8, 0.1, 2.0),       # bounds scale used for pruning and differences (1 = mesh bounds)
     "road_clear_m": (2.0, 0.0, 50.0),   # extra clearance past the road edge
+    "max_slope_deg": (32.0, 1.0, 90.0),  # scatter / foliage: nothing grows on ground steeper than this (banks, cliffs)
     "width_m": (12.0, 1.0, 200.0),      # buildings: frontage along the road
     "depth_m": (12.0, 1.0, 200.0),      # buildings: depth away from the road
     "height_min_m": (6.0, 1.0, 600.0),  # buildings: height range (the preview draws it; pick meshes to match)
@@ -1959,6 +1960,10 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                 if z is None or (sea is not None and z < sea + 50) or not on_map(x, y):
                     lot and no("under water / off map")
                     continue  # nothing grows under water or off the map
+                if layer["kind"] in SCATTERED and layer["max_slope_deg"] < 90:
+                    zs = (sample_z(x + 300, y), sample_z(x - 300, y), sample_z(x, y + 300), sample_z(x, y - 300))
+                    if None not in zs and math.hypot(zs[0] - zs[1], zs[2] - zs[3]) > 600 * math.tan(math.radians(layer["max_slope_deg"])):
+                        continue  # too steep: nothing grows on a bank or a cliff (slope over 6 m round the spot)
                 s = layer["scale_min"] + (layer["scale_max"] - layer["scale_min"]) * _u01("scale", *spot)
                 r = r_base * s
                 # scatter keeps the clearance; roadside layers sit at their setback, so only their own size counts
@@ -2338,6 +2343,11 @@ def _demo() -> None:
     assert {tuple(p[:2]) for p in roomy if math.hypot(p[0], p[1]) < 60000} == \
         {tuple(p[:2]) for p in preview([clean({**wood, "reach": 0})], cities, wide, [], lambda x, y: 0.0, foliage_limit=200000)["Wood"]["points"]
          if math.hypot(p[0], p[1]) < 60000}, "round the cities it stands where it stood"
+    # no tree on a bank: a 45 degree slope between two flats stays bare, the flats are forest
+    bank = lambda x, y: max(0.0, min(20000.0, x - 100000.0))  # flat, then 45 degrees for 200 m, then flat again
+    slope_wood = preview([clean({**wood, "reach": 0, "density": 0.2})], cities, wide, [], bank, foliage_limit=200000)["Wood"]["points"]
+    assert not [p for p in slope_wood if 100500 < p[0] < 119500], "a tree on the bank"
+    assert [p for p in slope_wood if p[0] < 99000] and [p for p in slope_wood if p[0] > 121000], "the flats are wooded"
     # nothing stands on a road, whatever placed it: a junction's arms and a private street are road too. Trees
     # and bushes go when they are within half a metre of one, street furniture when it stands a metre into one
     town = [{"name": "T", "x": 0, "y": 0, "radius": 50000, "private": {"streets": [[[20000, 20000], [30000, 20000]]]}}]
