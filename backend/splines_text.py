@@ -779,6 +779,41 @@ def kit_convert(points: list, segments: list) -> dict:
     return {"road_segments": road_segs, "pieces": counts, "unfit": len(unfit), "unfit_nodes": unfit[:60]}
 
 
+END_PIECE = "SM_Junc_End"  # a dead end's turnaround waiting for its piece (a 1-arm junction: the cul-de-sac bulb)
+CAP_MIN_CM = 1500.0  # a dead-end stretch shorter than this keeps its square end (the bulb would swallow it)
+
+
+def cap_ends(points: list, segments: list, ends: list) -> int:
+    """Close each dead end [(end point, the point before it)] with a turnaround ON THE SPLINE: a new node on the
+    end (built like any junction, with one arm, in the road's own materials and sidewalks) and the end point as
+    its mouth, a step back toward the road (place_generated puts it on the piece's end). Returns how many."""
+    by_i = {p["i"]: p for p in points}
+    if not by_i:
+        return 0
+    np_, ns = max(by_i) + 1, max((s["i"] for s in segments), default=-1) + 1
+    done = 0
+    for e, o in ends:
+        E, B = by_i.get(e), by_i.get(o)
+        road = next((s for s in segments if s["mesh"] and {s["a"], s["b"]} == {e, o}), None)
+        if not E or not B or road is None or E["mesh"]:
+            continue
+        L = math.hypot(E["x"] - B["x"], E["y"] - B["y"])
+        if L < CAP_MIN_CM:
+            continue
+        J = {**E, "i": np_, "mesh": END_PIECE, "pitch": 0.0,
+             "lines": [ln for ln in E["lines"] if not ln.startswith(("Mesh=", "MeshScale=", "SegmentMeshOffset="))]}
+        E["x"] -= (E["x"] - B["x"]) / L * 100.0
+        E["y"] -= (E["y"] - B["y"]) / L * 100.0
+        points.append(J)
+        by_i[np_] = J
+        link = {"i": ns, "a": np_, "b": e, "ta": 0.0, "tb": 0.0, "mesh": "", "raise": road["raise"],
+                "lines": [ln for ln in road["lines"] if not ln.startswith("SplineMeshes")]}
+        segments.append(link)
+        retangent(by_i, link)
+        np_, ns, done = np_ + 1, ns + 1, done + 1
+    return done
+
+
 def pending_nodes(points: list, segments: list, rebuild: bool = False) -> list:
     """Old fitted junction nodes (3+ arms) still waiting for a Road1-width piece: [(node, [mouths], [angles])].
     rebuild: also the nodes that already have a generated SM_JK_ piece (to regenerate it in place)."""
@@ -791,8 +826,8 @@ def pending_nodes(points: list, segments: list, rebuild: bool = False) -> list:
     out = []
     for p in points:
         waiting = p["mesh"].startswith("SM_Junc_") and p["mesh"] != "SM_Junc_Empty"
-        # 3+ arms: a junction; 2 arms: an elbow (a street's square corner)
-        if (waiting or (rebuild and p["mesh"].startswith("SM_JK_"))) and len(links.get(p["i"], [])) >= 2:
+        # 3+ arms: a junction; 2 arms: an elbow (a street's square corner); 1 arm: a dead end's turnaround
+        if (waiting or (rebuild and p["mesh"].startswith("SM_JK_"))) and links.get(p["i"]):
             arms = links[p["i"]]
             out.append((p["i"], arms, [math.degrees(math.atan2(by_i[m]["y"] - p["y"], by_i[m]["x"] - p["x"])) for m in arms]))
     return out
@@ -1125,6 +1160,15 @@ def _demo() -> None:
     place_generated([X] + xm, segs8, 50, todo[0][1], [845.0] * 4, "/Game/x/Kit/SM_JK_50")
     assert X["mesh"] == "SM_JK_50" and all(abs(math.hypot(q["x"], q["y"]) - 845.0) < 1 for q in xm)
     assert not pending_nodes([X] + xm, segs8) and not bad_tangents([X] + xm, segs8)
+    # a dead end gets a turnaround on the spline: a 1-arm node on the end, the end point its mouth
+    de = [pt(0, 0, 0), pt(1, 5000, 0)]
+    dseg = [seg(0, 0, 1, mesh="SM_Road_TwoLaneSidewalk_Straight10m")]
+    assert cap_ends(de, dseg, [(1, 0)]) == 1 and len(de) == 3 and len(dseg) == 2
+    todo = pending_nodes(de, dseg)
+    assert [(n, a) for n, a, _ in todo] == [(2, [1])] and abs(todo[0][2][0]) == 180.0, todo
+    place_generated(de, dseg, 2, [1], [1100.0], "/Game/x/Kit/SM_JK_2")
+    assert de[1]["x"] == 3900.0 and de[2]["x"] == 5000.0 and not bad_tangents(de, dseg)
+    assert cap_ends(de, dseg, [(2, 1)]) == 0, "a piece's own point is never capped again"
     print("drape ok", out)
 
 

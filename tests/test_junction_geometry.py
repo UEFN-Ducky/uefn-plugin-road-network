@@ -13,7 +13,7 @@ tree = ast.parse(src.read_text(encoding="utf-8"))
 keep = [n for n in tree.body
         if (isinstance(n, ast.FunctionDef) and n.name == "_junction_geometry")
         or (isinstance(n, ast.Assign) and all(isinstance(t, (ast.Name, ast.Tuple)) for t in n.targets)
-            and ast.unparse(n.targets[0]).lstrip("(").startswith(("_R1_", "_U_", "_OWN_", "_PAINT_", "_STOP_", "_ZEBRA", "_KERB_")))]
+            and ast.unparse(n.targets[0]).lstrip("(").startswith(("_R1_", "_U_", "_OWN_", "_PAINT_", "_STOP_", "_ZEBRA", "_KERB_", "_BULB")))]
 ns = {"math": math}
 exec(compile(ast.Module(keep, []), str(src), "exec"), ns)
 geo = ns["_junction_geometry"]
@@ -55,6 +55,18 @@ def test_junction_geometry():
     at_mouth = sorted({round(abs(y)) for x, y, z in sv if abs(x - m4[0]) < 1 and abs(z - 67.0) < 1e-6})
     assert at_mouth == [525, 875], at_mouth
     assert max(abs(y) for x, y, _ in qv if abs(x) > 600) <= 525 - 60 + 1, "crossings stay on the carriageway"
+    # a dead end (one arm going west): a round turnaround, the street's sidewalk carried on round it
+    bv, _, bt, bm, (bpv, _, _), (bsv, _, bst) = geo([180], flat=True, halves=[875], walks=[350])
+    assert len(bm) == 1 and 700 <= bm[0] < 1300 and bpv == [], (bm, "a mouth just past the round, no paint")
+    deck = [(x, y) for x, y, z in bv[1:] if abs(z - 52.0) < 1e-6]
+    assert abs(max(x for x, _ in deck) - 1375) < 1 and abs(max(abs(y) for _, y in deck) - 1375) < 10, "13.75 m round"
+    assert abs(min(x for x, _ in deck) + bm[0]) < 1 and all(max(t) < len(bv) for t in bt), "the mouth faces the road"
+    for a, b, c in [t for t in bt if t[0] == 0]:
+        (x0, y0, _), (x1, y1, _), (x2, y2, _) = bv[a], bv[b], bv[c]
+        assert (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0) <= 1e-6, "the turnaround's deck faces up"
+    inner = max(math.hypot(x, y) for x, y, z in bsv if abs(z - 67.0) < 1e-6 and x > 0 and abs(y) < 300)
+    assert abs(inner - 1375) < 1 and bst, "its sidewalk runs round the outside, kerb height up"
+    assert min(math.hypot(x, y) for x, y, z in bsv if abs(z - 67.0) < 1e-6 and x > 0 and abs(y) < 300) > 1024, "3.5 m wide"
     print("junction geometry ok:", len(verts), "deck verts,", len(pv) // 4, "painted bars, mouths", [round(m) for m in mouth])
 
 

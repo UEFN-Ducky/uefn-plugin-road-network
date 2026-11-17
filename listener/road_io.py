@@ -171,10 +171,12 @@ _PAINT_Z = 1.0  # painted lines sit this far above the junction deck
 _STOP_LINE = (70.0, 40.0)  # a stop line runs from this far to this far inside an arm's mouth
 _ZEBRA = (420.0, 120.0, 50.0, 110.0)  # crosswalk bars: from / to inside the mouth, bar width, pitch
 _KERB_Z = 15.0  # a junction's sidewalk stands this far above its deck: the road meshes' kerb height
+_BULB_MIN, _BULB_PAST = 1000.0, 500.0  # a turnaround's outer radius: at least this, and this much past the road's half
+_BULB_STEPS = 24
 
 
 def _junction_geometry(arm_deg: list, half: float = _R1_W, flat: bool = False, halves: list | None = None,
-                       paint: bool = True, walks: list | None = None) -> tuple:
+                       paint: bool = True, walks: list | None = None, bulb: float = 0.0) -> tuple:
     """Junction for arms at these world angles (degrees). Each arm's mouth is as wide as ITS road (halves:
     half width per arm, cm; else `half` for all): a lane meeting a boulevard gets a lane-wide mouth, never
     the boulevard's. flat: our own kit's flat deck and planar UVs; otherwise the Fortnite Road1 crown and its
@@ -182,7 +184,8 @@ def _junction_geometry(arm_deg: list, half: float = _R1_W, flat: bool = False, h
     walks: per arm, how much of its half width is sidewalk (cm; 0 = none). The junction then carries its own
     kerbs and sidewalk corners in the same mesh (a third buffer), joining each arm's sidewalks round the corner.
     Returns (verts, uvs, tris, mouth distance per arm in the given order, (paint verts, uvs, tris),
-    (sidewalk verts, uvs, tris))."""
+    (sidewalk verts, uvs, tris)). One arm: a dead end's turnaround (cul-de-sac), a round deck of outer radius `bulb`
+    (0 = the default) round the node, the road's sidewalks carried on round it."""
     widths = [max(0.5 * _R1_W, float(h)) for h in (halves if halves and len(halves) == len(arm_deg) else [half] * len(arm_deg))]
     walk_in = walks if flat and walks and len(walks) == len(arm_deg) else [0.0] * len(arm_deg)
     edge_z = _OWN_DECK_Z if flat else -2.0
@@ -205,6 +208,9 @@ def _junction_geometry(arm_deg: list, half: float = _R1_W, flat: bool = False, h
         need[k] = max(need[k], c)
         need[(k + 1) % n] = max(need[(k + 1) % n], c)
     d = [max(700.0, min(3000.0, x)) for x in need]
+    rb = max(_BULB_MIN, W[0] + _BULB_PAST, float(bulb or 0.0)) if n == 1 else 0.0
+    if n == 1:  # the mouth just past where the road's edges meet the round
+        d = [max(700.0, math.sqrt(max(0.0, rb * rb - W[0] * W[0])) + 150.0)]
 
     def pt(k, along, side):
         return (U[k][0] * along + N[k][0] * side, U[k][1] * along + N[k][1] * side)
@@ -221,6 +227,13 @@ def _junction_geometry(arm_deg: list, half: float = _R1_W, flat: bool = False, h
     def corner(k, j, wk, wj):
         # the edge from arm k's left side (wk from its centre line) round to arm j's right side (wj): 7 points
         L, R = pt(k, d[k], wk), pt(j, d[j], -wj)
+        if n == 1:  # the round of a turnaround, as far in from its outer edge as wk is in from the road's edge
+            r = rb - (W[k] - wk)
+            x1 = math.sqrt(max(1.0, r * r - wk * wk))
+            a0 = math.atan2(wk, x1)
+            arc = [pt(k, r * math.cos(a0 + (2 * math.pi - 2 * a0) * i / _BULB_STEPS),
+                      r * math.sin(a0 + (2 * math.pi - 2 * a0) * i / _BULB_STEPS)) for i in range(_BULB_STEPS + 1)]
+            return [L] + arc + [R]
         g = gap[k]
         square = False
         mid = ((L[0] + R[0]) / 2, (L[1] + R[1]) / 2)
@@ -335,6 +348,21 @@ def _junction_geometry(arm_deg: list, half: float = _R1_W, flat: bool = False, h
     return verts, uvs, tris, mouth, (pv, pu, ptri), (sv, su, stri)
 
 
+def _road_materials(like: str, mat, line_mat, walk_mat) -> tuple:
+    """(asphalt, white paint, sidewalk) materials from the road mesh a junction joins, by slot name, so the piece
+    is the same colour as that road (city streets use M_Asphalt, house streets the kit's M_BK_Asphalt). The
+    sidewalk is the paving slot (Pavers / Concrete, never the PaverBand), else the kerb. Falls back per slot."""
+    if not like or not unreal.EditorAssetLibrary.does_asset_exist(like):
+        return mat, line_mat, walk_mat
+    slots = [(str(s.material_slot_name), s.material_interface) for s in unreal.load_asset(like).static_materials
+             if s.material_interface]
+
+    def pick(*ends):
+        return next((m for e in ends for n, m in slots if n.endswith(e)), None)
+    return (pick("Asphalt") or mat, pick("PaintW", "PaintWhite") or line_mat,
+            pick("_Pavers", "_Concrete", "Curb") or walk_mat)
+
+
 @register("road_network_build_junctions")
 def road_network_build_junctions(folder: str = "", pieces: list | None = None) -> dict:
     """Create or update plain-asphalt Road1 junction meshes. pieces: [{name, arms: [world degrees]}].
@@ -354,12 +382,15 @@ def road_network_build_junctions(folder: str = "", pieces: list | None = None) -
     out, errors = {}, []
     for piece in pieces or []:
         name, arms = str(piece.get("name") or ""), list(piece.get("arms") or [])
-        if not name or len(arms) < 2:
-            errors.append(f"{name or '?'}: needs a name and 2+ arms")
+        if not name or not arms:
+            errors.append(f"{name or '?'}: needs a name and 1+ arms")
             continue
+        p_mat, p_line, p_walk = _road_materials(str(piece.get("like") or ""), mat, line_mat, walk_mat) if flat \
+            else (mat, line_mat, walk_mat)
         verts, uvs, tris, mouth, lines, walk = _junction_geometry(
             arms, float(piece.get("half") or _R1_W), flat, piece.get("halves"),
-            bool(piece.get("paint", True)) and line_mat is not None, piece.get("walks") if walk_mat else None)
+            bool(piece.get("paint", True)) and p_line is not None, piece.get("walks") if p_walk else None,
+            float(piece.get("bulb") or 0.0))
         buf = unreal.GeometryScriptSimpleMeshBuffers()
         buf.vertices = [unreal.Vector(*v) for v in verts]
         buf.uv0 = [unreal.Vector2D(*u) for u in uvs]
@@ -389,7 +420,7 @@ def road_network_build_junctions(folder: str = "", pieces: list | None = None) -
             sm = res[0] if isinstance(res, tuple) else res
         opts = unreal.GeometryScriptCopyMeshToAssetOptionsV2()
         opts.replace_materials = True
-        opts.new_materials = [mat] + ([line_mat] if lines[2] else []) + ([walk_mat] if walk[2] else [])
+        opts.new_materials = [p_mat] + ([p_line] if lines[2] else []) + ([p_walk] if walk[2] else [])
         opts.new_material_slot_names = (["Asphalt" if flat else "Road1"] + (["Paint"] if lines[2] else [])
                                         + (["Sidewalk"] if walk[2] else []))
         lod = unreal.GeometryScriptMeshWriteLOD()

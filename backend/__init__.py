@@ -764,6 +764,7 @@ def register(api) -> None:
         return {"ok": True, "label": head["label"], **result,
                 "problems": {k: len(v) for k, v in st.problems(pts, segs).items()}}
 
+    KERB_ONLY_CM = 30.0  # a private street's kerb (SM_Path_PrivateStreet: asphalt to 3.4 m, kerb to 3.7 m)
     JUNCTIONS_PER_CALL = 8
     SAVE_BATCH = 40  # assets per save call
     PROP_BATCH = 20  # prop trees placed per editor call (one call is one frame: a long loop of spawns freezes UEFN)
@@ -775,6 +776,13 @@ def register(api) -> None:
         head, pts, segs = load_actor(nid, aslug)
         if not head:
             return {"ok": False, "error": f"No actor {actor!r} in network {net_id!r}."}
+        gen = bool((data.get(f"net.{nid}") or {}).get("generated"))
+        capped = 0
+        if gen:  # every street that ends gets a turnaround piece on its own spline (no PCG disc)
+            others = [load_actor(nid, a)[1:] for a, h in actor_docs(nid).items() if a != aslug and not (
+                " before kit" in str(h.get("label") or "") or str(h.get("label") or "").endswith((" Paths", " Access")))]
+            terrain = (data.get(f"net.{nid}.scan") or {}).get("terrain") or {}
+            capped = st.cap_ends(pts, segs, pl.dead_ends([(pts, segs)] + others, terrain)[0])
         todo = st.pending_nodes(pts, segs, rebuild)
         if not todo:
             return {"ok": True, "label": head["label"], "built": 0, "note": "No junction needs a generated piece."}
@@ -782,10 +790,17 @@ def register(api) -> None:
         if not folder:
             return {"ok": False, "error": "Couldn't find the project's road folder from the road pieces."}
         # generated networks name their pieces per network so two cities never share SM_JK_<node>
-        gen = bool((data.get(f"net.{nid}") or {}).get("generated"))
         prefix = f"SM_JK_{nid}_{aslug}_".replace("-", "_") if gen else "SM_JK_"
         by_i = {p["i"]: p for p in pts}
         half = (lambda arms: max(by_i[m]["w"] for m in arms)) if gen else (lambda arms: 545.0)  # kit roads: Road1 width
+        road_of: dict = {}  # mouth point -> the road mesh on it (asset path)
+        for s in segs:
+            hit = s["mesh"] and re.search(r"StaticMesh'([^'.]+)", " ".join(s["lines"]))
+            if hit:
+                road_of.setdefault(s["a"], hit.group(1))
+                road_of.setdefault(s["b"], hit.group(1))
+        # a private street has no sidewalk but a kerb: its junctions and turnarounds get the kerb round them too
+        walk = lambda m: cg.walk_of(by_i[m]["w"]) or (KERB_ONLY_CM if "PrivateStreet" in road_of.get(m, "") else 0.0)  # noqa: E731
         built, unsaved = 0, []
         # a piece only slides its mouths along their own roads: a heightmap cut for these roads stays theirs
         net = data.get(f"net.{nid}") or {}
@@ -801,7 +816,10 @@ def register(api) -> None:
                      # each mouth as wide as its own road; runways and taxiways get no crossings painted
                      "halves": [by_i[m]["w"] for m in arms] if gen else None,
                      # a street's sidewalks carry on round the junction, in the junction's own mesh
-                     "walks": [cg.walk_of(by_i[m]["w"]) for m in arms] if gen else None,
+                     "walks": [walk(m) for m in arms] if gen else None,
+                     # the junction takes the asphalt, paint and sidewalk materials of its widest road's mesh,
+                     # so it is the same colour as the road it joins (house streets and city streets differ)
+                     "like": road_of.get(max(arms, key=lambda m: by_i[m]["w"]), ""),
                      "paint": not (aslug.endswith("airport"))}
                     for node, arms, angles in batch]}, timeout=600)
                 for node, arms, _ in batch:
@@ -827,7 +845,7 @@ def register(api) -> None:
                 net["generated"]["heightmap_roads"] = roads_digest(nid)
                 data.put(f"net.{nid}", net)
         record("road_network_build_pieces", "network", f"{nid}-{aslug}", None, [])
-        return {"ok": True, "label": head["label"], "built": built, "folder": folder,
+        return {"ok": True, "label": head["label"], "built": built, "folder": folder, "turnarounds": capped,
                 "problems": {k: len(v) for k, v in st.problems(pts, segs).items()}}
 
     def restore_actor(net_id: str = "", actor: str = "", from_actor: str = "") -> dict:
@@ -2000,8 +2018,9 @@ def register(api) -> None:
             # (no loose wall slabs along the roads: every road piece carries its own side walls down into the
             # ground, road_profiles 'skirt'; every building its own foundation, kit_bake.foundation; every low deck
             # its approach wall, citygen.deck_fills; and the ground is graded to the roads)
-            placed.update(pl.site_layers(cities, ground))  # complexes' parking, stalls, turnarounds, garages
-            placed.update(pl.road_ends(actors, terrain))  # a cap on every street that ends
+            placed.update(pl.site_layers(cities, ground))  # complexes' parking, stalls, garages
+            # (a cap on every street that ends is a turnaround piece on its spline, cap_ends: kept clear, not placed)
+            ends = pl.road_ends(actors, terrain)
             placed.update(pl.aprons(placed))  # a dropped kerb where each driveway meets its street
             # fences only round houses that were built, through no building, across no street, never crossing
             pl.fit_fences(placed, pl.road_samples(actors, 400.0) + pl.street_samples(cities))
@@ -2020,7 +2039,7 @@ def register(api) -> None:
             pl.clear_of(placed, pl.road_samples(fast, 400.0))
             # last of all: nothing on a road surface (junctions and private streets are road too), no tree in a
             # building. Every layer above was placed by its own rule, and each knew some roads and not others.
-            caps = [(p[0], p[1], p[4] * 1000.0) for p in (placed.get("Road ends") or {}).get("points") or []]
+            caps = [(p[0], p[1], p[4] * 1000.0) for p in (ends.get("Road ends") or {}).get("points") or []]
             _PREVIEW_CACHE["swept"] = {"off_roads": pl.clear_roads(placed, pl.surface_samples(actors, cities) + caps),
                                        "out_of_buildings": pl.clear_buildings(placed)}
             # waterfront structures (piers, marinas, quays, beaches, ports, stilt / floating homes)
@@ -3722,7 +3741,7 @@ def register(api) -> None:
         for aslug in actor_docs(nid):
             _, pts, segs = load_actor(nid, aslug)
             for _node, arms, _angles in st.pending_nodes(pts, segs, True):
-                kind = {2: "elbow (2 arms)", 3: "T (3 arms)", 4: "cross (4 arms)"}.get(len(arms), f"{len(arms)} arms")
+                kind = {1: "turnaround (1 arm)", 2: "elbow (2 arms)", 3: "T (3 arms)", 4: "cross (4 arms)"}.get(len(arms), f"{len(arms)} arms")
                 junctions[kind] = junctions.get(kind, 0) + 1
         doors = {path.rsplit(".", 1)[-1]: len(rows) for path, rows in groups.items()
                  if re.match(r"SM_BK_.*(Door|Entrance|Garage)", path.rsplit(".", 1)[-1])}

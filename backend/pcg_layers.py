@@ -745,8 +745,9 @@ def junctions(actors: list) -> list:
 def site_layers(cities: list, ground) -> dict:
     """The neighbourhoods' own pieces as built-in layers (kind 'site', rows [x, y, z, yaw, sx, sy, sz] already
     scaled for `mesh`, `box_m` its size at scale 1 for the preview): complex parking lots, painted stalls,
-    cul-de-sac turnarounds and parking garages (lots a complex reserved with role 'parking_garage')."""
-    lots, stalls, pads, garages, trees, fences = [], [], [], [], [], []
+    and parking garages (lots a complex reserved with role 'parking_garage'). Cul-de-sac turnarounds are pieces on
+    the road splines (splines_text.cap_ends), not PCG."""
+    lots, stalls, garages, trees, fences = [], [], [], [], []
     grounds: dict = {}
     for c in cities:
         priv = c.get("private") or {}
@@ -769,8 +770,6 @@ def site_layers(cities: list, ground) -> dict:
             grounds.setdefault("pool", []).append([x, y, round(ground(x, y) or 0), yaw, sx, sy, 1.0])
         for k, (x, y) in enumerate(priv.get("trees") or []):  # back yards, front corners, courtyards
             trees.append([x, y, round(ground(x, y) or 0), (x * 7 + y * 13) % 360, round(0.8 + (k * 37 % 50) / 100, 2)])
-        for x, y, r in priv.get("pads") or []:
-            pads.append([x, y, round(ground(x, y) or 0), 0.0, round(r / 1000, 3), round(r / 1000, 3), 1.0])
         for row in c.get("lots") or []:
             if len(row) > 8 and row[7] == "parking_garage":
                 garages.append([row[0], row[1], round(ground(row[0], row[1]) or 0), row[2],
@@ -778,7 +777,6 @@ def site_layers(cities: list, ground) -> dict:
     out = {}
     for name, mesh, rows, box in (("Complex parking", "SM_Kit_ParkingLot", lots, [1, 1, 0.08]),
                                   ("Parking stalls", "SM_Kit_ParkingStall", stalls, [5.5, 2.6, 0.02]),
-                                  ("Turnarounds", "SM_Kit_Turnaround", pads, [20, 20, 0.1]),
                                   ("Yard fences", "SM_Kit_Fence", fences, [1, 0.1, 2.5]),
                                   ("Parking garages", "SM_City_CT_MidRise", garages, [16.8, 20.6, 24.7])):
         if rows:
@@ -1109,25 +1107,26 @@ def paved_lots(cities: list, placed: dict, ground) -> dict:
                            "row": "x, y, z (its bottom), yaw, sx, sy, sz"}}
 
 
-STREET_PIECES = ("TwoLane", "FourLane", "Boulevard", "OneLane")  # the road pieces a city street is laid with
+STREET_PIECES = ("TwoLane", "FourLane", "Boulevard", "OneLane", "PrivateStreet")  # the road pieces a street is laid with
 END_CAP_CM = 350.0  # a street's end cap reaches this far past the road's own edge, all round
 
 
-def road_ends(actors: list, terrain: dict | None = None) -> dict:
-    """A cap on every street that ends: no road stops as a strip of asphalt cut off square. Where a city street
-    runs out (a dead end at the city's edge, a stub the water or a freeway took the rest of), a round paved
-    turnaround closes it, END_CAP_CM wider than the road, at the road's own height. Not where the road goes on
-    in another actor (a street joining two cities, a highway at its gate), not at a bridge, a ramp or a freeway's
-    end, not at the edge of the map. actors: every road actor [(points, segments)]."""
+def dead_ends(actors: list, terrain: dict | None = None) -> list:
+    """Per actor, every street end that needs a turnaround: [(end point i, the point before it)]. A street that
+    runs out (a dead end at the city's edge, a stub the water or a freeway took the rest of, a cul-de-sac).
+    Not where the road goes on in another actor (a street joining two cities, a highway at its gate), not at a
+    bridge, a ramp or a freeway's end, not at the edge of the map. actors: every road actor [(points, segments)]."""
     at: dict = {}  # how many actors have a point at each spot (to the metre)
     for pts, _segs in actors:
         for key in {(round(p["x"] / 100), round(p["y"] / 100)) for p in pts}:
             at[key] = at.get(key, 0) + 1
     lo, hi = (terrain or {}).get("min"), (terrain or {}).get("max")
     sea = (terrain or {}).get("sea")
-    rows = []
+    out = []
     for pts, segs in actors:
         by_i = {p["i"]: p for p in pts}
+        found = []
+        out.append(found)
         ends: dict = {}
         for s in segs:
             for n, m in ((s["a"], s["b"]), (s["b"], s["a"])):
@@ -1145,6 +1144,19 @@ def road_ends(actors: list, terrain: dict | None = None) -> dict:
                 continue
             if sea is not None and p["z"] < sea + 50:
                 continue
+            found.append((n, links[0][0]))
+    return out
+
+
+def road_ends(actors: list, terrain: dict | None = None) -> dict:
+    """Where each dead end's turnaround lies ([x, y, z, yaw, sx, sy, sz], radius = sx * 1000): the area kept
+    clear of PCG. The turnaround itself is a 1-arm junction piece on the road's spline (splines_text.cap_ends,
+    built by Build pieces in the road's own materials), never a PCG mesh: this layer is not pushed."""
+    rows = []
+    for (pts, _segs), found in zip(actors, dead_ends(actors, terrain)):
+        by_i = {p["i"]: p for p in pts}
+        for n, o in found:
+            p, other = by_i[n], by_i[o]
             r = max(300.0, float(p["w"])) + END_CAP_CM
             yaw = math.degrees(math.atan2(p["y"] - other["y"], p["x"] - other["x"]))
             rows.append([round(p["x"]), round(p["y"]), round(p["z"] + 3), round(yaw, 1), round(r / 1000, 3), round(r / 1000, 3), 1.0])
