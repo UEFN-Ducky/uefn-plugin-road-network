@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import random
 
 from . import grammar
 from .citygen import EMBED_CM
@@ -44,16 +45,10 @@ KIT = {
     "SM_City_DT_SlabTower_P4": ("City", -1029, -1541, 7680, 1029, 1541, 8610),
     "SM_City_DT_Tower3_P0": ("City", -918, -918, 0, 918, 918, 3192),
     "SM_City_DT_Tower3_P1": ("City", -773, -773, 3092, 773, 773, 6252),
-    "SM_City_HS_House2": ("City", -587, -520, 0, 587, 520, 1146),
-    "SM_City_HS_HouseWide": ("City", -542, -775, 0, 542, 775, 762),
-    "SM_City_HS_Modern": ("City", -622, -828, 0, 622, 828, 823),
     "SM_City_RC_Mansion_P0": ("City", -893, -1121, 0, 892, 1121, 905),
     "SM_City_RC_Mansion_P1": ("City", -875, -949, 867, 666, 1104, 917),
     "SM_City_RC_ModernVilla": ("City", -1134, -1596, 0, 1134, 1596, 823),
     "SM_Bld_Hospital": ("Kit", -4400, -3300, 0, 4400, 4120, 4435),
-    "SM_Bld_House_Flat": ("Kit", -700, -600, 0, 700, 694, 850),
-    "SM_Bld_House_Gable": ("Kit", -700, -600, 0, 700, 694, 1100),
-    "SM_Bld_House_L": ("Kit", -700, -600, 0, 700, 694, 740),
     "SM_Bld_Police": ("Kit", -3500, -2600, 0, 4430, 2600, 4380),
     "SM_Sky04_DecoCrown": ("Kit", -1280, -1130, 0, 1280, 1130, 8260),
     "SM_Sky05_Strawberry": ("Kit", -1100, -1030, 0, 1100, 1030, 8510),
@@ -196,9 +191,6 @@ KIT = {
 # stands through the glass, into a crown or past a setback. [storey, x0, y0, x1, y1, round]
 PROFILES = {
     "SM_Bld_Hospital": [[0,-4385,-3695,4006,3695,0],[1,-4385,-3695,3985,3695,0],[2,-4385,-3695,3985,3695,0],[3,-1985,-2785,1185,2785,0],[4,-1985,-2785,1185,2785,0],[5,-1985,-2785,1185,2785,0],[6,-1985,-2785,1185,2785,0],[7,-1985,-2785,1185,2785,0],[8,-1985,-2785,1185,2785,0],[9,-1985,-2785,1185,2785,0],[10,-1985,-2785,1185,2785,0]],
-    "SM_Bld_House_Flat": [[0,-705,-652,505,652,0],[1,-705,-652,625,652,0]],
-    "SM_Bld_House_Gable": [[0,-655,-555,555,555,0],[1,-655,-555,556,555,0]],
-    "SM_Bld_House_L": [[0,-665,-605,665,605,0]],
     "SM_Bld_Police": [[0,-3950,-2585,3506,2585,0],[1,-3950,-2585,3485,2585,0],[2,-3950,-2585,3485,2585,0],[3,-1985,-1785,985,1785,0],[4,-1985,-1785,985,1785,0],[5,-1985,-1785,985,1785,0],[6,-1985,-1785,985,1785,0],[7,-1985,-1785,985,1785,0],[8,-1985,-1785,985,1785,0],[9,-1985,-1785,985,1785,0],[10,-1985,-1785,985,1785,0]],
     "SM_City_CT_Apartment": [[0,-703,-759,815,759,0],[1,-703,-759,815,759,0],[2,-703,-759,815,759,0],[3,-703,-759,815,759,0]],
     "SM_City_CT_MidRise": [[0,-693,-1015,825,1015,0],[1,-693,-1015,825,1015,0],[2,-693,-1015,825,1015,0],[3,-693,-1015,825,1015,0],[4,-693,-1015,825,1015,0],[5,-693,-1015,825,1015,0]],
@@ -211,9 +203,6 @@ PROFILES = {
     "SM_City_DT_RoundTower_R15": [[0,-1527,-1532,1527,1532,1],[1,-1527,-1532,1527,1532,1],[2,-1527,-1532,1527,1532,1],[3,-1527,-1532,1527,1532,1],[4,-1527,-1532,1527,1532,1],[5,-1527,-1532,1527,1532,1],[6,-1527,-1532,1527,1532,1],[7,-1527,-1532,1527,1532,1],[8,-1527,-1532,1527,1532,1],[9,-1527,-1532,1527,1532,1],[10,-1527,-1532,1527,1532,1],[11,-1527,-1532,1527,1532,1],[12,-1527,-1532,1527,1532,1],[13,-1527,-1532,1527,1532,1],[14,-1527,-1532,1527,1532,1],[15,-1527,-1532,1527,1532,1],[16,-1018,-1020,1018,1012,1],[17,-1018,-1020,1018,1012,1],[18,-1018,-1020,1018,1012,1],[19,-1018,-1020,1018,1012,1],[20,-1018,-1020,1018,1012,1],[21,-1018,-1020,1018,1012,1]],
     "SM_City_DT_SlabTower": [[0,-1103,-1527,1015,1527,0],[1,-1015,-1527,1015,1527,0],[2,-1015,-1527,1015,1527,0],[3,-1015,-1527,1015,1527,0],[4,-1015,-1527,1015,1527,0],[5,-1015,-1527,1015,1527,0],[6,-1015,-1527,1015,1527,0],[7,-1015,-1527,1015,1527,0],[8,-1015,-1527,1015,1527,0],[9,-1015,-1527,1015,1527,0],[10,-1015,-1527,1015,1527,0],[11,-1015,-1527,1015,1527,0],[12,-1015,-1527,1015,1527,0],[13,-1015,-1527,1015,1527,0],[14,-1015,-1527,1015,1527,0],[15,-1015,-1527,1015,1527,0],[16,-1015,-1527,1015,1527,0],[17,-1015,-1527,1015,1527,0],[18,-1015,-1527,1015,1527,0],[19,-1015,-1527,1015,1527,0],[20,-1015,-1527,1015,1527,0],[21,-1015,-1527,1015,1527,0]],
     "SM_City_DT_Tower3": [[0,-759,-847,759,759,0],[1,-759,-759,759,759,0],[2,-759,-759,759,759,0],[3,-759,-759,759,759,0],[4,-759,-759,759,759,0],[5,-759,-759,759,759,0],[6,-759,-759,759,759,0],[7,-759,-759,759,759,0],[8,-759,-759,759,759,0],[9,-759,-759,759,759,0],[10,-759,-759,759,759,0],[11,-759,-759,759,759,0],[12,-759,-759,759,759,0],[13,-759,-759,759,759,0],[14,-759,-759,759,759,0],[15,-759,-759,759,759,0]],
-    "SM_City_HS_House2": [[0,-458,-503,548,503,0],[1,-458,-503,548,503,0]],
-    "SM_City_HS_HouseWide": [[0,-503,-683,503,758,0]],
-    "SM_City_HS_Modern": [[0,-473,-779,573,251,0],[1,-619,-779,573,251,0]],
     "SM_City_RC_Mansion": [[0,-817,-1100,858,1088,0],[1,-649,-932,858,1088,0]],
     "SM_City_RC_ModernVilla": [[0,-985,-1548,1086,1548,0],[1,-1130,-1548,1086,1019,0]],
     "SM_Sky04_DecoCrown": [[0,-1265,-1115,1265,1115,0],[1,-1265,-1115,1265,1115,0],[2,-1265,-1115,1265,1115,0],[3,-1265,-1115,1265,1115,0],[4,-1265,-1115,1265,1115,0],[5,-1265,-1115,1265,1115,0],[6,-1265,-1115,1265,1115,0],[7,-1265,-1115,1265,1115,0],[8,-1265,-1115,1265,1115,0],[9,-1265,-1115,1265,1115,0],[10,-1265,-1115,1265,1115,0],[11,-1265,-1115,1265,1115,0],[12,-985,-885,985,885,0],[13,-985,-885,985,885,0],[14,-985,-885,985,885,0],[15,-985,-885,985,885,0],[16,-985,-885,985,885,0],[17,-985,-885,985,885,0],[18,-635,-585,635,585,0],[19,-635,-585,635,585,0]],
@@ -256,8 +245,7 @@ BUILDINGS = {
     "shop": [["SM_City_CT_ShopRow"], ["SM_City_CT_ShopRow2"]],
     "mall": [["SM_City_CT_ShopRow2"]],
     "gas_station": [["SM_City_CT_ShopRow"]],
-    "house": [["SM_City_HS_House2"], ["SM_City_HS_HouseWide"], ["SM_City_HS_Modern"], ["SM_Bld_House_Flat"],
-              ["SM_Bld_House_Gable"], ["SM_Bld_House_L"]],
+    # (no "house": every house is built from BuildingKit parts by the grammar, never one whole mesh: MODULAR_ROLES)
     "mansion": [_parts("SM_City_RC_Mansion"), ["SM_City_RC_ModernVilla"]],
     "hospital": [["SM_Bld_Hospital"]],
     "police": [["SM_Bld_Police"]],
@@ -339,6 +327,10 @@ def path(name: str, root: str) -> str:
     return f"{root}/WorldGen/{KIT[name][0]}/{name}.{name}"
 
 
+MODULAR_ROLES = ("house",)  # always built from parts, whatever the layer says
+HOUSE_STOREYS = (1, 2, 2, 3)  # a house's storeys, picked by its spot
+HOUSE_FORMS = ("box", "box", "L")  # ... and its shape
+
 _BAKE = {"interiors": True}  # ponytail: one switch for the bake in progress; bakes run one at a time
 
 
@@ -374,7 +366,7 @@ def bake(previewed: dict, root: str, interiors: bool = True, props: dict | None 
             baked[name] = len(pts)
         elif layer.get("kind") == "buildings" and (role in grammar.STYLE_BY_ROLE or role in BUILDINGS):
             opts = BUILDINGS.get(role) or [["SM_City_CT_MidRise"]]
-            modular = layer.get("build") == "modular" and role in grammar.STYLE_BY_ROLE
+            modular = role in MODULAR_ROLES or (layer.get("build") == "modular" and role in grammar.STYLE_BY_ROLE)
             for p in pts:
                 fac = p[12] if len(p) > 12 and isinstance(p[12], str) else ""
                 if fac in FACILITIES or modular:  # planned facilities are always built for what they are
@@ -555,6 +547,11 @@ def _modular(groups: dict, root: str, role: str, p: list, fac: str = "") -> None
     w = (p[7] if len(p) > 7 else 12) * 100
     d = (p[8] if len(p) > 8 else 12) * 100
     spec = FACILITIES.get(fac) or {}
+    if role == "house" and not spec:  # every house its own: storeys and shape from its spot, so a street varies
+        # (a seeded stream, not the position hash: lot centres are round numbers and that hash then repeats)
+        spot = random.Random(f"house:{round(x)}:{round(y)}")
+        h = spot.choice(HOUSE_STOREYS) * grammar.STOREY_CM
+        form = spot.choice(HOUSE_FORMS)
     style = spec.get("style") or grammar.STYLE_BY_ROLE.get(role, "tower")
     u0, u1, v0, v1 = spec.get("box", FRONT_BOX if spec else (-0.5, 0.5, -0.5, 0.5))
     cu, cv = (u0 + u1) / 2 * d, (v0 + v1) / 2 * w
@@ -799,7 +796,16 @@ def _demo() -> None:
     assert len({tuple(r) for p in tall for r in groups[p] if r[0] == 0}) == 1, "every part of a tower shares one point"
     for p, rows in groups.items():
         for r in rows:
-            assert "SM_Kit_" in p or all(SCALE_RANGE[0] <= v <= SCALE_RANGE[1] for v in r[4:7]) or r[4] == 1.1, r
+            assert "SM_Kit_" in p or f"/{grammar.FOLDER}/" in p or all(SCALE_RANGE[0] <= v <= SCALE_RANGE[1] for v in r[4:7]) \
+                or r[4] == 1.1, r
+    # a house is BuildingKit parts only: never a whole-house mesh, no door leaf, open doorways
+    hp = [p for p in groups if f"/{grammar.FOLDER}/" in p]
+    assert any("SM_BK_House_Wall_Door_Doorway" in p for p in hp) and not any("DoorLeaf" in p for p in groups), hp
+    assert not any("SM_City_HS_" in p or "SM_Bld_House" in p for p in groups)
+    many = bake({"H": {"kind": "buildings", "role": "house", "points": [[x * 3000, x * 1700, 0, 0, 1, 7, 0, 12, 14, 0, []]
+                                                                          for x in range(40)]}}, "/R")[0]
+    tops = {r[2] for p, rows in many.items() if "SM_BK_Parapet" in p for r in rows}
+    assert len(tops) >= 3, ("houses differ in storeys", sorted(tops))
     assert all(p.startswith("/R/WorldGen/") and p.count(".") == 1 for p in groups)
     assert any("SM_V4_Tree" in p for p in groups), "forest trees are baked"
     gb, bb, mb = bake({"Bushes": {"kind": "foliage", "role": "bush", "points": [[1, 1, 0, 0, 1.2]]},
@@ -852,7 +858,7 @@ def _demo() -> None:
     wild = tiles({path("SM_V4_TreeRound", "/R"): [[10, 10, 0, 0, 1, 1, 1], [150000, 10, 0, 0, 1, 1, 1]],
                   path("SM_Kit_Plinth", "/R"): [[10, 10, 0, 0, 1, 1, 1]]})
     assert set(wild) == {"n0_0", "0_0"} and wild["n0_0"]["size"] == NATURE_TILE_CM, "trees in their own big tile"
-    assert blocks(path("SM_City_HS_House2", "/R")) and blocks(path("SM_V4_TreePine", "/R")) and not blocks(path("SM_Kit_Bush", "/R"))
+    assert blocks(path("SM_City_CT_Apartment", "/R")) and blocks(path("SM_V4_TreePine", "/R")) and not blocks(path("SM_Kit_Bush", "/R"))
     # street trees stand in a pit, forest trees do not
     gp = bake({"Street trees": {"kind": "along_roads", "role": "street_tree", "points": [[5, 6, 7, 30, 1.0]]},
                "Trees": {"kind": "foliage", "role": "tree", "points": [[9, 9, 0, 0, 1.0]]}}, "/R")[0]

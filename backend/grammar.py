@@ -33,15 +33,16 @@ STYLES = {
                        "Window": "SM_BK_Shop_Wall_Window", "Solid": "SM_BK_Shop_Wall_Solid"},
              "front_ground": "[Storefront*,Entrance,Storefront*]", "ground": "[{Window:1,Solid:1}*]",
              "upper": "[{Window:3,Solid:1}*]"},
+    # houses: every door and garage is an empty doorway (no leaf): the doors are the game's own, programmed in Verse
     "house": {"corner": "SM_BK_House_Corner",
               "walls": {"Window": "SM_BK_House_Wall_Window", "Double": "SM_BK_House_Wall_DoubleWindow",
-                        "Door": "SM_BK_House_Wall_Door", "Garage": "SM_BK_House_Wall_Garage",
+                        "Door": "SM_BK_House_Wall_Door_Doorway", "Garage": "SM_BK_House_Wall_Garage_Doorway",
                         "Solid": "SM_BK_House_Wall_Solid", "Balcony": "SM_BK_House_Wall_Balcony"},
               "front_ground": "[Garage,Door,{Window:2,Double:1}*]", "ground": "[{Window:1,Solid:1}*]",
               "upper": "[{Window:2,Double:1}*]"},
     "apartment": {"corner": "SM_BK_House_Corner",
                   "walls": {"Window": "SM_BK_House_Wall_Window", "Double": "SM_BK_House_Wall_DoubleWindow",
-                            "Door": "SM_BK_House_Wall_Door", "Solid": "SM_BK_House_Wall_Solid",
+                            "Door": "SM_BK_House_Wall_Door_Doorway", "Solid": "SM_BK_House_Wall_Solid",
                             "Balcony": "SM_BK_House_Wall_Balcony"},
                   "front_ground": "[{Window:2,Double:1}*,Door,{Window:2,Double:1}*]", "ground": "[{Window:2,Solid:1}*]",
                   "upper": "[{Window:2,Balcony:1,Double:1}*]"},
@@ -104,6 +105,8 @@ Tower_Wall_Lobby:0,-150,0,512,21,384 Tower_Wall_RevolvingDoor:0,-125,0,512,150,3
 BOUNDS.update({k + "_Doorway": BOUNDS[k] for k in ("SM_BK_Shop_Wall_Entrance", "SM_BK_Ind_Wall_Door",
                                                     "SM_BK_Ind_Wall_RollerDoor", "SM_BK_Mansion_Wall_GrandEntrance")})
 BOUNDS["SM_BK_Tower_Wall_RevolvingDoor_Doorway"] = (0, -1, 0, 512, 26, 384)
+# the house door and garage cut open in BuildingKit.blend: the siding round the opening, the trim frame, no leaf
+BOUNDS["SM_BK_House_Wall_Door_Doorway"] = BOUNDS["SM_BK_House_Wall_Garage_Doorway"] = (0, -1, 0, 512, 21, 384)
 # doorway -> its leaves: (leaf mesh, hinge x cm along the wall, hinge y cm in UEFN's local frame (UEFN's y is
 # Blender's -y), 1 = the leaf turned round to hang on the right jamb, how it opens: 'swing' | 'slide')
 DOOR_LEAVES = {
@@ -416,7 +419,12 @@ def _demo() -> None:
     storeys = round(blocks[0][5] / STOREY_CM)
     assert len(rows["SM_BK_Facade_FireEscape"]) == storeys - 1, rows.get("SM_BK_Facade_FireEscape")
     assert rows.get("SM_BK_Facade_WindowAC") and len(rows["SM_BK_Facade_Downpipe"]) == 4 * storeys
-    assert len(rows["SM_BK_Facade_WallLight"]) == 2 * len(rows["SM_BK_House_Wall_Door"])
+    assert len(rows["SM_BK_Facade_WallLight"]) == 2 * len(rows["SM_BK_House_Wall_Door_Doorway"])
+    # a house has open doorways only: no door leaf, no closed door module, a garage opening on the street
+    hrows, _ = build("box", "house", 1500, 1600, 768, 4, p)
+    assert hrows.get("SM_BK_House_Wall_Door_Doorway") and hrows.get("SM_BK_House_Wall_Garage_Doorway"), sorted(hrows)
+    assert not any(n in hrows for n in ("SM_BK_House_Wall_Door", "SM_BK_House_Wall_Garage"))
+    assert not any(n in DOOR_LEAVES for n in hrows), "no leaves: the doors are programmed"
     gear = sum(len(rows.get(n, [])) for n in ROOF["apartment"] if n)
     assert gear >= 3 and len(rows[BULKHEAD]) == 1, gear
     # details never change the walls: same seed, same wall picks as without them

@@ -56,7 +56,7 @@ ROLES = {
     "apartment": ("Apartments", "BuildingKit Tower/Modern storeys 3-8, SM_City_*", "apartment building residential"),
     "shop": ("Shops", "BuildingKit Shop walls (storefront, entrance, awning) 1 storey", "shop store storefront"),
     "mall": ("Malls", "BuildingKit Mall (drum entrance, skylight dome, escalator) 2 storeys", "mall shopping centre"),
-    "house": ("Houses", "SM_City_HS_House2 / HS_HouseWide / HS_Modern, BuildingKit House 1-2 storeys + gable roof",
+    "house": ("Houses", "BuildingKit House parts (walls, corners, open doorways) 1-3 storeys, box or L",
               "house suburban home"),
     "mansion": ("Mansions", "SM_City_RC_Mansion, BuildingKit Mansion pieces", "mansion villa"),
     "factory": ("Factories", "WorldGen/Kit containers + crane, BuildingKit Shared walls", "factory industrial plant"),
@@ -2250,7 +2250,7 @@ def _demo() -> None:
     assert all("Fortnite" in p["from"] for p in out["pieces"]) and out["asset_set"] == "fortnite"
     sky = next(p for p in out["pieces"] if p["layer"] == "Skyscrapers")
     assert sky["storeys"] == [23, 62] and sky["lot_m"] == [32, 32], sky
-    assert "own: SM_City_HS_House2" in next(p for p in plan({"name": "V"}, full, cities, "t", juncs=juncs)["pieces"]
+    assert "own: BuildingKit House" in next(p for p in plan({"name": "V"}, full, cities, "t", juncs=juncs)["pieces"]
                                             if p["layer"] == "Houses")["from"]
     # offline preview of the whole city
     ter = {"min": [-80000, -80000], "max": [80000, 80000]}
