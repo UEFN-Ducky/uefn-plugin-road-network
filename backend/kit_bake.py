@@ -68,8 +68,6 @@ KIT = {
     "SM_StreetLamp_NeonArm": ("Kit", -95, -95, 0, 383, 95, 777),
     "SM_StreetLamp_RoyalCrown": ("Kit", -100, -100, 0, 100, 100, 918),
     "SM_StreetLamp_TwinArm": ("Kit", -340, -95, 0, 340, 95, 880),
-    "SM_V4_TreeRound": ("Kit", -286, -272, 0, 299, 272, 900),
-    "SM_V4_TreePine": ("Kit", -280, -280, 0, 280, 280, 1075),
     "SM_Prop_BusShelter": ("Kit", -200, -93, 0, 268, 251, 300),
     "SM_Prop_Bench": ("Kit", -97, -36, 0, 97, 31, 111),
     "SM_Prop_TrashCan": ("Kit", -37, -37, 0, 37, 37, 95),
@@ -99,8 +97,51 @@ KIT = {
     "SM_Kit_ParkingStall": ("Kit/Street", -275, -130, 0, 275, 130, 2),
     "SM_Kit_Turnaround": ("Kit/Street", -1000, -1000, -10, 1000, 1000, 0),
     "SM_Kit_SidewalkCorner": ("Kit/Street", -200, -200, -15, 200, 200, 0),
-    "SM_Kit_Bush": ("Kit/Street", -83, -95, 0, 110, 85, 130),
-    "SM_Kit_Rock": ("Kit/Street", -80, -70, -20, 85, 70, 70),
+    # the nature kit (BuildingKit.blend BK_Nature, imported to WorldGen/Nature): real-scale trees (welded wood, scanned
+    # bark, leaf cards on twigs, wind in the vertex alpha), bushes, rocks, stumps, a log and ground plants
+    "SM_Kit_Tree_OakTall": ("Nature", -973, -1002, -47, 965, 907, 2732),
+    "SM_Kit_Tree_OakTall_B": ("Nature", -893, -896, -51, 835, 1191, 2817),
+    "SM_Kit_Tree_BeechTall": ("Nature", -986, -864, -52, 816, 1024, 3288),
+    "SM_Kit_Tree_BeechTall_B": ("Nature", -837, -892, -44, 916, 734, 3120),
+    "SM_Kit_Tree_MapleTall": ("Nature", -774, -899, -45, 889, 885, 2353),
+    "SM_Kit_Tree_MapleTall_B": ("Nature", -774, -965, -47, 905, 1017, 2261),
+    "SM_Kit_Tree_Maple_Autumn": ("Nature", -784, -894, -46, 834, 941, 2360),
+    "SM_Kit_Tree_Oak": ("Nature", -627, -652, -42, 780, 796, 1546),
+    "SM_Kit_Tree_Oak_B": ("Nature", -623, -541, -51, 617, 712, 1354),
+    "SM_Kit_Tree_Oak_Autumn": ("Nature", -775, -736, -45, 625, 721, 1551),
+    "SM_Kit_Tree_Birch": ("Nature", -474, -536, -43, 531, 413, 1905),
+    "SM_Kit_Tree_Birch_B": ("Nature", -585, -520, -44, 409, 478, 1706),
+    "SM_Kit_Tree_Birch_Autumn": ("Nature", -414, -435, -44, 561, 570, 1798),
+    "SM_Kit_Tree_Pine": ("Nature", -594, -614, -41, 599, 597, 2413),
+    "SM_Kit_Tree_Pine_B": ("Nature", -552, -589, -96, 564, 550, 1914),
+    "SM_Kit_Tree_Pine_Small": ("Nature", -396, -437, -162, 449, 435, 1112),
+    "SM_Kit_Tree_Dead": ("Nature", -437, -435, -46, 498, 405, 1701),
+    "SM_Kit_Bush_Round": ("Nature", -208, -229, -104, 243, 221, 310),
+    "SM_Kit_Bush_Tall": ("Nature", -98, -95, -29, 101, 94, 271),
+    "SM_Kit_Bush_Wide": ("Nature", -105, -111, -56, 115, 119, 94),
+    "SM_Kit_Bush_Small": ("Nature", -49, -42, -48, 48, 56, 52),
+    "SM_Kit_Rock": ("Nature", -82, -65, -8, 112, 55, 79),
+    "SM_Kit_Rock_B": ("Nature", -109, -119, -12, 122, 82, 105),
+    "SM_Kit_Rock_C": ("Nature", -68, -50, -15, 73, 52, 120),
+    "SM_Kit_Rock_01": ("Nature", -176, -148, -15, 142, 94, 137),
+    "SM_Kit_Rock_02": ("Nature", -184, -174, -9, 224, 157, 61),
+    "SM_Kit_Rock_03": ("Nature", -77, -74, -24, 74, 62, 279),
+    "SM_Kit_Rock_04": ("Nature", -143, -131, -20, 151, 124, 121),
+    "SM_Kit_Rock_05": ("Nature", -83, -70, -6, 80, 64, 47),
+    "SM_Kit_Rock_06": ("Nature", -187, -60, -12, 178, 43, 137),
+    "SM_Kit_Rock_07": ("Nature", -295, -141, -20, 258, 169, 133),
+    "SM_Kit_Rock_08": ("Nature", -142, -92, -17, 242, 169, 136),
+    "SM_Kit_Rock_09": ("Nature", -159, -187, -6, 242, 186, 47),
+    "SM_Kit_Rock_10": ("Nature", -126, -101, -13, 116, 122, 118),
+    "SM_Kit_Boulder": ("Nature", -246, -210, -30, 315, 181, 177),
+    "SM_Kit_CliffFace": ("Nature", -766, -197, -63, 839, 194, 478),
+    "SM_Kit_Stump_A": ("Nature", -122, -120, -38, 127, 126, 77),
+    "SM_Kit_Stump_B": ("Nature", -82, -88, -38, 88, 82, 47),
+    "SM_Kit_Log_Fallen": ("Nature", -322, -46, -3, 320, 88, 120),
+    "SM_Kit_Fern": ("Nature", -90, -118, 2, 109, 107, 64),
+    "SM_Kit_GrassTuft": ("Nature", -53, -48, -9, 46, 55, 100),
+    "SM_Kit_Flowers_A": ("Nature", -48, -55, -5, 61, 57, 84),
+    "SM_Kit_Flowers_B": ("Nature", -46, -65, -6, 64, 22, 81),
     "SM_Kit_TreePit": ("Kit/Street", -75, -75, -2, 75, 75, 2),  # dirt square + grate under every street tree
     # facility kit (BuildingKit.blend): what makes a power plant a power plant, a city hall a city hall
     "SM_Kit_EntranceSteps": ("Kit/Facility", 0, -150, -20, 180, 150, 200),  # 1 m rise (scaled to the plinth), down +X
@@ -269,15 +310,25 @@ BUILDINGS = {
 }
 PROPS = {
     "street_lamp": ["SM_StreetLamp_NeonArm", "SM_StreetLamp_RoyalCrown", "SM_StreetLamp_TwinArm"],
-    "street_tree": ["SM_V4_TreeRound", "SM_V4_TreePine"],
+    "street_tree": ["SM_Kit_Tree_Oak_B", "SM_Kit_Tree_Birch", "SM_Kit_Tree_Birch_B", "SM_Kit_Tree_Oak"],
     "bus_stop": ["SM_Prop_BusShelter"],
     "bench": ["SM_Prop_Bench"],
     "bin": ["SM_Prop_TrashCan", "SM_Prop_RecycleBin"],
     "hydrant": ["SM_Prop_FireHydrant"],
-    "tree": ["SM_V4_TreeRound", "SM_V4_TreePine", "SM_V4_TreeRound"],
-    "bush": ["SM_Kit_Bush"],
+    # a city's trees (gardens, parks, infill): medium ones, never the forest giants
+    "tree": ["SM_Kit_Tree_Oak", "SM_Kit_Tree_Oak_B", "SM_Kit_Tree_Birch", "SM_Kit_Tree_Birch_B", "SM_Kit_Tree_Oak_Autumn",
+             "SM_Kit_Tree_Birch_Autumn", "SM_Kit_Tree_Pine_Small"],
+    # the forest (foliage layers): giants 3-4 houses tall, pines, birches, a little autumn and the odd dead tree
+    "forest_tree": ["SM_Kit_Tree_OakTall", "SM_Kit_Tree_OakTall_B", "SM_Kit_Tree_BeechTall", "SM_Kit_Tree_BeechTall_B",
+                    "SM_Kit_Tree_MapleTall", "SM_Kit_Tree_MapleTall_B", "SM_Kit_Tree_Pine", "SM_Kit_Tree_Pine",
+                    "SM_Kit_Tree_Pine_B", "SM_Kit_Tree_Pine_Small", "SM_Kit_Tree_Oak", "SM_Kit_Tree_Oak_B", "SM_Kit_Tree_Birch",
+                    "SM_Kit_Tree_Birch_B", "SM_Kit_Tree_Maple_Autumn", "SM_Kit_Tree_Oak_Autumn", "SM_Kit_Tree_Birch_Autumn",
+                    "SM_Kit_Tree_OakTall", "SM_Kit_Tree_BeechTall", "SM_Kit_Tree_Dead"],
+    "bush": ["SM_Kit_Bush_Round", "SM_Kit_Bush_Tall", "SM_Kit_Bush_Wide", "SM_Kit_Bush_Small"],
     "sidewalk_corner": ["SM_Kit_SidewalkCorner"],
-    "rock": ["SM_Kit_Rock"],
+    # rocks, and the forest floor's stumps and fallen logs among them
+    "rock": ["SM_Kit_Rock", "SM_Kit_Rock_B", "SM_Kit_Rock_C"] + ["SM_Kit_Rock_%02d" % i for i in range(1, 11)] +
+            ["SM_Kit_Boulder", "SM_Kit_Stump_A", "SM_Kit_Stump_B", "SM_Kit_Log_Fallen"],
     "traffic_light": ["SM_Kit_TrafficLight"],
     "stop_sign": ["SM_Kit_StopSign"],
     "street_sign": ["SM_Kit_StreetSign"],
@@ -405,7 +456,8 @@ def bake(previewed: dict, root: str, interiors: bool = True, props: dict | None 
         elif role == "sidewalk_corner":
             baked[name] = 0  # every junction's mesh carries its own sidewalk corners: no loose pads on top of them
         elif role in PROPS:
-            opts = PROPS[role]
+            # a foliage layer (the forest) has its own mix when there is one: giants there, never in a garden
+            opts = PROPS.get(f"forest_{role}") if layer.get("kind") == "foliage" and f"forest_{role}" in PROPS else PROPS[role]
             # a city's trees as Fortnite's own props (when `props` is given): each one an actor, scaled to the
             # height the plan gave its spot. The forest (a foliage layer) is far too many for actors: it stays
             # instanced kit trees.
@@ -437,9 +489,10 @@ def bake(previewed: dict, root: str, interiors: bool = True, props: dict | None 
 
 TILE_CM = 40000  # PCG tile: 400 m squares, one graph + volume each, rebuilt only when its content changes
 NATURE_TILE_CM = 160000  # nature is sparse: 1.6 km tiles
-NATURE = ("SM_V4_Tree", "SM_Kit_Bush", "SM_Kit_Rock", "SM_Kit_Boulder")
+NATURE = ("SM_Kit_Tree", "SM_Kit_Bush", "SM_Kit_Rock", "SM_Kit_Boulder", "SM_Kit_Stump", "SM_Kit_Log", "SM_Kit_Cliff",
+          "SM_Kit_Fern", "SM_Kit_GrassTuft", "SM_Kit_Flowers")
 # Everything the city places blocks players, except leaves and flat paint (a painted stall or pitch is walked on)
-NO_COLLISION = ("SM_Kit_Bush", "SM_Kit_ParkingStall", "SM_Kit_SportsField", "SM_Air_Threshold", "SM_Kit_TreePit",
+NO_COLLISION = ("SM_Kit_Bush", "SM_Kit_Fern", "SM_Kit_GrassTuft", "SM_Kit_Flowers", "SM_Kit_ParkingStall", "SM_Kit_SportsField", "SM_Air_Threshold", "SM_Kit_TreePit",
                 "SM_Kit_Wetland", "SM_Kit_Pond")
 RECIPE = "collision-1"  # how a tile is built: a change here rebuilds every tile on the next push
 
@@ -858,10 +911,20 @@ def _demo() -> None:
     tops = {r[2] for p, rows in many.items() if "SM_BK_Parapet" in p for r in rows}
     assert len(tops) >= 3, ("houses differ in storeys", sorted(tops))
     assert all(p.startswith("/R/WorldGen/") and p.count(".") == 1 for p in groups)
-    assert any("SM_V4_Tree" in p for p in groups), "forest trees are baked"
+    assert any("SM_Kit_Tree_" in p for p in groups), "forest trees are baked"
     gb, bb, mb = bake({"Bushes": {"kind": "foliage", "role": "bush", "points": [[1, 1, 0, 0, 1.2]]},
                        "Rocks": {"kind": "foliage", "role": "rock", "points": [[2, 2, 0, 0, 0.9]]}}, "/R")
-    assert path("SM_Kit_Bush", "/R") in gb and path("SM_Kit_Rock", "/R") in gb and not mb, "bushes and rocks are PCG layers too"
+    assert any("SM_Kit_Bush_" in p for p in gb) and not mb, "bushes and rocks are PCG layers too"
+    assert any(k in p for p in gb for k in ("SM_Kit_Rock", "SM_Kit_Boulder", "SM_Kit_Stump", "SM_Kit_Log")), gb
+    # the forest is giants, pines and birches; a garden's trees come from the city's medium mix, never a giant
+    many_pts = [[i * 977, i * 613, 0, 0, 1.0] for i in range(300)]
+    gw = bake({"Trees": {"kind": "foliage", "role": "tree", "points": many_pts},
+               "Garden trees": {"kind": "scatter", "role": "tree", "points": [[p[0] + 5, p[1], 0, 0, 1.0] for p in many_pts]}}, "/R")[0]
+    used = {k.rsplit("/", 1)[1].split(".")[0] for k in gw}
+    assert {n for n in used if "Tall" in n} and used <= set(PROPS["forest_tree"]) | set(PROPS["tree"]), used
+    garden = bake({"Garden trees": {"kind": "scatter", "role": "tree", "points": many_pts}}, "/R")[0]
+    assert not [k for k in garden if "Tall" in k or "Dead" in k], "no giant or dead tree in a garden"
+    assert all(n in KIT for names in PROPS.values() for n in names), "every prop has a kit entry"
     # a layer of the person's own meshes: exactly those meshes, by weight, whatever its guessed role
     mine = {"Flower beds": {"kind": "scatter", "role": "street_lamp", "points": [[i * 997, i * 613, 0, 10, 1.1] for i in range(400)],
                             "meshes": [{"path": "/Game/Garden/SM_Tulips", "weight": 3}, {"path": "/Game/Garden/SM_Roses.SM_Roses", "weight": 1}]}}
@@ -906,10 +969,11 @@ def _demo() -> None:
     stored["9_9"] = {"hash": "x"}  # a tile the plan no longer has
     assert tile_diff(t2, stored) == (["2_0"], ["9_9"], ["0_0", "1_0"])
     assert tile_diff(t2, stored, force=True)[0] == ["0_0", "1_0", "2_0"]
-    wild = tiles({path("SM_V4_TreeRound", "/R"): [[10, 10, 0, 0, 1, 1, 1], [150000, 10, 0, 0, 1, 1, 1]],
+    wild = tiles({path("SM_Kit_Tree_Oak", "/R"): [[10, 10, 0, 0, 1, 1, 1], [150000, 10, 0, 0, 1, 1, 1]],
                   path("SM_Kit_Plinth", "/R"): [[10, 10, 0, 0, 1, 1, 1]]})
     assert set(wild) == {"n0_0", "0_0"} and wild["n0_0"]["size"] == NATURE_TILE_CM, "trees in their own big tile"
-    assert blocks(path("SM_City_CT_Apartment", "/R")) and blocks(path("SM_V4_TreePine", "/R")) and not blocks(path("SM_Kit_Bush", "/R"))
+    assert blocks(path("SM_City_CT_Apartment", "/R")) and blocks(path("SM_Kit_Tree_Pine", "/R")) and not blocks(path("SM_Kit_Bush_Round", "/R")) \
+        and not blocks(path("SM_Kit_Fern", "/R")) and tiles({path("SM_Kit_Stump_A", "/R"): [[1, 1, 0, 0, 1, 1, 1]]}).keys() == {"n0_0"}
     # street trees stand in a pit, forest trees do not
     gp = bake({"Street trees": {"kind": "along_roads", "role": "street_tree", "points": [[5, 6, 7, 30, 1.0]]},
                "Trees": {"kind": "foliage", "role": "tree", "points": [[9, 9, 0, 0, 1.0]]}}, "/R")[0]
@@ -922,14 +986,14 @@ def _demo() -> None:
     real: dict = {}
     gf = bake(town, "/R", props=real)[0]
     assert set(real) == {"Street trees", "Garden trees"} and len(real["Garden trees"]) == 400, set(real)
-    assert gf[path("SM_Kit_TreePit", "/R")] == [[5, 6, 7, 30, 1.0, 1.0, 1.0]] and sum(len(v) for k, v in gf.items() if "SM_V4_Tree" in k) == 1
+    assert gf[path("SM_Kit_TreePit", "/R")] == [[5, 6, 7, 30, 1.0, 1.0, 1.0]] and sum(len(v) for k, v in gf.items() if "SM_Kit_Tree_" in k) == 1
     st = real["Street trees"][0]
     assert st[0] in [c for c, _h in TREE_PROPS["street_tree"]] and st[1:5] == [5, 6, 7, 30], st
     heights = dict(TREE_PROPS["tree"])
-    assert all(TREE_PROP_SCALE[0] <= r[5] <= TREE_PROP_SCALE[1] and 500 < heights[r[0]] * r[5] < 1400 for r in real["Garden trees"]), \
+    assert all(TREE_PROP_SCALE[0] <= r[5] <= TREE_PROP_SCALE[1] and 500 < heights[r[0]] * r[5] < 2000 for r in real["Garden trees"]), \
         "every prop stands about as tall as the tree the plan drew"
     assert len({r[0] for r in real["Garden trees"]}) > 3, "a mix of kinds"
-    assert bake(town, "/R")[0] != gf and "SM_V4_Tree" in "".join(bake(town, "/R")[0]), "without props: kit trees as before"
+    assert bake(town, "/R")[0] != gf and "SM_Kit_Tree_" in "".join(bake(town, "/R")[0]), "without props: kit trees as before"
     pt, info = prop_tiles(real)
     assert info == {"placed": 401, "left_out": 0} and sum(len(t["rows"]) for t in pt.values()) == 401
     assert set(pt) == {"0_0", "0_1"} and prop_tiles(real)[0]["0_1"]["hash"] == pt["0_1"]["hash"], set(pt)

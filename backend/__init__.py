@@ -3120,8 +3120,10 @@ def register(api) -> None:
                 # the kit's instance-safe materials: made once, then reused. Making them loads every kit mesh
                 # (minutes); a build that only needs meshes it already has overrides for skips that.
                 cache = data.get(f"net.{nid}.mats") or {}
-                need = {m for k in build for m in new[k]["meshes"] if m.startswith(f"{root}/WorldGen/")}
-                if need and need <= set(cache.get("overrides") or {}):  # force rebuilds tiles, not materials
+                # (the nature kit brings its own instance-ready materials: WorldGen/Nature never needs overrides)
+                need = {m for k in build for m in new[k]["meshes"]
+                        if m.startswith(f"{root}/WorldGen/") and not m.startswith(f"{root}/WorldGen/Nature/")}
+                if need <= set(cache.get("overrides") or {}):  # force rebuilds tiles, not materials (none needed: skip)
                     mats = cache
                 else:
                     mats = kit_materials(nid)

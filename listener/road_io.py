@@ -846,11 +846,7 @@ _STREET_KIT = {
     "SM_Kit_Fence": (["Wood"], [("box", 0, (0, 0, 0), (0, 0, 0), (100, 10, 250))]),
     # the sidewalk carried round a junction corner: a round 4 m paving pad (any corner angle), top at z 0
     "SM_Kit_SidewalkCorner": (["Pavers"], [("cyl", 0, (0, 0, -15), (0, 0, 0), (200, 15, 16))]),
-    # nature for the Bushes / Rocks PCG layers: low-poly lumps (instanced by the hundred thousand)
-    "SM_Kit_Bush": (["Leaf"], [("sph", 0, (0, 0, 0), (0, 0, 0), (65, 5, 7)), ("sph", 0, (45, 20, 0), (0, 0, 0), (50, 5, 7)),
-                               ("sph", 0, (-35, -30, 0), (0, 0, 0), (48, 5, 7))]),
-    "SM_Kit_Rock": (["RockGrey"], [("box", 0, (0, 0, -20), (12, 8, 25), (160, 120, 90)),
-                                   ("box", 0, (40, -10, -10), (-10, 15, 70), (90, 80, 70))]),
+    # (bushes and rocks are the Blender nature kit now, WorldGen/Nature: kit_bake.KIT; never built from boxes here)
     # a street tree's pit in the paving: soil square with a steel grate frame, flush with the sidewalk
     "SM_Kit_TreePit": (["RockGrey", "Metal"], [("box", 0, (0, 0, -2), (0, 0, 0), (150, 150, 3)),
                                                ("box", 1, (70, 0, -1), (0, 0, 0), (10, 150, 3)),

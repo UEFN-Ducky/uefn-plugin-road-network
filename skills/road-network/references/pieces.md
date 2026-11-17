@@ -147,9 +147,13 @@ the top part's roof is left out):
   100 m2 (Trees 8 = a tree about every 3.5 m, Bushes 4) out to `reach` 1.8 city radii around each city. Beyond
   that the forest goes on over the whole map, as dense as the cap leaves room for (never under a fifth). Up to
   `FOREST_LIMIT` (200 000) points per layer are kept and baked.
-- All three are PCG layers (baked into the tiled build like buildings): Trees -> `SM_V4_TreeRound` / `SM_V4_TreePine`,
-  Bushes -> `SM_Kit_Bush` (3 low-poly spheres r 48-65 cm, `Leaf` look), Rocks -> `SM_Kit_Rock` (2 tilted boxes,
-  `RockGrey`, 20 cm sunk); random yaw, preview scale. Both are listener-built street kit pieces.
+- All three are PCG layers (baked into the tiled 1.6 km nature tiles), from the Blender nature kit in
+  `WorldGen/Nature` (BuildingKit.blend `BK_Nature`): the forest (foliage layers) is `kit_bake.PROPS["forest_tree"]`
+  (giants 23-33 m, pines, birches, autumn trees, a dead tree); city trees (`tree`, `street_tree`) are the medium
+  ones only. Bushes -> `SM_Kit_Bush_Round/Tall/Wide/Small`; Rocks -> 13 rock shapes, a boulder, two stumps and a
+  fallen log. Trees collide on their bark only (leaf sections have collision off); bushes and ground plants none.
+  Materials are instances of `M_BK_NatureFoliage_Master` / `M_BK_NatureSolid_Master` (scanned textures, wind in the
+  vertex alpha). Every layer keeps off slopes over `max_slope_deg` and below the water.
 - A park lot is a **grove**: a tree every 4 m on a jittered grid, 85 % filled, the middle row left open with a 2.5 m
   path slab along the lot.
 
