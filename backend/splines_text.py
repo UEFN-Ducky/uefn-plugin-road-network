@@ -843,8 +843,8 @@ def lay_on_ground(points: list, segments: list, node: int, plane: tuple, sink: f
     by_i = {p["i"]: p for p in points}
     J = by_i[node]
     J["z"] = c + sink
-    # UE rotator: +pitch lifts +X, +roll lifts +Y (measured on the level: -roll buried the uphill side)
-    J["pitch"], J["roll"] = math.degrees(math.atan(a)), math.degrees(math.atan(b))
+    # UE FRotationMatrix: X axis (CP, 0, SP) so +pitch lifts +X; Y axis (0, CR, -SR) so +roll LOWERS +Y
+    J["pitch"], J["roll"] = math.degrees(math.atan(a)), -math.degrees(math.atan(b))
     mouths = {s["b"] if s["a"] == node else s["a"] for s in segments if not s["mesh"] and node in (s["a"], s["b"])}
     for m in mouths:
         E = by_i[m]
