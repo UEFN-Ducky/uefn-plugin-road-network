@@ -383,10 +383,13 @@ def bake(previewed: dict, root: str, interiors: bool = True, props: dict | None 
                 sx = max(lo, min(hi, d / mx))
                 sy = max(lo, min(hi, w / my))
                 sz = max(lo, min(hi, h / _height(parts)))
+                # a building people go into stands on a lobby storey of kit parts with real doorways (whole meshes
+                # have none): the mesh and its floors sit one storey up on it
+                lift = _lobby(groups, root, role, parts, x, y, z, yaw, sx, sy) if role in LOBBY_ROLES else 0.0
                 for part in parts:
-                    groups.setdefault(path(part, root), []).append([x, y, z, yaw, round(sx, 3), round(sy, 3), round(sz, 3)])
+                    groups.setdefault(path(part, root), []).append([x, y, z + lift, yaw, round(sx, 3), round(sy, 3), round(sz, 3)])
                 if role in INTERIOR:
-                    _interior(groups, root, profile_parts(parts), INTERIOR[role], x, y, z, yaw, sx, sy, sz)
+                    _interior(groups, root, profile_parts(parts), INTERIOR[role], x, y, z + lift, yaw, sx, sy, sz)
                 _ground_pieces(groups, root, p, x, y, z, yaw, w, d)
             baked[name] = len(pts)
         elif role == "sidewalk_corner":
@@ -596,6 +599,39 @@ def _modular(groups: dict, root: str, role: str, p: list, fac: str = "") -> None
 
 
 
+# whole-mesh buildings people walk into: they get a lobby storey (_lobby). Factories, warehouses and utilities are
+# open yards of containers and cranes.
+LOBBY_ROLES = ("skyscraper", "office", "apartment", "shop", "mall", "gas_station", "mansion", "hospital", "police",
+               "fire_station", "school", "civic", "transit")
+
+
+def _lobby(groups: dict, root: str, role: str, parts: list, x, y, z, yaw, sx, sy) -> float:
+    """One storey of BuildingKit walls under a whole kit mesh, on the footprint of its lowest storey (its glazed
+    shell, PROFILES, else its box), in its role's style: the street front gets the style's entrance doorway (lobby,
+    revolving door, storefront entrance...), the same doorway modules every modular building uses. Returns the lift
+    (one storey) the mesh is placed up by."""
+    base = parts[0].rsplit("_P", 1)[0] if "_P" in parts[0] else parts[0]
+    row = next((r for r in PROFILES.get(base, []) if r[0] == 0), None)
+    if row:
+        u0, v0, u1, v1 = row[1], row[2], row[3], row[4]
+    else:
+        b = KIT[parts[0]][1:]
+        u0, v0, u1, v1 = b[0], b[1], b[3], b[4]
+    u0, u1, v0, v1 = u0 * sx, u1 * sx, v0 * sy, v1 * sy
+    cu, cv = (u0 + u1) / 2, (v0 + v1) / 2
+    style = grammar.STYLE_BY_ROLE.get(role, "tower")
+    seed = abs(int(x) * 73856093 ^ int(y) * 19349663)
+    rows, _ = grammar.build("box", role, u1 - u0, v1 - v0, grammar.STOREY_CM, seed,
+                            lambda n: f"{root}/WorldGen/{grammar.FOLDER}/{n}.{n}", style, roof=False)
+    fx, fy = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+    for mesh, rs in rows.items():
+        for u, v, h0, turn, msx, msy, msz in rs:
+            u, v = u + cu, v + cv
+            groups.setdefault(mesh, []).append([round(x + fx * u - fy * v), round(y + fy * u + fx * v), round(z + h0),
+                                                round((yaw + turn) % 360, 1), msx, msy, msz])
+    return float(grammar.STOREY_CM)
+
+
 def _interior(groups: dict, root: str, parts: list, furniture: str, x, y, z, yaw, sx, sy, sz,
               storey: float = 0.0) -> None:
     """Floors inside a building shell, per storey: a slab inset from the walls (glowing ceiling panels under it)
@@ -791,9 +827,14 @@ def _demo() -> None:
     slab = bake(plaza, "/R")[0][path("SM_Kit_PathSlab", "/R")][0]
     assert slab[4] == 5.0 and slab[5] == 10.8 and slab[7] < -15, slab
     assert g2[path("SM_Kit_ParkingLot", "/R")][0][4:7] == [40.0, 30.0, 1.0]
-    tall = [p for p, rows in groups.items() if "SM_Kit_" not in p and any(r[0] == 0 for r in rows)]
+    tall = [p for p, rows in groups.items() if "SM_Kit_" not in p and f"/{grammar.FOLDER}/" not in p
+            and any(r[0] == 0 for r in rows)]
     assert len(tall) >= 2 and all("SM_City_DT_" in p or "SM_Sky" in p for p in tall), "a 110 m lot gets a whole multi-part tower"
     assert len({tuple(r) for p in tall for r in groups[p] if r[0] == 0}) == 1, "every part of a tower shares one point"
+    # ... standing one storey up on a lobby of kit walls, with an entrance doorway on its street front at street level
+    assert all(r[2] == 500 + grammar.STOREY_CM for p in tall for r in groups[p] if r[0] == 0), "the tower sits on its lobby"
+    doors = [r for p, rows in groups.items() if p.endswith("_Doorway") for r in rows if abs(r[1]) < 4000 and r[2] == 500]
+    assert doors, "the 110 m tower has a street-level entrance"
     for p, rows in groups.items():
         for r in rows:
             assert "SM_Kit_" in p or f"/{grammar.FOLDER}/" in p or all(SCALE_RANGE[0] <= v <= SCALE_RANGE[1] for v in r[4:7]) \

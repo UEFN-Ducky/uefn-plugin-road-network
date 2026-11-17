@@ -33,7 +33,7 @@ STYLES = {
                        "Window": "SM_BK_Shop_Wall_Window", "Solid": "SM_BK_Shop_Wall_Solid"},
              "front_ground": "[Storefront*,Entrance,Storefront*]", "ground": "[{Window:1,Solid:1}*]",
              "upper": "[{Window:3,Solid:1}*]"},
-    # houses: every door and garage is an empty doorway (no leaf): the doors are the game's own, programmed in Verse
+    # houses: every door and garage is an empty doorway; its leaf is a separate mesh (DOOR_LEAVES) for Scene Graph
     "house": {"corner": "SM_BK_House_Corner",
               "walls": {"Window": "SM_BK_House_Wall_Window", "Double": "SM_BK_House_Wall_DoubleWindow",
                         "Door": "SM_BK_House_Wall_Door_Doorway", "Garage": "SM_BK_House_Wall_Garage_Doorway",
@@ -106,15 +106,21 @@ BOUNDS.update({k + "_Doorway": BOUNDS[k] for k in ("SM_BK_Shop_Wall_Entrance", "
                                                     "SM_BK_Ind_Wall_RollerDoor", "SM_BK_Mansion_Wall_GrandEntrance")})
 BOUNDS["SM_BK_Tower_Wall_RevolvingDoor_Doorway"] = (0, -1, 0, 512, 26, 384)
 # the house door and garage cut open in BuildingKit.blend: the siding round the opening, the trim frame, no leaf
-BOUNDS["SM_BK_House_Wall_Door_Doorway"] = BOUNDS["SM_BK_House_Wall_Garage_Doorway"] = (0, -1, 0, 512, 21, 384)
+BOUNDS["SM_BK_House_Wall_Door_Doorway"] = BOUNDS["SM_BK_House_Wall_Garage_Doorway"] = (0, -4, 0, 512, 20, 384)
+BOUNDS.update({"SM_BK_DoorLeaf_House": (0, -4, 0, 148, 4, 258), "SM_BK_DoorLeaf_Garage": (0, -3, 0, 318, 3, 278)})
 # doorway -> its leaves: (leaf mesh, hinge x cm along the wall, hinge y cm in UEFN's local frame (UEFN's y is
 # Blender's -y), 1 = the leaf turned round to hang on the right jamb, how it opens: 'swing' | 'slide')
+# Openings are sized for a Fortnite player (Creative's own doors: 1.44 m leaf, 2.16-2.88 m tall), a little roomier:
+# single 1.50 x 2.60 m (x 181..331), double 3.00 x 2.60 m (x 106..406), garage 3.20 x 2.80 m (x 96..416); every leaf
+# 2 cm narrower than its half of the opening. The leaves are their own meshes (Scene Graph doors), never baked.
 DOOR_LEAVES = {
-    "SM_BK_Shop_Wall_Entrance_Doorway": [("SM_BK_DoorLeaf_Shop", 196, -10, 0, "swing")],
-    "SM_BK_Ind_Wall_Door_Doorway": [("SM_BK_DoorLeaf_Ind", 198, -12, 0, "swing")],
+    "SM_BK_Shop_Wall_Entrance_Doorway": [("SM_BK_DoorLeaf_Shop", 182, -10, 0, "swing")],
+    "SM_BK_Ind_Wall_Door_Doorway": [("SM_BK_DoorLeaf_Ind", 182, -12, 0, "swing")],
     "SM_BK_Ind_Wall_RollerDoor_Doorway": [("SM_BK_DoorLeaf_Roller", 50, -15, 0, "slide")],
-    "SM_BK_Mansion_Wall_GrandEntrance_Doorway": [("SM_BK_DoorLeaf_Mansion", 158, -15, 0, "swing"),
-                                                 ("SM_BK_DoorLeaf_Mansion", 354, -15, 1, "swing")],
+    "SM_BK_Mansion_Wall_GrandEntrance_Doorway": [("SM_BK_DoorLeaf_Mansion", 107, -15, 0, "swing"),
+                                                 ("SM_BK_DoorLeaf_Mansion", 405, -15, 1, "swing")],
+    "SM_BK_House_Wall_Door_Doorway": [("SM_BK_DoorLeaf_House", 182, -10, 0, "swing")],
+    "SM_BK_House_Wall_Garage_Doorway": [("SM_BK_DoorLeaf_Garage", 97, -10, 0, "slide")],
     "SM_BK_Tower_Wall_RevolvingDoor_Doorway": [("SM_BK_DoorLeaf_Tower", 115, -12, 0, "swing"),
                                                ("SM_BK_DoorLeaf_Tower", 397, -12, 1, "swing")],
 }
@@ -270,10 +276,12 @@ WINDOWS = ("Window", "Double", "Arch", "Glass", "Slit")
 DOORS = ("Door", "Entrance", "Gate", "Lobby", "Roller")
 
 
-def build(form: str, role: str, d: float, w: float, h: float, seed: int, path, style_name: str = "") -> tuple:
+def build(form: str, role: str, d: float, w: float, h: float, seed: int, path, style_name: str = "",
+          roof: bool = True) -> tuple:
     """(rows {mesh path: [[u, v, z, yaw, sx, sy, sz]]} in the lot frame, blocks for the interiors).
     path(name) -> the mesh's content path. Storeys snap to whole BuildingKit storeys (at least one). Roof gear
-    and facade details come from their own random stream, so they never change which walls a building gets."""
+    and facade details come from their own random stream, so they never change which walls a building gets.
+    roof=False: walls and corners only (no parapet, slab, hut or gear): a lobby storey something else stands on."""
     sname = style_name or STYLE_BY_ROLE.get(role, "tower")
     style = STYLES[sname]
     rnd = random.Random(seed)
@@ -336,8 +344,10 @@ def build(form: str, role: str, d: float, w: float, h: float, seed: int, path, s
                     put("SM_BK_Facade_Downpipe", pu, pv, z, yaw)
             if cams and z0 == 0:
                 put("SM_BK_Facade_Camera", pu + ux * 60, pv + uy * 60, 0, yaw)
-            for i in range(n):  # parapet along the roof edge
+            for i in range(n if roof else 0):  # parapet along the roof edge
                 put(SHARED["parapet"], pu + ux * L / n * i, pv + uy * L / n * i, top, yaw, L / n / MODULE_CM)
+        if not roof:
+            continue
         put(SHARED["roof"], x0, y0, top, 0, bd / MODULE_CM)
         rows[path(SHARED["roof"])][-1][5] = round(bw / MODULE_CM, 3)  # roof slab: depth x width
         # the roof: an access hut over the stair core, gear in the free cells, nothing under a higher block
@@ -394,8 +404,8 @@ def _demo() -> None:
     assert len(blocks) == 2 and blocks[1][2] == blocks[0][5] and blocks[1][5] <= 11000 + STOREY_CM, blocks
     assert len(rows["SM_BK_Tower_Wall_RevolvingDoor_Doorway"]) == 1, "one front door at street level"
     # every door slot is a doorway with its leaves: two for the tower, hung on opposite jambs, facing opposite ways
-    assert all(m in DOOR_LEAVES for st_ in STYLES.values() for k, m in st_["walls"].items()
-               if k in ("Door", "Entrance", "Roller") and "House" not in m), "a door slot with no leaf"
+    assert all(m in DOOR_LEAVES for st_ in STYLES.values() for m in st_["walls"].values()
+               if m.endswith("_Doorway")), "a doorway with no leaf"
     two = door_leaves("SM_BK_Tower_Wall_RevolvingDoor_Doorway", [1000, 2000, 50, 90, 1, 1, 1])
     assert [(l[1][0], l[1][1], l[1][3]) for l in two] == [(1012.0, 2115.0, 90.0), (1012.0, 2397.0, 270.0)], two
     assert door_leaves("SM_BK_Ind_Wall_RollerDoor_Doorway", [0, 0, 0, 0, 1.2, 1, 1])[0][1][:2] == [60.0, -15.0]
@@ -424,7 +434,16 @@ def _demo() -> None:
     hrows, _ = build("box", "house", 1500, 1600, 768, 4, p)
     assert hrows.get("SM_BK_House_Wall_Door_Doorway") and hrows.get("SM_BK_House_Wall_Garage_Doorway"), sorted(hrows)
     assert not any(n in hrows for n in ("SM_BK_House_Wall_Door", "SM_BK_House_Wall_Garage"))
-    assert not any(n in DOOR_LEAVES for n in hrows), "no leaves: the doors are programmed"
+    assert all(n in DOOR_LEAVES for n in ("SM_BK_House_Wall_Door_Doorway", "SM_BK_House_Wall_Garage_Doorway")), \
+        "house doors are separate leaves for Scene Graph"
+    # every leaf hangs inside its opening: hinge to hinge + width within the clear opening
+    for mod, opening in (("SM_BK_House_Wall_Door_Doorway", (181, 331)), ("SM_BK_Shop_Wall_Entrance_Doorway", (181, 331)),
+                         ("SM_BK_Ind_Wall_Door_Doorway", (181, 331)), ("SM_BK_Mansion_Wall_GrandEntrance_Doorway", (106, 406)),
+                         ("SM_BK_House_Wall_Garage_Doorway", (96, 416))):
+        for leaf, hx, _hy, right, _how in DOOR_LEAVES[mod]:
+            wide = 318 if "Garage" in leaf else 148
+            lo, hi = (hx - wide, hx) if right else (hx, hx + wide)
+            assert opening[0] <= lo and hi <= opening[1], (mod, lo, hi)
     gear = sum(len(rows.get(n, [])) for n in ROOF["apartment"] if n)
     assert gear >= 3 and len(rows[BULKHEAD]) == 1, gear
     # details never change the walls: same seed, same wall picks as without them
