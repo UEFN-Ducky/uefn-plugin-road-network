@@ -441,6 +441,12 @@ def register(api) -> None:
         if ter.get("file") and not ter.get("heights"):
             got = read_json_file(ter["file"], cache=True)
             ter = {**ter, "heights": got.get("heights") or []}
+        if ter and ter.get("sea") is None:
+            # a ground pulled from UEFN is land only: the world's water level stays the one its water was laid at
+            # (without it the panel drew no water and the forest grew on the sea bed)
+            sea = (data.get(f"net.{nid}.water") or {}).get("sea")
+            if sea is not None:
+                ter = {**ter, "sea": sea}
         return ter
 
     def panel_terrain(nid: str, most: int = 512) -> dict:
@@ -2248,12 +2254,15 @@ def register(api) -> None:
                     if not lay or lay["kind"] not in pl.SCATTERED or v.get("keep_z"):
                         continue
                     lim = 600 * math.tan(math.radians(lay["max_slope_deg"])) if lay["max_slope_deg"] < 90 else None
-                    keep = []
+                    keep, sea = [], terrain.get("sea")
                     for p in v["points"]:
+                        z = g(p[0], p[1])
+                        if sea is not None and z < sea + 50:
+                            continue  # under (or right at) the water on the real ground
                         if lim is not None and math.hypot(g(p[0] + 300, p[1]) - g(p[0] - 300, p[1]),
                                                           g(p[0], p[1] + 300) - g(p[0], p[1] - 300)) > lim:
                             continue
-                        p[2] = round(g(p[0], p[1]) - lay["sink_cm"])
+                        p[2] = round(z - lay["sink_cm"])
                         keep.append(p)
                     if len(keep) != len(v["points"]):
                         v["count"] = round(v["count"] * len(keep) / max(1, len(v["points"])))
