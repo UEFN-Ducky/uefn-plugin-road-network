@@ -860,7 +860,8 @@ def register(api) -> None:
                             p["w"] = bulb(arms) + 50.0
                             p["lines"] = st._set_line(p["lines"], "Width", f"{p['w']:.1f}")
                             if node in ground_of:
-                                st.lay_on_ground(pts, segs, node, ground_of[node], cg.ROAD_SINK_CM)
+                                # on the ground itself, as the road points are (measured ~2 cm over it)
+                                st.lay_on_ground(pts, segs, node, ground_of[node], 0.0)
                         unsaved.append(f"{folder}/{prefix}{node}")
                         built += 1
                 # saved as we go, a batch per call: left unsaved, hundreds of meshes all went out in the
