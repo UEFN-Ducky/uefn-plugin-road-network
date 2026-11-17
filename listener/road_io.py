@@ -677,6 +677,87 @@ def _round_ring() -> list:
     return out
 
 
+LINE_CM = 10  # pitch lines: 10 cm wide, 1 cm proud of the turf
+
+
+def _pitch(L: float, W: float, circle: float, box_l: float, box_w: float, goal_w: float, goal_h: float) -> list:
+    """A football pitch at its real size, never stretched: turf with 2 m run-off all round (slot 0), its lines
+    (slot 1: touch and goal lines, halfway line, centre circle and spot, both penalty boxes) and two goals
+    (slot 2: posts and crossbar just behind each goal line). Centred, X along the length, top of the turf z 2."""
+    t, z = LINE_CM, 2
+    out = [("box", 0, (0, 0, 0), (0, 0, 0), (L + 400, W + 400, 2)),
+           ("box", 1, (0, W / 2, z), (0, 0, 0), (L + t, t, 1)), ("box", 1, (0, -W / 2, z), (0, 0, 0), (L + t, t, 1)),
+           ("box", 1, (L / 2, 0, z), (0, 0, 0), (t, W, 1)), ("box", 1, (-L / 2, 0, z), (0, 0, 0), (t, W, 1)),
+           ("box", 1, (0, 0, z), (0, 0, 0), (t, W, 1)), ("cyl", 1, (0, 0, z), (0, 0, 0), (15, 1, 12))]
+    for k in range(24):  # the centre circle, 24 short strips
+        a = k * 15.0
+        out.append(("box", 1, (circle * math.cos(math.radians(a)), circle * math.sin(math.radians(a)), z), (0, 0, a + 90),
+                    (2 * math.pi * circle / 24 + 2, t, 1)))
+    for s in (-1, 1):
+        front = s * (L / 2 - box_l)
+        out += [("box", 1, (front, 0, z), (0, 0, 0), (t, box_w, 1)),
+                ("box", 1, (s * (L / 2 - box_l / 2), box_w / 2, z), (0, 0, 0), (box_l, t, 1)),
+                ("box", 1, (s * (L / 2 - box_l / 2), -box_w / 2, z), (0, 0, 0), (box_l, t, 1)),
+                ("cyl", 2, (s * (L / 2 + 6), goal_w / 2, z), (0, 0, 0), (6, goal_h, 10)),
+                ("cyl", 2, (s * (L / 2 + 6), -goal_w / 2, z), (0, 0, 0), (6, goal_h, 10)),
+                ("box", 2, (s * (L / 2 + 6), 0, z + goal_h - 12), (0, 0, 0), (12, goal_w + 12, 12)),
+                ("box", 2, (s * (L / 2 + 120), 0, z), (0, 0, 0), (8, goal_w, 8))]
+    return out
+
+
+# football pitches: (length, width, centre circle radius, penalty box depth, its width, goal width, goal height) cm
+PITCHES = {"SM_Kit_Pitch5": (4000, 2000, 300, 600, 1000, 300, 200),     # 5-a-side
+           "SM_Kit_Pitch7": (6000, 4000, 600, 1000, 2400, 500, 200),    # 7-a-side
+           "SM_Kit_Pitch11": (10000, 6400, 915, 1650, 4030, 732, 244)}  # full size
+
+
+def _swings() -> list:
+    out = [("cyl", 0, (x, y, 0), (0, 0, 0), (5, 260, 10)) for x in (-200, 200) for y in (-60, 60)]
+    out.append(("box", 0, (0, 0, 250), (0, 0, 0), (412, 10, 10)))
+    for x in (-90, 90):
+        out += [("box", 1, (x, 0, 45), (0, 0, 0), (50, 22, 5)),
+                ("box", 0, (x - 22, 0, 50), (0, 0, 0), (2, 2, 200)), ("box", 0, (x + 22, 0, 50), (0, 0, 0), (2, 2, 200))]
+    return out
+
+
+def _slide() -> list:
+    out = [("cyl", 0, (x, y, 0), (0, 0, 0), (5, 260, 10)) for x in (-60, 60) for y in (-60, 60)]
+    out += [("box", 2, (0, 0, 150), (0, 0, 0), (130, 130, 8)),  # the deck, 1.5 m up
+            ("box", 0, (0, 62, 158), (0, 0, 0), (130, 4, 80)), ("box", 0, (0, -62, 158), (0, 0, 0), (130, 4, 80)),
+            ("box", 0, (-80, 30, 0), (0, 0, 0), (5, 5, 158)), ("box", 0, (-80, -30, 0), (0, 0, 0), (5, 5, 158))]
+    out += [("box", 0, (-80, 0, 25 + 30 * k), (0, 0, 0), (5, 60, 4)) for k in range(5)]  # ladder rungs
+    out += [("box", 1, (200, 0, 70), (0, -30, 0), (300, 60, 5)),  # the chute, down 30 degrees to +X
+            ("box", 1, (200, 31, 70), (0, -30, 0), (300, 4, 22)), ("box", 1, (200, -31, 70), (0, -30, 0), (300, 4, 22))]
+    return out
+
+
+def _climber() -> list:
+    out = [("cyl", 0, (x, y, 0), (0, 0, 0), (4, 200, 8)) for x in (-120, 0, 120) for y in (-120, 0, 120)]
+    for z in (100, 196):
+        out += [("box", 1, (0, y, z), (0, 0, 0), (244, 6, 6)) for y in (-120, 0, 120)]
+        out += [("box", 1, (x, 0, z), (0, 0, 0), (6, 244, 6)) for x in (-120, 0, 120)]
+    return out
+
+
+def _seesaw() -> list:
+    return [("box", 0, (0, 0, 0), (0, 0, 0), (30, 40, 50)), ("box", 1, (0, 0, 50), (0, 0, 0), (360, 30, 6)),
+            ("cyl", 0, (150, 0, 56), (0, 0, 0), (3, 30, 8)), ("cyl", 0, (-150, 0, 56), (0, 0, 0), (3, 30, 8))]
+
+
+def _roundabout() -> list:
+    out = [("cyl", 0, (0, 0, 0), (0, 0, 0), (20, 15, 12)), ("cyl", 1, (0, 0, 15), (0, 0, 0), (100, 8, 24))]
+    out += [("box", 0, (55 * math.cos(math.radians(a)), 55 * math.sin(math.radians(a)), 23), (0, 0, a), (80, 4, 4))
+            for a in (0, 90, 180, 270)]
+    return out
+
+
+def _sandbox() -> list:
+    out = [("box", 1, (0, 0, 0), (0, 0, 0), (280, 280, 12))]
+    out += [("box", 0, (x, 0, 0), (0, 0, 0), (10, 300, 25)) for x in (-145, 145)]
+    out += [("box", 0, (0, y, 0), (0, 0, 0), (280, 10, 25)) for y in (-145, 145)]
+    return out
+
+
 def _stair_core() -> list:
     """One storey (400 cm, floor top at 15) of a 400 x 400 core: a walkable switchback stair on y < 10
     (two 11-step flights, 25 cm treads, a landing between) and an elevator shaft on y > 30 with a door
@@ -766,6 +847,14 @@ _STREET_KIT = {
     # the planned developments' grounds: 1 m unit slabs (stretched to the part), top at their height
     "SM_Kit_Apron": (["Plinth"], [("box", 0, (0, 0, 0), (0, 0, 0), (100, 100, 10))]),
     "SM_Kit_SportsField": (["Turf"], [("box", 0, (0, 0, 0), (0, 0, 0), (100, 100, 2))]),
+    # real-size pitches (never stretched) and playground equipment, placed at scale 1 (pcg_layers.site_layers)
+    **{n: (["Turf", "PaintWhite", "Metal"], _pitch(*dims)) for n, dims in PITCHES.items()},
+    "SM_Kit_PG_Swings": (["Metal", "SignRed"], _swings()),
+    "SM_Kit_PG_Slide": (["Metal", "SignRed", "Wood"], _slide()),
+    "SM_Kit_PG_Climber": (["Metal", "SignGreen"], _climber()),
+    "SM_Kit_PG_SeeSaw": (["Metal", "Wood"], _seesaw()),
+    "SM_Kit_PG_Roundabout": (["Metal", "SignRed"], _roundabout()),
+    "SM_Kit_PG_Sandbox": (["Wood", "Sand"], _sandbox()),
     "SM_Kit_Playground": (["Rubber"], [("box", 0, (0, 0, 0), (0, 0, 0), (100, 100, 5))]),
     "SM_Kit_Pool": (["Panel", "Water"], [("box", 0, (0, 0, 0), (0, 0, 0), (100, 100, 10)),
                                          ("box", 1, (0, 0, 9), (0, 0, 0), (80, 80, 2))]),

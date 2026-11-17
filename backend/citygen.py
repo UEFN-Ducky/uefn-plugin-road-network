@@ -3783,7 +3783,7 @@ def _park(area: list, rnd) -> dict:
             grounds.append([*map(round, to_world(u, v)), round(yaw, 1), round(su / 100, 2), round(sv / 100, 2), kind, "park"])
             return
     for _ in range(2 if ha >= 9 else 1 if ha >= 4 else 0):
-        put("field", 10000.0, 6400.0)
+        put("field", 10800.0, 7200.0)  # a full-size pitch (100 x 64 m) with its run-off (pcg_layers.fit_pitch)
     if ha >= 1.2:
         put("pond", min(15000.0, L * rnd.uniform(0.2, 0.3)), min(9000.0, W * rnd.uniform(0.25, 0.4)))
     for _ in range(1 if ha < 2 else 2 if ha < 6 else 3):

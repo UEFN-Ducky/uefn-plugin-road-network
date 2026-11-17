@@ -754,8 +754,18 @@ def site_layers(cities: list, ground) -> dict:
         for x, y, yaw, sx, sy, kind, *fac in priv.get("grounds") or []:  # the planned developments' grounds
             if kind == "tower" and fac and fac[0] == "telecom_tower":
                 kind = "telecom"  # a mast, not a water tank
-            mesh, box, _tint = GROUNDS[kind]
             z = round(ground(x, y) or 0)
+            fx, fy = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+            if kind == "field":  # the biggest real pitch that fits the field, at scale 1 (a stretched one is wrong)
+                fit = fit_pitch(sx, sy)
+                if fit:
+                    grounds.setdefault(fit[0], []).append([x, y, z, round((yaw + fit[1]) % 360, 1), 1.0, 1.0, 1.0])
+                continue
+            if kind == "playground":  # its soft surface (below), and the swings, slide, ... on it at scale 1
+                for pk, u, v, turn in play_layout(sx, sy):
+                    grounds.setdefault(pk, []).append([round(x + fx * u - fy * v), round(y + fy * u + fx * v), z + 5,
+                                                       round((yaw + turn) % 360, 1), 1.0, 1.0, 1.0])
+            mesh, box, _tint = GROUNDS[kind]
             if box[0] == 1:  # 1 m unit slabs, stretched to the part
                 grounds.setdefault(kind, []).append([x, y, z, yaw, sx, sy, 1.0])
             else:  # fixed pieces (towers, benches) stand in its middle
@@ -804,10 +814,61 @@ GROUNDS = {"apron": ("SM_Kit_Apron", [1, 1, 0.1], "mix:fg-dim:bg:0.35"),
            "telecom": ("SM_Kit_TelecomMast", [3.2, 3.2, 40], "fg-dim"),
            # a park's own (citygen.park_paths): its paths in pieces, each on its own ground, and the benches along them
            "path": ("SM_Kit_PathSlab", [1, 1, 0.08], "mix:fg-dim:bg:0.3"),
-           "bench": ("SM_Prop_Bench", [1.94, 0.67, 1.11], "fg-dim")}
+           "bench": ("SM_Prop_Bench", [1.94, 0.67, 1.11], "fg-dim"),
+           # football pitches at their real size (scale 1, never stretched: the lines and goals stay true) and
+           # playground equipment; box_m is the whole piece (a pitch with its 2 m run-off all round)
+           "pitch11": ("SM_Kit_Pitch11", [104, 68, 2.46], "mix:green:fg:0.25"),
+           "pitch7": ("SM_Kit_Pitch7", [64, 44, 2.02], "mix:green:fg:0.25"),
+           "pitch5": ("SM_Kit_Pitch5", [44, 24, 2.02], "mix:green:fg:0.25"),
+           "pg_swings": ("SM_Kit_PG_Swings", [4.1, 1.3, 2.6], "mix:red:fg:0.4"),
+           "pg_slide": ("SM_Kit_PG_Slide", [4.2, 1.3, 2.6], "mix:red:fg:0.4"),
+           "pg_climber": ("SM_Kit_PG_Climber", [2.5, 2.5, 2.0], "mix:green:fg:0.4"),
+           "pg_sandbox": ("SM_Kit_PG_Sandbox", [3.0, 3.0, 0.25], "mix:amber:fg:0.3"),
+           "pg_seesaw": ("SM_Kit_PG_SeeSaw", [3.6, 0.4, 0.9], "mix:amber:fg:0.4"),
+           "pg_roundabout": ("SM_Kit_PG_Roundabout", [2.0, 2.0, 0.3], "mix:red:fg:0.4")}
 GROUND_NAMES = {"apron": "Service aprons", "field": "Sports fields", "playground": "Playgrounds", "pool": "Pools",
                 "yard": "Utility yards", "pond": "Ponds and tanks", "tower": "Towers", "telecom": "Telecom masts",
-                "path": "Park paths", "bench": "Park benches"}
+                "path": "Park paths", "bench": "Park benches",
+                "pitch11": "Football pitches (full size)", "pitch7": "Football pitches (7-a-side)",
+                "pitch5": "Football pitches (5-a-side)", "pg_swings": "Playground swings", "pg_slide": "Playground slides",
+                "pg_climber": "Playground climbing frames", "pg_sandbox": "Playground sandpits",
+                "pg_seesaw": "Playground seesaws", "pg_roundabout": "Playground roundabouts"}
+PITCH_FITS = (("pitch11", 10400, 6800), ("pitch7", 6400, 4400), ("pitch5", 4400, 2400))  # biggest first, with run-off
+# what a playground holds, in order of priority: (kind, box min x, max x, min y, max y) cm about the piece's pivot
+PLAY_KIT = (("pg_swings", -205, 205, -65, 65), ("pg_slide", -85, 335, -65, 65), ("pg_climber", -124, 124, -124, 124),
+            ("pg_sandbox", -150, 150, -150, 150), ("pg_seesaw", -180, 180, -20, 20), ("pg_roundabout", -100, 100, -100, 100))
+PLAY_GAP_CM = 150.0  # clear space round every piece (and in from the playground's edge)
+
+
+def fit_pitch(sx_m: float, sy_m: float):
+    """The biggest real football pitch that fits a field area (sx along its yaw, sy across, metres), and the
+    quarter turn that fits it: (kind, 0 | 90), or None when not even a 5-a-side pitch fits. Never stretched."""
+    a, b = sx_m * 100, sy_m * 100
+    for kind, L, W in PITCH_FITS:
+        if L <= a and W <= b:
+            return kind, 0
+        if L <= b and W <= a:
+            return kind, 90
+    return None
+
+
+def play_layout(sx_m: float, sy_m: float) -> list:
+    """Playground equipment packed into a playground (sx along its yaw, sy across, metres) in shelves along its
+    long side, each piece at scale 1 with PLAY_GAP_CM clear round it: [(kind, u, v, turn)] about the centre."""
+    turn = 0 if sx_m >= sy_m else 90
+    L, W = max(sx_m, sy_m) * 100 - 2 * PLAY_GAP_CM, min(sx_m, sy_m) * 100 - 2 * PLAY_GAP_CM
+    out, x, y, shelf = [], 0.0, 0.0, 0.0
+    for kind, x0, x1, y0, y1 in PLAY_KIT:
+        w, d = x1 - x0, y1 - y0
+        if x + w > L:  # this shelf is full: the next one
+            x, y, shelf = 0.0, y + shelf + PLAY_GAP_CM, 0.0
+        if x + w > L or y + d > W:
+            continue  # does not fit this playground
+        a, b = -L / 2 + x - x0, -W / 2 + y - y0  # the piece's pivot, its box at (x, y) in the shelf
+        u, v = (a, b) if turn == 0 else (-b, a)
+        out.append((kind, round(u), round(v), turn))
+        x, shelf = x + w + PLAY_GAP_CM, max(shelf, d)
+    return out
 
 
 def junction_corners(juncs: list, setback_m: float, corners: int) -> list:
@@ -2556,6 +2617,18 @@ def _demo() -> None:
           "Bridge piers": {"kind": "site", "role": "bridge", "box_m": [2, 2, 1], "points": [[0, 0, 0, 0, 1, 1, 5]]}}
     assert clear_of(on, [(x, 0.0, 650.0, 1.0, 0.0) for x in range(-2000, 2001, 400)]) == 1
     assert [p[1] for p in on["T"]["points"]] == [6000] and on["T"]["count"] == 1 and len(on["Bridge piers"]["points"]) == 1
+    # a field gets the biggest real pitch that fits, at scale 1, turned to fit; too small for 5-a-side: none
+    assert fit_pitch(110, 75) == ("pitch11", 0) and fit_pitch(46, 70) == ("pitch7", 90) and fit_pitch(30, 20) is None
+    sport = site_layers([{"private": {"grounds": [[0, 0, 0.0, 70.0, 50.0, "field", "school"],
+                                                  [9000, 0, 30.0, 20.0, 14.0, "playground", "school"]]}}], lambda x, y: 0.0)
+    assert sport["Football pitches (7-a-side)"]["points"] == [[0, 0, 0, 0.0, 1.0, 1.0, 1.0]] and "Sports fields" not in sport
+    kit = [(n, p) for n, v in sport.items() if n.startswith("Playground ") for p in v["points"]]
+    assert len(kit) >= 4 and all(p[4:7] == [1.0, 1.0, 1.0] for _n, p in kit), "equipment at scale 1"
+    assert sport["Playgrounds"]["points"][0][4:6] == [20.0, 14.0], "the soft surface still covers the whole playground"
+    for _n, p in kit:  # every piece inside the playground, clear of its edge
+        f = math.radians(30.0)
+        u, v = (p[0] - 9000) * math.cos(f) + p[1] * math.sin(f), -(p[0] - 9000) * math.sin(f) + p[1] * math.cos(f)
+        assert abs(u) < 1000 and abs(v) < 700, (_n, u, v)
     print("pcg layers ok", len(full), "layers,", len(out["nodes"]), "nodes", len(out["edges"]), "wires,",
           {n: v["count"] for n, v in pv.items() if v["count"]})
 if __name__ == "__main__":
