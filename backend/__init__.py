@@ -437,7 +437,7 @@ def register(api) -> None:
 
     def scan_terrain(nid: str) -> dict:
         """The world's ground grid {min, max, grid, heights}, wherever it is stored (doc or world file)."""
-        ter = scan_terrain(nid) or {}
+        ter = (data.get(f"net.{nid}.scan") or {}).get("terrain") or {}
         if ter.get("file") and not ter.get("heights"):
             got = read_json_file(ter["file"], cache=True)
             ter = {**ter, "heights": got.get("heights") or []}
