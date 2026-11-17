@@ -105,6 +105,7 @@ TYPES = ("natural", "beach", "residential", "commercial", "marina", "industrial"
 # houses. Behind it the land comes back to its own height as a bank. The planner decides stretch by stretch
 # (shores_for); citygen.cut_shores cuts the profile into the ground the landscape is made from, the streets are
 # laid on it, and every piece is built at its design level (never re-seated on whatever lies under it).
+YARD_DEPTH_CM = 8000.0  # a container port's paved yard, inland from its quay
 QUAY_CM = 200.0  # a quay, its promenade and the boardwalk behind a beach stand this far above the water
 STEEP = 0.6  # a shore steeper than this in its first 30 m stays as it lies (a cliff) ...
 RISE_MAX_M = 18.0  # ... and so does one that stands this high 50 m inland: too much hill to cut for a promenade
@@ -666,6 +667,7 @@ def plan(city: dict, analysis: dict, lots: list, ring_of, industrial, ground, no
     keep = [r for r in lots if not look.shelf(r[0], r[1], max(r[3], r[4]) / 2 + 300)
             and not too_close(r[0], r[1], 1000 + max(r[3], r[4]) / 2)]
     devs = []
+    claims = []  # container yards: (centre x, y, along x, y, half length, half depth) cm, no city lot on them
 
     def building(s, back, w, d, role, why):
         """A land building facing the water, `back` cm inland from the water line."""
@@ -778,8 +780,12 @@ def plan(city: dict, analysis: dict, lots: list, ring_of, industrial, ground, no
             yx, yy = mid["x"] - mid["nx"] * back, mid["y"] - mid["ny"] * back
             yz = ground(yx, yy)
             yz = sea + QUAY_CM if yz is None or yz < sea + QUAY_CM else yz
-            out.row(yx, yy, yz, _yaw(mid["tx"], mid["ty"]), min(300, length_m) * 0.9, 80, 1, "yard")
-            for a in range(-3, 4):
+            yard_l = min(300, length_m) * 0.9 * 100
+            out.row(yx, yy, yz, _yaw(mid["tx"], mid["ty"]), yard_l / 100, YARD_DEPTH_CM / 100, 1, "yard")
+            claims.append((yx, yy, mid["tx"], mid["ty"], yard_l / 2, YARD_DEPTH_CM / 2))
+            # the stacks stay on the paving: as many 14 m bays each way as the yard is long (at most 3)
+            na = max(0, min(3, int((yard_l / 2 - 700) // 1400)))
+            for a in range(-na, na + 1):
                 for b in range(-2, 3):
                     out.row(yx + mid["tx"] * a * 1400 + mid["nx"] * b * 1000, yy + mid["ty"] * a * 1400 + mid["ny"] * b * 1000,
                             yz, _yaw(mid["tx"], mid["ty"]), 1, 1, 1, "containers")
@@ -813,10 +819,13 @@ def plan(city: dict, analysis: dict, lots: list, ring_of, industrial, ground, no
                              **({"platform": shipyard.outline(y), "out_over_water_m": round(y.get("out", 0) / 100)}
                                 if y.get("z") is not None else {})})
         devs.append({"type": f"{y['type']} shipyard", "docks": len(y.get("docks") or [])})
-    # claimed land: no lot under a new waterfront building
+    # claimed land: no lot under a new waterfront building, nor on a container yard
     for b in out.lots:
         r = max(b[3], b[4]) / 2 + 800
         keep = [q for q in keep if math.hypot(q[0] - b[0], q[1] - b[1]) > r]
+    for cx, cy, tx, ty, hl, hd in claims:
+        keep = [q for q in keep if not (abs((q[0] - cx) * tx + (q[1] - cy) * ty) < hl + max(q[3], q[4]) / 2 + 500
+                                        and abs((q[1] - cy) * tx - (q[0] - cx) * ty) < hd + max(q[3], q[4]) / 2 + 500)]
     report = validate(out, segments)
     counts: dict = {}
     for seg in segments:
@@ -928,6 +937,14 @@ def _demo() -> None:
     kinds = {r[7] for r in got["rows"]}
     assert {"seawall", "pile", "deck", "sand"} <= kinds, kinds
     assert "crane" in kinds and "containers" in kinds, "a container port on deep industrial water"
+    # the containers stand on their yard, and no city lot does
+    for yd in [r for r in got["rows"] if r[7] == "yard"]:
+        tx_, ty_ = math.cos(math.radians(yd[3])), math.sin(math.radians(yd[3]))
+        inside = lambda x, y, m=0.0: (abs((x - yd[0]) * tx_ + (y - yd[1]) * ty_) <= yd[4] * 50 + m
+                                      and abs((y - yd[1]) * tx_ - (x - yd[0]) * ty_) <= yd[5] * 50 + m)
+        near = [r for r in got["rows"] if r[7] == "containers" and math.hypot(r[0] - yd[0], r[1] - yd[1]) < 8000]
+        assert near and all(inside(r[0], r[1], -600) for r in near), "every stack on the paving"
+        assert not [q for q in got["lots"] if q[8] is not True and inside(q[0], q[1])], "no city lot on a container yard"
     assert {"float", "slip", "boat"} <= kinds, "a marina with slips"
     assert got["report"]["ok"], got["report"]
     # no seawall where the shore is natural or a beach

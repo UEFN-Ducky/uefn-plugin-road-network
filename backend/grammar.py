@@ -23,30 +23,32 @@ FOLDER = "BuildingKit"  # under <project>/WorldGen/
 
 # style -> corner post, wall symbols -> meshes, and one grammar per storey kind
 STYLES = {
-    "tower": {"corner": "SM_BK_Tower_Corner",
+    # corner posts only where they are the architecture (mansion / civic columns): the walls' outside faces already
+    # meet at every corner (their thickness is on the inside), and posts on every storey read as stripes
+    "tower": {"corner": "",
               "walls": {"Window": "SM_BK_Tower_Wall_Curtain", "Band": "SM_BK_Tower_Wall_Band",
                         "Solid": "SM_BK_Tower_Wall_Solid", "Lobby": "SM_BK_Tower_Wall_Lobby",
                         "Door": "SM_BK_Tower_Wall_RevolvingDoor_Doorway"},
               "front_ground": "[Lobby*,Door,Lobby*]", "ground": "[Solid,Window*,Solid]", "upper": "[{Window:5,Band:1}*]"},
-    "shop": {"corner": "SM_BK_Shop_Corner", "awning": "SM_BK_Shop_Awning",
+    "shop": {"corner": "", "awning": "SM_BK_Shop_Awning",
              "walls": {"Storefront": "SM_BK_Shop_Wall_Storefront", "Entrance": "SM_BK_Shop_Wall_Entrance_Doorway",
                        "Window": "SM_BK_Shop_Wall_Window", "Solid": "SM_BK_Shop_Wall_Solid"},
              "front_ground": "[Storefront*,Entrance,Storefront*]", "ground": "[{Window:1,Solid:1}*]",
              "upper": "[{Window:3,Solid:1}*]"},
     # houses: every door and garage is an empty doorway; its leaf is a separate mesh (DOOR_LEAVES) for Scene Graph
-    "house": {"corner": "SM_BK_House_Corner",
+    "house": {"corner": "",
               "walls": {"Window": "SM_BK_House_Wall_Window", "Double": "SM_BK_House_Wall_DoubleWindow",
                         "Door": "SM_BK_House_Wall_Door_Doorway", "Garage": "SM_BK_House_Wall_Garage_Doorway",
                         "Solid": "SM_BK_House_Wall_Solid", "Balcony": "SM_BK_House_Wall_Balcony"},
               "front_ground": "[Garage,Door,{Window:2,Double:1}*]", "ground": "[{Window:1,Solid:1}*]",
               "upper": "[{Window:2,Double:1}*]"},
-    "apartment": {"corner": "SM_BK_House_Corner",
+    "apartment": {"corner": "",
                   "walls": {"Window": "SM_BK_House_Wall_Window", "Double": "SM_BK_House_Wall_DoubleWindow",
                             "Door": "SM_BK_House_Wall_Door_Doorway", "Solid": "SM_BK_House_Wall_Solid",
                             "Balcony": "SM_BK_House_Wall_Balcony"},
                   "front_ground": "[{Window:2,Double:1}*,Door,{Window:2,Double:1}*]", "ground": "[{Window:2,Solid:1}*]",
                   "upper": "[{Window:2,Balcony:1,Double:1}*]"},
-    "modern": {"corner": "SM_BK_Modern_StonePillar",
+    "modern": {"corner": "",
                "walls": {"Glass": "SM_BK_Modern_SlidingGlassWall", "Wood": "SM_BK_Modern_Wall_Wood",
                          "Garage": "SM_BK_Modern_GarageDoor"},
                "front_ground": "[Glass*]", "ground": "[{Glass:1,Wood:1}*]", "upper": "[{Glass:2,Wood:1}*]"},
@@ -54,16 +56,16 @@ STYLES = {
               "walls": {"Arch": "SM_BK_Mansion_Wall_ArchWindows", "Bay": "SM_BK_Mansion_Wall_BayWindow",
                         "Entrance": "SM_BK_Mansion_Wall_GrandEntrance_Doorway"},
               "front_ground": "[Arch*,Entrance,Arch*]", "ground": "[Arch*]", "upper": "[{Arch:4,Bay:1}*]"},
-    "school": {"corner": "SM_BK_Modern_StonePillar",  # schools, libraries, community and post offices
+    "school": {"corner": "",  # schools, libraries, community and post offices
                "walls": {"Glass": "SM_BK_Modern_SlidingGlassWall", "Wood": "SM_BK_Modern_Wall_Wood",
                          "Door": "SM_BK_Shop_Wall_Entrance_Doorway"},
                "front_ground": "[Glass*,Door,Glass*]", "ground": "[{Glass:2,Wood:1}*]", "upper": "[{Glass:3,Wood:1}*]"},
-    "industrial": {"corner": "SM_BK_Ind_Corner",  # factories, plants, depots, fire and ambulance stations
+    "industrial": {"corner": "",  # factories, plants, depots, fire and ambulance stations
                    "walls": {"Metal": "SM_BK_Ind_Wall_Metal", "Window": "SM_BK_Ind_Wall_Window",
                              "Roller": "SM_BK_Ind_Wall_RollerDoor_Doorway", "Door": "SM_BK_Ind_Wall_Door_Doorway"},
                    "front_ground": "[Roller*,Door,Roller*]", "ground": "[Door,{Metal:2,Window:1}*]",
                    "upper": "[{Window:1,Metal:1}*]"},
-    "jail": {"corner": "SM_BK_Jail_Corner",
+    "jail": {"corner": "",
              "walls": {"Slit": "SM_BK_Jail_Wall_Slit", "Solid": "SM_BK_Jail_Wall_Solid",
                        "Gate": "SM_BK_Jail_Wall_SallyPort"},
              "front_ground": "[Slit*,Gate,Slit*]", "ground": "[{Slit:2,Solid:1}*]", "upper": "[{Slit:2,Solid:1}*]"},
@@ -150,7 +152,7 @@ def modules() -> list:
     """Every BuildingKit mesh the grammar can place (for the piece manifest)."""
     names = set(SHARED.values()) | {BULKHEAD} | set(DETAILS)
     for s in STYLES.values():
-        names |= set(s["walls"].values()) | {s["corner"]} | ({s["awning"]} if "awning" in s else set())
+        names |= set(s["walls"].values()) | ({s["corner"]} if s["corner"] else set()) | ({s["awning"]} if "awning" in s else set())
     for gear in ROOF.values():
         names |= {n for n in gear if n}
     return sorted(names)
@@ -339,7 +341,8 @@ def build(form: str, role: str, d: float, w: float, h: float, seed: int, path, s
                             put("SM_BK_Facade_WallLight", mu + ux * size * s, mv + uy * size * s, z, yaw)
                         if cams:
                             put("SM_BK_Facade_Camera", mu + ux * size * 0.3, mv + uy * size * 0.3, z, yaw)
-                put(style["corner"], pu, pv, z, yaw)
+                if style["corner"]:
+                    put(style["corner"], pu, pv, z, yaw)
                 if pipes:
                     put("SM_BK_Facade_Downpipe", pu, pv, z, yaw)
             if cams and z0 == 0:
@@ -390,7 +393,9 @@ def _demo() -> None:
     assert all(0.65 <= r[4] <= 1.35 for rs in rows.values() for r in rs if rs is not rows["SM_BK_Floor"]), "modules barely stretch"
     walls = sum(len(v) for k, v in rows.items() if "_Wall_" in k)
     assert walls == 2 * 2 * (3 + 2), walls  # 2 storeys x (two 15 m walls of 3 + two 12 m walls of 2)
-    assert len(rows["SM_BK_Shop_Corner"]) == 4 * 2 and len(rows["SM_BK_Parapet"]) == 10 and len(rows["SM_BK_Floor"]) == 1
+    assert "SM_BK_Shop_Corner" not in rows and len(rows["SM_BK_Parapet"]) == 10 and len(rows["SM_BK_Floor"]) == 1, \
+        "no corner posts on a shop"
+    assert len(build("box", "mansion", 1500, 1200, 700, 7, p)[0]["SM_BK_Mansion_Column"]) == 4 * 2, "a mansion keeps its columns"
     # each wall runs along its edge: modules on the front edge face +Y yaw (90) and start at the corner
     assert {r[3] for r in front} == {90.0}, front
     # grammar
