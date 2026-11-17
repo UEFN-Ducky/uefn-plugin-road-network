@@ -952,6 +952,9 @@ def arm_samples(actors: list, step: float = 300.0) -> list:
 NATURAL = ("tree", "street_tree", "bush", "rock")
 
 
+STACKED = ("Container stacks",)  # site pieces that stand on a yard, not on a road: kept off every road too
+
+
 def clear_roads(placed: dict, samples: list) -> dict:
     """Nothing stands on a road. Every layer is placed by its own rule (a setback from its own street, a lot, a
     yard, a grove round an interchange), and each rule knew some roads and not others: garden trees none at all,
@@ -969,10 +972,11 @@ def clear_roads(placed: dict, samples: list) -> dict:
         return gone
     near = {(gx + i, gy + j) for gx, gy in grid for i in (-1, 0, 1) for j in (-1, 0, 1)}  # (most of a forest is far from any road)
     for name, layer in placed.items():
-        if layer.get("kind") in ("buildings", "site", "walls") or layer.get("role") in ("bridge", "sidewalk_corner"):
+        stacked = name in STACKED
+        if not stacked and (layer.get("kind") in ("buildings", "site", "walls") or layer.get("role") in ("bridge", "sidewalk_corner")):
             continue
         natural = layer.get("role") in NATURAL or layer.get("kind") in SCATTERED
-        slack = 50.0 if natural else -100.0
+        slack = 650.0 if stacked else 50.0 if natural else -100.0  # (a 12 m stack: its half length clear of the road)
         keep = []
         for p in layer.get("points") or []:
             cx, cy = int(p[0] // cell), int(p[1] // cell)
@@ -2627,6 +2631,11 @@ def _demo() -> None:
           "Bridge piers": {"kind": "site", "role": "bridge", "box_m": [2, 2, 1], "points": [[0, 0, 0, 0, 1, 1, 5]]}}
     assert clear_of(on, [(x, 0.0, 650.0, 1.0, 0.0) for x in range(-2000, 2001, 400)]) == 1
     assert [p[1] for p in on["T"]["points"]] == [6000] and on["T"]["count"] == 1 and len(on["Bridge piers"]["points"]) == 1
+    # a container stack on a street goes (site pieces are otherwise never swept); one in its yard 20 m off stays
+    stacks = {"Container stacks": {"kind": "site", "role": "site", "count": 2, "shown": 2,
+                                   "points": [[0, 300, 0, 0.0, 1, 1, 1], [0, 2500, 0, 0.0, 1, 1, 1]]}}
+    assert clear_roads(stacks, [(x, 0.0, 500.0) for x in range(-2000, 2001, 300)]) == {"Container stacks": 1}
+    assert [p[1] for p in stacks["Container stacks"]["points"]] == [2500]
     # a field gets the biggest real pitch that fits, at scale 1, turned to fit; too small for 5-a-side: none
     assert fit_pitch(110, 75) == ("pitch11", 0) and fit_pitch(46, 70) == ("pitch7", 90) and fit_pitch(30, 20) is None
     sport = site_layers([{"private": {"grounds": [[0, 0, 0.0, 70.0, 50.0, "field", "school"],

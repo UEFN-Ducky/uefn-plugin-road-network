@@ -2150,12 +2150,14 @@ def register(api) -> None:
             # last of all: nothing on a road surface (junctions and private streets are road too), no tree in a
             # building. Every layer above was placed by its own rule, and each knew some roads and not others.
             caps = [(p[0], p[1], p[4] * 1000.0) for p in (ends.get("Road ends") or {}).get("points") or []]
-            _PREVIEW_CACHE["swept"] = {"off_roads": pl.clear_roads(placed, pl.surface_samples(actors, cities) + caps),
-                                       "out_of_buildings": pl.clear_buildings(placed)}
             # waterfront structures (piers, marinas, quays, beaches, ports, stilt / floating homes)
             placed.update(waterfront.layers(cities))
             # airports: aircraft, jet bridges, hangars, tower, lights, aprons, fuel farm
             placed.update(airport.layers([r for c in cities for r in (c.get("private") or {}).get("airport") or []]))
+            # (swept after the ports and airports are in: a container yard keeps its trees out and its stacks off
+            # the streets like any other paved slab)
+            _PREVIEW_CACHE["swept"] = {"off_roads": pl.clear_roads(placed, pl.surface_samples(actors, cities) + caps),
+                                       "out_of_buildings": pl.clear_buildings(placed)}
             # every generated world: a building the ground would bury is lifted onto it, here, before any push
             # (worlds over another's landscape were skipped once: their houses went in with the hill inside them)
             if gen and cut and terrain.get("heights"):
