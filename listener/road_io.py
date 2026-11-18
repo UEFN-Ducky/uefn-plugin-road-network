@@ -485,12 +485,32 @@ def _look(name: str) -> tuple:
     return next((v for k, v in _LOOKS if k.lower() in name.lower()), _DEFAULT_LOOK)
 
 
+def _load_or_create(name: str, folder: str, cls, factory):
+    """The asset at folder/name, made when it isn't there. create_asset gives None when the name is taken (an
+    unsaved asset in memory, a redirector): load that one instead, or say which path is stuck."""
+    eal, path = unreal.EditorAssetLibrary, f"{folder}/{name}"
+    got = eal.load_asset(path) if eal.does_asset_exist(path) else None
+    if got is None:
+        got = unreal.AssetToolsHelpers.get_asset_tools().create_asset(name, folder, cls, factory)
+    if got is None:
+        got = unreal.load_object(None, f"{path}.{name}")
+    if got is None:
+        raise RuntimeError(f"couldn't load or make {path} (a redirector or a locked file there?)")
+    return got
+
+
+def _pieces_without(todo: dict, missing_looks: set) -> tuple:
+    """Street kit pieces that can still be built, and the names of those that need a look that couldn't be made."""
+    keep = {n: v for n, v in todo.items() if not set(v[0]) & missing_looks}
+    return keep, [n for n in todo if n not in keep]
+
+
 def _world_pbr_master(folder: str, root: str):
     path = f"{folder}/{_MASTER}"
     if unreal.EditorAssetLibrary.does_asset_exist(path):
-        return unreal.load_asset(path)
+        return _load_or_create(_MASTER, folder, unreal.Material, unreal.MaterialFactoryNew())
     mel = unreal.MaterialEditingLibrary
-    m = unreal.AssetToolsHelpers.get_asset_tools().create_asset(_MASTER, folder, unreal.Material, unreal.MaterialFactoryNew())
+    m = _load_or_create(_MASTER, folder, unreal.Material, unreal.MaterialFactoryNew())
 
     def node(cls, x, y, **props):
         e = mel.create_material_expression(m, cls, x, y)
@@ -629,9 +649,7 @@ def _save_batch(assets: list) -> None:
 def _mi(folder: str, name: str, master, root: str, look: tuple, tint=None):
     """An instance of the world PBR master: look = (texture set, tile cm, roughness x, metallic, emissive)."""
     mel, eal = unreal.MaterialEditingLibrary, unreal.EditorAssetLibrary
-    path = f"{folder}/{name}"
-    mi = eal.load_asset(path) if eal.does_asset_exist(path) else unreal.AssetToolsHelpers.get_asset_tools().create_asset(
-        name, folder, unreal.MaterialInstanceConstant, unreal.MaterialInstanceConstantFactoryNew())
+    mi = _load_or_create(name, folder, unreal.MaterialInstanceConstant, unreal.MaterialInstanceConstantFactoryNew())
     mel.set_material_instance_parent(mi, master)
     tex, tile, rough, metal, glow = look
     for ch, pname in (("B", "Base"), ("R", "Rough")):
@@ -1068,13 +1086,23 @@ def road_network_street_kit(root: str = "", rebuild: bool = False, plan: bool = 
     for n in todo:
         if not eal.does_directory_exist(where[n]):
             eal.make_directory(where[n])
-    master = _world_pbr_master(mat_folder, root)
+    try:
+        master = _world_pbr_master(mat_folder, root)
+    except Exception as exc:  # noqa: BLE001 - nothing can be built without it: say why, never a NoneType crash
+        return {"ok": False, "made": [], "paths": [], "errors": [f"{_MASTER}: {exc}"[:200]]}
     need = {m for mats, *_ in todo.values() for m in mats}  # some pieces carry a 3rd value: their folder
-    looks = {k: _mi(mat_folder, f"MI_Street_{k}", master, root, look, unreal.LinearColor(*tint, 1))
-             for k, (look, tint) in _STREET_LOOKS.items() if k in need}
+    looks, errors = {}, []
+    for k, (look, tint) in _STREET_LOOKS.items():
+        if k in need:
+            try:
+                looks[k] = _mi(mat_folder, f"MI_Street_{k}", master, root, look, unreal.LinearColor(*tint, 1))
+            except Exception as exc:  # noqa: BLE001 - one bad look skips only the pieces that wear it
+                errors.append(f"MI_Street_{k}: {exc}"[:200])
+    todo, skipped = _pieces_without(todo, need - set(looks))
+    errors += [f"{n}: skipped, its material couldn't be made" for n in skipped]
     gp = unreal.GeometryScript_Primitives
     base = unreal.GeometryScriptPrimitiveOriginMode.BASE
-    made, errors = [], []
+    made = []
     for name, (mats, parts, *_f) in todo.items():
         try:
             dm = unreal.DynamicMesh()
@@ -1103,6 +1131,8 @@ def road_network_street_kit(root: str = "", rebuild: bool = False, plan: bool = 
                 res = unreal.GeometryScript_NewAssetUtils.create_new_static_mesh_asset_from_mesh(
                     dm, path, unreal.GeometryScriptCreateNewStaticMeshAssetOptions())
                 sm = res[0] if isinstance(res, tuple) else res
+                if sm is None:
+                    raise RuntimeError(f"couldn't make the mesh asset {path}")
             opts = unreal.GeometryScriptCopyMeshToAssetOptionsV2()
             opts.replace_materials = True
             opts.new_materials = [looks[m] for m in mats]
