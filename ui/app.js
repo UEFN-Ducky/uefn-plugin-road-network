@@ -123,9 +123,10 @@ const savePrefs = () => call("prefs.set", { id: "ui", value: { gen: state.gen, v
 // ------------------------------------------------------------------ 3D scene
 const view = $("view");
 const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+const FULL_DPR = Math.min(2, window.devicePixelRatio || 1);  // while the view moves it draws at 1x (loop)
+renderer.setPixelRatio(FULL_DPR);
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.PCFShadowMap;  // (PCFSoft sampled every shadowed pixel many more times)
 // the sun never moves with the camera: the shadow map (every building, tree and the terrain drawn again) is
 // redrawn when the view comes to rest, never on each frame of a fly / orbit (loop)
 renderer.shadowMap.autoUpdate = false;
@@ -536,7 +537,14 @@ function resize() {
   needsDraw = true;
 }
 new ResizeObserver(resize).observe(view);
-const lastCam = new THREE.Matrix4();
+const lastCam = new THREE.Matrix4(), _far = new THREE.Vector3();
+function cullFar() {  // tiles of small things (addChunks far) past their distance are not drawn
+  for (const o of groups.pcg.children) {
+    const far = o.userData.far, s = o.boundingSphere;
+    if (!far || !s) continue;
+    o.visible = camera.position.distanceTo(_far.copy(s.center).applyMatrix4(o.matrixWorld)) - s.radius < far;
+  }
+}
 let shadowsStale = true;
 function loop(now) {
   flyStep(now || performance.now());
@@ -545,6 +553,8 @@ function loop(now) {
     camera.updateMatrixWorld();
     const moving = !camera.matrixWorld.equals(lastCam);
     lastCam.copy(camera.matrixWorld);
+    if (FULL_DPR > 1 && renderer.getPixelRatio() !== (moving ? 1 : FULL_DPR)) renderer.setPixelRatio(moving ? 1 : FULL_DPR);
+    if (moving || needsDraw) cullFar();
     if (needsDraw || gliding) shadowsStale = true;  // something may have changed: redraw them once at rest
     renderer.shadowMap.needsUpdate = shadowsStale && !moving;
     if (!moving) shadowsStale = false;
@@ -1117,8 +1127,35 @@ function ringPoint(c, share, deg) {
   const r = (reach[i] + (reach[(i + 1) % 360] - reach[i]) * (t - Math.floor(t))) * share;
   return [c.x + core[0] + Math.cos(a) * r, c.y + core[1] + Math.sin(a) * r];
 }
-// where each instance of an instanced mesh stands (x, y in world cm), so a city's own can be told apart
-const xyOf = (rows) => { const a = new Float32Array(rows.length * 2); rows.forEach((p, i) => { a[2 * i] = p[0]; a[2 * i + 1] = p[1]; }); return a; };
+// A layer's instances in one InstancedMesh per 1 km tile instead of one for the whole world: three.js culls a
+// whole object or nothing, so a world-wide mesh was drawn in full (every instance) wherever the camera looked.
+// items: [matrix, colour or null, x, y (UE cm)]. info(i) gets the index into items. far: metres past which a
+// tile of small things is not drawn at all (loop), 0 = always.
+const CHUNK_CM = 100000;
+function addChunks(geo, mat, items, { info = null, cast = true, receive = true, far = 0 } = {}) {
+  const tiles = new Map();
+  items.forEach((it, i) => {
+    const k = `${Math.floor(it[2] / CHUNK_CM)}_${Math.floor(it[3] / CHUNK_CM)}`;
+    (tiles.get(k) || tiles.set(k, []).get(k)).push(i);
+  });
+  for (const idx of tiles.values()) {
+    const mesh = new THREE.InstancedMesh(geo, mat, idx.length);
+    const xy = new Float32Array(idx.length * 2);
+    idx.forEach((n, i) => {
+      const [m, c, x, y] = items[n];
+      mesh.setMatrixAt(i, m);
+      if (c) mesh.setColorAt(i, c);
+      xy[2 * i] = x; xy[2 * i + 1] = y;
+    });
+    mesh.computeBoundingSphere();
+    mesh.userData.xy = xy;
+    if (info) mesh.userData.info = (i) => info(idx[i]);
+    if (far) mesh.userData.far = far;
+    mesh.castShadow = cast;
+    mesh.receiveShadow = receive;
+    groups.pcg.add(mesh);
+  }
+}
 
 // PCG preview: one instanced shape per layer, sized in metres like the real thing
 const PCG_COLORS = ["amber", "yellow", "purple", "red", "accent", "fg-dim"];  // street pieces: never grass green
@@ -1194,20 +1231,14 @@ function drawBuildings(layer, colour, name) {
     }
   }
   const mat = new THREE.MeshStandardMaterial({ roughness: glass ? 0.35 : 0.7, metalness: glass ? 0.35 : 0.05 });
-  for (const [list, geo] of [[boxes, new THREE.BoxGeometry(1, 1, 1)], [cyls, new THREE.CylinderGeometry(0.5, 0.5, 1, 20)]]) {
+  for (const [list, geo] of [[boxes, new THREE.BoxGeometry(1, 1, 1)], [cyls, new THREE.CylinderGeometry(0.5, 0.5, 1, 12)]]) {
     if (!list.length) continue;
-    const mesh = new THREE.InstancedMesh(geo, mat, list.length);
-    list.forEach(([mtx, tint], i) => { mesh.setMatrixAt(i, mtx); mesh.setColorAt(i, tint); });
-    mesh.userData.xy = xyOf(list.map((row) => row[2]));
-    mesh.userData.info = (i) => {
+    addChunks(geo, mat, list.map(([mtx, tint, p]) => [mtx, tint, p[0], p[1]]), { info: (i) => {
       const p = list[i][2];
       return layerInfo(name, layer, p, [["Form", forms[p[6]] || "box"], ["Lot", `${p[7] || "?"} m wide × ${p[8] || "?"} m deep, ${p[5] || "?"} m tall`],
         ["Built as", layer.build === "modular" ? "kit modules stacked by the grammar" : "one kit building stretched to the lot"],
         ["Its real pieces", "press Real pieces here on the Layers tab"]]);
-    };
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    groups.pcg.add(mesh);
+    } });
   }
 }
 // Every building's own foundation, as the push builds it (backend/kit_bake.foundation: change both together): a
@@ -1247,11 +1278,8 @@ function drawLotGround(layer) {
   }
   for (const [list, colour, at] of [[found, col(MAT.barrier), foundAt], [walks, col("fg-dim").lerp(col("fg"), 0.5), walksAt]]) {
     if (!list.length) continue;
-    const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: colour, roughness: 0.95 }), list.length);
-    list.forEach((m, i) => mesh.setMatrixAt(i, m));
-    mesh.userData.xy = xyOf(at);
-    mesh.receiveShadow = true;
-    groups.pcg.add(mesh);
+    addChunks(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: colour, roughness: 0.95 }),
+      list.map((m, i) => [m, null, at[i][0], at[i][1]]), { cast: false });
   }
 }
 // only: just these layers. from: the layers to draw instead of the world's (same names in the same order, so each
@@ -1273,13 +1301,12 @@ function drawPcg(legend, only, from) {
       const [bx, by, bz] = layer.box_m || [1, 1, 1];
       const stall = layer.mesh === "SM_Kit_ParkingStall";  // a painted line on the car park's asphalt, not a white slab
       const tint = layer.tint || (stall ? MAT.paint : layer.mesh === "SM_City_CT_MidRise" ? "fg-dim" : MAT.drive);
-      const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: col(tint), roughness: 0.9 }), pts.length);
-      const zx = state.view.zx || 1;
-      pts.forEach(([x, y, z, yaw, sx, sy, sz], i) => {
+      const zx = state.view.zx || 1, items = [];
+      pts.forEach(([x, y, z, yaw, sx, sy, sz]) => {
         if (layer.mesh === STAY) {
           stayBar(dummy, x, y, z + 60, yaw, sx, sz);
           dummy.updateMatrix();
-          return mesh.setMatrixAt(i, dummy.matrix);
+          return items.push([dummy.matrix.clone(), null, x, y]);
         }
         const a = yaw * Math.PI / 180, side = stall ? by * sy * 50 : 0;  // the line down one long side of the stall
         // (roads are drawn 60 cm up so they never sink into the ground: a piece lying on one goes up with it, and
@@ -1290,12 +1317,10 @@ function drawPcg(legend, only, from) {
         dummy.scale.set(stall ? 0.12 : by * sy, Math.max(0.05, bz * sz) * zx, bx * sx);
         if (inExact(x, y)) dummy.scale.setScalar(0);
         dummy.updateMatrix();
-        mesh.setMatrixAt(i, dummy.matrix);
+        items.push([dummy.matrix.clone(), null, x, y]);
       });
-      mesh.receiveShadow = true;
-      mesh.userData.xy = xyOf(pts);
-      mesh.userData.info = (i) => layerInfo(name, layer, pts[i]);
-      groups.pcg.add(mesh);
+      addChunks(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: col(tint), roughness: 0.9 }), items,
+        { info: (i) => layerInfo(name, layer, pts[i]), cast: false });
       legend[`${name} · ${layer.count.toLocaleString()}`] = tint;
       return;
     }
@@ -1310,21 +1335,18 @@ function drawPcg(legend, only, from) {
       const leafy = layer.role === "tree" || layer.role === "street_tree" || layer.role === "bush" || layer.kind === "foliage" && !/rock|stone|boulder/i.test(name);
       const base = leafy ? tone("green", 0.45, layer.role === "bush" ? 0.4 : 0.33).lerp(tone("amber", 0.4, 0.34), layer.role === "bush" ? 0.25 : 0.12)
         : col(colour);
-      const mesh = new THREE.InstancedMesh(geo, new THREE.MeshStandardMaterial({ roughness: 0.85 }), pts.length);
-      mesh.userData.xy = xyOf(pts);
-      mesh.userData.info = (i) => layerInfo(name, layer, pts[i]);
-      pts.forEach(([x, y, z, yaw, s], i) => {
+      const items = pts.map(([x, y, z, yaw, s]) => {
         dummy.position.copy(toV(x, y, z));
         dummy.rotation.set(0, -yaw * Math.PI / 180, 0);
         dummy.scale.setScalar(s);
         dummy.position.y += lift * s;
         dummy.updateMatrix();
-        mesh.setMatrixAt(i, dummy.matrix);
-        mesh.setColorAt(i, leafy ? vary(base, x, y, 1.4) : base);
+        return [dummy.matrix.clone(), leafy ? vary(base, x, y, 1.4) : base, x, y];
       });
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      groups.pcg.add(mesh);
+      // small things (bushes, benches, signs, lamps) are not drawn past 2.5 km, trees past 6 km: specks there
+      const small = layer.role === "bush" || /traffic|stop|sign|hydrant|bench|bin|trash|lamp|light|pole|post|grass|bush|shrub|flower/i.test(name);
+      addChunks(geo, new THREE.MeshStandardMaterial({ roughness: 0.85 }), items,
+        { info: (i) => layerInfo(name, layer, pts[i]), cast: !small, far: small ? 2500 : leafy ? 6000 : 0 });
     }
     if (building) drawLotGround(layer);
     legend[`${name} · ${layer.count.toLocaleString()}`] = colour;
