@@ -122,6 +122,9 @@ CHOICES = {
     # outside the core every other local street line is left out: ~200 m super-blocks that subdivisions and
     # apartment complexes fill with their own private streets (neighbourhoods.py)
     "superblocks": (("yes", "no"), "yes"),
+    # the suburbs' own road strategy: 'blocks' keeps the city's grid out to its edge, 'winding' ends the grid at the
+    # normal city and grows curving collectors, crescents, loops and cul-de-sacs from there (winding_suburbs)
+    "suburbs": (("blocks", "winding"), "blocks"),
     # urban freeways through each big city, planned before its blocks (freeways.py): viaducts over the grid,
     # service interchanges on the main roads, a stack where two freeways cross
     "freeways": (("yes", "no"), "yes"),
@@ -275,7 +278,7 @@ HIGHWAYS = CHOICES["highway"][0]
 
 
 # what one city may have or not, over the world's choice (city["features"], the Cities list's remove / + Add)
-FEATURES = ("airports", "shipyards", "freeways", "waterfront", "canals", "planner")
+FEATURES = ("airports", "shipyards", "freeways", "waterfront", "canals", "planner", "suburbs")
 
 
 CITY_SHARES = ("downtown", "normal",  # ... and its own district sizes (shares of its radius), kept with them
@@ -1892,6 +1895,13 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
             todo.extend(adj.get(n, []))
         edges = [e for e in edges if e[0] in seen]
         nodes = {n: p for n, p in nodes.items() if n in seen}
+    if o["suburbs"] == "winding" and style != "grid":
+        # the suburbs are no grid: public winding streets from the grid's last junctions out to the city's edge.
+        # Everything below (water, shores, freeways, widths, one network) and every lot, house and PCG layer
+        # treats them as the streets they are
+        nodes, edges = winding_suburbs(city, o, nodes, ring, edges, water_of(city, o, wet))
+        if virtual:  # (no block lines of the grid that is gone there)
+            virtual[:] = [v for v in virtual if max(ring.get(v[0], 0), ring.get(v[1], 0)) <= normal]
     yards = (city.get("shipyards") or []) + (city.get("shipyards_near") or [])
     fields = city.get("airports") or []
     if yards or fields:  # shipyards and airports are dedicated districts with their own roads
@@ -2071,6 +2081,107 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
                     return True
             return bool(fw.lines and fw.street_blocked(v[2], v[3], 500.0))
         virtual[:] = [v for v in virtual if not gone(v)]
+    return nodes, edges
+
+
+SUB_STEP = 4500.0  # winding suburb streets: a point every 45 m
+SUB_CLEAR = 7000.0  # ... never closer than this to another street's point (two rows of lots fit between)
+SUB_OFF = 4000.0  # ... nor this close to a street of the grid
+SUB_SEED_GAP = 20000.0  # a collector leaves the grid about every 200 m
+SUB_KEY = 10 ** 6
+
+
+def winding_suburbs(city: dict, o: dict, nodes: dict, ring: dict, edges: list, wet=None) -> tuple:
+    """The suburbs as an organic street network instead of the grid: past the normal city every grid street goes
+    (the two main axes stay: the roads out of town), and from the grid's last junctions winding collectors grow
+    out to the city's edge, local streets branch off them on both sides (crescents; some close a loop on a
+    neighbour), and short cul-de-sacs fill what room is left. The further out, the more a street winds. Nodes are
+    (SUB_KEY + n, 0, 0) (three ints: they sort with the grid's (ix, iy) wherever nodes are ordered); all are public streets, so lots front them (frontage_lots) and every end gets its turnaround.
+    ponytail: streets ignore the hills here (the ground is graded to them); follow hill_at if they must."""
+    normal = max(o["normal"], o["downtown"])
+    outer = lambda e: max(ring[e[0]], ring[e[1]]) > normal and not ((e[0][0] == 0 == e[1][0]) or (e[0][1] == 0 == e[1][1]))
+    cut, edges, old = [e for e in edges if outer(e)], [e for e in edges if not outer(e)], nodes
+    used = {n for e in edges for n in e[:2]}
+    nodes = {n: p for n, p in old.items() if n in used}
+    rnd = random.Random(f"suburbs:{city.get('seed', 1)}")
+    core = city.get("core") or (0, 0)
+    cx, cy = city["x"] + core[0], city["y"] + core[1]
+    kind, cell, grid, adj, count = o["suburb_roads"], SUB_CLEAR, {}, {}, 0
+    turn = lambda a, b: (a - b + math.pi) % (2 * math.pi) - math.pi
+
+    def put(x, y, key):
+        grid.setdefault((int(x // cell), int(y // cell)), []).append((x, y, key))
+
+    for n, p in nodes.items():
+        put(p[0], p[1], n)
+    for e in edges:  # (and along the grid's streets, so none is crossed between its junctions)
+        p, q = nodes[e[0]], nodes[e[1]]
+        L = math.dist(p[:2], q[:2])
+        for k in range(1, int(L // 3000)):
+            put(p[0] + (q[0] - p[0]) * k * 3000 / L, p[1] + (q[1] - p[1]) * k * 3000 / L, None)
+
+    def hit(x, y, skip):
+        best = None
+        for gx in (-1, 0, 1):
+            for gy in (-1, 0, 1):
+                for px, py, key in grid.get((int(x // cell) + gx, int(y // cell) + gy), ()):
+                    d = math.hypot(px - x, py - y)
+                    if key not in skip and d < (SUB_OFF if key is None else SUB_CLEAR) and (best is None or d < best[0]):
+                        best = (d, key)
+        return best
+
+    def grow(start, h, steps, depth, skip):
+        nonlocal count
+        skip, last, line = set(skip) | {start}, start, []
+        x, y = nodes[start][:2]
+        ph, w, c = rnd.uniform(0, 2 * math.pi), rnd.uniform(0.5, 0.9), rnd.uniform(-0.22, 0.22)
+        for i in range(steps):
+            far = max(0.0, min(1.0, (zone_share(city, x, y) - normal) / max(1e-6, 1.0 - normal)))
+            if depth == 0:  # a collector heads out of town, swinging wider the further out it is
+                h += 0.2 * turn(math.atan2(y - cy, x - cx), h) + (0.1 + 0.4 * far) * math.sin(ph + i * w)
+            elif i:  # a local street keeps one bend: a crescent
+                h += c * (0.4 + 0.6 * far)
+            nx, ny = x + SUB_STEP * math.cos(h), y + SUB_STEP * math.sin(h)
+            if zone_share(city, nx, ny) > 0.97 or (wet and wet(nx, ny)) or (city.get("yield_to") and yielded(city, nx, ny)):
+                break
+            got = hit(nx, ny, skip)
+            if got:
+                key = got[1]  # another winding street in the way: close the loop on it, or end here (a cul-de-sac)
+                if depth and line and key is not None and len(key) == 3 and key not in adj.get(last, ()) and \
+                        math.dist(nodes[last][:2], nodes[key][:2]) < 2.2 * SUB_STEP and rnd.random() < 0.6:
+                    edges.append([last, key, kind])
+                    adj.setdefault(last, set()).add(key)
+                    adj.setdefault(key, set()).add(last)
+                break
+            key = (SUB_KEY + count, 0, 0)
+            count += 1
+            nodes[key] = [nx, ny]
+            put(nx, ny, key)
+            skip.add(key)
+            edges.append([last, key, kind])
+            adj.setdefault(last, set()).add(key)
+            adj.setdefault(key, set()).add(last)
+            line.append((key, h))
+            last, x, y = key, nx, ny
+        return line
+
+    seeds = []  # where a street out of the grid was cut: (junction that stays, the way that street ran)
+    for e in cut:
+        if (e[0] in used) != (e[1] in used):
+            s, gone = (e[0], e[1]) if e[0] in used else (e[1], e[0])
+            if all(math.dist(nodes[s][:2], nodes[t][:2]) >= SUB_SEED_GAP for t, _h in seeds):
+                seeds.append((s, math.atan2(old[gone][1] - old[s][1], old[gone][0] - old[s][0])))
+    level = [grow(s, h, 60, 0, ()) for s, h in seeds]
+    for depth in (1, 2):  # local streets off the collectors, then cul-de-sacs off those where there is room
+        nxt = []
+        for line in level:
+            for i, (key, h) in enumerate(line[1:], 1):
+                for side in ((1 if i % 2 else -1,) if depth == 1 else (1, -1)):
+                    if depth == 2 and rnd.random() > 0.6:
+                        continue
+                    steps = rnd.randint(3, 8) if depth == 1 else rnd.randint(1, 3)
+                    nxt.append(grow(key, h + side * (math.pi / 2 + rnd.uniform(-0.25, 0.25)), steps, depth, adj.get(key, ())))
+        level = nxt
     return nodes, edges
 
 

@@ -3594,7 +3594,8 @@ function cityContents(c) {
 const CITY_FEATURES = [  // [key, label, icon, value when on, value when off] (citygen.FEATURES)
   ["airports", "Airport", "route", "auto", "none"], ["shipyards", "Shipyards", "wrench", "auto", "none"],
   ["freeways", "Freeways", "road", "yes", "no"], ["waterfront", "Waterfront", "water", "yes", "no"],
-  ["canals", "Canals", "wave", "canal_city", "none"], ["planner", "City services", "layers", "yes", "no"]];
+  ["canals", "Canals", "wave", "canal_city", "none"], ["planner", "City services", "layers", "yes", "no"],
+  ["suburbs", "Winding suburbs", "road", "winding", "blocks"]];
 function cityFeatures(c) {
   const own = c.features || {};
   const has = (k, on) => (own[k] ?? state.gen[k]) === on;
