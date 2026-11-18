@@ -79,11 +79,11 @@ const GEN_DEFAULTS = {
   block_m: 100, block_ratio: 1, wobble: 0.12, follow_hills: 0.8, green_lots: 0, prune: 0.22, downtown: 0.4, normal: 0.75, highway: "4L", highway_curve: 0.08,
   core_roads: "4L", neighbourhood_roads: "2S", suburb_roads: "2L", one_way_core: "no", interchange: "direct", overpasses: "yes",
   city_size: 1, city_gap_m: 300, freeways: "yes", waterfront: "yes", canals: "none", shipyards: "auto",
-  airports: "auto", military_base: "no", wind_deg: 240, city_ground: "natural",
+  airports: "auto", military_base: "no", wind_deg: 240, city_ground: "natural", island: "none",
 };
 const OPTION_KEYS = ["hill_km", "roughness", "detail", "ridges", "peaks", "flatten_m", "sea_m", "water_depth_m", "terrace_m", "smooth", "landscape_px", "block_m", "block_ratio", "wobble", "follow_hills", "green_lots",
   "prune", "downtown", "normal", "highway", "highway_curve", "core_roads", "neighbourhood_roads", "suburb_roads", "one_way_core",
-  "interchange", "overpasses", "city_size", "city_gap_m", "freeways", "interchange_models", "waterfront", "canals", "shipyards", "airports", "military_base", "wind_deg", "city_ground"];
+  "interchange", "overpasses", "city_size", "city_gap_m", "freeways", "interchange_models", "waterfront", "canals", "shipyards", "airports", "military_base", "wind_deg", "city_ground", "island"];
 const VIEW_DEFAULTS = { zx: 1, pcg: true, terrain: true, water: true, districts: true, points: false, look: "natural", sunAz: 135, sunEl: 52, shadows: true };
 const state = {
   nets: [], net: "", actor: "", geo: null, sel: null, cities: [], tab: "world", framed: false, live: false,
@@ -1743,7 +1743,12 @@ function buildPanes() {
         options: [["natural", "Natural", "terrain"], ["flatten", "Flatten", "layers"]] })).el,
       h("div", { class: "rn-hint" }, "Natural keeps the hills as they are: a moved city sits on the land it lands on. "
         + "Flatten levels the land under each city; lakes and the sea stay where they are either way. "
-        + "New terrain only: a world on scanned ground keeps that ground.")),
+        + "New terrain only: a world on scanned ground keeps that ground."),
+      (ctl.island = segmented({ label: "Island", value: state.gen.island, onChange: (v) => setGen("island", v),
+        options: [["none", "Off", "terrain"], ["one", "One island", "wave"], ["many", "Islands", "layers"]] })).el,
+      h("div", { class: "rn-hint" }, "One island: the land is one big island in the sea, big enough for every city. "
+        + "Islands: each city on its own island plus a few islets; highways bridge the water. Cities always stay on "
+        + "dry land. With Water level Off the sea sits at 0 m. New terrain only.")),
     section("This world", h("div", { id: "worldSummary" }), h("div", { id: "worldHeightmap" })));
   // ---- Terrain
   ctl.look = segmented({ label: "Preview look", value: state.view.look, options: [["natural", "Natural", "terrain"], ["height", "Height", "layers"], ["slope", "Slope", "wave"]],

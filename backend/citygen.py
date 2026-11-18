@@ -148,6 +148,10 @@ CHOICES = {
     # the ground under a city: 'natural' leaves the hills as they are (streets drape, lots get their own pads,
     # water is bridged), 'flatten' presses a flat plateau under every city
     "city_ground": (("natural", "flatten"), "natural"),
+    # the land as an island in the sea: 'one' one big island round the map's middle, 'many' an island for each
+    # city plus a few islets (highways bridge the straits); every city is always on dry land. Water level
+    # Off with an island: the sea sits at 0 m
+    "island": (("none", "one", "many"), "none"),
 }
 # steepest grade per road (rise / run): arterials and highways 4 %, collectors 5-6 %, local streets 8 %,
 # dirt 10 % (CityEngine-style targets for a game, not legal limits). Steeper ground is cut and filled.
@@ -493,6 +497,10 @@ def terrain(seed: int, size_cm: float, relief_cm: float, cities: list, grid: int
         return h
 
     base = [[shape(n) for n in row] for row in noise]
+    if o["island"] != "none":
+        sea = 0.0 if sea is None else sea
+        base = _islands(base, xs, ys, seed, size_cm, center, cities, o["island"], sea, depth, shore,
+                        o["flatten_m"] * 100)
     base, sea = _dig_lakes(base, xs, ys, lakes or [], sea, depth, shore)
 
     def at(x, y):
@@ -538,6 +546,51 @@ def terrain(seed: int, size_cm: float, relief_cm: float, cities: list, grid: int
             row.append(round(h, 1))
         rows.append(row)
     return {"min": lo, "max": hi, "grid": grid, "heights": rows, "sea": sea}
+
+
+ISLAND_COAST = 0.25  # the coast: land falls into the sea over this share of an island's radius
+ISLAND_WOBBLE = 0.22  # how far the coastline wanders in and out (share of the radius)
+
+
+def _islands(base: list, xs: list, ys: list, seed: int, size_cm: float, center: tuple, cities: list, mode: str,
+             sea: float, depth: float, shore: float, blend: float) -> list:
+    """The hills cut to islands: land inside each island (raised so its lowest ground is a beach over the sea),
+    open sea outside, a wandering coastline between. 'one': one island round the map's middle, big enough for
+    every city; 'many': one per city and a few islets. Each city's circle (+ its flatten blend) is always land."""
+    rnd = random.Random(seed * 31 + 7)
+    half = size_cm / 2
+    discs = []  # (x, y, radius)
+    if mode == "one":
+        r = 0.36 * size_cm
+        for c in cities:
+            r = max(r, math.hypot(c["x"] - center[0], c["y"] - center[1]) + c["radius"] * 1.15 + blend)
+        discs.append((center[0], center[1], min(r, 0.47 * size_cm)))
+    else:
+        for c in cities:
+            discs.append((c["x"], c["y"], c["radius"] * 1.3 + blend))
+        for _ in range(rnd.randint(2, 4) + (3 if not cities else 0)):  # islets out in the sea
+            discs.append((center[0] + rnd.uniform(-0.75, 0.75) * half, center[1] + rnd.uniform(-0.75, 0.75) * half,
+                          size_cm * rnd.uniform(0.04, 0.09)))
+    keep = [(c["x"], c["y"], c["radius"] * 1.08 + blend) for c in cities]  # never water inside these
+    wob = _fbm(seed + 101, 3, 0.5)
+    lo_h = min(min(r) for r in base)
+    floor = sea - depth - shore  # the open sea's bed
+    out = []
+    for j, y in enumerate(ys):
+        row = []
+        for i, x in enumerate(xs):
+            land = 0.0
+            for cx, cy, r in discs:
+                d = math.hypot(x - cx, y - cy)
+                a = math.atan2(y - cy, x - cx)
+                rr = r * (1 + ISLAND_WOBBLE * (2 * wob(3 + math.cos(a) * 1.7 + cx / 1e6, 3 + math.sin(a) * 1.7 + cy / 1e6) - 1))
+                land = max(land, _smoothstep(0.0, ISLAND_COAST * r, rr - d))
+            for cx, cy, r in keep:
+                land = max(land, 1.0 - _smoothstep(r, r * 1.15, math.hypot(x - cx, y - cy)))
+            high = sea + shore * 2 + (base[j][i] - lo_h) * 0.6  # the island's own hills, all above the water
+            row.append(round(floor + (high - floor) * land, 1))
+        out.append(row)
+    return out
 
 
 PAD_BLEND_CM = 400.0  # a lot's pad blends back into the hillside over this distance
@@ -5282,6 +5335,13 @@ def _demo() -> None:
     ter = terrain(3, 400000, 6000, cities, grid=64)
     assert ter["heights"] == terrain(3, 400000, 6000, [], grid=64)["heights"], "natural ground ignores the cities"
     flat = terrain(3, 400000, 6000, cities, grid=64, opts={"city_ground": "flatten"})
+    # islands: sea at the map's edge, every city on dry land, 'many' leaves water between cities
+    for mode in ("one", "many"):
+        isl = terrain(3, 400000, 6000, cities, grid=64, opts={"island": mode})
+        wet_i = wet_from(isl)
+        assert isl["sea"] == 0.0 and all(wet_i(x, y) for x, y in ((-195000, -195000), (195000, 195000))), mode
+        assert not any(wet_i(c["x"] + c["radius"] * math.cos(a), c["y"] + c["radius"] * math.sin(a))
+                       for c in cities for a in (k * math.pi / 4 for k in range(8))), (mode, "cities on land")
     for c in cities:
         z, z2 = st.sample_grid(flat, c["x"], c["y"]), st.sample_grid(flat, c["x"] + c["radius"] * 0.5, c["y"])
         assert abs(z - z2) < 50, "flatten: a city sits on a flat plateau"
