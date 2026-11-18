@@ -962,6 +962,21 @@ function junctionTris(c, list, paint, byColor) {
   const arms = list.map((m) => ({ a: (Math.atan2(m[2] - c[2], m[1] - c[1]) + TAU) % TAU, W: Math.max(272.5, m[6] || 500),
     D: Math.hypot(m[1] - c[1], m[2] - c[2]) })).sort((p, q) => p.a - q.a);
   const n = arms.length;
+  if (n === 1) {  // a dead end's turnaround (cul-de-sac): a round deck of _BULB_MIN / _BULB_PAST, the road into it
+    const W0 = arms[0].W, K0 = Math.max(0, Math.min(W0 - 150, WALK_OF[Math.round(W0)] || 0));
+    const rb = Math.max(1000, W0 + 500), u = [Math.cos(arms[0].a), Math.sin(arms[0].a)], v = [-u[1], u[0]];
+    const ring = (r) => Array.from({ length: 25 }, (_, i) => [r * Math.cos(i * Math.PI / 12), r * Math.sin(i * Math.PI / 12)]);
+    const put1 = (key, z, ...ps) => {
+      const arr = byColor[key] ||= [];
+      for (const p of ps) { const q = toV(c[1] + p[0], c[2] + p[1], c[3] + z); arr.push(q.x, q.y, q.z); }
+    };
+    const outer = ring(rb), inner = ring(rb - K0), D = Math.max(arms[0].D, 100);
+    for (let i = 0; i < 24; i++) put1(MAT.asphalt, 65, [0, 0], inner[i], inner[i + 1]);
+    if (K0 > 0) for (let i = 0; i < 24; i++) put1(MAT.sidewalk, 75, inner[i], inner[i + 1], outer[i + 1], inner[i], outer[i + 1], outer[i]);
+    const s = (a, b) => [u[0] * a + v[0] * b, u[1] * a + v[1] * b];
+    put1(MAT.asphalt, 65, s(0, -W0), s(D, -W0), s(D, W0), s(0, -W0), s(D, W0), s(0, W0));
+    return;
+  }
   if (n < 2) return;
   const W = arms.map((r) => r.W), K = W.map((w) => Math.max(0, Math.min(w - 150, WALK_OF[Math.round(w)] || 0)));
   const U = arms.map((r) => [Math.cos(r.a), Math.sin(r.a)]), N = U.map(([x, y]) => [-y, x]);

@@ -1337,6 +1337,19 @@ def cap_all(actors: list, terrain: dict | None = None) -> int:
     return sum(cap_ends(pts, segs, found) for (pts, segs), found in zip(actors, dead_ends(actors, terrain)))
 
 
+def cap_private(pts: list, segs: list, others: list, terrain: dict | None = None) -> int:
+    """cap_all for the private streets join_private just moved into a roads actor (points marked 'join'): each
+    one that ends gets its cul-de-sac, marked 'join' too so unjoin_private takes it out with its street (a re-run
+    caps it once again, never twice). others: the network's other road actors [(points, segments)]."""
+    from .splines_text import cap_ends
+    had_p, had_s = {p["i"] for p in pts}, {s["i"] for s in segs}
+    private = {p["i"] for p in pts if p.get("join")}
+    n = cap_ends(pts, segs, [(e, o) for e, o in dead_ends([(pts, segs)] + list(others), terrain)[0] if {e, o} <= private])
+    for x in [p for p in pts if p["i"] not in had_p] + [s for s in segs if s["i"] not in had_s]:
+        x["join"] = True
+    return n
+
+
 def road_ends(actors: list, terrain: dict | None = None) -> dict:
     """Where each dead end's turnaround lies ([x, y, z, yaw, sx, sy, sz], radius = sx * 1000): the area kept
     clear of PCG. The turnaround itself is a 1-arm junction piece on the road's spline (splines_text.cap_ends,

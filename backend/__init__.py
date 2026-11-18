@@ -2909,7 +2909,13 @@ def register(api) -> None:
             roads, rest, n_pr = cg.join_private({"points": rpts, "segments": rsegs}, access, folder)
             roads, n_links = cg.join_links(roads, [rest, paths], folder)
             pts, segs = st.straighten(roads["points"], roads["segments"])
-            joins[t["name"]] = {"junctions": n_pr, "links": n_links}
+            # a private street that ends (a subdivision lane, a complex's drive) closes in a cul-de-sac too: they
+            # join the roads only here, after generate capped the public streets, so they all ended square
+            mine = slug(f"{t['name']} Roads")
+            others = [load_actor(nid, a)[1:] for a, h in actor_docs(nid).items() if a != mine and not (
+                " before kit" in str(h.get("label") or "") or str(h.get("label") or "").endswith((" Paths", " Access")))]
+            n_cap = pl.cap_private(pts, segs, others, ter)
+            joins[t["name"]] = {"junctions": n_pr, "links": n_links, "cul_de_sacs": n_cap}
             out[f"{t['name']} Roads"] = store_actor(nid, f"{t['name']} Roads", {"points": pts, "segments": segs},
                                                     doc.get("name") or nid)["stats"]
             for label in (f"{t['name']} Paths", f"{t['name']} Access"):  # now inside the Roads actor

@@ -42,6 +42,15 @@ def test_join_private():
     assert n2 == 1 and len(again["points"]) == len(joined["points"]), (n2, len(again["points"]), len(joined["points"]))
     back = cg.unjoin_private(joined)
     assert (len(back["points"]), len(back["segments"])) == before, ((len(back["points"]), len(back["segments"])), before)
+    # the private street's far end closes in a cul-de-sac (it ended square), once, and comes out with its street
+    from backend import pcg_layers as pl
+    capped = {k: [dict(x) for x in v] for k, v in joined.items()}
+    assert pl.cap_private(capped["points"], capped["segments"], []) == 1
+    end = [p for p in capped["points"] if p["mesh"] == "SM_Junc_End"]
+    assert len(end) == 1 and abs(end[0]["x"] - 50000) < 1 and end[0]["y"] > 29000 and end[0].get("join"), end
+    assert pl.cap_private(capped["points"], capped["segments"], []) == 0, "never a second turnaround"
+    back_c = cg.unjoin_private(capped)
+    assert (len(back_c["points"]), len(back_c["segments"])) == before, "the turnaround comes out with its street"
     # a private street ending right at an existing crossing joins nothing rather than cutting into that junction
     cross = cg.build_actor({0: [0, 0], 1: [100000, 0], 2: [50000, -30000], 3: [50000, 0]},
                            [[0, 3, "4L"], [3, 1, "4L"], [2, 3, "4L"]], FLAT, "/Game/X/Roads")

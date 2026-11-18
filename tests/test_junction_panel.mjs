@@ -38,6 +38,13 @@ const far = {};
 junctionTris([0, 0, 0, 0], [0, 90, 180, 270].map((d) => arm(d, 875, 1500)), true, far);
 assert.ok(Math.abs(Math.max(...tris(far.asphalt).flat().map(([x]) => x)) - 1500) < 1, "the deck reaches the road's end");
 
+// a dead end capped by a turnaround (SM_Junc_End): a round deck as big as the mesh's bulb, a kerb ring, the stub into it
+const end = {};
+junctionTris([0, 0, 0, 0], [arm(0, 875, 300)], true, end);
+const bulb = tris(end.asphalt).flat();
+assert.ok(Math.abs(Math.max(...bulb.map(([, y]) => y)) - 1025) < 1, "the bulb is W + 5 m - kerb across (1375 - 350)");
+assert.ok(tris(end.sidewalk).length === 48 && Math.max(...tris(end.sidewalk).flat().map(([x]) => x)) > 1374, "a kerb ring round the bulb");
+
 // an elbow and an airport junction get no paint
 const elbow = {};
 junctionTris([0, 0, 0, 0], [arm(0, 525), arm(90, 525)], true, elbow);
