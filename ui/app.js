@@ -2659,8 +2659,22 @@ async function loadGeometry(keep, quiet = false) {
 // A whole city is several MB: the terrain comes first, then each actor in pages of PAGE points
 // and segments, so no single reply nears the panel bridge's 1 MB line.
 const PAGE = 2500;
+// re-polled geometry: send the last reply's etag, Ducky answers {unchanged} instead of the same MB again
+const geoCache = new Map();  // key -> { etag, reply }; Map keeps insertion order, so the first key is the oldest
+async function cachedRpc(method, params = {}) {
+  const key = method + JSON.stringify(params);
+  const hit = geoCache.get(key);
+  const out = await rpc(method, { ...params, _etag: hit?.etag ?? "" });
+  if (out?.unchanged && hit) { geoCache.delete(key); geoCache.set(key, hit); return { ...hit.reply }; }
+  if (out?.ok !== false && out?.etag) {
+    geoCache.delete(key);
+    geoCache.set(key, { etag: out.etag, reply: out });
+    if (geoCache.size > 40) geoCache.delete(geoCache.keys().next().value);
+  }
+  return { ...out };  // a copy: callers set ok/error on the reply
+}
 async function loadAllGeometry(net, step = null) {
-  const [base, info] = await Promise.all([rpc("geometry", { net_id: net, actor: "-" })  /* "-" matches no actor: terrain and props only */, rpc("get", { net_id: net })]);
+  const [base, info] = await Promise.all([cachedRpc("geometry", { net_id: net, actor: "-" })  /* "-" matches no actor: terrain and props only */, rpc("get", { net_id: net })]);
   if (base.ok === false) return base;
   if (info.ok === false) return info;
   const actors = {};
@@ -2681,7 +2695,7 @@ async function loadAllGeometry(net, step = null) {
   await Promise.all(batches.map(async (slugs) => {
     for (let offset = 0; ; offset += PAGE) {
       if (net !== state.net) return;  // another world was opened: stop paging this one
-      const page = await rpc("geometry", { net_id: net, actor: slugs.join(","), offset, limit: PAGE, terrain: false });
+      const page = await cachedRpc("geometry", { net_id: net, actor: slugs.join(","), offset, limit: PAGE, terrain: false });
       if (page.ok === false) throw new Error(page.error);
       let more = false;
       for (const aslug of slugs) {
