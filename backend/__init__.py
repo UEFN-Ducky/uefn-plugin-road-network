@@ -4353,7 +4353,8 @@ def register(api) -> None:
     panel_rpc("pcg_exact", lambda net_id="", x=0.0, y=0.0, radius_m=400.0: safe(pcg_exact)(
         net_id, float(x), float(y), float(radius_m)))
     panel_rpc("pcg_place", lambda net_id="", confirm=False: safe(pcg_place)(net_id, confirm))
-    panel_rpc("pcg_build", lambda net_id="", confirm=False, force=False: safe(pcg_build)(net_id, confirm, force))
+    panel_rpc("pcg_build", lambda net_id="", confirm=False, force=False, tiles="":  # tiles: the inspector's one-tile push
+              safe(pcg_build)(net_id, confirm, force, tiles=tiles))
 
     @api.register_pipeline_node("road-network.pcg_plan")
     def node_pcg_plan(ctx: dict) -> dict:

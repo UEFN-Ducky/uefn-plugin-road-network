@@ -1519,16 +1519,22 @@ function pick(e) {
 }
 // Click a building, prop or piece: what it is, which layer placed it, which mesh it uses and where it stands.
 const xyz = (x, y, z) => `${Math.round(x)}, ${Math.round(y)}, ${Math.round(z)} cm`;
+// the PCG tile a piece is built in (kit_bake.tiles): 400 m city tiles, 1.6 km 'n' tiles for trees, bushes and rocks
+const NATURE_RE = /SM_Kit_(Tree|Bush|Rock|Boulder|Stump|Log|Cliff|Fern|GrassTuft|Flowers)/;
+const tileOf = (x, y, nature) => nature ? `n${Math.floor(x / 160000)}_${Math.floor(y / 160000)}`
+  : `${Math.floor(x / 40000)}_${Math.floor(y / 40000)}`;
 function layerInfo(name, layer, p, more = []) {
-  return { title: name, rows: [["Layer", name], ["Kind", layer.role || layer.kind || "prop"],
+  const nature = layer.kind === "foliage" || ["tree", "street_tree", "bush", "rock"].includes(layer.role);
+  const tile = tileOf(p[0], p[1], nature);
+  return { title: name, tile, rows: [["Layer", name], ["Kind", layer.role || layer.kind || "prop"],
     ["Mesh", layer.mesh || (layer.meshes || []).map((m) => m.name || m.path || m).join(", ") || "picked from the kit by its kind"],
-    ...more, ["Where", xyz(p[0], p[1], p[2])], ["In this layer", (layer.count || 0).toLocaleString()]] };
+    ...more, ["Where", xyz(p[0], p[1], p[2])], ["PCG tile", tile], ["In this layer", (layer.count || 0).toLocaleString()]] };
 }
 function pieceInfo(ex, k, row) {
   const [name, x0, y0, z0, x1, y1, z1] = ex.meshes[k], [x, y, z, yaw, sx, sy, sz] = row;
   const from = name.startsWith("SM_BK_") ? "BuildingKit.blend module (WorldGen/BuildingKit), stacked by the grammar"
     : name.startsWith("SM_City_") ? "whole kit building (WorldGen/City), stretched to its lot" : "City Builder kit (WorldGen/Kit)";
-  return { title: name, rows: [["Piece", name], ["Comes from", from],
+  return { title: name, tile: tileOf(x, y, NATURE_RE.test(name)), rows: [["Piece", name], ["Comes from", from],
     ["Size", `${Math.round((x1 - x0) * sx)} × ${Math.round((y1 - y0) * sy)} × ${Math.round((z1 - z0) * sz)} cm`],
     ["Stretch", `${sx} × ${sy} × ${sz}`], ["Turn", `${yaw}°`], ["Where", xyz(x, y, z)],
     ["Same piece in view", ex.rows[k].length.toLocaleString()], ["All pieces in view", ex.pieces.toLocaleString()]] };
@@ -1542,7 +1548,9 @@ function showInspect(info) {
     $("view").parentElement.appendChild(el);
   }
   el.hidden = !info;
-  if (info) el.replaceChildren(h("b", {}, info.title), h("div", { class: "rn-kv" }, ...info.rows.flatMap(([k, v]) => [h("span", {}, k), h("span", {}, String(v))])));
+  if (info) el.replaceChildren(h("b", {}, info.title), h("div", { class: "rn-kv" }, ...info.rows.flatMap(([k, v]) => [h("span", {}, k), h("span", {}, String(v))])),
+    ...(info.tile && state.net ? [h("button", { type: "button", class: "rn-mini", style: "pointer-events: auto; margin-top: 6px",
+      onclick: () => onPcgPlace(info.tile) }, `Push tile ${info.tile} to UEFN`)] : []));
 }
 function inspectAt() {  // the ray is already set by pick()
   const hit = ray.intersectObjects(groups.pcg.children, false).find((x) => x.object.userData.info && x.instanceId != null);
@@ -1951,17 +1959,20 @@ async function loadLayers() {
   }
   schedulePcgPreview(100);
 }
-async function onPcgPlace() {
+// tile: push only that one tile (the inspector's button): rebuilt even when nothing in it changed, every other
+// tile, the roads and the rest of the level left alone
+async function onPcgPlace(tile) {
   if (!state.net) return;
-  const ask = await rpc("pcg_build", { net_id: state.net });
+  const one = typeof tile === "string" && tile ? { tiles: tile, force: true } : {};
+  const ask = await rpc("pcg_build", { net_id: state.net, ...one });
   if (ask.ok !== false) return alert("Up to date", ask.note || "Nothing changed since the last push.");
   if (!/confirm=true/.test(ask.error || "")) return showError(ask.error);
   if (!ask.build?.length && !ask.remove?.length) return alert("Up to date", "Nothing changed since the last push: every tile is left as it is.");
-  const ok = await call("ui.confirm", { title: "Push city to UEFN", confirm: "Push",
+  const ok = await call("ui.confirm", { title: one.tiles ? `Push tile ${one.tiles} to UEFN` : "Push city to UEFN", confirm: "Push",
     message: (ask.error || "").replace(" Call again with confirm=true.", "") + " Only those tiles change in the open UEFN level. Don't touch UEFN until it finishes." }).catch(() => null);
   if (!ok?.confirmed) return;
-  busy(`Pushing ${ask.build.length} changed tiles to UEFN…`);
-  const out = await rpc("pcg_build", { net_id: state.net, confirm: true });
+  busy(one.tiles ? `Pushing tile ${one.tiles} to UEFN…` : `Pushing ${ask.build.length} changed tiles to UEFN…`);
+  const out = await rpc("pcg_build", { net_id: state.net, confirm: true, ...one });
   busy("");
   if (out.ok === false) return showError(out.error + (out.note ? ` ${out.note}` : ""));
   showError("");
