@@ -165,3 +165,17 @@ situation and what to do. Keep it to what you couldn't have known.
   layer fits (planted; downtown and industrial lots are built by the tower, office and warehouse layers), a keep
   zone (left alone on purpose). `road_network_pcg_preview` summary `swept` lists what was taken off the roads.
 - A forest layer covers the whole map. `reach` is how far from a city it is as dense as asked, not where it stops.
+- Editor calls heal themselves (Nov 17 2026): a lost connection presses the known button on a blocking popup,
+  reloads the listener and sends the call once more; a late reply only clears popups. Don't add your own retry loop.
+- `road_network_pcg_build` no longer stops at a bad tile: it retries the failed ones once, then answers
+  `partial: true` with `failed_tiles`. Read those out; building again retries them.
+- The push tool refuses buried or floating buildings and names them. Fix them (`road_network_edit`, the lots);
+  pass `allow_misfits=true` only when the person said to push anyway. The panel's own push just warns.
+- `collision.level` in a build's result is counted in the level (`road_network_collision_count`): a solid mesh's
+  component left at No Collision is switched on there. Quote that count, never "collision is set".
+- Meshes that passed their collision / LOD / instancing checks are remembered and skipped on the next build.
+  After reimporting or changing a kit mesh, build with `force=true` so it is checked again.
+- Every build and road push reports `timings` (seconds per phase, and per road for `import_all`). A slow push:
+  read `timings` first and fix the biggest phase, never guess.
+- A road push repairs broken spline data itself and goes on past a failed road (`failed`, `partial`).
+  `kit_materials` resumes at its last slice after a cut-short run.
