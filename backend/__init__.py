@@ -894,8 +894,6 @@ def register(api) -> None:
         folder = junction_folder(pts, segs)
         if not folder:
             return {"ok": False, "error": "Couldn't find the project's road folder from the road pieces."}
-        # generated networks name their pieces per network so two cities never share SM_JK_<node>
-        prefix = f"SM_JK_{nid}_{aslug}_".replace("-", "_") if gen else "SM_JK_"
         by_i = {p["i"]: p for p in pts}
         half = (lambda arms: max(by_i[m]["w"] for m in arms)) if gen else (lambda arms: 545.0)  # kit roads: Road1 width
         road_of: dict = {}  # mouth point -> the road mesh on it (asset path)
@@ -926,42 +924,55 @@ def register(api) -> None:
                                       for r in rows if r.get("ground") is not None])
                 if plane:
                     ground_of[n] = plane
+        # Junctions of the same shape share ONE mesh, turned by its yaw: a mesh per junction was thousands of
+        # assets, each its own draw call and instanced-mesh component (PCG can't batch different meshes).
+        paint = not aslug.endswith("airport")
         built, unsaved = 0, []
-        try:
-            # few meshes per call: each mesh build opens a progress window that UEFN frees only when the
-            # call's frame ends (see street_kit_build)
-            for k in range(0, len(todo), JUNCTIONS_PER_CALL):
-                batch = todo[k:k + JUNCTIONS_PER_CALL]
-                out = listener("road_network_build_junctions", {"folder": folder, "pieces": [
-                    {"name": f"{prefix}{node}", "arms": angles, "half": half(arms),
+        shapes: dict = {}  # mesh name -> the piece to build
+        placing = []  # (node, arms in the piece's order, mesh name, yaw, rel angles)
+        for node, arms, angles in todo:
+            hv = [by_i[m]["w"] for m in arms] if gen else None
+            wk = [walk(m) for m in arms] if gen else None
+            order, rel, rot = st.junction_shape(angles, hv, wk)
+            piece = {"arms": rel, "half": half(arms),
                      # each mouth as wide as its own road; runways and taxiways get no crossings painted
-                     "halves": [by_i[m]["w"] for m in arms] if gen else None,
+                     "halves": [hv[k] for k in order] if gen else None,
                      # a street's sidewalks carry on round the junction, in the junction's own mesh
-                     "walks": [walk(m) for m in arms] if gen else None,
+                     "walks": [wk[k] for k in order] if gen else None,
                      # the junction takes the asphalt, paint and sidewalk materials of its widest road's mesh,
                      # so it is the same colour as the road it joins (house streets and city streets differ)
                      "like": road_of.get(max(arms, key=lambda m: by_i[m]["w"]), ""),
-                     "bulb": bulb(arms),
-                     "paint": not (aslug.endswith("airport"))}
-                    for node, arms, angles in batch]}, timeout=600)
-                for node, arms, _ in batch:
-                    dists = (out.get("mouths") or {}).get(f"{prefix}{node}")
-                    if dists:
-                        st.place_generated(pts, segs, node, arms, dists, f"{folder}/{prefix}{node}")
-                        if bulb(arms):  # a turnaround's Width is its whole round: the ground is graded to all of it
-                            p = by_i[node]
-                            p["w"] = bulb(arms) + 50.0
-                            p["lines"] = st._set_line(p["lines"], "Width", f"{p['w']:.1f}")
-                            if node in ground_of:
-                                # on the ground itself, as the road points are (measured ~2 cm over it)
-                                st.lay_on_ground(pts, segs, node, ground_of[node], 0.0)
-                        unsaved.append(f"{folder}/{prefix}{node}")
-                        built += 1
+                     "bulb": bulb(arms), "paint": paint}
+            name = "SM_JK_S" + hashlib.sha1(json.dumps(piece, sort_keys=True).encode()).hexdigest()[:12]
+            shapes[name] = {"name": name, **piece}
+            placing.append((node, [arms[k] for k in order], name, rot, rel))
+        mouths: dict = {}
+        try:
+            # few meshes per call: each mesh build opens a progress window that UEFN frees only when the
+            # call's frame ends (see street_kit_build)
+            todo_shapes = list(shapes.values())
+            for k in range(0, len(todo_shapes), JUNCTIONS_PER_CALL):
+                batch = todo_shapes[k:k + JUNCTIONS_PER_CALL]
+                out = listener("road_network_build_junctions", {"folder": folder, "pieces": batch}, timeout=600)
+                mouths.update(out.get("mouths") or {})
+                unsaved += [f"{folder}/{p['name']}" for p in batch if p["name"] in mouths]
                 # saved as we go, a batch per call: left unsaved, hundreds of meshes all went out in the
                 # person's next level save (one frame, a checkout per package)
                 if len(unsaved) >= SAVE_BATCH:
                     listener("road_network_save_assets", {"paths": unsaved}, timeout=300)
                     unsaved = []
+            for node, arms, name, rot, rel in placing:
+                dists = mouths.get(name)
+                if dists:
+                    st.place_generated(pts, segs, node, arms, dists, f"{folder}/{name}", yaw=rot, rel=rel)
+                    if len(arms) == 1:  # a turnaround's Width is its whole round: the ground is graded to all of it
+                        p = by_i[node]
+                        p["w"] = bulb(arms) + 50.0
+                        p["lines"] = st._set_line(p["lines"], "Width", f"{p['w']:.1f}")
+                        if node in ground_of:
+                            # on the ground itself, as the road points are (measured ~2 cm over it)
+                            st.lay_on_ground(pts, segs, node, ground_of[node], 0.0)
+                    built += 1
             if unsaved:
                 listener("road_network_save_assets", {"paths": unsaved}, timeout=300)
         except (ConnectionError, RuntimeError, TimeoutError) as exc:

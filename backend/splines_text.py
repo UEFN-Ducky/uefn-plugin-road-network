@@ -902,8 +902,11 @@ def lay_on_ground(points: list, segments: list, node: int, plane: tuple, sink: f
     by_i = {p["i"]: p for p in points}
     J = by_i[node]
     J["z"] = c + sink
+    # the slopes along the piece's own axes: a shared piece sits turned by its yaw
+    cy, sy = math.cos(math.radians(J.get("yaw", 0.0))), math.sin(math.radians(J.get("yaw", 0.0)))
+    la, lb = a * cy + b * sy, -a * sy + b * cy
     # UE FRotationMatrix: X axis (CP, 0, SP) so +pitch lifts +X; Y axis (0, CR, -SR) so +roll LOWERS +Y
-    J["pitch"], J["roll"] = math.degrees(math.atan(a)), -math.degrees(math.atan(b))
+    J["pitch"], J["roll"] = math.degrees(math.atan(la)), -math.degrees(math.atan(lb))
     mouths = {s["b"] if s["a"] == node else s["a"] for s in segments if not s["mesh"] and node in (s["a"], s["b"])}
     for m in mouths:
         E = by_i[m]
@@ -932,20 +935,42 @@ def pending_nodes(points: list, segments: list, rebuild: bool = False) -> list:
     return out
 
 
-def place_generated(points: list, segments: list, node: int, arms: list, dists: list, mesh_path: str) -> None:
-    """Put a generated piece (built in world axes, yaw 0) on a node and its mouths on the piece's ends."""
+SHARE_DEG = 1.0  # arm angles rounded to this: junctions that differ by less share one mesh
+
+
+def junction_shape(angles: list, halves: list | None, walks: list | None) -> tuple:
+    """(order, rel, rot): a junction as a shape every junction like it shares. order: the arms' indexes,
+    counter-clockwise from the canonical first arm; rel: their angles from that arm, rounded to SHARE_DEG;
+    rot: the first arm's world angle (the piece's yaw). Same rel + widths = the same mesh, turned by rot."""
+    n = len(angles)
+    srt = sorted(range(n), key=lambda k: angles[k] % 360.0)
+    best = None
+    for s in range(n):
+        order = srt[s:] + srt[:s]
+        rel = [round(((angles[k] - angles[order[0]]) % 360.0) / SHARE_DEG) * SHARE_DEG % 360.0 for k in order]
+        key = [(r, round(halves[k]) if halves else 0, round(walks[k]) if walks else 0) for r, k in zip(rel, order)]
+        if best is None or key < best[0]:
+            best = (key, order, rel)
+    _key, order, rel = best
+    return order, rel, angles[order[0]] % 360.0
+
+
+def place_generated(points: list, segments: list, node: int, arms: list, dists: list, mesh_path: str,
+                    yaw: float = 0.0, rel: list | None = None) -> None:
+    """Put a generated piece on a node, turned by yaw, and its mouths on the piece's ends. rel: each arm's angle
+    in the piece (junction_shape); without it the piece is built in world axes and each arm keeps its own."""
     by_i = {p["i"]: p for p in points}
     p = by_i[node]
     name = mesh_path.rsplit("/", 1)[-1]
-    p["mesh"], p["yaw"], p["pitch"] = name, 0.0, 0.0
+    p["mesh"], p["yaw"], p["pitch"] = name, _wrap(yaw), 0.0
     p["w"] = min(GIANT_CM - 1, max(dists) + 50.0)
     lines = [ln for ln in p["lines"] if not ln.startswith(("Mesh=", "MeshScale=", "MaterialOverrides="))]
     p["lines"] = _set_line(lines + [f"Mesh=\"/Script/Engine.StaticMesh'{mesh_path}.{name}'\"",
                                     "MeshScale=(X=1.000000,Y=1.000000,Z=1.000000)"], "Width", f"{p['w']:.1f}")
     touched = {node}
-    for m, d in zip(arms, dists):
+    for k, (m, d) in enumerate(zip(arms, dists)):
         q = by_i[m]
-        ang = math.atan2(q["y"] - p["y"], q["x"] - p["x"])
+        ang = math.radians(yaw + rel[k]) if rel else math.atan2(q["y"] - p["y"], q["x"] - p["x"])
         q["x"], q["y"], q["z"] = p["x"] + d * math.cos(ang), p["y"] + d * math.sin(ang), p["z"]
         q["yaw"], q["pitch"] = math.degrees(ang), 0.0
         touched.add(m)

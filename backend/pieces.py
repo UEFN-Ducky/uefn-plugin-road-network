@@ -138,9 +138,10 @@ def manifest(root: str = "/<project>") -> dict:
                        "used_by": ["modular buildings (grammar.py)"],
                        "made_by": "BuildingKit.blend (Blender, metres: export x100). Walls run +X from the pivot, "
                                   "outside on -Y, one storey tall"})
-    pieces.append({"name": "SM_JK_<world>_<actor>_<node>", "folder": "WorldGen/Roads/Junctions/Kit", "size_cm": None,
+    pieces.append({"name": "SM_JK_S<shape>", "folder": "WorldGen/Roads/Junctions/Kit", "size_cm": None,
                    "used_by": ["every junction"],
-                   "made_by": "City Builder builds each one to fit its arms (no Blender): one mesh with the deck, "
+                   "made_by": "City Builder builds one per junction shape (arm angles to 1 degree, widths), shared by "
+                              "every junction like it and turned by its yaw (no Blender): one mesh with the deck, "
                               "painted stop lines and crossings, kerbs and sidewalk corners (slots Asphalt, Paint, Sidewalk)"})
     want = []
     for name, kind, role, what in WANTED:
