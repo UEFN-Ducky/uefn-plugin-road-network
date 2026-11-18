@@ -29,7 +29,7 @@ Rules every tile follows (`ROAD_TYPES` in `backend/citygen.py`, `OUR_FAMILIES` i
   (`road_profiles.SKIRT_CM`), so the road never floats on a slope and needs no separate wall piece.
 - Road decks are drawn `SegmentMeshOffset` 6 cm up their points (`citygen.ROAD_OFFSET_CM`); junction decks sit at
   `road_io._OWN_DECK_Z` = 7 (the road's deck + 1 cm). Every push ends with `road_network_paint_ground`: Layer1 dirt
-  under roads, junctions and building pieces (paint only, added to what is there).
+  under roads, junctions and building pieces (paint only; the layer is rewritten to exactly the current footprints, so moved roads leave no dirt).
 - Materials: `M_Asphalt`, `M_PaintW`, `M_PaintY`, `M_Gutter`, `M_Curb`, `M_PaverBand`, `M_Pavers`, `M_Grate`, `M_BarrierConcrete`,
   slot order as listed in `OUR_FAMILIES[...]["materials"]`; road materials need **Used with Spline Meshes**.
 - Points on a city street raise and lower the terrain (`bRaiseTerrain/bLowerTerrain=True`, SideFalloff 800, EndFalloff 1000).

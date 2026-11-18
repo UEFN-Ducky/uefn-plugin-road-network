@@ -1778,7 +1778,8 @@ def register(api) -> None:
 
     def paint_ground() -> dict:
         """After a push: dirt paint under every road, junction and building, so no grass shows there.
-        Paint only (never heights), and it only adds; a failure never fails the push."""
+        Paint only (never heights): the layer is rewritten to the current footprints, so moved or removed
+        roads leave no dirt behind. A failure never fails the push."""
         try:
             return listener_long("road_network_paint_ground", {"layer": "Layer1", "margin_cm": 150.0})
         except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:

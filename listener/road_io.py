@@ -4,7 +4,7 @@ Runs inside UEFN's Python. Landscape spline control points are not readable from
 Python, so a road actor's full definition travels as its BEGIN_SPLINES clipboard text
 (the text the Splines tool copies and pastes). These handlers hand that text out in
 chunks, list the road actors and their pieces and sample the terrain for the 3D view.
-Nothing here writes the landscape's heights; road_network_paint_ground only adds dirt paint.
+Nothing here writes the landscape's heights; road_network_paint_ground rewrites one dirt paint layer.
 """
 
 from __future__ import annotations
@@ -1345,7 +1345,10 @@ def road_network_save_assets(paths: list | None = None) -> dict:
     return {"ok": True, "saved": len([a for a in assets if a is not None])}
 
 
-_GROUND_FOLDERS = ("/WorldGen/BuildingKit/", "/WorldGen/City/", "/WorldGen/CityPCG", "/WorldGen/Kit/Facility/")
+# ponytail: the island's hand-built cinema is listed here too; make it a per-network setting when a second
+# island needs its own landmark folders.
+_GROUND_FOLDERS = ("/WorldGen/BuildingKit/", "/WorldGen/City/", "/WorldGen/CityPCG", "/WorldGen/Kit/Facility/",
+                   "/Cinema/")
 
 
 def _box_tri(x, y, yaw, bb, sx, sy, m, to_px) -> list:
@@ -1360,7 +1363,9 @@ def _box_tri(x, y, yaw, bb, sx, sy, m, to_px) -> list:
 @register("road_network_paint_ground")
 def road_network_paint_ground(layer: str = "Layer1", margin_cm: float = 150.0, folders: list | None = None) -> dict:
     """Paint `layer` (a dirt layer) on the landscape under every road piece, junction and building piece, so no
-    grass shows or grows there. Only ever adds paint: the layer's old weights are kept (max), heights untouched.
+    grass shows or grows there. The layer is owned by the city: it is rewritten to exactly the current footprints,
+    so a road or building that moved or went leaves no dirt behind. (Reading the layer back to keep other paint
+    doesn't work: render_weightmap stays stale after an import in the same session.) Heights are untouched.
     The weightmap import reads render-target pixel i as landscape vertex i, so the target is exactly one pixel
     per vertex and footprints are drawn in vertex units."""
     acts = unreal.get_editor_subsystem(unreal.EditorActorSubsystem).get_all_level_actors()
@@ -1408,12 +1413,10 @@ def road_network_paint_ground(layer: str = "Layer1", margin_cm: float = 150.0, f
                 pieces += len(ts)
     w, rl = _world(), unreal.RenderingLibrary
     fmt = unreal.TextureRenderTargetFormat.RTF_RGBA8
-    old, rt = rl.create_render_target2d(w, n, n, fmt), rl.create_render_target2d(w, n, n, fmt)
-    land.render_weightmap(unreal.Transform(), unreal.Box2D(), layer, old)  # whole landscape: n verts on n px
+    rt = rl.create_render_target2d(w, n, n, fmt)
     rl.clear_render_target2d(w, rt, unreal.LinearColor(0, 0, 0, 1))
     canvas, _, ctx = rl.begin_draw_canvas_to_render_target(w, rt)
     one, V = unreal.LinearColor(1, 1, 1, 1), unreal.Vector2D
-    canvas.draw_texture(old, V(0, 0), V(n, n), V(0, 0), V(1, 1), one, unreal.BlendMode.BLEND_OPAQUE)
     uv = [unreal.CanvasUVTri(v0_pos=V(t[0], t[1]), v1_pos=V(t[2], t[3]), v2_pos=V(t[4], t[5]),
                              v0_color=one, v1_color=one, v2_color=one) for t in tris]
     for i in range(0, len(uv), 20000):
@@ -1422,7 +1425,8 @@ def road_network_paint_ground(layer: str = "Layer1", margin_cm: float = 150.0, f
     if not land.landscape_import_weightmap_from_render_target(rt, layer, 0):
         return {"ok": False, "error": f"UEFN refused the {layer} weightmap import."}
     return {"ok": True, "layer": layer, "vertices": n, "road_pieces": roads, "junctions": junctions,
-            "building_pieces": pieces, "note": "Paint only: the landscape's heights are untouched. Save the level to keep it."}
+            "building_pieces": pieces, "note": "The layer now covers exactly the current roads and buildings (heights untouched). "
+                    "Save the level to keep it."}
 
 
 def _self_gb() -> float:
