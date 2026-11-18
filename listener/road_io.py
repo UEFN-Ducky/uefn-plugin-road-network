@@ -1348,7 +1348,11 @@ def road_network_save_assets(paths: list | None = None) -> dict:
 # ponytail: the island's hand-built cinema is listed here too; make it a per-network setting when a second
 # island needs its own landmark folders.
 _GROUND_FOLDERS = ("/WorldGen/BuildingKit/", "/WorldGen/City/", "/WorldGen/CityPCG", "/WorldGen/Kit/Facility/",
-                   "/Cinema/")
+                   "/Cinema/",
+                   # ground pieces (kit_bake): foundations, parking, plazas, corners, turnarounds; tall kit buildings
+                   "/SM_Kit_Plinth.", "/SM_Kit_ParkingLot.", "/SM_Kit_ParkingStall.", "/SM_Kit_PathSlab.",
+                   "/SM_Kit_SidewalkCorner.", "/SM_Kit_Turnaround.", "/SM_Kit_EntranceSteps.", "/SM_Sky",
+                   "/SM_V4_Container", "/SM_V4_Crane.")
 
 
 def _box_tri(x, y, yaw, bb, sx, sy, m, to_px) -> list:
