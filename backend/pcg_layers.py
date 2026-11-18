@@ -957,62 +957,34 @@ YARDS = ("Port yards",)  # paved yards no building may stand on (whatever placed
 
 
 def fit_yards(placed: dict, samples: list) -> dict:
-    """Container yards planned before waterfront.yard_spot knew the streets (the Valley's) lie across them: each
-    becomes the biggest part of itself that no road surface (surface_samples) crosses (shorter, shallower, slid
-    within its old outline: the platform levelled for it; off it the yard stood on the bank or under the hill), at
-    the same level, with its stacks laid out again on what is left: as many 14 m bays and 10 m rows as fit, the way
-    waterfront.plan lays them. No part clear: no yard and no stacks. Returns what changed."""
-    from .waterfront import yard_spot
-    yards = [p for name in YARDS for p in (placed.get(name) or {}).get("points") or []]
-    stacks = [layer for name in STACKED if (layer := placed.get(name))]
-    roads = [(x, y, x, y, h) for x, y, h in samples]
-    moved = gone = 0
-    went = []  # each yard cut down: from, to (x, y cm, length, depth m), its stacks
-    why = []  # each yard that found no spot: where, and the road it stood on (along, across, half width; cm)
-    for p in list(yards):
-        tx, ty = math.cos(math.radians(p[3])), math.sin(math.radians(p[3]))
-        nx, ny = -ty, tx
-        hl, hd = p[4] * 50, p[5] * 50
-        new = yard_spot(roads, p[0], p[1], tx, ty, nx, ny, hl * 2, within=True)
-        if new and math.hypot(new[0] - p[0], new[1] - p[1]) < 1 and abs(new[2] - hl * 2) < 1 and abs(new[3] - hd * 2) < 1:
-            continue
+    """Container yards planned before the streets (the Valley's) were known can lie across them. Trimming one to
+    the clear part still left a pad over the junction (Valley 2_1, Nov 17 2026), so a yard any road surface
+    (surface_samples) reaches goes whole, with its stacks: clear_yards then leaves its lot's building standing.
+    Returns {"removed": n} or {}."""
+    gone = 0
+    for name in YARDS:
+        layer = placed.get(name) or {}
+        keep = []
+        for p in layer.get("points") or []:
+            tx, ty = math.cos(math.radians(p[3])), math.sin(math.radians(p[3]))
+            hl, hd = p[4] * 50, p[5] * 50
 
-        def on(s, cx, cy, l, d):
-            return abs((s[0] - cx) * tx + (s[1] - cy) * ty) <= l and abs((s[0] - cx) * nx + (s[1] - cy) * ny) <= d
-        laid = 0
-        for layer in stacks:
-            mine = [s for s in layer.get("points") or [] if on(s, p[0], p[1], hl, hd)]
-            keep = [s for s in layer.get("points") or [] if not on(s, p[0], p[1], hl, hd)]
-            if mine and new:
-                na = max(0, min(3, int((new[2] / 2 - 700) // 1400)))
-                nb = max(0, min(2, int((new[3] / 2 - 600) // 1000)))
-                keep += [[round(new[0] + tx * a * 1400 + nx * b * 1000), round(new[1] + ty * a * 1400 + ny * b * 1000),
-                          *mine[0][2:]] for a in range(-na, na + 1) for b in range(-nb, nb + 1)]
-                laid += (2 * na + 1) * (2 * nb + 1)
+            def on(x, y, slack=0.0):
+                return abs((x - p[0]) * tx + (y - p[1]) * ty) <= hl + slack and abs((y - p[1]) * tx - (x - p[0]) * ty) <= hd + slack
+            if not any(on(x, y, h) for x, y, h in samples):
+                keep.append(p)
+                continue
+            gone += 1
+            for s_name in STACKED:
+                st = placed.get(s_name)
+                if st:
+                    st["points"] = [s for s in st.get("points") or [] if not on(s[0], s[1])]
+                    st["shown"] = st["count"] = len(st["points"])
+        if gone:
             layer["points"] = keep
             layer["shown"] = layer["count"] = len(keep)
-        for name in YARDS:
-            layer = placed.get(name) or {}
-            pts = layer.get("points") or []
-            if p in pts:
-                i = pts.index(p)
-                if new:
-                    pts[i] = [round(new[0]), round(new[1]), p[2], p[3], round(new[2] / 100, 1), round(new[3] / 100, 1), *p[6:]]
-                    moved += 1
-                    went.append({"from": [round(p[0]), round(p[1]), p[4], p[5]],
-                                 "to": [round(new[0]), round(new[1]), round(new[2] / 100, 1), round(new[3] / 100, 1)],
-                                 "stacks": laid})
-                else:
-                    pts.pop(i)
-                    gone += 1
-                    on_it = sorted({(round(((x - p[0]) * tx + (y - p[1]) * ty) / 100) * 100,
-                                     round(((x - p[0]) * nx + (y - p[1]) * ny) / 100) * 100, round(h))
-                                    for x, y, h in samples if on((x, y), p[0], p[1], hl + 2000, hd + 2000)})
-                    why.append({"at": [round(p[0]), round(p[1])], "yaw": p[3], "size_m": [p[4], p[5]],
-                                "roads_on_it": on_it[::max(1, len(on_it) // 40)]})
-                layer["shown"] = layer["count"] = len(pts)
-    return {k: v for k, v in (("moved", moved), ("removed", gone), ("to", went), ("no_spot", why)) if v}
-    return {k: v for k, v in (("moved", moved), ("removed", gone), ("to", went), ("no_spot", why)) if v}
+    return {"removed": gone} if gone else {}
+
 
 def clear_yards(placed: dict) -> dict:
     """No building on a container yard. The port claims its land from the street grid's lots, but buildings placed
@@ -2727,21 +2699,15 @@ def _demo() -> None:
             "Warehouses": {"kind": "buildings", "count": 2, "shown": 2,
                            "points": [[322, 476, 0, -150, 1, 8, 0, 24.0, 12.0], [-13000, -9000, 0, 0, 1, 8, 0, 24.0, 12.0]]}}
     assert clear_yards(port) == {"Warehouses": 1} and port["Warehouses"]["points"][0][0] == -13000
-    # a yard (along x, 200 m) with a street across its middle slides or shrinks clear of it, its stacks with it;
-    # a stack that ends up on the street or past the new ends goes. A yard no street touches stays where it is
+    # a yard a street crosses goes whole, with its stacks; a yard no street touches, and its stacks, stay
     road = [(0.0, y, 500.0) for y in range(-6000, 6001, 300)]
-    yard = {"Port yards": {"kind": "site", "points": [[0, 0, 0, 0.0, 200.0, 80.0, 1.0]]},
+    yard = {"Port yards": {"kind": "site", "points": [[0, 0, 0, 0.0, 200.0, 80.0, 1.0], [30000, 0, 0, 0.0, 50.0, 40.0, 1.0]]},
             "Container stacks": {"kind": "site", "points": [[a * 1400, b * 1000, 0, 0.0, 1, 1, 1]
-                                                            for a in range(-6, 7) for b in (-2, 0, 2)]}}
-    got = fit_yards(yard, road)
-    assert got["moved"] == 1 and got["to"][0]["stacks"] == len(yard["Container stacks"]["points"]) > 0, got
-    y0 = yard["Port yards"]["points"][0]
-    assert y0[2] == 0 and abs(y0[0]) + y0[4] * 50 <= 10000 and y0[5] <= 80, ("on its own platform, its level", y0)
-    assert {s[2] for s in yard["Container stacks"]["points"]} == {0}, "its stacks on its paving"
-    y0 = yard["Port yards"]["points"][0]
-    assert abs(y0[0]) >= y0[4] * 50 + 800, ("the street is beside the yard now", y0)
-    assert all(abs(s[0] - y0[0]) <= y0[4] * 50 - 700 for s in yard["Container stacks"]["points"])
-    assert clear_roads(yard, road) == {} and fit_yards(yard, road) == {}
+                                                            for a in range(-6, 7) for b in (-2, 0, 2)] + [[30000, 0, 0, 0.0, 1, 1, 1]]}}
+    assert fit_yards(yard, road) == {"removed": 1}
+    assert [p[0] for p in yard["Port yards"]["points"]] == [30000]
+    assert [s[0] for s in yard["Container stacks"]["points"]] == [30000]
+    assert fit_yards(yard, road) == {}
     # a field gets the biggest real pitch that fits, at scale 1, turned to fit; too small for 5-a-side: none
     assert fit_pitch(110, 75) == ("pitch11", 0) and fit_pitch(46, 70) == ("pitch7", 90) and fit_pitch(30, 20) is None
     sport = site_layers([{"private": {"grounds": [[0, 0, 0.0, 70.0, 50.0, "field", "school"],
