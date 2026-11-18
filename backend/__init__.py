@@ -2156,7 +2156,8 @@ def register(api) -> None:
             placed.update(airport.layers([r for c in cities for r in (c.get("private") or {}).get("airport") or []]))
             # (swept after the ports and airports are in: a container yard keeps its trees out and its stacks off
             # the streets like any other paved slab)
-            _PREVIEW_CACHE["swept"] = {"off_roads": pl.clear_roads(placed, pl.surface_samples(actors, cities) + caps),
+            _PREVIEW_CACHE["swept"] = {"off_yards": pl.clear_yards(placed),
+                                       "off_roads": pl.clear_roads(placed, pl.surface_samples(actors, cities) + caps),
                                        "out_of_buildings": pl.clear_buildings(placed)}
             # every generated world: a building the ground would bury is lifted onto it, here, before any push
             # (worlds over another's landscape were skipped once: their houses went in with the hill inside them)

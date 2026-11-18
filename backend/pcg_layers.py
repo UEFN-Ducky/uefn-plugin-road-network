@@ -953,6 +953,34 @@ NATURAL = ("tree", "street_tree", "bush", "rock")
 
 
 STACKED = ("Container stacks",)  # site pieces that stand on a yard, not on a road: kept off every road too
+YARDS = ("Port yards",)  # paved yards no building may stand on (whatever placed the building: a city lot, a site)
+
+
+def clear_yards(placed: dict) -> dict:
+    """No building on a container yard. The port claims its land from the street grid's lots, but buildings placed
+    later (planned sites, infill) knew nothing of it: a 24 m warehouse stood among the stacks (Valley 2_1, Nov 17
+    2026). Every building whose footprint reaches into a yard goes. Returns {layer: removed}."""
+    yards = [(p[0], p[1], math.cos(math.radians(p[3])), math.sin(math.radians(p[3])), p[4] * 50, p[5] * 50)
+             for name in YARDS for p in (placed.get(name) or {}).get("points") or []]
+    gone: dict = {}
+    if not yards:
+        return gone
+    for name, layer in placed.items():
+        if layer.get("kind") != "buildings":
+            continue
+        keep = []
+        for p in layer.get("points") or []:
+            r = max(p[7], p[8]) * 50 if len(p) > 8 else 0.0
+            if not any(abs((p[0] - cx) * tx + (p[1] - cy) * ty) < hl + r and abs((p[1] - cy) * tx - (p[0] - cx) * ty) < hd + r
+                       for cx, cy, tx, ty, hl, hd in yards):
+                keep.append(p)
+        lost = len(layer.get("points") or []) - len(keep)
+        if lost:
+            gone[name] = lost
+            layer["points"] = keep
+            layer["shown"] = len(keep)
+            layer["count"] = max(len(keep), int(layer.get("count", len(keep))) - lost)
+    return gone
 
 
 def clear_roads(placed: dict, samples: list) -> dict:
@@ -2636,6 +2664,11 @@ def _demo() -> None:
                                    "points": [[0, 300, 0, 0.0, 1, 1, 1], [0, 2500, 0, 0.0, 1, 1, 1]]}}
     assert clear_roads(stacks, [(x, 0.0, 500.0) for x in range(-2000, 2001, 300)]) == {"Container stacks": 1}
     assert [p[1] for p in stacks["Container stacks"]["points"]] == [2500]
+    # no building on a container yard, wherever it came from; one 50 m beyond the yard's edge stays
+    port = {"Port yards": {"kind": "site", "points": [[0, 0, 0, 145.0, 144.0, 80.0, 1.0]]},
+            "Warehouses": {"kind": "buildings", "count": 2, "shown": 2,
+                           "points": [[322, 476, 0, -150, 1, 8, 0, 24.0, 12.0], [-13000, -9000, 0, 0, 1, 8, 0, 24.0, 12.0]]}}
+    assert clear_yards(port) == {"Warehouses": 1} and port["Warehouses"]["points"][0][0] == -13000
     # a field gets the biggest real pitch that fits, at scale 1, turned to fit; too small for 5-a-side: none
     assert fit_pitch(110, 75) == ("pitch11", 0) and fit_pitch(46, 70) == ("pitch7", 90) and fit_pitch(30, 20) is None
     sport = site_layers([{"private": {"grounds": [[0, 0, 0.0, 70.0, 50.0, "field", "school"],
