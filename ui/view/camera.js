@@ -189,7 +189,9 @@ function showPerf(now, js) {
   if (now - perfT < 500) return;
   const { calls, triangles } = renderer.info.render, c = renderer.domElement;
   perf.textContent = `${Math.round(perfN * 1000 / (now - perfT))} fps · js ${(perfJs / perfN).toFixed(1)} ms · ${calls} calls · `
-    + `${(triangles / 1e6).toFixed(2)}M tris · ${c.width}×${c.height} · ${GPU}`;
+    + `${(triangles / 1e6).toFixed(2)}M tris · ${c.width}×${c.height} · ${GPU}`
+    + (SOFTWARE ? " · no GPU: close and reopen Ducky (not UEFN) for smooth 3D" : "");
+  if (SOFTWARE) { perf.style.color = "var(--amber)"; perf.style.opacity = "1"; }
   perfN = 0; perfJs = 0; perfT = now;
 }
 function loop(now) {
