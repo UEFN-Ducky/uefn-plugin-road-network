@@ -2988,9 +2988,16 @@ def register(api) -> None:
                     gone.append(label)
         doc = data.get(f"net.{nid}") or {}
         doc["actors"] = sorted((set(doc.get("actors") or []) | set(out)) - set(gone))
+        # the whole network checked after every generate: one piece, no height step, no road on top of another
+        every = {}
+        for a, h in actor_docs(nid).items():
+            if " before kit" not in str(h.get("label") or ""):
+                _h, apts, asegs = load_actor(nid, a)
+                every[a] = {"points": apts, "segments": asegs}
+        doc["network_check"] = cg.network_report(every)
         data.put(f"net.{nid}", doc)
         push({"what": "network", "id": nid})
-        return {"ok": True, "actors": out, "joined": joins, "merged_away": gone}
+        return {"ok": True, "actors": out, "joined": joins, "merged_away": gone, "network": doc["network_check"]}
 
     def pipeline_run(net_id: str = "", run_from: str = "", confirm: bool = False) -> dict:
         """Status of every stage, or (run_from) re-run that stage and everything downstream, offline."""
@@ -3036,6 +3043,10 @@ def register(api) -> None:
                 ran.append(stage)
                 if not r.get("ok"):
                     notes.append(r.get("error"))
+                elif not (r.get("network") or {}).get("ok", True):
+                    n = r["network"]
+                    notes.append(f"Road network NOT whole: {n['pieces']} pieces, {len(n['steps'])} height steps, "
+                                 f"{len(n['stacked'])} roads on top of another (see sidewalks status).")
             elif stage == "road_meshes":
                 notes.append("RoadMeshGenerator runs in UEFN: Push roads (only changed actors are pasted).")
         towns = list(city_docs(nid).values())
@@ -3061,7 +3072,8 @@ def register(api) -> None:
             elif s["id"] == "roads":
                 info = {"actors": [a for a in doc.get("actors") or [] if not a.endswith(" Paths")]}
             elif s["id"] == "sidewalks":
-                info = {"actors": [a for a in doc.get("actors") or [] if a.endswith(" Paths")]}
+                info = {"actors": [a for a in doc.get("actors") or [] if a.endswith(" Paths")],
+                        "network": doc.get("network_check")}
             elif s["id"] == "blocks":
                 info = {"lots": {t["name"]: len(t.get("lots") or []) for t in towns}}
             elif s["id"] == "demand":

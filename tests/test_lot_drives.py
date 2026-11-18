@@ -79,8 +79,8 @@ def test_drives_to_one_junction_all_join_it():
     acc = cg.access_actor({"private": {"streets": drives}}, [], g, "/Game/X")
     out, _rest, joins = cg.join_private(roads, acc, "/Game/X")
     assert joins == 3, "a drive never takes another's end for its street"
-    j = next(p for p in out["points"] if p["x"] == 0 and p["y"] == 0)
-    assert len([s for s in out["segments"] if j["i"] in (s["a"], s["b"])]) == 6
+    rep = cg.network_report({"A": out})
+    assert rep["pieces"] == 1 and not rep["stacked"], rep
 
 
 def test_link_meets_its_host_at_the_host_height_and_once():
@@ -104,7 +104,8 @@ def test_driveway_short_of_the_street_runs_on_to_it():
     assert links == 1 and len(dw) == 2, "30 m out: its own mesh on to the street, then tied"
     assert any(round(P[s["b"]]["y"]) == 875 for s in dw), "the new end is at the street's edge"
     far = _actor([(10, 10000, 9000, 0, 175.0), (11, 10000, 8000, 0, 175.0)], [(20, 10, 11, "DW")])
-    assert cg.join_links(roads, [far], "/Game/X")[1] == 0, "past FAR_LINK_CM: left alone"
+    out, links = cg.join_links(roads, [far], "/Game/X")
+    assert links == 0 and len(out["points"]) == 2, "past FAR_LINK_CM: reaches nothing, so it is dropped"
 
 
 def test_ramp_climbs_to_the_street_at_most_ten_percent():

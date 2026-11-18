@@ -3614,7 +3614,26 @@ def join_links(roads: dict, extra: list, folder: str) -> tuple:
         at.setdefault(e, []).append(link)
         at.setdefault(h["i"], []).append(link)
         links += 1
-    return {"points": list(rp.values()), "segments": rs}, links
+    # a walkway / driveway no street reaches even now stands on its own: dropped (an airport building's front walk,
+    # its drive in the airport's own actor 600 m off, Valley Nov 18 2026). Nothing in a network stands apart
+    seen: set = set()
+    gone: set = set()
+    for i in list(rp):
+        if i in seen or not at.get(i):
+            continue
+        comp, stack = {i}, [i]
+        while stack:
+            c = stack.pop()
+            for s in at.get(c, []):
+                o = s["b"] if s["a"] == c else s["a"]
+                if o not in comp:
+                    comp.add(o)
+                    stack.append(o)
+        seen |= comp
+        if all(rp[c].get("join") for c in comp) and all(s["mesh"] in path_meshes for c in comp for s in at[c]):
+            gone |= comp
+    rs = [s for s in rs if s["a"] not in gone and s["b"] not in gone]
+    return {"points": [p for i, p in rp.items() if i not in gone], "segments": rs}, links
 
 
 COLLECTOR_ROWS = 0.65  # of the suburbs' rows of blocks, how many share one winding street from block to block
@@ -3987,6 +4006,82 @@ def airport_drives(lots: list, nodes: dict, edges: list) -> None:
             edges.append([("drive", k), n, "PR"])
 
 
+STEP_CM = 150.0  # two splines meeting in one spot more than this apart in height: a step
+APART_MESHES = ("SM_Air_", "SM_Water_")  # runways, taxiways, canals, docks: their own pieces by design
+
+
+def network_report(actors: dict) -> dict:
+    """The generated road network checked as a whole: {ok, pieces, sizes, loose: [[x, y, actor]], steps:
+    [[x, y, metres]], stacked: [[x, y, actor, actor]]}. One piece (every point reached from every other; points of
+    two actors in one spot meet), no height step where splines meet, and no road drawn on top of another (one street
+    laid twice, Valley's airport road, Nov 2026). Air and water splines may stand apart.
+    ponytail: stacked = a segment's middle on another's centre line, parallel; a grid of 100 m cells keeps it fast."""
+    par: dict = {}
+
+    def top(k):
+        while par.setdefault(k, k) != k:
+            par[k] = par[par[k]]
+            k = par[k]
+        return k
+    spot: dict = {}
+    pos, meshes = {}, {}
+    lines = []
+    for label, a in actors.items():
+        P = {p["i"]: p for p in a.get("points") or []}
+        for p in P.values():
+            k = (label, p["i"])
+            pos[k] = p
+            spot.setdefault((round(p["x"] / 5), round(p["y"] / 5)), []).append(k)
+        for s in a.get("segments") or []:
+            if s["a"] in P and s["b"] in P:
+                par[top((label, s["a"]))] = top((label, s["b"]))
+                m = str(s.get("mesh") or "")
+                for i in (s["a"], s["b"]):
+                    meshes.setdefault((label, i), set()).add(m)
+                if m.startswith(("SM_Road_", "SM_Path_PrivateStreet")):
+                    lines.append((label, P[s["a"]], P[s["b"]], s))
+    steps = []
+    for ks in spot.values():
+        for k in ks[1:]:
+            par[top(k)] = top(ks[0])
+        z = [pos[k]["z"] for k in ks]
+        if max(z) - min(z) > STEP_CM:
+            steps.append([round(pos[ks[0]]["x"]), round(pos[ks[0]]["y"]), round((max(z) - min(z)) / 100, 1)])
+    groups: dict = {}
+    for k in pos:
+        groups.setdefault(top(k), []).append(k)
+    apart = lambda ks: all(m.startswith(APART_MESHES) or not m for k in ks for m in meshes.get(k, {""}))  # noqa: E731
+    parts = sorted((g for g in groups.values() if not apart(g)), key=len, reverse=True)
+    loose = [[round(pos[g[0]]["x"]), round(pos[g[0]]["y"]), g[0][0]] for g in parts[1:]]
+    cell: dict = {}
+    for n, (label, p, q, s) in enumerate(lines):
+        for f in (0.0, 0.5, 1.0):
+            x, y = p["x"] + (q["x"] - p["x"]) * f, p["y"] + (q["y"] - p["y"]) * f
+            cell.setdefault((int(x // 10000), int(y // 10000)), set()).add(n)
+    stacked = []
+    for n, (label, p, q, s) in enumerate(lines):
+        L = math.hypot(q["x"] - p["x"], q["y"] - p["y"])
+        if L < 300:
+            continue
+        mx, my, mz = (p["x"] + q["x"]) / 2, (p["y"] + q["y"]) / 2, (p["z"] + q["z"]) / 2
+        for m in cell.get((int(mx // 10000), int(my // 10000)), ()):
+            l2, p2, q2, s2 = lines[m]
+            if m == n or {(label, s["a"]), (label, s["b"])} & {(l2, s2["a"]), (l2, s2["b"])}:
+                continue
+            L2 = math.hypot(q2["x"] - p2["x"], q2["y"] - p2["y"])
+            if L2 < 300 or abs(((q["x"] - p["x"]) * (q2["x"] - p2["x"]) + (q["y"] - p["y"]) * (q2["y"] - p2["y"]))
+                               / (L * L2)) < 0.9:
+                continue
+            t = max(0.0, min(1.0, ((mx - p2["x"]) * (q2["x"] - p2["x"]) + (my - p2["y"]) * (q2["y"] - p2["y"])) / L2 ** 2))
+            fx, fy = p2["x"] + (q2["x"] - p2["x"]) * t, p2["y"] + (q2["y"] - p2["y"]) * t
+            fz = p2["z"] + (q2["z"] - p2["z"]) * t
+            if 0.0 < t < 1.0 and math.hypot(mx - fx, my - fy) < 0.5 * min(p["w"], p2["w"]) and abs(mz - fz) < 300:
+                stacked.append([round(mx), round(my), label, l2])
+                break
+    return {"ok": not loose and not steps and not stacked, "pieces": len(parts), "sizes": [len(g) for g in parts[:5]],
+            "loose": loose[:20], "steps": steps[:20], "stacked": stacked[:20]}
+
+
 def lot_drives(lots: list, streets: list, blocks: list, roads: list, wet=None) -> list:
     """Every lot and every private lane can be driven to: a lot outside the street blocks (a waterfront restaurant
     or hotel, a shipyard's sheds, an airport's substation) with no street at its door, and a lane with neither end
@@ -4007,10 +4102,13 @@ def lot_drives(lots: list, streets: list, blocks: list, roads: list, wet=None) -
             f = min(DRIVE_SHORT_CM, math.dist(a, q) / 2) / (math.dist(a, q) or 1.0)
             q = (q[0] + (a[0] - q[0]) * f, q[1] + (a[1] - q[1]) * f)
             out.append([[round(a[0]), round(a[1])], [round(q[0]), round(q[1])]])
-    for r in lots:
-        if any(_inside(poly, r[0], r[1]) for poly in polys) or _nearest_road((r[5], r[6]), every)[0] < DOOR_CM:
-            continue  # a block's lot (its streets, or its complex's, are round it), or one with a street at its door
-        q = _nearest_road((r[0], r[1]), every)[1]
+    # the lots nearest a street first, each to the nearest street OR drive made so far: drives branch off one another
+    # like a tree. Each straight to the street, a shipyard's sheds side by side ran four drives on top of each
+    # other into one spot (Valley's Northgate, Nov 18 2026)
+    need = [r for r in lots if not any(_inside(poly, r[0], r[1]) for poly in polys)
+            and _nearest_road((r[5], r[6]), every)[0] >= DOOR_CM]  # (not a block's lot, nor one with a street at its door)
+    for r in sorted(need, key=lambda r: _nearest_road((r[0], r[1]), every)[0]):
+        q = _nearest_road((r[0], r[1]), every + [(*d[0], *d[1], HALF["PR"]) for d in out])[1]
         if q is not None:
             drive(lot_edge(r, q), q)  # from the lot's edge, the way to that street
     # lanes and drives that touch are one group: a group with no end on a street gets one access road, from its
