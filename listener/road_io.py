@@ -1352,7 +1352,11 @@ _GROUND_FOLDERS = ("/WorldGen/BuildingKit/", "/WorldGen/City/", "/WorldGen/CityP
                    # ground pieces (kit_bake): foundations, parking, plazas, corners, turnarounds; tall kit buildings
                    "/SM_Kit_Plinth.", "/SM_Kit_ParkingLot.", "/SM_Kit_ParkingStall.", "/SM_Kit_PathSlab.",
                    "/SM_Kit_SidewalkCorner.", "/SM_Kit_Turnaround.", "/SM_Kit_EntranceSteps.", "/SM_Sky",
-                   "/SM_V4_Container", "/SM_V4_Crane.")
+                   "/SM_V4_Container", "/SM_V4_Crane.",
+                   # sports and park grounds, yards and big tanks (a park's open lawn has no slab: it stays grass)
+                   "/SM_Kit_Apron.", "/SM_Kit_SportsField.", "/SM_Kit_Playground.", "/SM_Kit_Pitch", "/SM_Kit_PG_",
+                   "/SM_Kit_Pool.", "/SM_Kit_UtilityYard.", "/SM_Kit_BoatLaunch.", "/SM_Kit_WaterTower.",
+                   "/SM_Kit_FuelTank.", "/SM_Kit_ContainerStack.")
 
 
 def _box_tri(x, y, yaw, bb, sx, sy, m, to_px) -> list:
