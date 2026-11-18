@@ -1753,7 +1753,15 @@ def register(api) -> None:
             _, pts, segs = load_actor(nid, aslug)
             data.put(f"net.{nid}.actor.{aslug}", {**head, "pushed": hashlib.sha1(st.serialize(pts, segs).encode()).hexdigest()})
             done[label] = {"junction_pieces": pieces.get("built", 0), "pieces": out.get("pieces")}
-        return {"ok": True, "id": nid, "done": done, "unchanged": same}
+        return {"ok": True, "id": nid, "done": done, "unchanged": same, "ground_paint": paint_ground()}
+
+    def paint_ground() -> dict:
+        """After a push: dirt paint under every road, junction and building, so no grass shows there.
+        Paint only (never heights), and it only adds; a failure never fails the push."""
+        try:
+            return listener_long("road_network_paint_ground", {"layer": "Layer1", "margin_cm": 150.0})
+        except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
+            return {"ok": False, "error": f"Roads pushed; painting the ground under them failed: {exc}"[:300]}
 
     # ---------------------------------------------------------------- PCG placement layers
     def layer_docs(nid: str) -> dict:
@@ -2741,9 +2749,14 @@ def register(api) -> None:
             args = {"root": root, "folders": folders, "offset": offset, "limit": 5, "max_grow_gb": 3.0}
             r = listener_long("road_network_kit_materials", args)
             uefn_memory.settle(base)
-            if r.get("late"):  # the reply (and its overrides) was lost: the same slice again is quick now
+            for _ in range(3):  # the reply (and its overrides) was lost: the same slice again is quick now
+                if not r.get("late"):
+                    break
                 r = listener_long("road_network_kit_materials", args)
                 uefn_memory.settle(base)
+            if r.get("late"):  # a lost slice has no `next`: going on would leave the rest of the kit checkered
+                return {"ok": False, "error": f"UEFN didn't answer for kit meshes {offset}+ (busy): try again.",
+                        "street_kit": street}
             if not r.get("ok"):
                 return {**r, "street_kit": street}
             out["overrides"].update(r.get("overrides") or {})
@@ -3234,6 +3247,11 @@ def register(api) -> None:
                         return {"ok": False, "error": f"Kit materials: {mats.get('error')}"}
                     data.put(f"net.{nid}.mats", {"name": f"{name} / kit materials",
                                                  "overrides": mats.get("overrides") or {}})
+                # a kit mesh without its textured MIs draws the grey checker on PCG instances: never build it so
+                left = sorted(m.rsplit(".", 1)[-1] for m in need - set(mats.get("overrides") or {}))
+                if left:
+                    return {"ok": False, "error": f"Kit materials missing for {len(left)} meshes "
+                                                  f"({', '.join(left[:6])}): nothing was built, try again."}
             # the person's own layers: their meshes' materials need the instanced-mesh usage too (10 meshes per call)
             own = kit_bake.own_meshes(got.get("layers") or {}) if build else []
             own_report = {"fixed": [], "locked": [], "missing": []}
@@ -3372,7 +3390,7 @@ def register(api) -> None:
             if not trees.get("ok"):
                 return {**trees, "built": done, "note": "Build again: finished tiles are kept and skipped."}
             return {"ok": True, "id": nid, "built_tiles": done, "old_graph_folders_removed": cleaned, "removed_tiles": gone, "unchanged_tiles": len(same),
-                    "tree_props": trees,
+                    "tree_props": trees, "ground_paint": paint_ground(),
                     "legacy_removed": legacy_removed, "nodes": nodes, "meshes": len(groups), "built": baked,
                     "no_kit_piece": missing, "messages": messages[:20], "memory": uefn_memory.report(5)["worst"],
                     "collision": collision, "seconds": round(time.time() - job["started"]),

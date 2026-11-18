@@ -4,7 +4,7 @@ Runs inside UEFN's Python. Landscape spline control points are not readable from
 Python, so a road actor's full definition travels as its BEGIN_SPLINES clipboard text
 (the text the Splines tool copies and pastes). These handlers hand that text out in
 chunks, list the road actors and their pieces and sample the terrain for the 3D view.
-Nothing here writes the landscape.
+Nothing here writes the landscape's heights; road_network_paint_ground only adds dirt paint.
 """
 
 from __future__ import annotations
@@ -173,10 +173,10 @@ _R1_MATERIAL = "/Game/Athena/Apollo/Environments/Landscape/Materials/MI_Apollo_R
 
 
 # Our own road kit (WorldGen/Roads): a flat deck at z 0 in M_Asphalt, drawn on its points (SegmentMeshOffset
-# citygen.ROAD_OFFSET_CM = 0; 50 and then 10 left every road and kerb floating over the graded ground).
+# citygen.ROAD_OFFSET_CM = 6; 50 and 10 left every road and kerb floating, 0 let bumps of ground poke through).
 # A junction piece sits on its point with the road's deck height, plus a 1 cm hair so the road ends it meets
 # never flicker, with planar UVs in metres.
-_OWN_DECK_Z = 1.0
+_OWN_DECK_Z = 7.0
 _OWN_UV_CM = 400.0
 _OWN_SKIRT_Z = -330.0  # a straight wall down under every fillet, like the road tiles' 3 m skirt
 
@@ -1283,6 +1283,86 @@ def road_network_save_assets(paths: list | None = None) -> dict:
     return {"ok": True, "saved": len([a for a in assets if a is not None])}
 
 
+_GROUND_FOLDERS = ("/WorldGen/BuildingKit/", "/WorldGen/City/", "/WorldGen/CityPCG", "/WorldGen/Kit/Facility/")
+
+
+def _box_tri(x, y, yaw, bb, sx, sy, m, to_px) -> list:
+    """Two triangles (pixel coords) for a mesh's footprint: its local box, scaled, turned by yaw, grown by m cm."""
+    ca, sa = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+    pts = [to_px(x + lx * ca - ly * sa, y + lx * sa + ly * ca)
+           for lx, ly in ((bb.min.x * sx - m, bb.min.y * sy - m), (bb.max.x * sx + m, bb.min.y * sy - m),
+                          (bb.max.x * sx + m, bb.max.y * sy + m), (bb.min.x * sx - m, bb.max.y * sy + m))]
+    return [pts[0] + pts[1] + pts[2], pts[0] + pts[2] + pts[3]]
+
+
+@register("road_network_paint_ground")
+def road_network_paint_ground(layer: str = "Layer1", margin_cm: float = 150.0, folders: list | None = None) -> dict:
+    """Paint `layer` (a dirt layer) on the landscape under every road piece, junction and building piece, so no
+    grass shows or grows there. Only ever adds paint: the layer's old weights are kept (max), heights untouched.
+    The weightmap import reads render-target pixel i as landscape vertex i, so the target is exactly one pixel
+    per vertex and footprints are drawn in vertex units."""
+    acts = unreal.get_editor_subsystem(unreal.EditorActorSubsystem).get_all_level_actors()
+    land = next((a for a in acts if a.get_class().get_name() == "Landscape"), None)
+    if land is None:
+        return {"ok": False, "error": "No landscape in the level."}
+    if layer not in [str(n) for n in land.get_target_layer_names()]:
+        return {"ok": False, "error": f"The landscape has no paint layer {layer!r} with a layer info."}
+    x0, y0, q = land.get_actor_location().x, land.get_actor_location().y, land.get_actor_scale3d().x
+    far = max((o.x + e.x for o, e in (p.get_actor_bounds(False) for p in acts
+                                      if p.get_class().get_name() == "LandscapeStreamingProxy")), default=0.0)
+    n = int(round((far - x0) / q)) + 1 if far > x0 else 2049
+    to_px = lambda x, y: [(x - x0) / q + 0.5, (y - y0) / q + 0.5]
+    tris, roads, junctions, pieces = [], 0, 0, 0
+    keys = tuple(folders or _GROUND_FOLDERS)
+    for a in acts:
+        spline = a.get_class().get_name() == "LandscapeSplineActor"
+        for c in a.get_components_by_class(unreal.StaticMeshComponent):
+            mesh = c.static_mesh
+            if mesh is None:
+                continue
+            bb = mesh.get_bounding_box()
+            if spline and isinstance(c, unreal.SplineMeshComponent):
+                t = c.get_world_transform()
+                s, e = t.transform_location(c.get_start_position()), t.transform_location(c.get_end_position())
+                ln = math.hypot(e.x - s.x, e.y - s.y) or 1.0
+                hw = (bb.max.y - bb.min.y) / 2 + margin_cm
+                nx, ny = -(e.y - s.y) / ln * hw, (e.x - s.x) / ln * hw
+                p = [to_px(s.x + nx, s.y + ny), to_px(e.x + nx, e.y + ny), to_px(e.x - nx, e.y - ny), to_px(s.x - nx, s.y - ny)]
+                tris += [p[0] + p[1] + p[2], p[0] + p[2] + p[3]]
+                roads += 1
+                continue
+            if not spline and not any(k in mesh.get_path_name() for k in keys):
+                continue
+            if isinstance(c, unreal.InstancedStaticMeshComponent):
+                ts = [c.get_instance_transform(i, True) for i in range(c.get_instance_count())]
+            else:
+                ts = [c.get_world_transform()]
+            for t in ts:
+                tris += _box_tri(t.translation.x, t.translation.y, t.rotation.rotator().yaw, bb,
+                                 t.scale3d.x, t.scale3d.y, margin_cm, to_px)
+            if spline:
+                junctions += len(ts)
+            else:
+                pieces += len(ts)
+    w, rl = _world(), unreal.RenderingLibrary
+    fmt = unreal.TextureRenderTargetFormat.RTF_RGBA8
+    old, rt = rl.create_render_target2d(w, n, n, fmt), rl.create_render_target2d(w, n, n, fmt)
+    land.render_weightmap(unreal.Transform(), unreal.Box2D(), layer, old)  # whole landscape: n verts on n px
+    rl.clear_render_target2d(w, rt, unreal.LinearColor(0, 0, 0, 1))
+    canvas, _, ctx = rl.begin_draw_canvas_to_render_target(w, rt)
+    one, V = unreal.LinearColor(1, 1, 1, 1), unreal.Vector2D
+    canvas.draw_texture(old, V(0, 0), V(n, n), V(0, 0), V(1, 1), one, unreal.BlendMode.BLEND_OPAQUE)
+    uv = [unreal.CanvasUVTri(v0_pos=V(t[0], t[1]), v1_pos=V(t[2], t[3]), v2_pos=V(t[4], t[5]),
+                             v0_color=one, v1_color=one, v2_color=one) for t in tris]
+    for i in range(0, len(uv), 20000):
+        canvas.draw_triangles(None, uv[i:i + 20000])  # no texture: plain white, weight 1
+    rl.end_draw_canvas_to_render_target(w, ctx)
+    if not land.landscape_import_weightmap_from_render_target(rt, layer, 0):
+        return {"ok": False, "error": f"UEFN refused the {layer} weightmap import."}
+    return {"ok": True, "layer": layer, "vertices": n, "road_pieces": roads, "junctions": junctions,
+            "building_pieces": pieces, "note": "Paint only: the landscape's heights are untouched. Save the level to keep it."}
+
+
 def _self_gb() -> float:
     """UEFN's own private memory in GB (Windows), 0 when it can't be read."""
     import ctypes
@@ -1360,8 +1440,18 @@ def road_network_kit_materials(root: str = "", folders: list | None = None, offs
             if key not in made:
                 mi_path = f"{mat_folder}/MI_City_{key.removeprefix('M_')}"
                 fresh = not eal.does_asset_exist(mi_path)
-                mi = tools.create_asset(mi_path.rsplit("/", 1)[1], mat_folder, unreal.MaterialInstanceConstant,
-                                        unreal.MaterialInstanceConstantFactoryNew()) if fresh else eal.load_asset(mi_path)
+                mi = None if fresh else eal.load_asset(mi_path)
+                if mi is None and not fresh:
+                    # a file cut short by a crash mid-save (~500 bytes) never loads, and its empty package then
+                    # fails every save ("Packages Failed To Save"): delete it and make the MI again
+                    eal.delete_asset(mi_path)
+                    fresh = True
+                if fresh:
+                    mi = tools.create_asset(mi_path.rsplit("/", 1)[1], mat_folder, unreal.MaterialInstanceConstant,
+                                            unreal.MaterialInstanceConstantFactoryNew())
+                if mi is None:  # still locked by this session: the slot keeps the mesh's own material
+                    per_slot.append("")
+                    continue
                 if "glass" in key.lower() and mi.get_editor_property("parent") != glass:
                     mel.set_material_instance_parent(mi, glass)  # see-through windows
                     mel.set_material_instance_vector_parameter_value(mi, "Tint", _old_tint(old))

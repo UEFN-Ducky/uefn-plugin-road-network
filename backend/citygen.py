@@ -4181,8 +4181,8 @@ def links(cities: list) -> list:
 
 
 # ------------------------------------------------------------------ splines
-ROAD_OFFSET_CM = 0.0  # a road segment's mesh is drawn this far up its points (junction decks: road_io._OWN_DECK_Z)
-# (10 left every deck ~12 cm over the graded ground with its kerb wall showing: measured on Valley 2026-11-17)
+ROAD_OFFSET_CM = 6.0  # a road segment's mesh is drawn this far up its points (junction decks: road_io._OWN_DECK_Z)
+# (10 left every deck ~12 cm over the graded ground with its kerb wall showing; 0 let bumps poke through)
 
 
 def _point(i, x, y, z, yaw, w, mesh="", lifted=False, piece=""):

@@ -27,7 +27,9 @@ Rules every tile follows (`ROAD_TYPES` in `backend/citygen.py`, `OUR_FAMILIES` i
 - Every vertex stays inside X 0..tile length, or the spline mesh smears at the joints.
 - Deck top is z 0 at the centre line; a ground road's side walls (its skirt) go 3 m down from its underside
   (`road_profiles.SKIRT_CM`), so the road never floats on a slope and needs no separate wall piece.
-- Control points sit 40 under the road surface and use `SegmentMeshOffset` 50 (the deck lands 10 above ground).
+- Road decks are drawn `SegmentMeshOffset` 6 cm up their points (`citygen.ROAD_OFFSET_CM`); junction decks sit at
+  `road_io._OWN_DECK_Z` = 7 (the road's deck + 1 cm). Every push ends with `road_network_paint_ground`: Layer1 dirt
+  under roads, junctions and building pieces (paint only, added to what is there).
 - Materials: `M_Asphalt`, `M_PaintW`, `M_PaintY`, `M_Gutter`, `M_Curb`, `M_PaverBand`, `M_Pavers`, `M_Grate`, `M_BarrierConcrete`,
   slot order as listed in `OUR_FAMILIES[...]["materials"]`; road materials need **Used with Spline Meshes**.
 - Points on a city street raise and lower the terrain (`bRaiseTerrain/bLowerTerrain=True`, SideFalloff 800, EndFalloff 1000).
