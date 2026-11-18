@@ -13,7 +13,7 @@ def shed(x, y=0):  # 40 x 20 m, its front toward +x (away from the street)
 
 def test_lot_far_from_a_street_gets_a_drive_from_its_edge():
     drives = cg.lot_drives([shed(10000)], [], [], ROAD)
-    assert drives == [[[9000, 0], [0, 0]]], drives
+    assert drives == [[[9000, 0], [300, 0]]], drives  # (3 m short of the street's middle)
 
 
 def test_lot_with_a_street_at_its_door_or_in_a_block_gets_none():
@@ -30,14 +30,20 @@ def test_no_drive_over_water_or_too_far():
 def test_lane_on_its_own_is_joined_from_its_nearer_end():
     lane = [[12000, 0], [12000, 3000]]
     joined = [[1000, 9000], [9000, 9000]]  # ... one with an end on the street is left alone
-    assert cg.lot_drives([], [lane, joined], [], ROAD) == [[[12000, 0], [0, 0]]]
+    assert cg.lot_drives([], [lane, joined], [], ROAD) == [[[12000, 0], [300, 0]]]
 
 
 def test_lanes_that_touch_get_one_access_road_and_reach_further():
     a, b = [[12000, 0], [12000, 3000]], [[12000, 3000], [15000, 3000]]
-    assert cg.lot_drives([], [a, b], [], ROAD) == [[[12000, 0], [0, 0]]], "one for the two"
+    assert cg.lot_drives([], [a, b], [], ROAD) == [[[12000, 0], [300, 0]]], "one for the two"
     far = [[40000, 0], [41000, 0]]  # 400 m out: past a lot's drive, inside an access road's reach
-    assert cg.lot_drives([], [far], [], ROAD) == [[[40000, 0], [0, 0]]]
+    assert cg.lot_drives([], [far], [], ROAD) == [[[40000, 0], [300, 0]]]
+
+
+def test_drives_to_one_street_end_keep_their_own_ends():
+    lots = [shed(10000, 60000), [-10000, 60000, 0.0, 4000, 2000, -11000, 60000, "warehouse", False]]
+    ends = {tuple(d[1]) for d in cg.lot_drives(lots, [], [], ROAD)}
+    assert len(ends) == 2, ends
 
 
 def test_airport_building_gets_a_drive_in_the_landside_roads():
@@ -60,6 +66,18 @@ def test_private_street_carries_on_from_a_street_that_just_ends():
     assert joins == 1 and any({s["a"], s["b"]} == {1, far["i"]} and "PrivateStreet" in s["mesh"] for s in out["segments"])
     assert far["z"] == -2000.0, "climbs at most 10 % from the street's end"
     assert not any(p["x"] == 10500 for p in out["points"]), "its end inside the street's end is gone"
+
+
+def test_link_meets_its_host_at_the_host_height_and_once():
+    roads = _actor([(0, 0, 0, 0, 400.0), (1, 10000, 0, 0, 400.0)], [(2, 0, 1, "PR")])
+    path = _actor([(10, 5000, 3000, 800, 400.0), (11, 5000, 300, 800, 400.0)], [(20, 10, 11, "PR")])
+    out, links = cg.join_links(roads, [path], "/Game/X")
+    z = {(p["x"], p["y"]): p["z"] for p in out["points"]}
+    assert links == 1 and z[(5000, 300)] == 0 and z[(5000, 3000)] == 270.0, z
+    a = _actor([(10, 0, 50000, 0, 400.0), (11, 5000, 50000, 0, 400.0)], [(20, 10, 11, "PR")])
+    b = _actor([(10, 5000, 50000, 0, 400.0), (11, 10000, 50000, 0, 400.0)], [(20, 10, 11, "PR")])
+    _out, links = cg.join_links({"points": [], "segments": []}, [a, b], "/Game/X")
+    assert links == 1, "two ends that meet: one link, not one each way"
 
 
 def test_ramp_climbs_to_the_street_at_most_ten_percent():

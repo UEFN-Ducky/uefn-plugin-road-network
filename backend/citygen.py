@@ -3375,7 +3375,7 @@ def join_private(roads: dict, access: dict, folder: str) -> tuple:
             near += [rp[o] for q in near for x in nbrs(q["i"]) if not x["mesh"]
                      for o in (x["a"], x["b"]) if o in rp and str(rp[o].get("mesh") or "").startswith("SM_Junc")]
             ok = [q for q in near if str(q.get("mesh") or "").startswith("SM_Junc") or
-                  (not q.get("mesh") and len([x for x in nbrs(q["i"]) if x["mesh"]]) == 1)]
+                  (not q.get("mesh") and len(nbrs(q["i"])) == 1)]  # (a dead end; never a junction's mouth)
             hub = min(ok, key=lambda q: math.hypot(q["x"] - E["x"], q["y"] - E["y"])) if ok else None
             if hub is None or math.hypot(hub["x"] - E["x"], hub["y"] - E["y"]) > hub["w"] + JOIN_REACH_CM:
                 continue  # beside a piece, or too far off: left as it is
@@ -3500,6 +3500,8 @@ def join_links(roads: dict, extra: list, folder: str) -> tuple:
 
     links = 0
     for e in [i for i in list(rp) if len(at.get(i, [])) == 1 and at[i][0]["mesh"] and rp[i].get("join")]:
+        if len(at[e]) != 1:
+            continue  # an end another end just linked to: tied already (two links once, one each way)
         E, own = rp[e], component(e)
         best = None
         for s in rs:
@@ -3550,6 +3552,13 @@ def join_links(roads: dict, extra: list, folder: str) -> tuple:
                 at.setdefault(u, []).append(ns)
                 at.setdefault(v, []).append(ns)
                 st.retangent(rp, ns)
+        hz = a["z"] + (b["z"] - a["z"]) * t
+        if abs(E["z"] - hz) > 50 and E.get("raise", True) and host.get("raise", True):
+            # the end meets its host at the host's height, its own street graded down to it: an end kept at its own
+            # height stood 3 to 13 m over or under the street it is tied to (Valley's private streets, Nov 18 2026)
+            E["z"] = hz
+            _ramp(rp, rs, o["i"], e, hz)
+            st.retangent(rp, own_seg)
         link = _segment(next(nid), e, h["i"], "", folder, lifted=True)  # draws nothing, shapes nothing
         link["join"] = True
         rs.append(link)
@@ -3898,6 +3907,7 @@ def ground_roads(actors: list) -> list:
 
 DOOR_CM = 2500.0  # a street this close to a lot's front is at its door
 DRIVE_REACH_CM = 25000.0  # ... else a private drive runs to the nearest street this close
+DRIVE_SHORT_CM = 300.0  # a drive's end, this far short of its street's middle (still well inside its reach)
 ACCESS_REACH_CM = 60000.0  # lanes that reach no street (a shipyard's, 373 m out at Valley's Northgate): one access road
 
 
@@ -3943,6 +3953,10 @@ def lot_drives(lots: list, streets: list, blocks: list, roads: list, wet=None) -
         n = max(1, int(math.dist(a, q) // 500))
         if math.dist(a, q) <= reach and not (wet and any(
                 wet(a[0] + (q[0] - a[0]) * k / n, a[1] + (q[1] - a[1]) * k / n) for k in range(n + 1))):
+            # it ends DRIVE_SHORT_CM short of the street's middle, on its own line: drives from lots round one street
+            # end met in one point, became one lane through it and were never joined (3 at Valley's Riverton)
+            f = min(DRIVE_SHORT_CM, math.dist(a, q) / 2) / (math.dist(a, q) or 1.0)
+            q = (q[0] + (a[0] - q[0]) * f, q[1] + (a[1] - q[1]) * f)
             out.append([[round(a[0]), round(a[1])], [round(q[0]), round(q[1])]])
     for r in lots:
         if any(_inside(poly, r[0], r[1]) for poly in polys) or _nearest_road((r[5], r[6]), every)[0] < DOOR_CM:
