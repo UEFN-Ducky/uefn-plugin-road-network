@@ -26,6 +26,7 @@ import threading
 import time
 
 from . import citygen as cg
+from . import editor_heal
 from . import history
 from . import holds as hd
 from . import kit_bake
@@ -264,8 +265,10 @@ def register(api) -> None:
             pass
 
     def listener(command: str, params: dict | None = None, timeout: float = 120):
-        # every editor call is metered: UEFN's memory before/after, refused when the last call blew up
-        return uefn_memory.metered(command, lambda: api.listener(command, params or {}, timeout=timeout))
+        # every editor call is metered: UEFN's memory before/after, refused when the last call blew up;
+        # a popup or a dropped listener is cleared and a lost call sent once more (editor_heal)
+        return editor_heal.retry_once(lambda: uefn_memory.metered(
+            command, lambda: api.listener(command, params or {}, timeout=timeout)), api.call_tool)
 
     def listener_long(command: str, params: dict | None = None, timeout: float = 300) -> dict:
         """A slow editor call (a mesh build, a heavy slice). Ducky's bridge stops waiting after ~30 s but UEFN
@@ -292,8 +295,9 @@ def register(api) -> None:
         # (api.call_tool's dispatcher drops them for unreal__call_tool).
         from backend.mcp_plugins.client_pool import get_plugin_pool
         pool = get_plugin_pool()
-        out = uefn_memory.metered(f"{toolset.rsplit('.', 1)[-1]}.{tool}", lambda: pool.run_sync(pool.call_tool(
-            "unreal__call_tool", {"toolset_name": toolset, "tool_name": tool, "arguments": arguments}), timeout=timeout))
+        out = editor_heal.retry_once(lambda: uefn_memory.metered(f"{toolset.rsplit('.', 1)[-1]}.{tool}", lambda: pool.run_sync(
+            pool.call_tool("unreal__call_tool", {"toolset_name": toolset, "tool_name": tool, "arguments": arguments}),
+            timeout=timeout)), api.call_tool)
         if not isinstance(out, (str, dict)):
             out = getattr(out, "text", None) or str(out)
         if isinstance(out, str):
