@@ -1509,6 +1509,7 @@ function pick(e) {
   const m = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
   ray.setFromCamera(m, camera);
   ray.params.Points.threshold = orbit.dist / 400;
+  if (moving) { moveHere(); return true; }
   const hits = ray.intersectObjects([...groups.points.children, ...groups.pieces.children], false);
   if (!hits.length) return inspectAt();
   const hit = hits[0];
@@ -1526,7 +1527,7 @@ const tileOf = (x, y, nature) => nature ? `n${Math.floor(x / 160000)}_${Math.flo
 function layerInfo(name, layer, p, more = []) {
   const nature = layer.kind === "foliage" || ["tree", "street_tree", "bush", "rock"].includes(layer.role);
   const tile = tileOf(p[0], p[1], nature);
-  return { title: name, tile, rows: [["Layer", name], ["Kind", layer.role || layer.kind || "prop"],
+  return { title: name, tile, at: { layer: name, x: p[0], y: p[1] }, rows: [["Layer", name], ["Kind", layer.role || layer.kind || "prop"],
     ["Mesh", layer.mesh || (layer.meshes || []).map((m) => m.name || m.path || m).join(", ") || "picked from the kit by its kind"],
     ...more, ["Where", xyz(p[0], p[1], p[2])], ["PCG tile", tile], ["In this layer", (layer.count || 0).toLocaleString()]] };
 }
@@ -1548,9 +1549,31 @@ function showInspect(info) {
     $("view").parentElement.appendChild(el);
   }
   el.hidden = !info;
+  const btn = (label, fn, title = "") => h("button", { type: "button", class: "rn-mini", style: "pointer-events: auto; margin: 6px 6px 0 0", title, onclick: fn }, label);
   if (info) el.replaceChildren(h("b", {}, info.title), h("div", { class: "rn-kv" }, ...info.rows.flatMap(([k, v]) => [h("span", {}, k), h("span", {}, String(v))])),
-    ...(info.tile && state.net ? [h("button", { type: "button", class: "rn-mini", style: "pointer-events: auto; margin-top: 6px",
-      onclick: () => onPcgPlace(info.tile) }, `Push tile ${info.tile} to UEFN`)] : []));
+    h("div", {}, ...(info.at && state.net ? [
+      btn("Delete", () => editPiece({ op: "delete", ...info.at }), "Delete this piece for good: every rebuild keeps it gone"),
+      btn("Move", () => { moving = info.at; showInspect({ title: `Moving ${info.title}`, rows: [["Next", "click the ground where it goes"]] }); },
+        "Move this piece for good: click it, then click where it goes"),
+      btn("Copy", () => { moving = { ...info.at, op: "copy" }; showInspect({ title: `Copying ${info.title}`, rows: [["Next", "click the ground where the copy goes"]] }); },
+        "Put another one of these somewhere: click where it goes")] : []),
+    ...(info.tile && state.net ? [btn(`Push tile ${info.tile} to UEFN`, () => onPcgPlace(info.tile))] : [])));
+}
+// The person's own deletes and moves: kept with the world (road_network_edit), applied after every rule
+let moving = null;  // the piece a Move button picked: the next click on the ground is where it goes
+async function editPiece(params) {
+  const r = await rpc("edit", { net_id: state.net, ...params });
+  if (r.ok === false) return showError(r.error);
+  schedulePcgPreview(100);
+  showInspect({ title: `${{ delete: "Deleted", move: "Moved", copy: "Copied" }[r.edit.op]}: ${r.piece.layer}`, tile: r.tiles.join(", "),
+    rows: [["Kept", `every rebuild keeps it (${r.edits} edits on this world)`], ["In UEFN", `push ${r.tiles.join(", ")}`]] });
+}
+function moveHere() {  // the ray is already set by pick()
+  const piece = moving;
+  moving = null;
+  const hit = ray.intersectObjects(groups.terrain.children, true)[0];
+  if (!hit) return showInspect({ title: "Move cancelled", rows: [["Why", "that click was not on the ground"]] });
+  editPiece({ op: "move", ...piece, to_x: -hit.point.z * 100, to_y: hit.point.x * 100 });  // (piece.op: a copy)
 }
 function inspectAt() {  // the ray is already set by pick()
   const hit = ray.intersectObjects(groups.pcg.children, false).find((x) => x.object.userData.info && x.instanceId != null);

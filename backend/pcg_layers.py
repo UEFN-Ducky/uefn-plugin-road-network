@@ -986,6 +986,63 @@ def fit_yards(placed: dict, samples: list) -> dict:
     return {"removed": gone} if gone else {}
 
 
+EDIT_REACH_CM = 500.0  # an edit takes the piece standing nearest its point, if one stands this close
+
+
+def nearest(placed: dict, x: float, y: float, layer: str = "", reach: float = EDIT_REACH_CM) -> tuple:
+    """(layer name, point) of the piece standing nearest (x, y): of that layer, or of any; (None, None) if none is
+    within reach cm."""
+    best, d = (None, None), reach
+    for name, lay in ([(layer, placed.get(layer) or {})] if layer else placed.items()):
+        for p in lay.get("points") or []:
+            if (dd := math.hypot(p[0] - x, p[1] - y)) <= d:
+                best, d = (name, p), dd
+    return best
+
+
+def apply_edits(placed: dict, edits: list, ground=None) -> list:
+    """The person's own hand on the city, applied after every rule so each rebuild keeps it: each edit
+    {"op": "delete" | "move" | "copy", "layer", "x", "y", "reach", "every", "to": [x, y], "yaw"} takes the piece of
+    its layer nearest (x, y), within reach cm (5 m), and deletes it (every=true: every piece of that layer, or of
+    any, within reach), moves (and turns) it, or puts a copy of it at `to`; on the ground there unless its layer
+    keeps its own level. In order, so a later edit finds a moved piece where it went. Returns the edits that found
+    nothing (a regenerate moved or dropped their piece)."""
+    missed = []
+    for e in edits:
+        reach = float(e.get("reach") or EDIT_REACH_CM)
+        if e["op"] == "delete" and e.get("every"):
+            hit = 0
+            for name, lay in ([(e["layer"], placed.get(e["layer"]) or {})] if e.get("layer") else placed.items()):
+                keep = [q for q in lay.get("points") or [] if math.hypot(q[0] - e["x"], q[1] - e["y"]) > reach]
+                if len(keep) != len(lay.get("points") or []):
+                    hit += len(lay["points"]) - len(keep)
+                    lay["count"] = max(len(keep), int(lay.get("count", 0)) - (len(lay["points"]) - len(keep)))
+                    lay["points"], lay["shown"] = keep, len(keep)
+            if not hit:
+                missed.append(e)
+            continue
+        name, p = nearest(placed, e["x"], e["y"], e.get("layer") or "", reach)
+        if p is None:
+            missed.append(e)
+            continue
+        lay = placed[name]
+        if e["op"] == "delete":
+            lay["points"] = [q for q in lay["points"] if q is not p]
+            lay["shown"] = len(lay["points"])
+            lay["count"] = max(len(lay["points"]), int(lay.get("count", 1)) - 1)
+            continue
+        if e["op"] == "copy":
+            p = list(p)
+            lay["points"].append(p)
+            lay["shown"], lay["count"] = len(lay["points"]), int(lay.get("count", 0)) + 1
+        p[0], p[1] = round(e["to"][0]), round(e["to"][1])
+        if e.get("yaw") is not None:
+            p[3] = float(e["yaw"])
+        if ground and not lay.get("keep_z"):
+            p[2] = round(ground(p[0], p[1]))
+    return missed
+
+
 def clear_yards(placed: dict) -> dict:
     """No building on a container yard. The port claims its land from the street grid's lots, but buildings placed
     later (planned sites, infill) knew nothing of it: a 24 m warehouse stood among the stacks (Valley 2_1, Nov 17
@@ -2708,6 +2765,23 @@ def _demo() -> None:
     assert [p[0] for p in yard["Port yards"]["points"]] == [30000]
     assert [s[0] for s in yard["Container stacks"]["points"]] == [30000]
     assert fit_yards(yard, road) == {}
+    # the person's edits: a delete takes the nearest piece of its layer, a move puts one on the ground where it
+    # goes; an edit whose piece is gone is handed back
+    town = {"Houses": {"kind": "buildings", "count": 2, "shown": 2, "points": [[0, 0, 0, 0.0, 1], [5000, 0, 0, 0.0, 1]]},
+            "Port yards": {"kind": "site", "keep_z": True, "points": [[9000, 0, -36, 0.0, 50.0, 40.0, 1.0]]}}
+    gone = {"op": "delete", "layer": "", "x": 9000, "y": 9000}
+    assert apply_edits(town, [{"op": "delete", "layer": "Houses", "x": 120, "y": -80},
+                              {"op": "move", "layer": "Houses", "x": 5000, "y": 0, "to": [7000, 100], "yaw": 90},
+                              {"op": "move", "layer": "", "x": 9000, "y": 0, "to": [9500, 0]}, gone],
+                       lambda x, y: 250.0) == [gone]
+    assert town["Houses"]["points"] == [[7000, 100, 250, 90.0, 1]] and town["Houses"]["count"] == 1
+    assert town["Port yards"]["points"][0][:3] == [9500, 0, -36], "a yard keeps its own level"
+    # a copy keeps the original; every=true clears all of a layer within reach, nothing else
+    assert apply_edits(town, [{"op": "copy", "layer": "Houses", "x": 0, "y": 0, "reach": 8000, "to": [100, 100]}],
+                       lambda x, y: 0.0) == []
+    assert [p[:2] for p in town["Houses"]["points"]] == [[7000, 100], [100, 100]] and town["Houses"]["count"] == 2
+    assert apply_edits(town, [{"op": "delete", "layer": "Houses", "every": True, "x": 0, "y": 0, "reach": 8000}]) == []
+    assert town["Houses"]["points"] == [] and len(town["Port yards"]["points"]) == 1
     # a field gets the biggest real pitch that fits, at scale 1, turned to fit; too small for 5-a-side: none
     assert fit_pitch(110, 75) == ("pitch11", 0) and fit_pitch(46, 70) == ("pitch7", 90) and fit_pitch(30, 20) is None
     sport = site_layers([{"private": {"grounds": [[0, 0, 0.0, 70.0, 50.0, "field", "school"],

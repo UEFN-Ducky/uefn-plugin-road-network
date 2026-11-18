@@ -2113,8 +2113,9 @@ def register(api) -> None:
         cg.HEIGHTMAP_RES = cg.landscape_res(gen.get("options"))
         # (without each city's plan report: the placement reads its lots, never the report, and the report's wording
         # alone changes on the rebuild after an edit)
+        edits = edit_list(nid)
         key = hashlib.sha1(pickle.dumps([nid, docs, [{k: v for k, v in c.items() if k != "plan"} for c in cities],
-                                         terrain, actors, keep, cut, cg.HEIGHTMAP_RES], protocol=5)).hexdigest()
+                                         terrain, actors, keep, cut, cg.HEIGHTMAP_RES, edits], protocol=5)).hexdigest()
         if _PREVIEW_CACHE.get("key") != key:  # ponytail: one entry, the world being looked at
             ground = st.grid_sampler(terrain) if terrain.get("heights") else (lambda x, y: 0.0)
             ground = cg.on_made(cities, ground)  # (a shipyard's platform and a made shore: at their own levels)
@@ -2298,7 +2299,9 @@ def register(api) -> None:
                                           ("Bridge cables", "SM_Kit_BridgeStay", towers["stays"], [1.0, 0.12, 1.0])):
                 placed[name] = {"kind": "site", "role": "bridge", "mesh": mesh, "box_m": box, "tint": "fg-dim",
                                 "count": len(rows), "shown": len(rows), "points": rows}
-            _PREVIEW_CACHE.update(key=key, out=placed, fit=fit, ter=fit_ter)
+            # last of all, the person's own deletes and moves (road_network_edit): no rule above undoes them
+            _PREVIEW_CACHE["edits_missed"] = pl.apply_edits(placed, edits, stands_on)
+            _PREVIEW_CACHE.update(key=key, out=placed, fit=fit, ter=fit_ter, ground=stands_on)
         out = _PREVIEW_CACHE["out"]
         if layer_id:  # one layer, or several "a,b,c" (the panel asks for small layers together: fewer calls)
             pick: dict = {}
@@ -2324,6 +2327,90 @@ def register(api) -> None:
         return {"ok": True, "id": nid, "layers": out}
 
     _GROUND: dict = {}
+
+    # ---------------------------------------------------------------- the person's own edits
+    def edit_list(nid: str) -> list:
+        return list((data.get(f"net.{nid}.edits") or {}).get("items") or [])
+
+    def camera_point() -> tuple:
+        """Where the middle of the UEFN viewport looks: the camera's ray down to the city's ground (cm)."""
+        cam = listener("get_viewport_camera", {}, timeout=20)
+        loc, rot = cam["location"], cam["rotation"]
+        p, w = math.radians(rot["pitch"]), math.radians(rot["yaw"])
+        d = (math.cos(p) * math.cos(w), math.cos(p) * math.sin(w), math.sin(p))
+        if d[2] > -0.05:
+            raise ValueError("The UEFN camera looks at the sky: look down at the piece (the middle of the view).")
+        g = _PREVIEW_CACHE.get("ground") or (lambda x, y: 0.0)
+        x, y, z = loc["x"], loc["y"], loc["z"]
+        for _ in range(2000):  # ponytail: 1 m steps, 2 km reach
+            if z <= g(x, y):
+                break
+            x, y, z = x + d[0] * 100, y + d[1] * 100, z + d[2] * 100
+        return x, y
+
+    def tile_of(x: float, y: float, name: str) -> str:
+        lay = (_PREVIEW_CACHE.get("out") or {}).get(name) or {}
+        n = lay.get("kind") == "foliage" or lay.get("role") in pl.NATURAL
+        return f"n{math.floor(x / 160000)}_{math.floor(y / 160000)}" if n else f"{math.floor(x / 40000)}_{math.floor(y / 40000)}"
+
+    def edit(net_id: str = "", op: str = "delete", x=None, y=None, layer: str = "", to_x=None, to_y=None,
+             yaw=None, at: str = "", to: str = "", reach_m: float = 0.0, every: bool = False) -> dict:
+        """Delete or move one placed piece for good: the edit is kept with the world and applied after every rule,
+        so each rebuild keeps it. at='camera' / to='camera': the point the middle of the UEFN view looks at."""
+        nid = slug(net_id)
+        if not data.get(f"net.{nid}"):
+            return {"ok": False, "error": f"No road network {net_id!r}."}
+        if op not in ("delete", "move", "copy"):
+            return {"ok": False, "error": "op is 'delete', 'move' or 'copy'."}
+        reach = float(reach_m) * 100 if reach_m else pl.EDIT_REACH_CM
+        pcg_preview(nid, summary=True)  # (the placement as it stands, with the edits so far)
+        if at == "camera":
+            x, y = camera_point()
+        if x is None or y is None:
+            return {"ok": False, "error": "Give x and y (cm), or at='camera' to take what the UEFN view looks at."}
+        name, p = pl.nearest(_PREVIEW_CACHE["out"], float(x), float(y), layer, reach)
+        if p is None:
+            return {"ok": False, "error": f"Nothing{' of ' + layer if layer else ''} stands within "
+                                           f"{round(reach / 100)} m of {round(float(x))}, {round(float(y))}."}
+        if every and op == "delete":  # everything within reach (of the layer, if one is named): kept at its point
+            hits = {n: sum(math.hypot(q[0] - float(x), q[1] - float(y)) <= reach for q in v.get("points") or [])
+                    for n, v in _PREVIEW_CACHE["out"].items() if not layer or n == layer}
+            e = {"op": op, "layer": layer, "x": round(float(x)), "y": round(float(y)), "reach": reach, "every": True}
+            p, name = [e["x"], e["y"], 0, 0], layer or "(every layer)"
+        else:
+            e = {"op": op, "layer": name, "x": p[0], "y": p[1]}
+            hits = {name: 1}
+        tiles = [tile_of(p[0], p[1], name if name in _PREVIEW_CACHE["out"] else "")]
+        if op in ("move", "copy"):
+            if to == "camera":
+                to_x, to_y = camera_point()
+            if to_x is None or to_y is None:
+                return {"ok": False, "error": f"A {op} needs to_x and to_y (cm), or to='camera'."}
+            e.update(to=[round(float(to_x)), round(float(to_y))], yaw=None if yaw is None else float(yaw))
+            tiles = (tiles if op == "move" else []) + [tile_of(e["to"][0], e["to"][1], name)]  # (a copy's source stays)
+        items = edit_list(nid) + [e]
+        data.put(f"net.{nid}.edits", {"items": items})
+        tiles = list(dict.fromkeys(tiles))
+        return {"ok": True, "id": nid, "edit": e, "piece": {"layer": name, "at": p[:3], "yaw": p[3]},
+                "pieces": {k: v for k, v in hits.items() if v}, "tiles": tiles, "edits": len(items),
+                "next": f"Push {', '.join(tiles)}: road_network_pcg_build(net_id={nid!r}, tiles={', '.join(tiles)!r}, "
+                        f"force=true, confirm=true)"}
+
+    def edits(net_id: str = "", undo: bool = False, clear: bool = False) -> dict:
+        nid = slug(net_id)
+        if not data.get(f"net.{nid}"):
+            return {"ok": False, "error": f"No road network {net_id!r}."}
+        items = edit_list(nid)
+        dropped = items if clear else items[-1:] if undo else []
+        if dropped:
+            items = items[:len(items) - len(dropped)]
+            data.put(f"net.{nid}.edits", {"items": items})
+        tiles = sorted({tile_of(e["x"], e["y"], e["layer"]) for e in dropped}
+                       | {tile_of(*e["to"], e["layer"]) for e in dropped if e.get("to")})
+        if dropped:
+            pcg_preview(nid, summary=True)
+        return {"ok": True, "id": nid, "items": items, "count": len(items), "dropped": len(dropped),
+                "tiles_to_push": tiles, "missed": _PREVIEW_CACHE.get("edits_missed") or []}
 
     def road_fit(ground, actors: list, terrain: dict) -> dict:
         """Every street point against the ground the buildings were fitted to: how many the ground covers (over)
@@ -4317,6 +4404,27 @@ def register(api) -> None:
         return safe(pcg_exact)(net_id, float(x), float(y), float(radius_m), summary)
 
     @tool(intent=PCG_INTENT, listener=False)
+    def road_network_edit(net_id: str = "", op: str = "delete", x: float | None = None, y: float | None = None,
+                          layer: str = "", to_x: float | None = None, to_y: float | None = None,
+                          yaw: float | None = None, at: str = "", to: str = "", reach_m: float = 0.0,
+                          every: bool = False) -> dict:
+        """Delete, move or copy a placed piece (a building, yard, slab, prop, tree...) for good: the edit is kept
+        with the world and applied after every placement rule, so every rebuild keeps it. op='delete' | 'move' |
+        'copy'. The piece is the one standing nearest (x, y) cm within reach_m (default 5 m), of `layer` if given.
+        at='camera': the piece the middle of the UEFN viewport looks at (the person points the editor camera at
+        it). every=true with delete: every piece (of `layer`, or of every layer) within reach_m. A move or copy goes
+        to (to_x, to_y), or to='camera', turned to yaw degrees if given: copy a house from next door to put a house
+        on an emptied lot. Returns the tiles to push (pcg_build tiles=)."""
+        return safe(edit)(net_id, op, x, y, layer, to_x, to_y, yaw, at, to, reach_m, every)
+
+    @tool(intent=PCG_INTENT, listener=False)
+    def road_network_edits(net_id: str = "", undo: bool = False, clear: bool = False) -> dict:
+        """The person's deletes and moves on this world (road_network_edit), in order. undo=true drops the last,
+        clear=true drops them all; tiles_to_push names the tiles to push again. missed: edits whose piece a
+        regenerate moved or dropped."""
+        return safe(edits)(net_id, undo, clear)
+
+    @tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_build(net_id: str = "", confirm: bool = False, force: bool = False,
                                stop: bool = False, nature_only: bool = False, city_only: bool = False,
                                tiles: str = "") -> dict:
@@ -4356,6 +4464,9 @@ def register(api) -> None:
     panel_rpc("pcg_exact", lambda net_id="", x=0.0, y=0.0, radius_m=400.0: safe(pcg_exact)(
         net_id, float(x), float(y), float(radius_m)))
     panel_rpc("pcg_place", lambda net_id="", confirm=False: safe(pcg_place)(net_id, confirm))
+    panel_rpc("edit", lambda net_id="", op="delete", x=None, y=None, layer="", to_x=None, to_y=None, yaw=None, at="", to="",
+              reach_m=0.0, every=False: safe(edit)(net_id, op, x, y, layer, to_x, to_y, yaw, at, to, reach_m, every))
+    panel_rpc("edits", lambda net_id="", undo=False, clear=False: safe(edits)(net_id, undo, clear))
     panel_rpc("pcg_build", lambda net_id="", confirm=False, force=False, tiles="":  # tiles: the inspector's one-tile push
               safe(pcg_build)(net_id, confirm, force, tiles=tiles))
 

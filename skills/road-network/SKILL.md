@@ -121,6 +121,10 @@ situation and what to do. Keep it to what you couldn't have known.
   piece's real box, the ground as the landscape has it). `ground_fit.buried` / `floating` must be 0 and `unknown`
   empty. The panel's "Real pieces here" draws the same thing. A world laid over another's landscape is fitted to
   the scanned ground; once `road_network_heightmap` is made for it, to that heightmap (import it, then push).
+- One piece wrong (a building, a yard, a slab)? `road_network_edit(net_id, op='delete'|'move', at='camera')`
+  takes the piece the middle of the UEFN view looks at (or `x, y` cm; a move goes `to='camera'` or `to_x, to_y`).
+  The edit is kept and applied after every rule, so rebuilds keep it; push the `tiles` it returns. The panel's
+  inspector has Delete / Move on every clicked piece. `road_network_edits(net_id, undo|clear)` lists or drops them.
 - A BuildingKit mesh in UEFN must measure `grammar.BOUNDS` (walls 0..512 on X, roof slab 0..512 on X and Y). An
   FBX import that mirrors Y puts roofs beside their buildings: fix the export, never the placement.
 - `road_network_pcg_build(confirm=true)` runs in the background, a batch of tiles per editor script: call it again
