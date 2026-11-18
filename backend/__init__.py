@@ -1023,6 +1023,11 @@ def register(api) -> None:
         # landscape's reserved Splines edit layer shapes the ground, exactly like a hand-made spline.
         label = head["label"]
         found = st.problems(pts, segs)
+        repaired = None
+        if any(found.values()):  # broken data: repair it (as road_network_repair does), then check again
+            repaired = repair_actor(nid, aslug)
+            head, pts, segs = load_actor(nid, aslug)
+            found = st.problems(pts, segs)
         if any(found.values()):
             counts = {k: len(v) for k, v in found.items()}
             return {"ok": False, "error": f"{label} has broken data that would stamp giant shapes into the terrain "
@@ -1034,6 +1039,7 @@ def register(api) -> None:
         after = listener("road_network_count", {"label": label})
         record("road_network_reimport", "network", nid, None, [])
         return {"ok": True, "label": label, "pieces": after.get("pieces"),
+                **({"repaired": {k: v for k, v in repaired.items() if k != "ok"}} if repaired else {}),
                 "note": "Live splines: the ground follows them through the landscape's Splines edit layer."}
 
     def paste_actor(label: str, pts: list, segs: list):
@@ -1055,8 +1061,13 @@ def register(api) -> None:
         for attempt in range(2):
             res = uefn_memory.metered(f"paste {label}", uefn_input.paste_in_splines_tool)
             if not res.get("ok"):
-                if attempt == 0:  # a window over UEFN or a slow panel: one more go
-                    time.sleep(1.5)
+                if attempt == 0:  # a popup over UEFN or the Splines tool left: clear it, back to Landscape, one more go
+                    editor_heal.heal("", api.call_tool)
+                    try:
+                        epic("EditorToolset.EditorAppToolset", "SetEditorMode", {"modeId": "EM_Landscape"})
+                    except (ConnectionError, RuntimeError, TimeoutError, ValueError):
+                        pass
+                    time.sleep(3)
                     continue
                 return {"ok": False, "error": res.get("error"), "note": "The text is on the clipboard: Manage > Splines, Ctrl+V."}
             time.sleep(min(90, 5 + len(text) / 80000))
@@ -1744,20 +1755,26 @@ def register(api) -> None:
             return {"ok": False, "error": f"This pastes {len(todo)} changed road actors into the open UEFN level "
                                           f"({', '.join(t[1] for t in todo)}); {len(same)} unchanged are left alone. "
                                           f"Call again with confirm=true.", "unchanged": same}
-        done = {}
-        for aslug, label, digest in todo:
+        done, failed = {}, []
+        for aslug, label, digest in todo:  # one road that fails never stops the others: it is pushed next time
             pieces = build_pieces(nid, label)
             if not pieces.get("ok"):
-                return {"ok": False, "error": f"{label}: {pieces.get('error')}", "done": done}
+                failed.append({"label": label, "error": str(pieces.get("error"))[:200]})
+                continue
             out = reimport(nid, label, True)
             if not out.get("ok"):
-                return {"ok": False, "error": f"{label}: {out.get('error')}", "done": done}
+                failed.append({"label": label, "error": str(out.get("error"))[:200]})
+                continue
             head = data.get(f"net.{nid}.actor.{aslug}") or {}
             # the hash of what is in the level now (build_pieces may have placed junction meshes)
             _, pts, segs = load_actor(nid, aslug)
             data.put(f"net.{nid}.actor.{aslug}", {**head, "pushed": hashlib.sha1(st.serialize(pts, segs).encode()).hexdigest()})
             done[label] = {"junction_pieces": pieces.get("built", 0), "pieces": out.get("pieces")}
-        return {"ok": True, "id": nid, "done": done, "unchanged": same, "ground_paint": paint_ground()}
+        if not done:
+            return {"ok": False, "error": f"No road actor was pushed: {failed[0]['label']}: {failed[0]['error']}",
+                    "failed": failed, "unchanged": same}
+        return {"ok": True, "id": nid, "done": done, "failed": failed, "partial": bool(failed), "unchanged": same,
+                "ground_paint": paint_ground()}
 
     def paint_ground() -> dict:
         """After a push: dirt paint under every road, junction and building, so no grass shows there.
