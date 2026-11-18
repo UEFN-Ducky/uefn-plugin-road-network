@@ -282,7 +282,7 @@ def register(api) -> None:
                 raise
         end = time.time() + timeout
         while time.time() < end:
-            time.sleep(5)
+            time.sleep(2)
             try:
                 api.listener("road_network_count", {"label": ""}, timeout=20)  # answers once UEFN is free
                 return {"ok": True, "late": True}
@@ -1052,7 +1052,7 @@ def register(api) -> None:
             if before.get("path"):
                 epic("EditorToolset.LevelToolset", "RemoveFromScene", {"actor": {"refPath": before["path"]}})
             epic("EditorToolset.EditorAppToolset", "SetEditorMode", {"modeId": "EM_Landscape"})
-            time.sleep(3)  # the Landscape panel opens a few frames after the call returns
+            time.sleep(1.0)  # the Landscape panel opens a few frames after the call returns (a miss: the retry below)
         except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
             return {"ok": False, "error": f"UEFN step failed: {exc}"}
         expected = len([s for s in segs if s["mesh"]])
@@ -1070,10 +1070,19 @@ def register(api) -> None:
                     time.sleep(3)
                     continue
                 return {"ok": False, "error": res.get("error"), "note": "The text is on the clipboard: Manage > Splines, Ctrl+V."}
-            time.sleep(min(90, 5 + len(text) / 80000))
-            for row in listener("road_network_actors").get("actors", []):
-                if row["path"] not in known and row["spline_pieces"] >= expected * 0.5:
-                    pasted = row["path"]
+            # poll instead of one long sleep: UEFN pastes on its own thread, so the listener answers as soon as the
+            # paste is done; the old fixed wait (up to 90 s) is now only the deadline
+            end = time.time() + min(90, 5 + len(text) / 80000)
+            time.sleep(1.0)
+            while not pasted and time.time() < end:
+                try:
+                    rows = listener("road_network_actors", timeout=max(5.0, end - time.time())).get("actors", [])
+                except (ConnectionError, RuntimeError, TimeoutError, ValueError):
+                    rows = []
+                pasted = next((r["path"] for r in rows
+                               if r["path"] not in known and r["spline_pieces"] >= expected * 0.5), None)
+                if not pasted:
+                    time.sleep(2.0)
             if pasted:
                 break
         if not pasted:
@@ -1757,7 +1766,9 @@ def register(api) -> None:
                                           f"Call again with confirm=true.", "unchanged": same}
         done, failed = {}, []
         for aslug, label, digest in todo:  # one road that fails never stops the others: it is pushed next time
+            t0 = time.time()
             pieces = build_pieces(nid, label)
+            t_pieces = round(time.time() - t0, 1)
             if not pieces.get("ok"):
                 failed.append({"label": label, "error": str(pieces.get("error"))[:200]})
                 continue
@@ -1769,7 +1780,8 @@ def register(api) -> None:
             # the hash of what is in the level now (build_pieces may have placed junction meshes)
             _, pts, segs = load_actor(nid, aslug)
             data.put(f"net.{nid}.actor.{aslug}", {**head, "pushed": hashlib.sha1(st.serialize(pts, segs).encode()).hexdigest()})
-            done[label] = {"junction_pieces": pieces.get("built", 0), "pieces": out.get("pieces")}
+            done[label] = {"junction_pieces": pieces.get("built", 0), "pieces": out.get("pieces"),
+                           "seconds": {"junctions": t_pieces, "paste": round(time.time() - t0 - t_pieces, 1)}}
         if not done:
             return {"ok": False, "error": f"No road actor was pushed: {failed[0]['label']}: {failed[0]['error']}",
                     "failed": failed, "unchanged": same}
@@ -3278,6 +3290,8 @@ def register(api) -> None:
                             f"'{folder_}'. left_out: trees over the world's limit (road_network_pcg_assets trees_max)."}
 
         def work() -> dict:
+            timings: dict = {}  # seconds per phase, in the result: where a slow push spent its time
+            t_phase = time.time()
             mats = None
             if build:
                 # the kit's instance-safe materials: made once, then reused. Making them loads every kit mesh
@@ -3302,13 +3316,21 @@ def register(api) -> None:
                     data.put(f"net.{nid}.mats", {"name": f"{name} / kit materials", "overrides": over,
                                                  "absent": absent})
                     mats = {**mats, "overrides": over}
+            timings["materials_s"] = round(time.time() - t_phase, 1)
+            t_phase = time.time()
             # the person's own layers: their meshes' materials need the instanced-mesh usage too (10 meshes per call)
+            # meshes already checked by an earlier build skip their checks: each check LOADS the mesh in UEFN
+            # (compiling its shaders), which was most of a small rebuild. force=true checks everything again.
+            ok_before = {k: set(v) for k, v in ({} if force else (data.get("kit.checked") or {})).items()}
+            passed = {k: set(v) for k, v in ok_before.items()}
             own = kit_bake.own_meshes(got.get("layers") or {}) if build else []
+            own_new = [m for m in own if m not in ok_before.get("ism", ())]
             own_report = {"fixed": [], "locked": [], "missing": []}
-            for k in range(0, len(own), 10):
-                r = listener("road_network_ism_ready", {"meshes": own[k:k + 10]}, timeout=300)
+            for k in range(0, len(own_new), 10):
+                r = listener("road_network_ism_ready", {"meshes": own_new[k:k + 10]}, timeout=300)
                 for key in own_report:
                     own_report[key] += r.get(key) or []
+            passed.setdefault("ism", set()).update(set(own_new) - set(own_report["missing"]) - set(own_report["locked"]))
             if own_report["missing"]:
                 return {"ok": False, "error": f"These layer meshes aren't in the project: {own_report['missing'][:10]}. "
                                               f"Fix the layer's meshes (Content Browser path) and push again."}
@@ -3318,18 +3340,24 @@ def register(api) -> None:
             used = sorted({m for k in build for m in new[k]["meshes"]})
             solid = [m for m in used if kit_bake.blocks(m)]
             made_exact = []
-            for k in range(0, len(solid), 20):
-                for m in listener_long("road_network_collision_ready", {"meshes": solid[k:k + 20]}).get("need") or []:
+            solid_new = [m for m in solid if m not in ok_before.get("collision", ())]
+            for k in range(0, len(solid_new), 20):
+                for m in listener_long("road_network_collision_ready", {"meshes": solid_new[k:k + 20]}).get("need") or []:
                     epic("EditorToolset.StaticMeshToolset", "SetCollisionComplexity",
                          {"mesh": {"refPath": m}, "complexity": "CTF_UseComplexAsSimple"})
                     made_exact.append(m.split(".")[0])
             for k in range(0, len(made_exact), SAVE_BATCH):
                 listener_long("road_network_save_assets", {"paths": made_exact[k:k + SAVE_BATCH]})
             # the project's own meshes: LODs + Low/Medium Min LOD, or UEFN's validator flags each one
-            mine = [m for m in used if m.startswith(f"{root}/")]
+            passed.setdefault("collision", set()).update(solid_new)
+            mine = [m for m in used if m.startswith(f"{root}/") and m not in ok_before.get("lod", ())]
             lods_added = 0
             for k in range(0, len(mine), 20):
                 lods_added += int(listener_long("road_network_lod_ready", {"meshes": mine[k:k + 20]}).get("fixed") or 0)
+            passed.setdefault("lod", set()).update(mine)
+            data.put("kit.checked", {k: sorted(v) for k, v in passed.items()})
+            timings["mesh_checks_s"] = round(time.time() - t_phase, 1)
+            t_phase = time.time()
             collision = {"blocking_meshes": len(solid), "lods_added": lods_added,
                          "made_exact": [m.rsplit("/", 1)[-1] for m in made_exact],
                          "no_collision": [m.rsplit(".", 1)[-1] for m in used if not kit_bake.blocks(m)],
@@ -3419,7 +3447,9 @@ def register(api) -> None:
             except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
                 return {"ok": False, "error": f"Stopped after {len(done)} of {len(build)} tiles: {exc}",
                         "built": done, "note": "Build again: finished tiles are kept and skipped.",
-                        "memory": uefn_memory.report(5)}
+                        "memory": uefn_memory.report(5), "timings": timings}
+            timings["tiles_s"] = round(time.time() - t_phase, 1)
+            t_phase = time.time()
             # recount what was really placed: a solid mesh's component left at No Collision is switched on,
             # so 'collision' in the result is a count from the level, never just what the build asked for
             if done:
@@ -3439,6 +3469,8 @@ def register(api) -> None:
                             cleaned.append(f.rsplit("/", 1)[1])
                     except (ConnectionError, RuntimeError, TimeoutError, ValueError):
                         pass  # left for the next build's clean-up: the city itself is built
+            timings["collision_and_cleanup_s"] = round(time.time() - t_phase, 1)
+            t_phase = time.time()
             try:
                 trees = place_props() if p_build or p_remove else {"ok": True, "placed": 0, "unchanged_tiles": len(p_same)}
             except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
@@ -3446,10 +3478,14 @@ def register(api) -> None:
                         "note": "Build again: finished tiles are kept and skipped.", "memory": uefn_memory.report(5)}
             if not trees.get("ok"):
                 return {**trees, "built": done, "note": "Build again: finished tiles are kept and skipped."}
-            return {"ok": True, "id": nid, "partial": bool(failed_tiles),
+            timings["tree_props_s"] = round(time.time() - t_phase, 1)
+            t_phase = time.time()
+            paint = paint_ground()
+            timings["ground_paint_s"] = round(time.time() - t_phase, 1)
+            return {"ok": True, "id": nid, "partial": bool(failed_tiles), "timings": timings,
                     "failed_tiles": [{"key": k, "error": e} for k, e in sorted(failed_tiles.items())],
                     "built_tiles": done, "old_graph_folders_removed": cleaned, "removed_tiles": gone, "unchanged_tiles": len(same),
-                    "tree_props": trees, "ground_paint": paint_ground(),
+                    "tree_props": trees, "ground_paint": paint,
                     "legacy_removed": legacy_removed, "nodes": nodes, "meshes": len(groups), "built": baked,
                     "no_kit_piece": missing, "messages": messages[:20], "memory": uefn_memory.report(5)["worst"],
                     "collision": collision, "seconds": round(time.time() - job["started"]),
