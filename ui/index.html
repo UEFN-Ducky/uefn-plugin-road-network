@@ -22,7 +22,8 @@
     .rn-header { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--header); }
     .rn-brand { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--fg); margin-right: 8px; white-space: nowrap; }
     .rn-brand .rn-icon { color: var(--accent); }
-    .rn-world { min-width: 200px; max-width: 320px; }
+    .rn-world { min-width: 200px; max-width: 360px; display: flex; align-items: center; }
+    .rn-world > :first-child { flex: 1; min-width: 0; }
     .rn-world .dk-field__label, .rn-world label { display: none; }
     .rn-header .rn-spacer { flex: 1; }
     .rn-header .dk-btn { display: inline-flex; align-items: center; gap: 6px; }

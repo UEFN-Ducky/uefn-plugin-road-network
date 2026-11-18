@@ -3235,19 +3235,34 @@ async function loadSync() {
   el.replaceChildren(b);
 }
 let worldDrop = null;
+// the open world deleted for good (its roads, cities and layers here; UEFN keeps whatever was built)
+async function deleteWorld() {
+  const n = currentNet();
+  if (!n) return;
+  const ok = await call("ui.confirm", { title: `Delete ${n.name}`, danger: true, confirm: "Delete",
+    message: `${n.name} and everything in it (terrain, cities, roads, layers) go from City Builder. Nothing in UEFN changes.` }).catch(() => null);
+  if (!ok?.confirmed) return;
+  const out = await rpc("delete", { net_id: n.id });
+  if (out.ok === false) return showError(out.error);
+  state.net = "";
+  worldDrop = null;  // rebuilt with the worlds that are left
+  await loadNets();
+}
+const deleteWorldButton = () => h("button", { type: "button", class: "rn-mini", style: "margin-left: 6px",
+  title: "Delete this world", "aria-label": "Delete this world", onclick: deleteWorld }, icon("trash", 14));
 function renderWorldPick() {
   const host = $("worldPick");
   if (!state.nets.length) { worldDrop = null; host.replaceChildren(h("span", { class: "dk-muted" }, "No worlds yet")); return; }
   const opts = state.nets.map((n) => ({ value: n.id, label: n.generated ? n.name : `${n.name} (from UEFN)` }));
   if (!window.DuckyKit?.dropdown) {  // the kit not loaded yet: plain buttons, never a native select
     host.replaceChildren(...state.nets.map((n) => button(n.name, n.generated ? "world" : "network", () => openNet(n.id),
-      n.id === state.net ? "primary" : "ghost")));
+      n.id === state.net ? "primary" : "ghost")), deleteWorldButton());
     return;
   }
   if (!worldDrop) {
     worldDrop = window.DuckyKit.dropdown({ label: "World", options: opts, value: state.net || opts[0].value,
       onChange: (v) => { if (v && v !== state.net) openNet(v); } });
-    host.replaceChildren(worldDrop.el);
+    host.replaceChildren(worldDrop.el, deleteWorldButton());
   } else {
     worldDrop.setOptions?.(opts);
     worldDrop.set?.(state.net);
