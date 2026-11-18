@@ -236,6 +236,9 @@ RULES = [
     "simple or none, and check in a playtest that nothing can be walked through.",
 ]
 STYLES = ("mixed", "grid", "organic")
+# what a generated or added city gets when nobody picked: never a ruled grid (every second city of a new world was one,
+# when Valley's had come out organic and mixed). Grid stays a choice in the city's own settings.
+AUTO_STYLES = ("organic", "mixed")
 JUNCTION = "SM_Junc_Gen"  # waits for Build pieces (st.pending_nodes picks it up)
 MOUTH_CM = 1500.0
 CORNER_DEG = 30.0  # a 2-street node turning more than this gets a square elbow piece, not a spline bend
@@ -1036,7 +1039,7 @@ def place_cities(seed: int, count: int, bounds: tuple, keep: list | None = None,
         gap = lambda c: gap_cm if gap_cm is not None else (r + c["radius"]) * 0.5
         if all(math.hypot(x - c["x"], y - c["y"]) > r + c["radius"] + gap(c) for c in out):
             out.append({"name": NAMES[len(out) % len(NAMES)], "x": round(x), "y": round(y), "radius": round(r),
-                        "style": STYLES[len(out) % len(STYLES)], "seed": rnd.randrange(1 << 30)})
+                        "style": AUTO_STYLES[len(out) % len(AUTO_STYLES)], "seed": rnd.randrange(1 << 30)})
     return out
 
 
@@ -5650,7 +5653,7 @@ def parcels_area(poly: list) -> float:
 
 def _demo() -> None:
     cities = place_cities(3, 3, ((-200000, -200000), (200000, 200000)))
-    assert len(cities) == 3 and all(c["style"] in STYLES for c in cities)
+    assert len(cities) == 3 and all(c["style"] in AUTO_STYLES for c in cities), "no generated city is a ruled grid"
     ter = terrain(3, 400000, 6000, cities, grid=64)
     assert ter["heights"] == terrain(3, 400000, 6000, [], grid=64)["heights"], "natural ground ignores the cities"
     flat = terrain(3, 400000, 6000, cities, grid=64, opts={"city_ground": "flatten"})

@@ -1552,7 +1552,7 @@ def register(api) -> None:
             return {"ok": False, "error": "That spot is mostly water: a city needs dry land. Pick a spot on land, or "
                                           "Find a free spot."}
         city = {"name": name, "x": round(float(x)), "y": round(float(y)), "radius": round(radius),
-                "style": style or cg.STYLES[len(have) % len(cg.STYLES)], "seed": int(gen.get("seed", 7)) * 31 + len(have) + 7}
+                "style": style or cg.AUTO_STYLES[len(have) % len(cg.AUTO_STYLES)], "seed": int(gen.get("seed", 7)) * 31 + len(have) + 7}
         put_city(nid, slug(name), {**city, "roads": f"{name} Roads", "districts": cg.districts(city, o),
                                    "buildings": {"downtown": [], "normal": [], "housing": []}})
         api.search.upsert(f"net.{nid}.city.{slug(name)}", name, f"City {name} in world {doc.get('name')}")
