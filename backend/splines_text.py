@@ -288,8 +288,25 @@ def drape(points: list, segments: list, ground: dict, iters: int = 4, pin_joints
             "median_shift_cm": round(shifts[n // 2]) if n else 0, "max_shift_cm": round(shifts[-1]) if n else 0}
 
 
+_SAMPLERS: dict = {}  # id(terrain) -> (its heights, grid, min, max, grid_sampler): the setup done once per terrain
+
+
 def sample_grid(terrain: dict, x: float, y: float):
-    """Bilinear ground height from a scan grid ({min, max, grid, heights[j][i]}); None off it."""
+    """Bilinear ground height from a scan grid ({min, max, grid, heights[j][i]}); None off it.
+    (Through the terrain's own grid_sampler, kept while its heights, grid and bounds are the same: the city
+    preview asks millions of times and the setup was most of each call.)"""
+    rows, n, lo, hi = terrain.get("heights"), terrain.get("grid"), terrain.get("min"), terrain.get("max")
+    c = _SAMPLERS.get(id(terrain))
+    # (the very same objects: a terrain is never edited in place but its heights, which the sampler reads live)
+    if c is None or c[0] is not rows or c[1] != n or c[2] is not lo or c[3] is not hi:
+        if len(_SAMPLERS) > 64:  # ponytail: a handful of terrains are live at once
+            _SAMPLERS.clear()
+        c = _SAMPLERS[id(terrain)] = (rows, n, lo, hi, grid_sampler(terrain))
+    return c[4](x, y)
+
+
+def _sample_slow(terrain: dict, x: float, y: float):
+    """sample_grid's general case (holes in the scan included)."""
     n = int(terrain.get("grid") or 0)
     rows = terrain.get("heights") or []
     if n < 2 or len(rows) < n:
@@ -331,7 +348,7 @@ def grid_sampler(terrain: dict):
         r0, r1 = rows[j0], rows[j0 + 1]
         a, b, c, e = r0[i0], r0[i0 + 1], r1[i0], r1[i0 + 1]
         if a is None or b is None or c is None or e is None:
-            return sample_grid(terrain, x, y)  # a hole in the scan: the general case
+            return _sample_slow(terrain, x, y)  # a hole in the scan: the general case
         w0, w1, w2, w3 = (1 - tx) * (1 - ty), tx * (1 - ty), (1 - tx) * ty, tx * ty
         total = sum((w0, w1, w2, w3))  # sum() itself: its float rounding is sample_grid's
         if total <= 1e-9:
@@ -1250,5 +1267,23 @@ def _demo() -> None:
     print("drape ok", out)
 
 
+def _sampler_check() -> None:
+    """sample_grid's cached sampler gives _sample_slow's numbers, holes and the edges included, and follows a
+    terrain whose heights were swapped."""
+    import random
+    rnd = random.Random(4)
+    rows = [[rnd.uniform(-500, 900) for _ in range(9)] for _ in range(9)]
+    rows[3][4] = None
+    ter = {"grid": 9, "min": [-1000.0, -2000.0], "max": [7000.0, 5000.0], "heights": rows}
+    for _ in range(3000):
+        x, y = rnd.uniform(-1500, 7500), rnd.uniform(-2500, 5500)
+        assert sample_grid(ter, x, y) == _sample_slow(ter, x, y), (x, y)
+    ter["heights"] = [[0.0] * 9 for _ in range(9)]
+    assert sample_grid(ter, 10.0, 10.0) == 0.0, "a terrain with new heights is sampled anew"
+    assert sample_grid({"grid": 0}, 1.0, 1.0) is None
+    print("sampler ok")
+
+
 if __name__ == "__main__":
+    _sampler_check()
     _demo()

@@ -2617,8 +2617,12 @@ let loadSeq = 0;
 async function loadGeometry(keep, quiet = false) {
   if (!state.net) return;
   const seq = ++loadSeq, net = state.net;
-  if (!quiet) busy("Loading the world", { text: "Roads, cities and their plans…" });
-  const [geo, st, cities] = await Promise.all([loadAllGeometry(net), rpc("stats", { net_id: net }), rpc("cities", { net_id: net })]);
+  if (!quiet) busy("Loading the world", { text: "Ground and water…", step: 0, of: 1 });
+  // the card says what has come in so far (it sat on one line for the whole load)
+  const step = quiet ? null : (done, of, text) => {
+    if (net === state.net && loading.title === "Loading the world") busy("Loading the world", { text, step: done, of });
+  };
+  const [geo, st, cities] = await Promise.all([loadAllGeometry(net, step), rpc("stats", { net_id: net }), rpc("cities", { net_id: net })]);
   if (seq !== loadSeq || net !== state.net) return;  // a newer load (or another world) took over
   if (!quiet || loading.title === "Loading the world") busy("");
   if (geo.ok === false) return showError(`Couldn't load ${currentNet()?.name || "the world"}: ${geo.error}`, () => loadGeometry(keep));
@@ -2655,7 +2659,7 @@ async function loadGeometry(keep, quiet = false) {
 // A whole city is several MB: the terrain comes first, then each actor in pages of PAGE points
 // and segments, so no single reply nears the panel bridge's 1 MB line.
 const PAGE = 2500;
-async function loadAllGeometry(net) {
+async function loadAllGeometry(net, step = null) {
   const [base, info] = await Promise.all([rpc("geometry", { net_id: net, actor: "-" })  /* "-" matches no actor: terrain and props only */, rpc("get", { net_id: net })]);
   if (base.ok === false) return base;
   if (info.ok === false) return info;
@@ -2672,6 +2676,8 @@ async function loadAllGeometry(net) {
     room -= size;
   }
   if (group.length) batches.push(group);
+  let done = 0;
+  step?.(0, batches.length + 1, `Roads: 0 of ${batches.length} parts…`);
   await Promise.all(batches.map(async (slugs) => {
     for (let offset = 0; ; offset += PAGE) {
       if (net !== state.net) return;  // another world was opened: stop paging this one
@@ -2687,7 +2693,10 @@ async function loadAllGeometry(net) {
       }
       if (!more) break;
     }
+    done += 1;
+    step?.(done, batches.length + 1, `Roads: ${done} of ${batches.length} parts (${slugs.map((s) => actors[s].label).join(", ")})`);
   })).catch((err) => { base.ok = false; base.error = err.message; });
+  step?.(batches.length, batches.length + 1, "Cities and their plans…");
   return { ...base, actors };
 }
 function renderActors(geo) {

@@ -1123,23 +1123,25 @@ def clear_buildings(placed: dict, margin: float = 0.0) -> dict:
     gone: dict = {}
     if not rows:
         return gone
-    # (cells as wide as the widest building reaches: a tree looks at its own cell and the eight round it, and a
-    # tree with no building in those nine, most of a forest, at nothing)
-    cell = max(4000.0, max(math.hypot(r[3], r[4]) for r in rows))
-    grid: dict = {}
+    # each building in every 40 m cell it can reach into: a tree looks in its own cell only, and a tree with no
+    # building there, most of a forest, at nothing. (Cells as wide as the widest building were 500 m once an
+    # airport's apron was in: every tree near a city tested thousands of buildings.)
+    cell, grid = 4000.0, {}
     for x, y, yaw, hd, hw in rows:
-        f = math.radians(yaw)
-        grid.setdefault((int(x // cell), int(y // cell)), []).append((x, y, math.cos(f), math.sin(f), hd, hw))
-    near = {(gx + i, gy + j) for gx, gy in grid for i in (-1, 0, 1) for j in (-1, 0, 1)}
+        f, r = math.radians(yaw), math.hypot(hd, hw)
+        row = (x, y, math.cos(f), math.sin(f), hd, hw)
+        for i in range(int((x - r) // cell), int((x + r) // cell) + 1):
+            for j in range(int((y - r) // cell), int((y + r) // cell) + 1):
+                grid.setdefault((i, j), []).append(row)
     for name, layer in placed.items():
         if not (layer.get("role") in NATURAL or layer.get("kind") in SCATTERED):
             continue
         keep = []
         for p in layer.get("points") or []:
-            cx, cy = int(p[0] // cell), int(p[1] // cell)
-            if (cx, cy) not in near or not any(
+            here = grid.get((int(p[0] // cell), int(p[1] // cell)))
+            if not here or not any(
                     abs((p[0] - x) * c + (p[1] - y) * s) < hd and abs(-(p[0] - x) * s + (p[1] - y) * c) < hw
-                    for gx in (cx - 1, cx, cx + 1) for gy in (cy - 1, cy, cy + 1) for x, y, c, s, hd, hw in grid.get((gx, gy), ())):
+                    for x, y, c, s, hd, hw in here):
                 keep.append(p)
         lost = len(layer.get("points") or []) - len(keep)
         if lost:
@@ -1573,10 +1575,17 @@ class _Rects:
 
     def __init__(self, cell: float = 4000.0):
         self.cell, self.grid, self.reach = cell, {}, 0.0
+        self.cover: dict = {}  # each rectangle in every cell its reach covers: hit() reads only the cells round it
 
     def add(self, r: tuple) -> None:
         self.grid.setdefault((int(r[0] // self.cell), int(r[1] // self.cell)), []).append(r)
         self.reach = max(self.reach, math.hypot(r[4], r[5]))
+        # _rects_hit(a, b, m) leaves the centres at most (a4 + a5) + sqrt(2) (b4 + b5) + 2 m apart on either world
+        # axis: b goes in every cell within 1.5 (b4 + b5) of its centre, a looks in the cells within a4 + a5 + 2 m
+        c, k = self.cell, 1.5 * (r[4] + r[5])
+        for i in range(int((r[0] - k) // c), int((r[0] + k) // c) + 1):
+            for j in range(int((r[1] - k) // c), int((r[1] + k) // c) + 1):
+                self.cover.setdefault((i, j), []).append(r)
 
     def near(self, x: float, y: float, reach: float):
         n = int((reach + self.reach) // self.cell) + 1
@@ -1584,7 +1593,14 @@ class _Rects:
         return (r for gx in range(cx - n, cx + n + 1) for gy in range(cy - n, cy + n + 1) for r in self.grid.get((gx, gy), ()))
 
     def hit(self, r: tuple, margin: float = 100.0) -> bool:
-        return any(_rects_hit(r, o, margin) for o in self.near(r[0], r[1], math.hypot(r[4], r[5]) + margin))
+        # (every cell the widest building's reach could come from was walked for every tree: 100 lookups a tree)
+        c, k, get = self.cell, r[4] + r[5] + 2 * margin, self.cover.get
+        for i in range(int((r[0] - k) // c), int((r[0] + k) // c) + 1):
+            for j in range(int((r[1] - k) // c), int((r[1] + k) // c) + 1):
+                for o in get((i, j), ()):
+                    if _rects_hit(r, o, margin):
+                        return True
+        return False
 
 
 def street_samples(cities: list, step: float = 400.0) -> list:
@@ -2423,6 +2439,18 @@ def park_trees(placed: dict, cities: list, ground) -> dict:
 
 
 def _demo() -> None:
+    # _Rects.hit reads only the cells round the rectangle: the same answers as testing every one placed
+    import random
+    rnd = random.Random(7)
+    turned = lambda: (lambda f: (rnd.uniform(-40000, 40000), rnd.uniform(-40000, 40000), math.cos(f), math.sin(f),
+                                 rnd.choice((150, 400, 2500, 9000)) * rnd.uniform(0.3, 1), rnd.choice((150, 600, 6000, 12000)) * rnd.uniform(0.3, 1)))(
+        rnd.uniform(0, 6.3))
+    placed_r, rects = [turned() for _ in range(400)], _Rects()
+    for r in placed_r:
+        rects.add(r)
+    for _ in range(4000):
+        q, m = turned(), rnd.choice((0.0, 30.0, 100.0, 800.0))
+        assert rects.hit(q, m) == any(_rects_hit(q, o, m) for o in placed_r), (q, m)
     cities = [{"name": "A", "x": 0, "y": 0, "radius": 50000, "districts": {"downtown": {"radius": 20000},
                "normal": {"radius": 37500}, "housing": {"radius": 50000}, "industrial": {"angle": 90}}}]
     full = preset()

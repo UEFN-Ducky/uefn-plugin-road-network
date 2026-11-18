@@ -132,15 +132,19 @@ def register(api) -> None:
         """Full-city work runs once at a time. A caller that waited gets the answer of a run that started after
         it asked (fresh), so a pile of the same request costs at most two runs. The panel asks on every open
         and reload: these minutes-long runs side by side took Ducky to 13 GB (Nov 11 2026)."""
-        lock, last = threading.RLock(), {}
+        lock, last, now_running = threading.RLock(), {}, {}
+        what = {"generate": "rebuild of the world", "sync_status": "check against UEFN"}.get(fn.__name__, "build")
 
         def run(*a, **k):
             key, asked = json.dumps([a, k], sort_keys=True, default=str), time.perf_counter()
             if not lock.acquire(blocking=False):  # say so: the panel sat on 'Starting… 0 %' with no word why
-                who = k.get("name") or k.get("net_id") or (a[0] if a and isinstance(a[0], str) else "")
-                if who:
-                    push({"what": "progress", "id": slug(who), "step": 0, "of": 1,
-                          "text": "Waiting for the build already running to finish…"})
+                world = k.get("name") or k.get("net_id") or (a[0] if a and isinstance(a[0], str) else "")
+                if world:
+                    # ... and who: a teammate's ducky's rebuild is not the person's own stuck one
+                    by, since = now_running.get("by") or "Someone", now_running.get("at") or time.monotonic()
+                    push({"what": "progress", "id": slug(world), "step": 0, "of": 1,
+                          "text": f"Waiting: {by} started a {what} {round(time.monotonic() - since)} s ago. "
+                                  "Yours starts as soon as it is done."})
             else:
                 lock.release()
             with lock:
@@ -148,6 +152,10 @@ def register(api) -> None:
                 if hit and hit[0] > asked:
                     return hit[1]
                 started = time.perf_counter()
+                try:
+                    now_running.update(by=hd.label(actor()), at=time.monotonic())
+                except Exception:
+                    now_running.update(by="Someone", at=time.monotonic())
                 out = fn(*a, **k)
                 last.clear()  # ponytail: only the newest answer is kept
                 last[key] = (started, out)
@@ -2115,6 +2123,7 @@ def register(api) -> None:
         return out
 
     _PREVIEW_CACHE: dict = {}
+    _PREVIEW_STASH: dict = {}  # the world looked at before this one: {nid: (its preview cache, its ground)}
     FOREST_LIMIT = 200000  # foliage points per layer kept and baked: very dense forests; tiled PCG builds them 400 m at a time
 
     @one_run_at_a_time
@@ -2165,6 +2174,21 @@ def register(api) -> None:
         docs = layer_docs(nid)
         if not docs:
             return {"ok": True, "id": nid, "layers": {}}
+        cur = _PREVIEW_CACHE.get("nid")
+        if cur != nid:
+            # another world: the last one's placement is put aside and this one's taken back, so going back to a
+            # world just looked at is instant (it was placed again from nothing, a minute, every time)
+            # ponytail: one world put aside (each is a few hundred MB of points); more if people hop between three
+            back = _PREVIEW_STASH.pop(nid, None)
+            _PREVIEW_STASH.clear()
+            if cur:
+                _PREVIEW_STASH[cur] = (dict(_PREVIEW_CACHE), dict(_GROUND))
+            _PREVIEW_CACHE.clear()
+            _GROUND.clear()
+            if back:
+                _PREVIEW_CACHE.update(back[0])
+                _GROUND.update(back[1])
+            _PREVIEW_CACHE["nid"] = nid
         terrain = scan_terrain(nid) or {}
         actors = world_actors(nid)
         cities = list(city_docs(nid).values())
@@ -2209,7 +2233,7 @@ def register(api) -> None:
             placed = pl.preview(list(docs.values()), cities, terrain, pl.road_samples(actors), ground,
                                 limit=6000, juncs=pl.junctions(actors), keep=keep, foliage_limit=FOREST_LIMIT, memo=memo,
                                 arms=pl.arm_samples(actors),
-                                on_layer=lambda i, n, name: tick(int(60 * i / max(1, n)), f"Placing {name}…"))
+                                on_layer=lambda i, n, name: tick(int(60 * i / max(1, n)), f"Placing {name.lower()} (layer {i + 1} of {n})…"))
             tick(60, "Keeping everything off the roads and out of the buildings…")
             _PREVIEW_CACHE["placing"] = dict(memo.last)
             # (no loose wall slabs along the roads: every road piece carries its own side walls down into the
@@ -4579,11 +4603,45 @@ def register(api) -> None:
         return safe(door_spots)(net_id)
 
     @tool(intent=PCG_INTENT, listener=False)
-    def road_network_pcg_preview(net_id: str = "", layer_id: str = "", summary: bool = False) -> dict:
+    def road_network_pcg_preview(net_id: str = "", layer_id: str = "", summary: bool = False,
+                                 profile: bool = False) -> dict:
         """Run a world's PCG layers offline with the graph's rules (district, off the roads, clear of earlier
         layers, no overlaps, nothing under water) and return where each would place things plus its count;
-        the panel draws it in 3D. layer_id: just that layer. summary=true: only the count per layer."""
-        return safe(pcg_preview)(net_id, layer_id, summary)
+        the panel draws it in 3D. layer_id: just that layer. summary=true: only the count per layer.
+        profile=true: place the whole city again from nothing and return the 30 slowest functions."""
+        if not profile:
+            return safe(pcg_preview)(net_id, layer_id, summary)
+        import sys
+        # ponytail: a sampling profiler (the embedded Python has no cProfile): every 20 ms, where the run is
+        _PREVIEW_CACHE.clear()
+        _PREVIEW_MEMO.pop(slug(net_id), None)
+        _GROUND.clear()
+        me, own, total, done = threading.get_ident(), {}, {}, threading.Event()
+        where = lambda fr: f"{os.path.basename(fr.f_code.co_filename)}:{fr.f_code.co_name}"
+
+        def sample() -> None:
+            while not done.wait(0.02):
+                f = sys._current_frames().get(me)
+                if f is None:
+                    continue
+                at = f"{where(f)}:{f.f_lineno}"  # (the line: a generator expression has no name of its own)
+                own[at] = own.get(at, 0) + 1
+                seen = set()
+                while f is not None:
+                    w = where(f)
+                    if w not in seen:
+                        seen.add(w)
+                        total[w] = total.get(w, 0) + 1
+                    f = f.f_back
+        threading.Thread(target=sample, daemon=True).start()
+        t0 = time.perf_counter()
+        try:
+            safe(pcg_preview)(net_id, "", True)
+        finally:
+            done.set()
+        top = lambda d: [[k, round(v * 0.02, 1)] for k, v in sorted(d.items(), key=lambda kv: -kv[1])[:30]]
+        return {"ok": True, "seconds": round(time.perf_counter() - t0, 1), "took_s": _PREVIEW_CACHE.get("took_s"),
+                "row": "[file:function, seconds]", "by_total": top(total), "by_own": top(own)}
 
     @tool(intent=PCG_INTENT, listener=False)
     def road_network_ground_fit(net_id: str = "") -> dict:
