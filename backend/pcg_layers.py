@@ -1819,7 +1819,7 @@ class PreviewMemo:
 
 def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, limit: int = 2500,
             juncs: list | None = None, keep: list | None = None, foliage_limit: int = 0,
-            memo: PreviewMemo | None = None, arms: list | None = None) -> dict:
+            memo: PreviewMemo | None = None, arms: list | None = None, on_layer=None) -> dict:
     """Run every enabled layer offline with the same rules as the graph (mask, off roads, keep clear of
     earlier layers, self pruning, sink) and return {layer name: {points: [[x, y, z, yaw, scale]], ...}}.
     Scatter is thinned to ``limit`` points per layer for the view; ``count`` says the full estimate.
@@ -1827,7 +1827,7 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
     nothing in a unit depends on a random shared with another, so a change in one place moves nothing elsewhere.
     ``memo`` (a PreviewMemo kept by the caller for this world) puts back every unit no change can reach and
     places only the others again. ``arms`` (arm_samples): the junctions' own road surface, which nothing is
-    placed along but everything keeps off."""
+    placed along but everything keeps off. ``on_layer(i, n, name)`` is called as each layer starts."""
     layers = sorted((clean(l) for l in layers if l.get("enabled", True)), key=lambda l: (l["order"], l["name"]))
     lo, hi = terrain.get("min"), terrain.get("max")
     # with a terrain, nothing is placed past its edge (its sampler answers the edge's height out there, so the
@@ -1889,8 +1889,10 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
     if memo is not None:
         memo.begin(repr([layers, limit, foliage_limit, keep, lo, hi]), cities, roads + [(*a, 0.0, 0.0) for a in arms or []], terrain)
     units_now: dict = {}
-    for layer in layers:
+    for li, layer in enumerate(layers):
         seed, name = layer["seed"], layer["name"]
+        if on_layer:
+            on_layer(li, len(layers), name)
         building = layer["kind"] == "buildings"
         units = []  # (unit id, its box (x0, y0, x1, y1), its candidates or a function that makes them)
         full = 0.0

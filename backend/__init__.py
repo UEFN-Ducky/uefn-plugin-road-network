@@ -2185,9 +2185,22 @@ def register(api) -> None:
             # the whole city, unit by unit: what no change can reach is put back as it stood (pl.PreviewMemo), so an
             # edit to one city places that city again and leaves every other building and tree where it was
             memo = _PREVIEW_MEMO.setdefault(nid, pl.PreviewMemo())
+            # the panel's 'Placing the city' bar follows these (it sat at 0 % for the whole first call), and the
+            # seconds each stage took come back in the summary (took_s)
+            took, clock = {}, [time.perf_counter(), ""]
+
+            def tick(step: int, text: str) -> None:
+                now = time.perf_counter()
+                if clock[1]:
+                    took[clock[1]] = round(took.get(clock[1], 0.0) + now - clock[0], 2)
+                clock[:] = [now, text]
+                if text:
+                    push({"what": "progress", "id": nid, "step": step, "of": 100, "text": text})
             placed = pl.preview(list(docs.values()), cities, terrain, pl.road_samples(actors), ground,
                                 limit=6000, juncs=pl.junctions(actors), keep=keep, foliage_limit=FOREST_LIMIT, memo=memo,
-                                arms=pl.arm_samples(actors))
+                                arms=pl.arm_samples(actors),
+                                on_layer=lambda i, n, name: tick(int(60 * i / max(1, n)), f"Placing {name}…"))
+            tick(60, "Keeping everything off the roads and out of the buildings…")
             _PREVIEW_CACHE["placing"] = dict(memo.last)
             # (no loose wall slabs along the roads: every road piece carries its own side walls down into the
             # ground, road_profiles 'skirt'; every building its own foundation, kit_bake.foundation; every low deck
@@ -2227,6 +2240,7 @@ def register(api) -> None:
                                        "out_of_buildings": pl.clear_buildings(placed)}
             # every generated world: a building the ground would bury is lifted onto it, here, before any push
             # (worlds over another's landscape were skipped once: their houses went in with the hill inside them)
+            tick(70, "Cutting the roads into the ground…")
             if gen and cut and terrain.get("heights"):
                 # the ground the city leaves, a landscape pixel at a time: every road cut and filled in first
                 # (its own cells locked), then every lot levelled round them. Re-cut whenever the city changes;
@@ -2278,6 +2292,7 @@ def register(api) -> None:
                         first_pad.setdefault(p[:2], p[6])
                     ter = cg.cut_pads(_GROUND["ter"], [(*p[:6], first_pad[p[:2]]) for p in pads], _GROUND["locked"])
                 return ter, fit_buildings(placed, ter, cut, ter is not terrain) if gen and terrain.get("heights") else None
+            tick(80, "Fitting every building to the ground…")
             fit_ter, fit = cut_and_fit()
             # Nothing is built where the land falls more than pl.FOUND_MAX_M away under it: those buildings go, the
             # ground is cut again without their pads (which moves their neighbours' a little, so a few rounds) and
@@ -2338,6 +2353,7 @@ def register(api) -> None:
                         v["points"], v["shown"] = keep, len(keep)
             # real bridges: a pier bent every 30 m under every deck and elevated ramp, down to the ground it stands
             # on (the cut ground once there is one) or the lake bed
+            tick(92, "Bridges, piers and paving…")
             decks = {str(k): {"points": p, "segments": s} for k, (p, s) in enumerate(actors)}
             stands_on = (fit or {}).get("ground") or (lambda x, y: ground(x, y) or 0.0)
             # the city centre stands on concrete, not grass: laid last, on the ground as the lots left it
@@ -2364,7 +2380,9 @@ def register(api) -> None:
                                 "count": len(rows), "shown": len(rows), "points": rows}
             # last of all, the person's own deletes and moves (road_network_edit): no rule above undoes them
             _PREVIEW_CACHE["edits_missed"] = pl.apply_edits(placed, edits, stands_on)
-            _PREVIEW_CACHE.update(key=key, out=placed, fit=fit, ter=fit_ter, ground=stands_on)
+            tick(100, "")
+            _PREVIEW_CACHE.update(key=key, out=placed, fit=fit, ter=fit_ter, ground=stands_on,
+                                  took_s=dict(sorted(took.items(), key=lambda kv: -kv[1])[:12]))
         out = _PREVIEW_CACHE["out"]
         if layer_id:  # one layer, or several "a,b,c" (the panel asks for small layers together: fewer calls)
             pick: dict = {}
@@ -2386,7 +2404,9 @@ def register(api) -> None:
                     "skipped": {k: v["skipped"] for k, v in out.items() if v.get("skipped")},
                     "ground_fit": fit_summary(),
                     # what the last pass took off the roads and out of the buildings, per layer
-                    "swept": _PREVIEW_CACHE.get("swept")}
+                    "swept": _PREVIEW_CACHE.get("swept"),
+                    # the slowest stages of the last full placement, in seconds
+                    "took_s": _PREVIEW_CACHE.get("took_s")}
         return {"ok": True, "id": nid, "layers": out}
 
     _GROUND: dict = {}
