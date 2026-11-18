@@ -2149,9 +2149,16 @@ def register(api) -> None:
 
     _PREVIEW_MEMO: dict = {}  # per world: its last placement, unit by unit
 
-    def pcg_preview(net_id: str = "", layer_id: str = "", summary: bool = False) -> dict:
+    _PANEL_WANTS: dict = {}  # the world the panel last asked a city for: an older world's placement stops
+
+    def panel_preview(net_id: str = "", layer_id: str = "") -> dict:
+        _PANEL_WANTS["net"] = slug(net_id)
+        return pcg_preview(net_id, layer_id, panel=True)
+
+    def pcg_preview(net_id: str = "", layer_id: str = "", summary: bool = False, panel: bool = False) -> dict:
         """Every enabled layer placed offline with the graph's rules; one layer per call when layer_id is
-        given (keeps each reply small). Points: [x, y, z, yaw, scale(, height m for buildings)]."""
+        given (keeps each reply small). Points: [x, y, z, yaw, scale(, height m for buildings)].
+        panel: the panel's own call, stopped (at the next layer or stage) once it opens another world."""
         nid = slug(net_id)
         if not data.get(f"net.{nid}"):
             return {"ok": False, "error": f"No road network {net_id!r}."}
@@ -2190,6 +2197,9 @@ def register(api) -> None:
             took, clock = {}, [time.perf_counter(), ""]
 
             def tick(step: int, text: str) -> None:
+                if panel and _PANEL_WANTS.get("net") != nid:
+                    _PREVIEW_MEMO.pop(nid, None)  # (half placed: its next run places everything again)
+                    raise RuntimeError("Stopped: another world was opened.")
                 now = time.perf_counter()
                 if clock[1]:
                     took[clock[1]] = round(took.get(clock[1], 0.0) + now - clock[0], 2)
@@ -4637,7 +4647,7 @@ def register(api) -> None:
     panel_rpc("pcg_plan", lambda net_id="", road_tag="": safe(pcg_plan)(net_id, road_tag))
     panel_rpc("pcg_assets", lambda net_id="", asset_set="", interiors="", trees="", trees_max=0:
               safe(pcg_assets)(net_id, asset_set, interiors, trees, trees_max))
-    panel_rpc("pcg_preview", lambda net_id="", layer_id="": safe(pcg_preview)(net_id, layer_id))
+    panel_rpc("pcg_preview", lambda net_id="", layer_id="": safe(panel_preview)(net_id, layer_id))
     panel_rpc("ground_fit", lambda net_id="": safe(ground_fit)(net_id))
     panel_rpc("pcg_exact", lambda net_id="", x=0.0, y=0.0, radius_m=400.0: safe(pcg_exact)(
         net_id, float(x), float(y), float(radius_m)))

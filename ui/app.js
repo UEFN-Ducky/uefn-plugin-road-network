@@ -1387,12 +1387,15 @@ function schedulePcgPreview(delay = 700) {
 const PCG_BATCH = 12;
 // One at a time: a second ask while the city is coming in (a teammate's change arrives in two syncs) waits and runs
 // once after it, instead of two loads swapping the same layers over each other
-let pcgLoading = false, pcgAgain = false;
+let pcgLoading = "", pcgAgain = false;  // the world whose city is being placed
 async function loadPcgPreview() {
-  if (pcgLoading) { pcgAgain = true; return; }
-  pcgLoading = true;
-  try { await loadPcgPreviewNow(); } finally { pcgLoading = false; }
-  if (pcgAgain) { pcgAgain = false; return loadPcgPreview(); }
+  const net = state.net;
+  // the same world: once more after this run. Another world: start now; the old run is stopped in the backend
+  // (it sees a newer world asked for) and its replies are dropped here
+  if (pcgLoading && pcgLoading === net) { pcgAgain = true; return; }
+  pcgLoading = net; pcgAgain = false;
+  try { await loadPcgPreviewNow(); } finally { if (pcgLoading === net) pcgLoading = ""; }
+  if (pcgAgain && !pcgLoading && net === state.net) { pcgAgain = false; return loadPcgPreview(); }
 }
 async function loadPcgPreviewNow() {
   if (!state.net || !(state.layers || []).length) { state.pcg = {}; settleCity(); state.lifted = null; buildScene(); loadSync(); return; }
@@ -1415,12 +1418,12 @@ async function loadPcgPreviewNow() {
     card("Placing the city", { text: i ? `${ls.map((l) => l.name).join(", ")}` : "Placing every building, prop and tree…",
       step: i, of: calls.length });
     const r = await rpc("pcg_preview", { net_id: net, layer_id: ls.map((l) => l.id).join(",") });
-    if (net !== state.net) return card("");
+    if (net !== state.net) return;  // (openNet took the card down; the new world's run owns it now)
     if (r.ok === false && ls[0].id !== "road-walls") { card(""); settleCity(); state.lifted = null; buildScene(); return showError(r.error, () => loadPcgPreview()); }
     if (r.ok !== false) {
       Object.assign(picked, r.layers || {});
       await revealLayers(r.layers || {}, i === 0);  // a few layers at a time, each rising out of the ground
-      if (net !== state.net) return card("");
+      if (net !== state.net) return;
     }
   }
   // the layer order the panel has always drawn: each layer in turn, then the walls and sites
@@ -2594,6 +2597,7 @@ async function openNet(id) {
   state.net = id; state.framed = false; state.sel = null; state.actor = ""; state.pcg = {}; state.exact = null;
   state.cityPick = ""; state.block = null;
   settleCity();
+  if (loading.title === "Placing the city") busy("");  // the last world's: its run stops (loadPcgPreview)
   call("prefs.set", { id: "last_net", value: id }).catch(() => {});
   renderWorldPick();
   $("syncBadge")?.replaceChildren();  // filled after this world's city preview (loadPcgPreview)
@@ -2670,6 +2674,7 @@ async function loadAllGeometry(net) {
   if (group.length) batches.push(group);
   await Promise.all(batches.map(async (slugs) => {
     for (let offset = 0; ; offset += PAGE) {
+      if (net !== state.net) return;  // another world was opened: stop paging this one
       const page = await rpc("geometry", { net_id: net, actor: slugs.join(","), offset, limit: PAGE, terrain: false });
       if (page.ok === false) throw new Error(page.error);
       let more = false;
