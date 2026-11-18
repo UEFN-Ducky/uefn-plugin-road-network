@@ -3292,13 +3292,16 @@ def register(api) -> None:
                     mats = kit_materials(nid)
                     if not mats.get("ok"):
                         return {"ok": False, "error": f"Kit materials: {mats.get('error')}"}
-                    data.put(f"net.{nid}.mats", {"name": f"{name} / kit materials",
-                                                 "overrides": mats.get("overrides") or {}})
-                # a kit mesh without its textured MIs draws the grey checker on PCG instances: never build it so
-                left = sorted(m.rsplit(".", 1)[-1] for m in need - set(mats.get("overrides") or {}))
-                if left:
-                    return {"ok": False, "error": f"Kit materials missing for {len(left)} meshes "
-                                                  f"({', '.join(left[:6])}): nothing was built, try again."}
+                    # a whole pass (a lost slice fails above) saw every kit mesh: one it didn't see isn't in the
+                    # project (e.g. SM_BK_Roof_SatelliteDish), so PCG places nothing for it. Kept as absent ([]),
+                    # or every build would redo the minutes-long pass for it.
+                    # ponytail: a mesh imported into the kit later stays [] until net.<id>.mats is cleared
+                    over = mats.get("overrides") or {}
+                    absent = sorted(m.rsplit(".", 1)[-1] for m in need - set(over))
+                    over.update({m: [] for m in need - set(over)})
+                    data.put(f"net.{nid}.mats", {"name": f"{name} / kit materials", "overrides": over,
+                                                 "absent": absent})
+                    mats = {**mats, "overrides": over}
             # the person's own layers: their meshes' materials need the instanced-mesh usage too (10 meshes per call)
             own = kit_bake.own_meshes(got.get("layers") or {}) if build else []
             own_report = {"fixed": [], "locked": [], "missing": []}
