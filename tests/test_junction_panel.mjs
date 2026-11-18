@@ -1,13 +1,13 @@
 // The panel's junction drawing against the mesh builder's numbers: node tests/test_junction_panel.mjs
-// junctionTris is lifted out of ui/app.js (it needs the panel's THREE scene otherwise); toV is the identity
+// junctionTris is lifted out of ui/view/roads.js (it needs the panel's THREE scene otherwise); toV is the identity
 // here, so positions come back in UE cm. The expected values are the ones tests/test_junction_geometry.py
 // checks on listener/road_io._junction_geometry: the two must draw the same junction.
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 
-const src = readFileSync(new URL("../ui/app.js", import.meta.url), "utf8");
-const from = src.indexOf("const WALK_OF = "), to = src.indexOf("// citygen.outline()");
-assert.ok(from > 0 && to > from, "junctionTris is in app.js");
+const src = readFileSync(new URL("../ui/view/roads.js", import.meta.url), "utf8");
+const from = src.indexOf("const WALK_OF = "), to = src.indexOf("\nexport {");
+assert.ok(from > 0 && to > from, "junctionTris is in view/roads.js");
 const MAT = { asphalt: "asphalt", sidewalk: "sidewalk" };
 const toV = (x, y, z) => ({ x, y, z });
 const junctionTris = new Function("MAT", "toV", `${src.slice(from, to)}; return junctionTris;`)(MAT, toV);
@@ -55,7 +55,7 @@ assert.equal(air.fg, undefined);
 
 // ramp ends (backend/ramp_joins): a merge lane as wide as its rows say, a street mouth that reaches the carriageway
 const j0 = src.indexOf("function joinSkips("), j1 = src.indexOf("function drawProfile(");
-assert.ok(j0 > 0 && j1 > j0, "drawJoins is in app.js");
+assert.ok(j0 > 0 && j1 > j0, "drawJoins is in view/roads.js");
 const M2 = { asphalt: "asphalt", sidewalk: "sidewalk", barrier: "barrier", paint: "paint" };
 const [joinSkips, drawJoins] = new Function("MAT", "toV", `${src.slice(j0, j1)}; return [joinSkips, drawJoins];`)(M2, toV);
 const joins = { gores: [{ deck: true, rows: [[-600, 1650, 0, 1, 1600, 750], [0, 1650, 0, 1, 1600, 750], [600, 1650, 0, 1, 800, 750], [1200, 1650, 0, 1, 0, 750]] }],
