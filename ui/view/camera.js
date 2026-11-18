@@ -177,18 +177,25 @@ let shadowsStale = true;
 const perf = Object.assign(document.createElement("div"), { className: "rn-perf" });
 perf.style.cssText = "position:absolute;right:8px;bottom:8px;font:11px monospace;opacity:.7;pointer-events:none;color:var(--fg-dim)";
 view.appendChild(perf);
-let perfN = 0, perfT = 0;
-function showPerf(now) {
-  perfN++;
+let perfN = 0, perfT = 0, perfJs = 0;
+// the graphics card the panel draws with: "SwiftShader" / "Basic Render" means no GPU (software WebGL)
+const GPU = (() => {
+  const gl = renderer.getContext(), ext = gl.getExtension("WEBGL_debug_renderer_info");
+  return String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)).replace(/^ANGLE \(|\)$/g, "").slice(0, 60);
+})();
+function showPerf(now, js) {
+  perfN++; perfJs += js;
   if (now - perfT < 500) return;
-  const { calls, triangles } = renderer.info.render;
-  perf.textContent = `${Math.round(perfN * 1000 / (now - perfT))} fps · ${calls} calls · ${(triangles / 1e6).toFixed(2)}M tris`;
-  perfN = 0; perfT = now;
+  const { calls, triangles } = renderer.info.render, c = renderer.domElement;
+  perf.textContent = `${Math.round(perfN * 1000 / (now - perfT))} fps · js ${(perfJs / perfN).toFixed(1)} ms · ${calls} calls · `
+    + `${(triangles / 1e6).toFixed(2)}M tris · ${c.width}×${c.height} · ${GPU}`;
+  perfN = 0; perfJs = 0; perfT = now;
 }
 function loop(now) {
   flyStep(now || performance.now());
   const gliding = rt.liveReady && stepGhosts();  // teammates' bodies on their way to where they now look
   if (rt.visible && (rt.needsDraw || gliding || shadowsStale)) {
+    const t0 = performance.now();
     camera.updateMatrixWorld();
     const moving = !camera.matrixWorld.equals(lastCam);
     lastCam.copy(camera.matrixWorld);
@@ -198,9 +205,9 @@ function loop(now) {
     renderer.shadowMap.needsUpdate = shadowsStale && !moving;
     if (!moving) shadowsStale = false;
     renderer.render(scene, camera);
-    showPerf(now || performance.now());
     placeLabels();
     if (rt.liveReady) placePeerLabels();
+    showPerf(now || performance.now(), performance.now() - t0);
     rt.needsDraw = false;
   }
   requestAnimationFrame(loop);
