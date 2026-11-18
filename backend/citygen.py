@@ -2041,8 +2041,10 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
             for v in e[3]:
                 if len(v) > 3 and v[3]:
                     v[3] = deck if v[3] in ("BR", "ED", "BW") else ramp if v[3] == "BRR" else e[2]
-    # no street laid along another: two that run the same way, share no junction and lie closer than 0.6 of their
-    # half widths together are one road drawn twice (a bridge beside the shore street it left): the narrower goes
+    edges = _no_fans(nodes, edges)
+    # no street laid along another: two that run the same way, share no junction and lie closer than their half
+    # widths together are one road drawn twice (a bridge beside the shore street it left): the narrower goes. (At
+    # 0.6 of them two of Riverton's 17.5 m streets stayed 11.6 m apart, pavements over each other, Nov 17 2026)
     geo = [(nodes[e[0]][:2], nodes[e[1]][:2], HALF.get(e[2], 500.0)) for e in edges]
     cell, near, lost = 20000.0, {}, set()
     for k, (p, q, _h) in enumerate(geo):
@@ -2059,7 +2061,7 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
             if vl < 300 or abs(ux * vx + uy * vy) / (ul * vl) < 0.94:
                 continue
             t = max(0.0, min(1.0, ((mx - p2[0]) * vx + (my - p2[1]) * vy) / (vl * vl)))
-            if math.hypot(mx - p2[0] - vx * t, my - p2[1] - vy * t) < 0.6 * (h + h2):
+            if math.hypot(mx - p2[0] - vx * t, my - p2[1] - vy * t) < h + h2:
                 lost.add(k if (h, ul) <= (h2, vl) else j)
     if lost:
         edges = [e for k, e in enumerate(edges) if k not in lost]
@@ -2082,6 +2084,29 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
             return bool(fw.lines and fw.street_blocked(v[2], v[3], 500.0))
         virtual[:] = [v for v in virtual if not gone(v)]
     return nodes, edges
+
+
+FAN_DEG = 20.0  # two streets leaving one junction closer together than this overlap from its mouth on
+
+
+def _no_fans(nodes: dict, edges: list) -> list:
+    """No two streets out of one junction the same way: the same two junctions joined twice (Valley's Riverton drew
+    both, bowed apart, Nov 17 2026) or a second street fanned off a few degrees beside the first. The overlap check
+    after this skips streets that share a junction, so it never saw them. Bridges first, then the wider, then the
+    longer street stays.
+    ponytail: a dropped street that alone reached a corner leaves it to one_network (it goes, or is joined again)."""
+    rank = sorted(range(len(edges)), key=lambda k: (not (len(edges[k]) > 3 and edges[k][3]), -HALF.get(edges[k][2], 500.0),
+                                                    -math.dist(nodes[edges[k][0]][:2], nodes[edges[k][1]][:2]), k))
+    out, kept, lim = {}, set(), math.radians(FAN_DEG)
+    for k in rank:
+        a, b = edges[k][0], edges[k][1]
+        ends = [(n, math.atan2(nodes[m][1] - nodes[n][1], nodes[m][0] - nodes[n][0])) for n, m in ((a, b), (b, a))]
+        if a == b or any(abs((t - u + math.pi) % (2 * math.pi) - math.pi) < lim for n, t in ends for u in out.get(n, ())):
+            continue
+        kept.add(k)
+        for n, t in ends:
+            out.setdefault(n, []).append(t)
+    return [e for k, e in enumerate(edges) if k in kept]
 
 
 SUB_STEP = 4500.0  # winding suburb streets: a point every 45 m
@@ -4023,6 +4048,20 @@ def joins(cities: list, graphs: list, opts: dict | None = None, wet=None, keep: 
     return out
 
 
+def meet_city(road: dict, city: dict | None, ends: list) -> int:
+    """A road from outside (an airport's access and cargo roads) ends on its city's junction at that junction's
+    height. It was graded on the raw ground, the city on its own cut, so Northgate's airport road stopped 24 m above
+    the junction it was laid to (Nov 17 2026). Returns how many ends were brought down (or up) to the city."""
+    done = 0
+    for x, y in ends:
+        cp = next((p for p in (city or {}).get("points", ()) if abs(p["x"] - x) < 2 and abs(p["y"] - y) < 2), None)
+        rp = next((p for p in road.get("points", ()) if abs(p["x"] - x) < 2 and abs(p["y"] - y) < 2), None)
+        if cp and rp and rp["z"] != cp["z"]:
+            rp["z"] = cp["z"]
+            done += 1
+    return done
+
+
 def level_joins(actors: dict, cities: list, rows: list) -> int:
     """The two halves of a joining street meet at ONE height. Each city's roads are graded on their own, and two
     cities on different levels (each on its own flattened ground, say) left a step in the middle of every joining
@@ -4764,6 +4803,7 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
         rn, re_ = got["landside"]
         if re_:
             out[f"{label} Roads"] = build_actor(rn, re_, ground, folder)
+            meet_city(out[f"{label} Roads"], out.get(f"{ap['city']} Roads"), [l["to_city_node"] for l in got["links"]])
         if airport_builds is not None:
             airport_builds[label] = got
     for c in cities:  # graving docks: laid at the dock floor so the spline digs the basin
