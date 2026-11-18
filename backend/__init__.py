@@ -2763,12 +2763,28 @@ def register(api) -> None:
         # ~4 GB each, freed a little later): the listener stops a slice once UEFN grew 3 GB, and we wait for it
         # to settle before the next. One call for the whole kit took UEFN past 100 GB and crashed it.
         folders = ["City", "Kit", "Kit/Street", "Kit/Facility", "BuildingKit"]
-        out = {"ok": True, "instances": 0, "created": 0, "meshes": 0, "overrides": {}}
-        offset = 0
+        # a run cut short (UEFN busy, the memory guard, a crash) resumes at its last slice with what it had made
+        run = data.get("kit.mats_run") or {}
+        run = run if run.get("root") == root else {}
+        out = {"ok": True, "instances": 0, "created": int(run.get("created") or 0), "meshes": 0,
+               "overrides": dict(run.get("overrides") or {}), "resumed_at": int(run.get("offset") or 0)}
+        offset = out["resumed_at"]
+
+        def one_slice(args: dict, base) -> dict:
+            try:
+                return listener_long("road_network_kit_materials", args)
+            except RuntimeError as exc:
+                # the memory guard tripped on a shader spike: wait for UEFN to free it, then the slice once more
+                # (the RAM-limit refusal says 'restart UEFN': that one is the person's call, never retried)
+                if not str(exc).startswith("Stopped: '"):
+                    raise
+                uefn_memory.settle(base, slack=uefn_memory.SETTLE_GB, timeout=240)
+                return listener_long("road_network_kit_materials", args)
+
         while offset is not None:
             base = uefn_memory.uefn_gb()
             args = {"root": root, "folders": folders, "offset": offset, "limit": 5, "max_grow_gb": 3.0}
-            r = listener_long("road_network_kit_materials", args)
+            r = one_slice(args, base)
             uefn_memory.settle(base)
             for _ in range(3):  # the reply (and its overrides) was lost: the same slice again is quick now
                 if not r.get("late"):
@@ -2785,6 +2801,10 @@ def register(api) -> None:
             out["master"] = r.get("master")
             nxt = r.get("next")
             offset = None if nxt is None or nxt <= offset else nxt  # no progress: stop rather than loop
+            if offset is not None:
+                data.put("kit.mats_run", {"root": root, "offset": offset, "created": out["created"],
+                                          "overrides": out["overrides"]})
+        data.delete("kit.mats_run")  # done: the next run starts from the top
         out["meshes"] = len(out["overrides"])
         out["instances"] = len({m for v in out["overrides"].values() for m in v if m})
         return {**out, "street_kit": street}
