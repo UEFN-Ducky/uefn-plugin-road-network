@@ -168,7 +168,7 @@ const lastCam = new THREE.Matrix4(), _far = new THREE.Vector3();
 function cullFar() {  // tiles of small things (addChunks far) past their distance are not drawn
   for (const o of groups.pcg.children) {
     const far = o.userData.far, s = o.boundingSphere;
-    if (!far || !s) continue;
+    if (!far || !s || rt.hiddenLayers.has(o.userData.layer)) continue;  // a hidden layer stays hidden
     o.visible = camera.position.distanceTo(_far.copy(s.center).applyMatrix4(o.matrixWorld)) - s.radius < far;
   }
 }

@@ -1,5 +1,5 @@
 import * as THREE from "../vendor/three@0.160.0/build/three.module.min.js";
-import { MAT, busy, col, groups, loading, rpc, showError, state, toV, tone, vary } from "../core.js";
+import { MAT, busy, col, groups, loading, rpc, rt, showError, state, toV, tone, vary } from "../core.js";
 import { live, peers } from "../live.js";
 import { cachedRpc, loadSync } from "../panes/world.js";
 import { orbit } from "./camera.js";
@@ -182,7 +182,8 @@ function drawPcg(legend, only, from) {
   Object.entries(layers).forEach((entry, k) => {
     const n0 = groups.pcg.children.length;
     drawLayer(entry, k);
-    for (let i = n0; i < groups.pcg.children.length; i++) groups.pcg.children[i].userData.layer = entry[0];
+    const shown = !rt.hiddenLayers.has(entry[0]);
+    for (let i = n0; i < groups.pcg.children.length; i++) Object.assign(groups.pcg.children[i], { visible: shown }).userData.layer = entry[0];
   });
   function drawLayer([name, layer], k) {
     const pts = layer.points || [];

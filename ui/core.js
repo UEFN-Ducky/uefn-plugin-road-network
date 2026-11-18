@@ -196,6 +196,8 @@ const toUE = (v) => [Math.round(-v.z * 100), Math.round(v.x * 100), Math.round(v
 // what other modules set (an ES import is read-only): flags of the view loop and hooks into later modules
 const rt = {
   liveReady: false,  // set once the page has started (the live helpers exist then)
+  // layer names hidden in the 3D view only (the eye in Layer order): nothing in the world or UEFN changes
+  hiddenLayers: new Set(JSON.parse(localStorage.getItem("rn.hiddenLayers") || "[]")),
   drag: null,  // the press under way on the view (view/camera.js pointer handlers)
   needsDraw: true,
   visible: true,

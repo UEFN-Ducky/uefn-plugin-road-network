@@ -1,6 +1,6 @@
 import { button, h, icon } from "../controls.js";
 import { parseLiveView, syncPlan } from "../sync.js";
-import { $, CHANNEL, OPTION_KEYS, busy, call, ctl, esc, loading, rpc, rt, showError, state, swatch } from "../core.js";
+import { $, CHANNEL, OPTION_KEYS, busy, call, ctl, esc, groups, loading, rpc, rt, showError, state, swatch } from "../core.js";
 import { drawPeers, flash, live, onMemberState, onPeerPcg, onSharedSelection, peerBusy, peers, refreshHolds, tellGroup } from "../live.js";
 import { edits, renderCitiesPane, renderCityList } from "./cities.js";
 import { loadHistory } from "./history.js";
@@ -399,8 +399,9 @@ function renderLayerList() {
       title: `${i + 1}. ${l.name}: placed after the layers above it; drag to change the order` },
       h("span", { class: "rn-num" }, `${i + 1}`),
       h("span", { class: "rn-dot", style: `background: ${swatch(ROLE_COLOR[l.role] || "fg-dim")}` }),
-      h("span", { class: "rn-name" }, l.name), h("span", { class: "rn-count", "data-pcg-count": l.name }, ""), icon("grip", 14));
+      h("span", { class: "rn-name" }, l.name), h("span", { class: "rn-count", "data-pcg-count": l.name }, ""), eyeOf(l), icon("grip", 14));
     row.lastChild.classList.add("rn-grab");
+    if (rt.hiddenLayers.has(l.name)) row.classList.add("is-hidden");
     row.addEventListener("click", () => {
       state.pcgOpen = l.id;
       openTab("pcg");
@@ -428,6 +429,21 @@ function renderLayerList() {
     return row;
   }));
   renderPcgCounts();
+}
+// the eye on a layer row: hides or shows that layer in the view only (kept across reloads)
+function eyeOf(l) {
+  const hidden = rt.hiddenLayers.has(l.name);
+  const eye = h("span", { class: "rn-eye", role: "button", title: hidden ? `Show ${l.name} in the view` : `Hide ${l.name} in the view (nothing in UEFN changes)` },
+    icon(hidden ? "eyeOff" : "eye", 14));
+  eye.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (!rt.hiddenLayers.delete(l.name)) rt.hiddenLayers.add(l.name);
+    localStorage.setItem("rn.hiddenLayers", JSON.stringify([...rt.hiddenLayers]));
+    for (const o of groups.pcg.children) if (o.userData.layer === l.name) o.visible = !rt.hiddenLayers.has(l.name);
+    rt.needsDraw = true;
+    renderLayerList();
+  });
+  return eye;
 }
 
 
