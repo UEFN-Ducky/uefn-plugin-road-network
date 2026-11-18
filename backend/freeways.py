@@ -265,12 +265,17 @@ def place_model(out: "Plan", kind: str, f: Frame, group, road: str = "", across:
     m = models()[kind]
     sx, sy = m["size"][0] / 2, m["size"][1] / 2
     marks = []
+    # a service model takes a cross, not its whole square: full width over its middle half (the ramps and loops),
+    # half width out along the arms (the ramps have come in to the freeway). The square left 1.4 km x 400 m of
+    # forest beside every freeway (Nov 18 2026). The stack fills its corners with flyovers: all of its square.
+    corner = (lambda a, b: False) if kind == "stack" else (lambda a, b: abs(a) > sx / 2 and abs(b) > sy / 2)
     a = -sx
     while a <= sx:
         b = -sy
         while b <= sy:
             x, y = f.w(a, b)
-            marks.append((x, y, 0.0, MODEL_CELL_HALF, False))
+            if not corner(a, b):
+                marks.append((x, y, 0.0, MODEL_CELL_HALF, False))
             b += MODEL_CELL
         a += MODEL_CELL
     out.mark(marks, group)
@@ -546,7 +551,8 @@ def plan(city: dict, o: dict) -> Plan:
         stack_along = stack_at[1] if name == "ns" else stack_at[0]
         upper = name == "ns"
         sides, (back, ahead) = sides_of[name], reach_of[name]
-        lf0 = lambda t, sa=stack_along, up=upper and stacked, sd=sides: lift(t, (t - sa) if up else None, sd)
+        # (the upper one climbs over the other with no stack too: they crossed at grade, freeway 0 x freeway 10)
+        lf0 = lambda t, sa=stack_along, up=upper and two, sd=sides: lift(t, (t - sa) if up else None, sd)
         first = int(-end // 2000) if back >= end + 2000 else -int(back // 2000)
         last = int(end // 2000) if ahead >= end + 2000 else int(ahead // 2000)
         ts = [k * 2000.0 for k in range(first, last + 1)]
@@ -567,7 +573,7 @@ def plan(city: dict, o: dict) -> Plan:
         # (no stack built: no room kept for one. Riverton's stack would have stood in the water, and the freeway
         # that was left had no interchange at all for 1.6 km either side of where it was not)
         reach_d = (model_reach(stack_model, "a" if upper else "b") if stack_model else STACK_FLY)
-        done = [(stack_along, reach_d)] if stacked else []  # (along, how far its ramps / square reach)
+        done = [(stack_along, reach_d)] if two else []  # (along, how far its ramps / square reach; or the flyover)
         cuts = [(stack_along, reach_d)] if stack_model else []
         spots = []
         step, across = (by, bx) if name == "ns" else (bx, by)  # the grid along this freeway, and across it
@@ -593,7 +599,7 @@ def plan(city: dict, o: dict) -> Plan:
             kind = "diamond" if share <= down else "parclo" if share <= normal else "diamond_frontage"
             m = models().get(kind) if use_models else None
             if m and (on_slope(cx, cy) or not (model_fits(city, cx, cy, m, free) and -back + model_reach(m, "a") <= t <= ahead - model_reach(m, "a"))):
-                m = None  # a city too small for the model (or the map's edge, reserved land): the generated ramps
+                continue  # no room for the model: no interchange here (the generated ramps fell apart, Nov 18 2026)
             mine = model_reach(m, "a") if m else DIAMOND_A
             if any(abs(t - d) < max(IC_SPACING, mine + theirs + 20000) for d, theirs in done):
                 continue

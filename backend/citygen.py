@@ -5378,7 +5378,7 @@ def model_pieces(a: dict, ics: list, ground, folder: str) -> dict:
     model's point is linked to each socket (a mesh-less link, as a junction to its mouths): without them the
     model joined nothing and every freeway through one fell apart in two, its cross roads with it (Nov 18 2026)."""
     socks = [s for ic in ics if ic.get("model") for s in ic["model"]["sockets"]]
-    # (each link carries half the model's width across it, so grade_to_roads levels the model's whole square;
+    # (each link carries half the model's width across it, so grade_to_roads levels the model's cross (a stack: its square);
     # the sockets take the model's height and settle_grades eases the freeway and cross roads to it)
     held = {}
     for p in a["points"]:
@@ -5399,6 +5399,8 @@ def model_pieces(a: dict, ics: list, ground, folder: str) -> dict:
             for sx, sy in m["sockets"]:
                 along = math.hypot(sx - x, sy - y)
                 across = size[1] / 2 if abs(along - size[0] / 2) <= abs(along - size[1] / 2) else size[0] / 2
+                if ic.get("kind") != "stack":  # the cross freeways.place_model takes: a flat pad of the whole
+                    across /= 2  # square cut a trench with walls into the hill beside the freeway (Nov 18 2026)
                 for p in held.values():
                     if math.hypot(p["x"] - sx, p["y"] - sy) < 100:
                         p["z"] = centre["z"]
