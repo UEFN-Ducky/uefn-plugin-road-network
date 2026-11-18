@@ -1,276 +1,37 @@
 {
  "units": "cm",
  "frame": "+X along the freeway (E/W sockets), +Y along the cross road (N/S); origin = the crossing; yaw = road heading out of the model",
+ "source": "Blender collection 'Roads - Interchanges (City Builder fit)': each IC_*_Fit is its IC_* model cut where its ramps end (freeway back at grade at 700 m, cross road just past the ramps); IC_Stack is the full model",
  "kinds": {
-  "diamond": {
-   "mesh": "IC_Diamond",
-   "size": [
-    200000,
-    200000
-   ],
-   "sockets": [
-    {
-     "name": "E",
-     "road": "FW",
-     "x": 100000,
-     "y": 0,
-     "z": 0,
-     "yaw": 0,
-     "width": 3300
-    },
-    {
-     "name": "N",
-     "road": "XR",
-     "x": 0,
-     "y": 100000,
-     "z": 0,
-     "yaw": 90,
-     "width": 2100
-    },
-    {
-     "name": "S",
-     "road": "XR",
-     "x": 0,
-     "y": -100000,
-     "z": 0,
-     "yaw": -90,
-     "width": 2100
-    },
-    {
-     "name": "W",
-     "road": "FW",
-     "x": -100000,
-     "y": 0,
-     "z": 0,
-     "yaw": 180,
-     "width": 3300
-    }
-   ]
-  },
-  "diamond_frontage": {
-   "mesh": "IC_DiamondFrontage",
-   "size": [
-    200000,
-    200000
-   ],
-   "sockets": [
-    {
-     "name": "E",
-     "road": "FW",
-     "x": 100000,
-     "y": 0,
-     "z": 0,
-     "yaw": 0,
-     "width": 3300
-    },
-    {
-     "name": "N",
-     "road": "XR",
-     "x": 0,
-     "y": 100000,
-     "z": 0,
-     "yaw": 90,
-     "width": 2100
-    },
-    {
-     "name": "S",
-     "road": "XR",
-     "x": 0,
-     "y": -100000,
-     "z": 0,
-     "yaw": -90,
-     "width": 2100
-    },
-    {
-     "name": "W",
-     "road": "FW",
-     "x": -100000,
-     "y": 0,
-     "z": 0,
-     "yaw": 180,
-     "width": 3300
-    }
-   ]
-  },
-  "parclo": {
-   "mesh": "IC_Parclo",
-   "size": [
-    200000,
-    200000
-   ],
-   "sockets": [
-    {
-     "name": "E",
-     "road": "FW",
-     "x": 100000,
-     "y": 0,
-     "z": 0,
-     "yaw": 0,
-     "width": 3300
-    },
-    {
-     "name": "N",
-     "road": "XR",
-     "x": 0,
-     "y": 100000,
-     "z": 0,
-     "yaw": 90,
-     "width": 2100
-    },
-    {
-     "name": "S",
-     "road": "XR",
-     "x": 0,
-     "y": -100000,
-     "z": 0,
-     "yaw": -90,
-     "width": 2100
-    },
-    {
-     "name": "W",
-     "road": "FW",
-     "x": -100000,
-     "y": 0,
-     "z": 0,
-     "yaw": 180,
-     "width": 3300
-    }
-   ]
-  },
-  "cloverleaf": {
-   "mesh": "IC_Cloverleaf",
-   "size": [
-    200000,
-    200000
-   ],
-   "sockets": [
-    {
-     "name": "E",
-     "road": "FW",
-     "x": 100000,
-     "y": 0,
-     "z": 0,
-     "yaw": 0,
-     "width": 3300
-    },
-    {
-     "name": "N",
-     "road": "FW",
-     "x": 0,
-     "y": 100000,
-     "z": 0,
-     "yaw": 90,
-     "width": 3300
-    },
-    {
-     "name": "S",
-     "road": "FW",
-     "x": 0,
-     "y": -100000,
-     "z": 0,
-     "yaw": -90,
-     "width": 3300
-    },
-    {
-     "name": "W",
-     "road": "FW",
-     "x": -100000,
-     "y": 0,
-     "z": 0,
-     "yaw": 180,
-     "width": 3300
-    }
-   ]
-  },
-  "trumpet": {
-   "mesh": "IC_Trumpet",
-   "size": [
-    200000,
-    200000
-   ],
-   "sockets": [
-    {
-     "name": "E",
-     "road": "FW",
-     "x": 100000,
-     "y": 0,
-     "z": 0,
-     "yaw": 0,
-     "width": 3300
-    },
-    {
-     "name": "N",
-     "road": "FW",
-     "x": 0,
-     "y": 100000,
-     "z": 0,
-     "yaw": 90,
-     "width": 3300
-    },
-    {
-     "name": "S",
-     "road": "FW",
-     "x": 0,
-     "y": -100000,
-     "z": 0,
-     "yaw": -90,
-     "width": 3300
-    },
-    {
-     "name": "W",
-     "road": "FW",
-     "x": -100000,
-     "y": 0,
-     "z": 0,
-     "yaw": 180,
-     "width": 3300
-    }
-   ]
-  },
-  "stack": {
-   "mesh": "IC_Stack",
-   "size": [
-    247259,
-    247259
-   ],
-   "sockets": [
-    {
-     "name": "E",
-     "road": "FW",
-     "x": 100000,
-     "y": 0,
-     "z": 90,
-     "yaw": 0,
-     "width": 6400
-    },
-    {
-     "name": "N",
-     "road": "FW",
-     "x": 0,
-     "y": 100000,
-     "z": 90,
-     "yaw": 90,
-     "width": 6400
-    },
-    {
-     "name": "S",
-     "road": "FW",
-     "x": 0,
-     "y": -100000,
-     "z": 90,
-     "yaw": -90,
-     "width": 6400
-    },
-    {
-     "name": "W",
-     "road": "FW",
-     "x": -100000,
-     "y": 0,
-     "z": 90,
-     "yaw": 180,
-     "width": 6400
-    }
-   ]
-  }
+  "diamond": {"mesh": "IC_Diamond_Fit", "size": [140000, 30000], "sockets": [
+   {"name": "E", "road": "FW", "x": 70000, "y": 0, "z": 0, "yaw": 0, "width": 3300},
+   {"name": "N", "road": "XR", "x": 0, "y": 15000, "z": 0, "yaw": 90, "width": 2100},
+   {"name": "S", "road": "XR", "x": 0, "y": -15000, "z": 0, "yaw": -90, "width": 2100},
+   {"name": "W", "road": "FW", "x": -70000, "y": 0, "z": 0, "yaw": 180, "width": 3300}]},
+  "diamond_frontage": {"mesh": "IC_DiamondFrontage_Fit", "size": [140000, 30000], "sockets": [
+   {"name": "E", "road": "FW", "x": 70000, "y": 0, "z": 0, "yaw": 0, "width": 3300},
+   {"name": "N", "road": "XR", "x": 0, "y": 15000, "z": 0, "yaw": 90, "width": 2100},
+   {"name": "S", "road": "XR", "x": 0, "y": -15000, "z": 0, "yaw": -90, "width": 2100},
+   {"name": "W", "road": "FW", "x": -70000, "y": 0, "z": 0, "yaw": 180, "width": 3300}]},
+  "parclo": {"mesh": "IC_Parclo_Fit", "size": [140000, 40000], "sockets": [
+   {"name": "E", "road": "FW", "x": 70000, "y": 0, "z": 0, "yaw": 0, "width": 3300},
+   {"name": "N", "road": "XR", "x": 0, "y": 20000, "z": 0, "yaw": 90, "width": 2100},
+   {"name": "S", "road": "XR", "x": 0, "y": -20000, "z": 0, "yaw": -90, "width": 2100},
+   {"name": "W", "road": "FW", "x": -70000, "y": 0, "z": 0, "yaw": 180, "width": 3300}]},
+  "cloverleaf": {"mesh": "IC_Cloverleaf_Fit", "size": [140000, 105000], "sockets": [
+   {"name": "E", "road": "FW", "x": 70000, "y": 0, "z": 0, "yaw": 0, "width": 3300},
+   {"name": "N", "road": "FW", "x": 0, "y": 52500, "z": 0, "yaw": 90, "width": 3300},
+   {"name": "S", "road": "FW", "x": 0, "y": -52500, "z": 0, "yaw": -90, "width": 3300},
+   {"name": "W", "road": "FW", "x": -70000, "y": 0, "z": 0, "yaw": 180, "width": 3300}]},
+  "trumpet": {"mesh": "IC_Trumpet_Fit", "size": [140000, 90000], "sockets": [
+   {"name": "E", "road": "FW", "x": 70000, "y": 0, "z": 0, "yaw": 0, "width": 3300},
+   {"name": "N", "road": "FW", "x": 0, "y": 45000, "z": 0, "yaw": 90, "width": 3300},
+   {"name": "S", "road": "FW", "x": 0, "y": -45000, "z": 0, "yaw": -90, "width": 3300},
+   {"name": "W", "road": "FW", "x": -70000, "y": 0, "z": 0, "yaw": 180, "width": 3300}]},
+  "stack": {"mesh": "IC_Stack", "size": [247259, 247259], "sockets": [
+   {"name": "E", "road": "FW", "x": 100000, "y": 0, "z": 90, "yaw": 0, "width": 6400},
+   {"name": "N", "road": "FW", "x": 0, "y": 100000, "z": 90, "yaw": 90, "width": 6400},
+   {"name": "S", "road": "FW", "x": 0, "y": -100000, "z": 90, "yaw": -90, "width": 6400},
+   {"name": "W", "road": "FW", "x": -100000, "y": 0, "z": 90, "yaw": 180, "width": 6400}]}
  }
 }

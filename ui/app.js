@@ -1796,8 +1796,8 @@ function buildPanes() {
     seg("overpasses", "Where a highway crosses a street", [["yes", "Bridge over", "top"], ["no", "Cross at grade", "route"]]),
     seg("freeways", "Urban freeways through big cities", [["yes", "Freeways", "layers"], ["no", "None", "route"]]),
     seg("interchange_models", "Freeway interchanges", [["yes", "Blender models", "layers"], ["no", "Generated ramps", "route"]]),
-    h("div", { class: "rn-hint" }, "Blender models (IC_Diamond, Parclo, DiamondFrontage, Stack...) go only where the whole 2 km " +
-      "square fits inside the city's circle; the freeway and cross road join them at their sockets. Smaller cities get generated ramps."),
+    h("div", { class: "rn-hint" }, "Blender models (IC_Diamond, Parclo, DiamondFrontage, Stack...) go wherever their footprint " +
+      "(about 1.4 km along the freeway) is on free land; the freeway and cross road join them at their sockets."),
     sl("highway_curve", "Highway curve", 0, 0.3, 0.01, pct),
     h("div", { class: "rn-hint" }, "Diamond, trumpet and cloverleaf are built from our ramp, bridge and road pieces: the highway " +
       "bridges over a cross road with slip ramps (diamond), one loop (trumpet) or four loops (cloverleaf). Stack rises onto the " +

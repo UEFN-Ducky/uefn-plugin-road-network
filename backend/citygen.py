@@ -128,7 +128,7 @@ CHOICES = {
     # urban freeways through each big city, planned before its blocks (freeways.py): viaducts over the grid,
     # service interchanges on the main roads, a stack where two freeways cross
     "freeways": (("yes", "no"), "yes"),
-    # the six Blender interchange models (assets/interchanges) where one fits wholly inside the city's circle,
+    # the six Blender interchange models (assets/interchanges) wherever one's footprint is on the city's free land,
     # joined to the freeway and the cross road at its sockets; elsewhere the generated ramps
     "interchange_models": (("yes", "no"), "yes"),
     # demand-driven urban planner (urban.py): schools, emergency services, retail, parks, utilities and transit
@@ -6630,8 +6630,9 @@ def _demo() -> None:
         huge = {"name": "Huge", "x": 0, "y": 0, "radius": 450000, "seed": 7, "style": "mixed"}
         got = [i for i in freeway_plan(huge).interchanges if i.get("model")]
         assert got, [i["kind"] for i in freeway_plan(huge).interchanges]
-        half = {k: math.hypot(*m["size"]) / 2 for k, m in _fw.models().items()}
-        assert all(math.hypot(*i["at"]) + half[i["kind"]] <= 450000 for i in got), "inside the city circle"
+        assert all(math.hypot(*i["at"]) <= 450000 for i in got), "centre inside the city circle"
+        mid = {"name": "Mid", "x": 0, "y": 0, "radius": 150000, "seed": 7, "style": "mixed"}  # a normal city uses them too
+        assert any(i.get("model") for i in freeway_plan(mid).interchanges), [i["kind"] for i in freeway_plan(mid).interchanges]
         world = generate([huge], lambda x, y: 0.0, "/G", seed=1)["Huge Freeways"]
         held = {(round(p["x"]), round(p["y"])) for p in world["points"] if p["mesh"] == "IC_Socket"}
         for i in got:

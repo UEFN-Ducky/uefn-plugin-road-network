@@ -217,8 +217,9 @@ def interchange(kind: str, f: Frame, hA: float, hB: float, liftA, liftB, tag: tu
 
 
 # ------------------------------------------------------------------ interchange models (Blender)
-# The six interchanges modelled in Blender ('Roads - Interchanges': IC_Diamond, IC_DiamondFrontage, IC_Parclo,
-# IC_Cloverleaf, IC_Trumpet, IC_Stack), each with four SOCKET_E/N/W/S empties where its roads leave it. A model
+# The six interchanges modelled in Blender ('Roads - Interchanges'), exported from 'Roads - Interchanges (City
+# Builder fit)': IC_Diamond_Fit, IC_DiamondFrontage_Fit, IC_Parclo_Fit, IC_Cloverleaf_Fit, IC_Trumpet_Fit (each model
+# cut where its ramps end, ~1.4 km x 0.3-1 km) and the full IC_Stack, each with four SOCKET_E/N/W/S empties. A model
 # that fits stands in for the generated ramps: the freeway is cut out of its square and ends on its E / W sockets,
 # a short stub of the cross road leaves each N / S socket for the street grid. Frame: Blender +X along the freeway,
 # +Y along the cross road, cm. UEFN imports Blender's +Y as its -Y, so a socket's local y is negated here.
@@ -249,9 +250,9 @@ def model_reach(m: dict, axis: str) -> float:
 
 
 def model_fits(city: dict, cx: float, cy: float, m: dict, inside=None) -> bool:
-    """The whole model square lies inside the city's circle (and, `inside(x, y)`, on free land)."""
+    """The model's centre is in the city and its whole square (`inside(x, y)`) on free land."""
     half = math.hypot(*m["size"]) / 2
-    if math.hypot(cx - city["x"], cy - city["y"]) + half > city["radius"]:
+    if math.hypot(cx - city["x"], cy - city["y"]) > city["radius"]:
         return False
     ring = [(0.0, 0.0)] + [(math.cos(k * math.pi / 4) * half, math.sin(k * math.pi / 4) * half) for k in range(8)]
     return inside is None or all(inside(cx + dx, cy + dy) for dx, dy in ring)
