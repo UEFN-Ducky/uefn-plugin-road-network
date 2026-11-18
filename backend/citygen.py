@@ -499,8 +499,7 @@ def terrain(seed: int, size_cm: float, relief_cm: float, cities: list, grid: int
     base = [[shape(n) for n in row] for row in noise]
     if o["island"] != "none":
         sea = 0.0 if sea is None else sea
-        base = _islands(base, xs, ys, seed, size_cm, center, cities, o["island"], sea, depth, shore,
-                        o["flatten_m"] * 100)
+        base = _islands(base, xs, ys, seed, size_cm, center, o["island"], sea, depth, shore)
     base, sea = _dig_lakes(base, xs, ys, lakes or [], sea, depth, shore)
 
     def at(x, y):
@@ -548,49 +547,69 @@ def terrain(seed: int, size_cm: float, relief_cm: float, cities: list, grid: int
     return {"min": lo, "max": hi, "grid": grid, "heights": rows, "sea": sea}
 
 
-ISLAND_COAST = 0.25  # the coast: land falls into the sea over this share of an island's radius
-ISLAND_WOBBLE = 0.22  # how far the coastline wanders in and out (share of the radius)
-
-
-def _islands(base: list, xs: list, ys: list, seed: int, size_cm: float, center: tuple, cities: list, mode: str,
-             sea: float, depth: float, shore: float, blend: float) -> list:
-    """The hills cut to islands: land inside each island (raised so its lowest ground is a beach over the sea),
-    open sea outside, a wandering coastline between. 'one': one island round the map's middle, big enough for
-    every city; 'many': one per city and a few islets. Each city's circle (+ its flatten blend) is always land."""
-    rnd = random.Random(seed * 31 + 7)
+def island_land(seed: int, size_cm: float, center: tuple, mode: str):
+    """(x, y) -> 0 (sea) .. 1 (land) for the Island option, from noise alone: the land is shaped first and the
+    cities are moved onto it (towns_on_land), never the coast drawn round the cities (Nov 18 2026: round blobs).
+    'one': one big island with a wandering coast, sea all round the map's edge; 'many': an archipelago, the land
+    where low-frequency noise is high, thinning out towards the edge."""
+    coast = _fbm(seed + 101, 4, 0.5)
     half = size_cm / 2
-    discs = []  # (x, y, radius)
-    if mode == "one":
-        r = 0.36 * size_cm
-        for c in cities:
-            r = max(r, math.hypot(c["x"] - center[0], c["y"] - center[1]) + c["radius"] * 1.15 + blend)
-        discs.append((center[0], center[1], min(r, 0.47 * size_cm)))
-    else:
-        for c in cities:
-            discs.append((c["x"], c["y"], c["radius"] * 1.3 + blend))
-        for _ in range(rnd.randint(2, 4) + (3 if not cities else 0)):  # islets out in the sea
-            discs.append((center[0] + rnd.uniform(-0.75, 0.75) * half, center[1] + rnd.uniform(-0.75, 0.75) * half,
-                          size_cm * rnd.uniform(0.04, 0.09)))
-    keep = [(c["x"], c["y"], c["radius"] * 1.08 + blend) for c in cities]  # never water inside these
-    wob = _fbm(seed + 101, 3, 0.5)
+
+    def land(x, y):
+        u, v = (x - center[0]) / half, (y - center[1]) / half  # -1 .. 1 across the map
+        r = math.hypot(u, v)
+        if mode == "one":
+            edge = 0.74 + (coast(u * 1.4 + 5.3, v * 1.4 + 5.3) - 0.5) * 1.2  # the coast's distance from the middle
+            return _smoothstep(0.0, 0.1, edge - r)
+        s = coast(u * 2.6 + 11.7, v * 2.6 + 11.7) - 0.5 - 0.45 * max(0.0, r - 0.45)
+        return _smoothstep(-0.015, 0.03, s)
+    return land
+
+
+def towns_on_land(towns: list, land, bounds, gap: float = 0.0) -> list:
+    """Each city whose circle is not on dry land (land(x, y) >= 0.5 at its middle and all round its edge) moves to
+    the nearest spot that is, clear of the cities already settled; shrunk (to half at most) when no spot is big
+    enough. A pinned city stays. Returns notes of what moved."""
+    (x0, y0), (x1, y1) = bounds
+    ring = [(0.0, 0.0)] + [(f * math.cos(k * math.pi / 6), f * math.sin(k * math.pi / 6)) for f in (0.55, 1.0) for k in range(12)]
+
+    def dry(x, y, r):
+        return (x0 + r <= x <= x1 - r and y0 + r <= y <= y1 - r) and all(land(x + dx * r, y + dy * r) >= 0.5 for dx, dy in ring)
+
+    settled, notes = [], []
+    for t in sorted(towns, key=lambda c: (not c.get("pinned"), -c["radius"])):
+        clear = lambda x, y, r: all(math.hypot(x - o["x"], y - o["y"]) >= r + o["radius"] + gap for o in settled)
+        if t.get("pinned") or (dry(t["x"], t["y"], t["radius"]) and clear(t["x"], t["y"], t["radius"])):
+            settled.append(t)
+            continue
+        found = None
+        for scale in (1.0, 0.85, 0.7, 0.5):
+            r = t["radius"] * scale
+            step = max(r / 2, 2000.0)
+            spots = [(t["x"] + i * step, t["y"] + j * step) for i in range(-60, 61) for j in range(-60, 61)]
+            for x, y in sorted(spots, key=lambda p: math.hypot(p[0] - t["x"], p[1] - t["y"])):
+                if dry(x, y, r) and clear(x, y, r):
+                    found = (x, y, r)
+                    break
+            if found:
+                break
+        if found:
+            notes.append(f"{t.get('name')} moved {round(math.hypot(found[0] - t['x'], found[1] - t['y']) / 100)} m onto land"
+                         + (f", {round(100 * found[2] / t['radius'])} % size" if found[2] < t["radius"] else ""))
+            t["x"], t["y"], t["radius"] = found
+        settled.append(t)
+    return notes
+
+
+def _islands(base: list, xs: list, ys: list, seed: int, size_cm: float, center: tuple, mode: str,
+             sea: float, depth: float, shore: float) -> list:
+    """The hills cut to islands (island_land): the island's own hills raised so its lowest ground is a beach over
+    the sea, open sea outside, the coast sloping between."""
+    land = island_land(seed, size_cm, center, mode)
     lo_h = min(min(r) for r in base)
     floor = sea - depth - shore  # the open sea's bed
-    out = []
-    for j, y in enumerate(ys):
-        row = []
-        for i, x in enumerate(xs):
-            land = 0.0
-            for cx, cy, r in discs:
-                d = math.hypot(x - cx, y - cy)
-                a = math.atan2(y - cy, x - cx)
-                rr = r * (1 + ISLAND_WOBBLE * (2 * wob(3 + math.cos(a) * 1.7 + cx / 1e6, 3 + math.sin(a) * 1.7 + cy / 1e6) - 1))
-                land = max(land, _smoothstep(0.0, ISLAND_COAST * r, rr - d))
-            for cx, cy, r in keep:
-                land = max(land, 1.0 - _smoothstep(r, r * 1.15, math.hypot(x - cx, y - cy)))
-            high = sea + shore * 2 + (base[j][i] - lo_h) * 0.6  # the island's own hills, all above the water
-            row.append(round(floor + (high - floor) * land, 1))
-        out.append(row)
-    return out
+    return [[round(floor + (sea + shore * 2 + (base[j][i] - lo_h) * 0.6 - floor) * land(x, y), 1)
+             for i, x in enumerate(xs)] for j, y in enumerate(ys)]
 
 
 PAD_BLEND_CM = 400.0  # a lot's pad blends back into the hillside over this distance
@@ -5512,13 +5531,17 @@ def _demo() -> None:
     ter = terrain(3, 400000, 6000, cities, grid=64)
     assert ter["heights"] == terrain(3, 400000, 6000, [], grid=64)["heights"], "natural ground ignores the cities"
     flat = terrain(3, 400000, 6000, cities, grid=64, opts={"city_ground": "flatten"})
-    # islands: sea at the map's edge, every city on dry land, 'many' leaves water between cities
+    # islands: the land comes from noise alone (the cities never shape it), sea at the map's edge, and every city
+    # is moved onto dry land
     for mode in ("one", "many"):
         isl = terrain(3, 400000, 6000, cities, grid=64, opts={"island": mode})
+        assert isl["heights"] == terrain(3, 400000, 6000, [], grid=64, opts={"island": mode})["heights"], mode
         wet_i = wet_from(isl)
         assert isl["sea"] == 0.0 and all(wet_i(x, y) for x, y in ((-195000, -195000), (195000, 195000))), mode
+        moved = [dict(c) for c in cities]
+        towns_on_land(moved, island_land(3, 400000, (0.0, 0.0), mode), ((-200000, -200000), (200000, 200000)))
         assert not any(wet_i(c["x"] + c["radius"] * math.cos(a), c["y"] + c["radius"] * math.sin(a))
-                       for c in cities for a in (k * math.pi / 4 for k in range(8))), (mode, "cities on land")
+                       for c in moved for a in (k * math.pi / 4 for k in range(8))), (mode, "cities on land")
     for c in cities:
         z, z2 = st.sample_grid(flat, c["x"], c["y"]), st.sample_grid(flat, c["x"] + c["radius"] * 0.5, c["y"])
         assert abs(z - z2) < 50, "flatten: a city sits on a flat plateau"

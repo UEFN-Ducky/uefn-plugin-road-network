@@ -136,6 +136,13 @@ def register(api) -> None:
 
         def run(*a, **k):
             key, asked = json.dumps([a, k], sort_keys=True, default=str), time.perf_counter()
+            if not lock.acquire(blocking=False):  # say so: the panel sat on 'Starting… 0 %' with no word why
+                who = k.get("name") or k.get("net_id") or (a[0] if a and isinstance(a[0], str) else "")
+                if who:
+                    push({"what": "progress", "id": slug(who), "step": 0, "of": 1,
+                          "text": "Waiting for the build already running to finish…"})
+            else:
+                lock.release()
             with lock:
                 hit = last.get(key)
                 if hit and hit[0] > asked:
@@ -1301,6 +1308,10 @@ def register(api) -> None:
         # every city stays on the map: pushed apart (a grown city's neighbours make room) and pulled back inside,
         # smaller if the map has no room (a grown city pushed its neighbours off the map, Nov 11 2026)
         towns, fit_notes = cg.fit_inside(towns, bounds, opts["city_gap_m"] * 100, keep)
+        if opts["island"] != "none" and not base:  # the land is shaped first; a city in the sea moves onto it
+            fit_notes = list(fit_notes or []) + cg.towns_on_land(
+                towns, cg.island_land(int(seed), size, (center_x, center_y), opts["island"]), bounds,
+                opts["city_gap_m"] * 100)
         for t in towns:  # the map's edges: freeways come back to grade and end before them
             t["map"] = [bounds[0][0], bounds[0][1], bounds[1][0], bounds[1][1]]
         cg.yield_plan(towns)  # where two cities overlap the bigger keeps the land: no street or house twice
