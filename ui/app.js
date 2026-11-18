@@ -433,6 +433,7 @@ renderer.domElement.addEventListener("pointerdown", (e) => {
   if (e.button === 0 && state.tool === "area") { drag.drawing = true; note.points = []; addAreaPoint(e); }
   if (e.button === 0 && state.tool === "select" && !e.shiftKey) {
     drag.cityCand = cityUnder(e);  // a plain click picks it, then its blocks; the Pointer never moves a city
+    drag.piece = pcgUnder(e);  // ... but a building, slab or prop under it is dragged to a new place
   }
   if (e.button === 0 && state.tool === "city" && !e.shiftKey) {  // Edit city: one of its handles, else the city itself
     const hnd0 = handleUnder(e), hnd = hnd0 && heldElsewhere(hnd0.c) ? null : hnd0, hit = hnd0 ? null : cityUnder(e);
@@ -462,6 +463,7 @@ renderer.domElement.addEventListener("pointermove", (e) => {
   const dx = locked ? e.movementX : e.clientX - drag.x, dy = locked ? e.movementY : e.clientY - drag.y;
   if (locked || Math.abs(e.clientX - drag.x0) + Math.abs(e.clientY - drag.y0) > 5) drag.moved = true;
   if (drag.handle) { if (drag.moved) dragHandle(e); return; }  // turning or shaping a city: the camera stays
+  if (drag.piece) { if (drag.moved) dragPiece(e); return; }  // moving one placed piece: the camera stays
   if (drag.cityCand && drag.cityMove && drag.moved && !drag.city) startCityDrag(drag.cityCand);
   if (drag.city) { dragCity(e); return; }  // moving a city: it follows the pointer, the camera stays
   if (drag.ptCand && drag.moved) { dragRoadPoint(e); return; }  // moving one part of a road
@@ -496,6 +498,7 @@ renderer.domElement.addEventListener("pointerup", (e) => {
   if (drag?.city) { const d = drag; drag = null; dropCity(d.city); return; }
   if (drag?.ptCand) { const d = drag; drag = null; if (d.ptTo) dropRoadPoint(d); return; }
   if (drag?.lakePt) { const d = drag; drag = null; if (d.lakePt.moved) dropLakePoint(d.lakePt); return; }
+  if (drag?.piece?.to) { const d = drag; drag = null; dropPiece(d.piece, e); return; }
   if (drag && !drag.moved && drag.button === 0) {
     if (state.tool === "pin") placePin(e);
     else if (state.tool === "lake") lakeClick(e);
@@ -1509,13 +1512,15 @@ function pick(e) {
   const m = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
   ray.setFromCamera(m, camera);
   ray.params.Points.threshold = orbit.dist / 400;
-  if (moving) { moveHere(); return true; }
+  if (moving) { moveHere(e); return true; }
   const hits = ray.intersectObjects([...groups.points.children, ...groups.pieces.children], false);
   if (!hits.length) return inspectAt();
-  const hit = hits[0];
-  if (hit.object.isPoints) select(hit.object.userData.actor, hit.object.userData.pts[hit.index]);
-  else select(hit.object.userData.actor, hit.object.userData.point);
+  const hit = hits[0], aslug = hit.object.userData.actor;
+  if (hit.object.isPoints) select(aslug, hit.object.userData.pts[hit.index]);
+  else select(aslug, hit.object.userData.point);
   openTab("edit");
+  const label = state.geo?.actors?.[aslug]?.label || aslug;
+  showInspect({ title: label, road: aslug, rows: [["Road", label], ["In UEFN", "live splines: rebuilt on their own, no tile"]] });
   return true;
 }
 // Click a building, prop or piece: what it is, which layer placed it, which mesh it uses and where it stands.
@@ -1552,28 +1557,80 @@ function showInspect(info) {
   const btn = (label, fn, title = "") => h("button", { type: "button", class: "rn-mini", style: "pointer-events: auto; margin: 6px 6px 0 0", title, onclick: fn }, label);
   if (info) el.replaceChildren(h("b", {}, info.title), h("div", { class: "rn-kv" }, ...info.rows.flatMap(([k, v]) => [h("span", {}, k), h("span", {}, String(v))])),
     h("div", {}, ...(info.at && state.net ? [
-      btn("Delete", () => editPiece({ op: "delete", ...info.at }), "Delete this piece for good: every rebuild keeps it gone"),
+      btn("Delete", async (ev) => { if (await popAt(ev.clientX, ev.clientY, `Delete ${info.title}? It is rebuilt in UEFN without it.`)) editPiece({ op: "delete", ...info.at }, true); },
+        "Delete this piece for good: every rebuild keeps it gone"),
       btn("Move", () => { moving = info.at; showInspect({ title: `Moving ${info.title}`, rows: [["Next", "click the ground where it goes"]] }); },
         "Move this piece for good: click it, then click where it goes"),
       btn("Copy", () => { moving = { ...info.at, op: "copy" }; showInspect({ title: `Copying ${info.title}`, rows: [["Next", "click the ground where the copy goes"]] }); },
         "Put another one of these somewhere: click where it goes")] : []),
-    ...(info.tile && state.net ? [btn(`Push tile ${info.tile} to UEFN`, () => onPcgPlace(info.tile))] : [])));
+    ...(info.tile && state.net ? [btn(`Rebuild tile ${info.tile} in UEFN`, () => onPcgPlace(info.tile), "Build just this tile again in UEFN; every other tile is left alone")] : []),
+    ...(info.road && state.net ? [btn("Rebuild this road in UEFN", () => { state.actor = info.road; onReimport(); }, "Paste just this road into UEFN again as live splines")] : [])));
+}
+// a little OK / Cancel box just above the pointer: resolves true on OK (or Enter), false on Cancel (or Escape)
+function popAt(x, y, text) {
+  document.getElementById("rnPop")?.remove();
+  return new Promise((done) => {
+    const close = (v) => { box.remove(); document.removeEventListener("keydown", key, true); done(v); };
+    const key = (e) => { if (e.key === "Escape" || e.key === "Enter") { e.preventDefault(); close(e.key === "Enter"); } };
+    const box = h("div", { id: "rnPop", class: "rn-help", role: "dialog", "aria-label": text,
+      style: `position: fixed; left: ${x}px; top: ${Math.max(8, y - 84)}px; bottom: auto; right: auto; width: auto; max-width: 280px; transform: translateX(-50%); z-index: 60; pointer-events: auto` },
+      h("div", { style: "margin-bottom: 6px" }, text),
+      h("button", { type: "button", class: "rn-mini", style: "margin-right: 6px; font-weight: 600", onclick: () => close(true) }, "OK"),
+      h("button", { type: "button", class: "rn-mini", onclick: () => close(false) }, "Cancel"));
+    document.body.appendChild(box);
+    document.addEventListener("keydown", key, true);
+    box.querySelector("button").focus();
+  });
+}
+// the placed piece (building, slab, prop) under the pointer, for a drag: its instance and what it is
+function pcgUnder(e) {
+  const r = renderer.domElement.getBoundingClientRect();
+  ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), camera);
+  const hit = ray.intersectObjects(groups.pcg.children, false).find((x) => x.object.userData.info && x.instanceId != null);
+  const info = hit && hit.object.userData.info(hit.instanceId);
+  return info?.at ? { mesh: hit.object, id: hit.instanceId, info, g0: groundAt(e)?.y } : null;
+}
+function dragPiece(e) {  // it follows the pointer over the ground; nothing is saved until OK
+  const d = drag.piece, v = groundAt(e);
+  if (!v) return;
+  if (!d.orig) { d.orig = new THREE.Matrix4(); d.mesh.getMatrixAt(d.id, d.orig); }
+  renderer.domElement.style.cursor = "grabbing";
+  const m = d.orig.clone(), y = new THREE.Vector3().setFromMatrixPosition(m).y;
+  m.setPosition(v.x, y + v.y - (d.g0 ?? v.y), v.z);
+  d.mesh.setMatrixAt(d.id, m);
+  d.mesh.instanceMatrix.needsUpdate = true;
+  d.to = toUE(v);
+}
+async function dropPiece(d, e) {
+  const ok = await popAt(e.clientX, e.clientY, `Move ${d.info.title} here? It is rebuilt in UEFN where you put it.`);
+  if (!ok) { d.mesh.setMatrixAt(d.id, d.orig); d.mesh.instanceMatrix.needsUpdate = true; return; }
+  editPiece({ op: "move", ...d.info.at, to_x: d.to[0], to_y: d.to[1] }, true);
 }
 // The person's own deletes and moves: kept with the world (road_network_edit), applied after every rule
 let moving = null;  // the piece a Move button picked: the next click on the ground is where it goes
-async function editPiece(params) {
+async function editPiece(params, push = false) {
   const r = await rpc("edit", { net_id: state.net, ...params });
   if (r.ok === false) return showError(r.error);
   schedulePcgPreview(100);
+  if (push) {  // OK in the little box: straight into UEFN, only the tiles it touched
+    const tiles = r.tiles.join(", ");
+    busy(`Rebuilding ${tiles} in UEFN…`);
+    const out = await rpc("pcg_build", { net_id: state.net, confirm: true, force: true, tiles });
+    busy("");
+    if (out.ok === false) return showError(out.error + (out.note ? ` ${out.note}` : ""));
+    showError("");
+  }
   showInspect({ title: `${{ delete: "Deleted", move: "Moved", copy: "Copied" }[r.edit.op]}: ${r.piece.layer}`, tile: r.tiles.join(", "),
     rows: [["Kept", `every rebuild keeps it (${r.edits} edits on this world)`], ["In UEFN", `push ${r.tiles.join(", ")}`]] });
 }
-function moveHere() {  // the ray is already set by pick()
+async function moveHere(e) {  // the ray is already set by pick()
   const piece = moving;
   moving = null;
   const hit = ray.intersectObjects(groups.terrain.children, true)[0];
   if (!hit) return showInspect({ title: "Move cancelled", rows: [["Why", "that click was not on the ground"]] });
-  editPiece({ op: "move", ...piece, to_x: -hit.point.z * 100, to_y: hit.point.x * 100 });  // (piece.op: a copy)
+  const [to_x, to_y] = toUE(hit.point);
+  if (await popAt(e.clientX, e.clientY, `${piece.op === "copy" ? "Put a copy" : "Move it"} here? It is rebuilt in UEFN.`))
+    editPiece({ op: "move", ...piece, to_x, to_y }, true);  // (piece.op: a copy)
 }
 function inspectAt() {  // the ray is already set by pick()
   const hit = ray.intersectObjects(groups.pcg.children, false).find((x) => x.object.userData.info && x.instanceId != null);
