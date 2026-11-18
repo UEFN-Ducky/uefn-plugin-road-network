@@ -3492,7 +3492,9 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
         # waterfront first: the shore's quays, marinas, beaches and ports take their land before the services
         from . import waterfront
         pop = round(len(out["lots"]) * 9)  # a rough count for the port / ferry thresholds; urban.plan counts properly
-        wf = waterfront.plan(city, water, out["lots"], ring_of, industrial, ground, nodes, pop)
+        roads = [(*nodes[a][:2], *nodes[b][:2], HALF.get(k, 500.0)) for a, b, k, *_ in edges if a in nodes and b in nodes]
+        roads += [(*p[:2], *q[:2], 400.0) for s in out["streets"] for p, q in zip(s, s[1:])]
+        wf = waterfront.plan(city, water, out["lots"], ring_of, industrial, ground, nodes, pop, roads)
         out["lots"], out["water"] = wf["lots"], wf["rows"]
         out["waterfront"] = {k: wf[k] for k in ("segments", "developments", "shoreline_m", "made_m", "report", "shipyards")}
     # the blocks' own trees keep off what is not a block's ground: a made shore, a shipyard, an airfield, a keep zone

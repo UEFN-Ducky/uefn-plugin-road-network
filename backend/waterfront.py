@@ -131,6 +131,34 @@ OWN_HEIGHT = ("deck", "float", "pile", "slip", "boat", "float_home", "stilt_hous
 NO_PAD += ("deck", "float", "riprap", "sand", "promenade", "launch")
 
 
+def yard_spot(roads: list, x: float, y: float, tx: float, ty: float, nx: float, ny: float, length: float):
+    """Where a container yard goes: its spot (x, y), shore direction (tx, ty) and inland normal (nx, ny), slid
+    along the shore and inland, and shortened, until no street (roads: (x0, y0, x1, y1, half width) cm) crosses
+    its paving. The yard was laid behind the quay wherever that fell, and a street with its junction ran through
+    the middle of the container stacks (Valley 2_1, Nov 17 2026). Returns (x, y, length), or None: no yard here."""
+    hd = YARD_DEPTH_CM / 2
+    near = [r for r in roads if min(math.hypot(r[0] - x, r[1] - y), math.hypot(r[2] - x, r[3] - y))
+            < length + 2 * YARD_DEPTH_CM + math.hypot(r[2] - r[0], r[3] - r[1])]
+    pts = []
+    for x0, y0, x1, y1, h in near:  # every 3 m along each street, with its half width
+        n = max(1, int(math.hypot(x1 - x0, y1 - y0) // 300))
+        pts += [(x0 + (x1 - x0) * k / n, y0 + (y1 - y0) * k / n, h) for k in range(n + 1)]
+
+    def clear(cx, cy, hl):
+        return not any(abs((px - cx) * tx + (py - cy) * ty) < hl + h + 300
+                       and abs((px - cx) * nx + (py - cy) * ny) < hd + h + 300 for px, py, h in pts)
+    for scale in (1.0, 0.8, 0.6, 0.45):
+        L = length * scale
+        if L < 4000:
+            break
+        for back in (0.0, 1500.0, 3000.0):  # (never toward the water: the quay is there)
+            for slide in (0.0, 1500.0, -1500.0, 3000.0, -3000.0, 4500.0, -4500.0, 6000.0, -6000.0):
+                cx, cy = x + tx * slide + nx * back, y + ty * slide + ny * back
+                if clear(cx, cy, L / 2):
+                    return cx, cy, L
+    return None
+
+
 def _dice(*key) -> float:
     """A draw in [0, 1) that belongs to its key: the same stretch of the same shore draws the same every run."""
     return zlib.crc32(repr(key).encode()) / 4294967296.0
@@ -635,7 +663,7 @@ def shores_for(city: dict, analysis: dict, ring_of, industrial, population: int 
 
 
 def plan(city: dict, analysis: dict, lots: list, ring_of, industrial, ground, nodes: dict | None = None,
-         population: int = 0) -> dict:
+         population: int = 0, roads: list | None = None) -> dict:
     """WaterfrontPlanner + generators for one city: classified segments, structures (rows), land buildings
     (lot rows), the lots kept, and the validator report. Everything is built on the city's made shores
     (city['shores'], planned before the streets; worked out here when a caller has none), at their design
@@ -777,10 +805,14 @@ def plan(city: dict, analysis: dict, lots: list, ring_of, industrial, ground, no
             for s in along(S, 6000):  # container cranes straddle the quay edge
                 out.row(s["x"] - s["nx"] * 800, s["y"] - s["ny"] * 800, sea + QUAY_CM, _yaw(mid["tx"], mid["ty"]), 1, 1, 1, "crane")
             back = W + B + 4500
-            yx, yy = mid["x"] - mid["nx"] * back, mid["y"] - mid["ny"] * back
+            spot = yard_spot(roads or [], mid["x"] - mid["nx"] * back, mid["y"] - mid["ny"] * back,
+                             mid["tx"], mid["ty"], -mid["nx"], -mid["ny"], min(300, length_m) * 0.9 * 100)
+            if spot is None:  # streets all over the land behind this quay: cranes and wall, no yard
+                devs.append({"type": "container quay", "length_m": length_m})
+                continue
+            yx, yy, yard_l = spot
             yz = ground(yx, yy)
             yz = sea + QUAY_CM if yz is None or yz < sea + QUAY_CM else yz
-            yard_l = min(300, length_m) * 0.9 * 100
             out.row(yx, yy, yz, _yaw(mid["tx"], mid["ty"]), yard_l / 100, YARD_DEPTH_CM / 100, 1, "yard")
             claims.append((yx, yy, mid["tx"], mid["ty"], yard_l / 2, YARD_DEPTH_CM / 2))
             # the stacks stay on the paving: as many 14 m bays each way as the yard is long (at most 3)
@@ -1019,6 +1051,14 @@ def _demo() -> None:
     print("  shipyards", [(y["type"], y["docks"], y["site_m"]) for y in yard["shipyards"]])
     t, lift = bridge_kind(90000, "4L")
     assert t == "cable-stayed bridge" and lift == 3000.0
+    # a yard behind its quay: shore along x, inland +y. No street: it stays put. A street across its middle
+    # (inland, the way the Valley 2_1 one ran): it slides clear of it. Streets everywhere: no yard
+    assert yard_spot([], 0, 0, 1, 0, 0, 1, 20000) == (0, 0, 20000)
+    cross = [(0, -20000, 0, 20000, 500.0)]
+    x, y, L = yard_spot(cross, 0, 0, 1, 0, 0, 1, 20000)
+    assert abs(x) >= L / 2 + 800, ("the street is beside the yard, not in it", x, L)
+    grid = [(gx, -20000, gx, 20000, 500.0) for gx in range(-30000, 30001, 2500)]
+    assert yard_spot(grid, 0, 0, 1, 0, 0, 1, 20000) is None
     print("waterfront ok", len(got["rows"]), "pieces", len(wb), "waterfront buildings")
 
 
