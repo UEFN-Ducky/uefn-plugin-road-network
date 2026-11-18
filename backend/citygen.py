@@ -719,7 +719,7 @@ def grade_to_roads(ter: dict, actors: dict, locked: set | None = None) -> dict:
             continue
         # graded to the roads exactly as they are pushed (straight from corner to corner, road_network_roads_pcg),
         # never to the point-per-bump line they were drawn with: the two must meet everywhere
-        pts_, segs_ = st.straighten(a["points"], a["segments"])
+        pts_, segs_ = st.straighten(a["points"], a["segments"], keep_z=label.endswith(("Freeways", "Highways")))
         by_i = {p["i"]: p for p in pts_}
         links: dict = {}  # mesh-less links per point: a piece with one is a dead end's turnaround
         for s in segs_:
@@ -734,6 +734,7 @@ def grade_to_roads(ter: dict, actors: dict, locked: set | None = None) -> dict:
             half = HALF.get(next((k for k, m in ROAD_MESH.items() if m.split("/")[-1] == mesh), ""), 800.0)
             if not mesh:  # a turnaround is graded round its whole width, like the road it ends (its Width)
                 half = max([half] + [float(p.get("w") or 0) for p in (pa, pb) if p.get("mesh") and links.get(p["i"]) == 1])
+                half = max(half, float(s.get("half") or 0))  # (a Blender interchange's link: its whole square)
             if mesh in STRUCTURES:
                 # a deck or ramp stands free, but the ground may never rise through it: where a viaduct comes
                 # down to grade the hill under it is cut to DECK_CLEAR_CM below the deck (never filled up to it)
@@ -3112,7 +3113,7 @@ def freeway_plan(city: dict, opts: dict | None = None):
     from . import freeways
     o = city_options(city, opts)
     key = repr((city.get("name"), city["x"], city["y"], city["radius"], city.get("seed"), city.get("map"),
-                city.get("turn"), city.get("shape"), city.get("yield_to"), city.get("fw_shore"),
+                city.get("turn"), city.get("shape"), city.get("yield_to"), city.get("fw_shore"), city.get("ic_steep"),
                 [o[k] for k in ("freeways", "interchange_models", "block_m", "block_ratio", "downtown", "normal", "collector_every", "core_roads",
                                 "neighbourhood_roads", "canals")],
                 [(a.get("center"), a.get("heading"), a.get("type")) for a in city.get("airports") or []],
@@ -4610,6 +4611,28 @@ def shore_plan(cities: list, opts: dict | None = None, wet=None) -> None:
             c.pop("fw_shore", None)
 
 
+MODEL_FLAT_CM = 400.0  # a Blender interchange model (flat to a metre) goes only where the ground under it varies less
+
+
+def slope_plan(cities: list, opts: dict | None, ground) -> None:
+    """Where a Blender interchange model would stand on a slope (its centre and sockets more than MODEL_FLAT_CM apart
+    in height: a parclo on a hillside had its two freeway ends 124 m apart, Nov 18 2026), the spot goes in
+    city['ic_steep'] and the plan builds generated ramps there instead. Again until no model is left on a slope."""
+    for c in cities:
+        c.pop("ic_steep", None)
+        for _ in range(4):
+            steep = []
+            for ic in freeway_plan(c, opts).interchanges:
+                m = ic.get("model")
+                if m:
+                    zs = [ground(x, y) for x, y in [ic["at"]] + m["sockets"]]
+                    if max(zs) - min(zs) > MODEL_FLAT_CM:
+                        steep.append(list(ic["at"]))
+            if not steep:
+                break
+            c["ic_steep"] = (c.get("ic_steep") or []) + steep
+
+
 PORT_ROAD = "4L"  # the road to a port: four lanes, for its trucks
 PORT_CELL_CM = 6000.0  # ... found on a grid this coarse
 PORT_REACH_CM = 600000.0  # ... to a street or a highway no further than this from its gate
@@ -4766,15 +4789,31 @@ def port_roads(cities: list, graphs: list, hw_nodes: dict, hw_edges: list, groun
 
 
 def links(cities: list) -> list:
-    """Highways: the shortest tree joining every city (Prim)."""
+    """Highways: the shortest tree joining every city (Prim), then a second way out of every city that has only
+    one, to its nearest city not yet joined, where that highway crosses no other: from three cities on, a city is
+    never cut off by one road (a tree gave each end city a single highway, Nov 18 2026)."""
     if len(cities) < 2:
         return []
+    at = lambda i: (cities[i]["x"], cities[i]["y"])
+    D = lambda p: math.dist(at(p[0]), at(p[1]))
     done, out = {0}, []
     while len(done) < len(cities):
-        a, b = min(((i, j) for i in done for j in range(len(cities)) if j not in done),
-                   key=lambda p: math.hypot(cities[p[0]]["x"] - cities[p[1]]["x"], cities[p[0]]["y"] - cities[p[1]]["y"]))
+        a, b = min(((i, j) for i in done for j in range(len(cities)) if j not in done), key=D)
         done.add(b)
         out.append((a, b))
+
+    def crosses(p, q):
+        def side(o, u, v):
+            return (u[0] - o[0]) * (v[1] - o[1]) - (u[1] - o[1]) * (v[0] - o[0])
+        a, b, c, d = at(p[0]), at(p[1]), at(q[0]), at(q[1])
+        return side(a, b, c) * side(a, b, d) < 0 and side(c, d, a) * side(c, d, b) < 0
+    for i in range(len(cities)):
+        if sum(i in e for e in out) >= 2:
+            continue
+        for j in sorted((j for j in range(len(cities)) if j != i), key=lambda j: D((i, j))):
+            if (i, j) not in out and (j, i) not in out and not any(crosses((i, j), e) for e in out if not {i, j} & set(e)):
+                out.append((i, j))
+                break
     return out
 
 
@@ -5073,14 +5112,29 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
     stack: an elevated deck on ramps), and it bridges over every street it crosses on the way."""
     o = options(opts)
     graphs = [city_graph(c, o, wet, bridges) for c in cities]
+    # a Blender interchange's cross road ends where the grid's next street would be: in an organic or mixed city
+    # there was none and the stub stopped 20-100 m short, its city cut off from its freeway (Nov 18 2026). A street
+    # of the city's own now runs from that end to its nearest junction
+    for c, (nodes, edges) in zip(cities, graphs):
+        own = [n for n in nodes if isinstance(n, tuple) and len(n) == 2 and isinstance(n[0], int)]
+        for k, ic in enumerate(freeway_plan(c, o).interchanges):
+            for j, xy in enumerate((ic.get("model") or {}).get("cross") or ()):
+                near = min(own, key=lambda n: math.dist(nodes[n][:2], xy), default=None)
+                if near is not None and 100 < math.dist(nodes[near][:2], xy) < 40000:
+                    nodes[("icx", k, j)] = list(xy)
+                    edges.append([("icx", k, j), near, ic.get("cross_road") or o["core_roads"]])
     rnd = random.Random(seed)
     hw_nodes, hw_edges, pieces = {}, [], {}
     streets = [(n[a][:2], n[b][:2]) for n, e in graphs for a, b, *_ in e]
     gates = o["gate_interchanges"] == "yes"
     tips = []  # per city: its freeways' open ends [x, y, the way it was heading there (unit), in the water]
     for c in cities:
-        runs = [ln["points"] for ln in freeway_plan(c, o).lines if ln["cls"] == "freeway" and len(ln["points"]) > 1]
-        every_tip = [(p, q) for ps in runs for p, q in ((ps[0], ps[1]), (ps[-1], ps[-2]))]
+        fwp = freeway_plan(c, o)
+        runs = [ln["points"] for ln in fwp.lines if ln["cls"] == "freeway" and len(ln["points"]) > 1]
+        socks = [s for ic in fwp.interchanges for s in (ic.get("model") or {}).get("sockets") or ()]
+        # (a freeway cut at a Blender interchange's socket goes on through the model: no highway starts there)
+        every_tip = [(p, q) for ps in runs for p, q in ((ps[0], ps[1]), (ps[-1], ps[-2]))
+                     if not any(math.dist(p[:2], s) < 100 for s in socks)]
         mine = []
         for p, q in every_tip:
             L = math.dist(p[:2], q[:2]) or 1.0
@@ -5307,7 +5361,7 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
     # a point only where a road turns, meets another or carries a piece: straight from corner to corner (a point
     # per 20 m, each on its own bump, made every road wave); then every welded end put back on the road it reaches
     for label in list(out):
-        pts, segs = st.straighten(out[label]["points"], out[label]["segments"])
+        pts, segs = st.straighten(out[label]["points"], out[label]["segments"], keep_z=label.endswith(("Freeways", "Highways")))
         out[label] = {**out[label], "points": pts, "segments": segs}
     for _ in range(8):
         if not weld_ends(out, edge):
@@ -5320,19 +5374,38 @@ INTERCHANGE_FOLDER = "Interchanges"  # under the roads folder: the IC_* models (
 
 def model_pieces(a: dict, ics: list, ground, folder: str) -> dict:
     """Each Blender interchange model (freeways.place_model) as a piece on its own point, and every road end on
-    one of its sockets held there (marked 'IC_Socket'): weld_ends never runs a freeway on into the model."""
+    one of its sockets held there (marked 'IC_Socket'): weld_ends never runs a freeway on into the model. The
+    model's point is linked to each socket (a mesh-less link, as a junction to its mouths): without them the
+    model joined nothing and every freeway through one fell apart in two, its cross roads with it (Nov 18 2026)."""
     socks = [s for ic in ics if ic.get("model") for s in ic["model"]["sockets"]]
+    # (each link carries half the model's width across it, so grade_to_roads levels the model's whole square;
+    # the sockets take the model's height and settle_grades eases the freeway and cross roads to it)
+    held = {}
     for p in a["points"]:
         if not p["mesh"] and any(math.hypot(p["x"] - x, p["y"] - y) < 100 for x, y in socks):
             p["mesh"] = "IC_Socket"
+        if p["mesh"] == "IC_Socket":
+            held[p["i"]] = p
     i = max([p["i"] for p in a["points"]] + [s["i"] for s in a["segments"]] + [0]) + 1
     for ic in ics:
         m = ic.get("model")
         if m:
             x, y = ic["at"]
-            a["points"].append(_point(i, x, y, ground(x, y), m["yaw"], m["width"], lifted=True,
-                                      piece=f"{folder}/{INTERCHANGE_FOLDER}/{m['mesh']}"))
+            centre = _point(i, x, y, ground(x, y), m["yaw"], m["width"], lifted=True,
+                            piece=f"{folder}/{INTERCHANGE_FOLDER}/{m['mesh']}")
+            a["points"].append(centre)
             i += 1
+            size = m.get("size") or [2 * m["width"]] * 2
+            for sx, sy in m["sockets"]:
+                along = math.hypot(sx - x, sy - y)
+                across = size[1] / 2 if abs(along - size[0] / 2) <= abs(along - size[1] / 2) else size[0] / 2
+                for p in held.values():
+                    if math.hypot(p["x"] - sx, p["y"] - sy) < 100:
+                        p["z"] = centre["z"]
+                end = min(held.values(), key=lambda p: math.hypot(p["x"] - sx, p["y"] - sy), default=None)
+                if end and math.hypot(end["x"] - sx, end["y"] - sy) < 100:
+                    a["segments"].append({**_segment(i, centre["i"], end["i"], "", folder, lifted=True), "half": across})
+                    i += 1
     return a
 
 
@@ -5486,6 +5559,18 @@ def weld_ends(actors: dict, edge: dict | None = None) -> int:
               for cy in range(int((p["y"] - reach) // cell), int((p["y"] + reach) // cell) + 1)
               for k in by_cell.get((cx, cy), ())}
         return [every[k] for k in sorted(ks)]
+    # every freeway / highway open end: one that sits on another actor's end is that road going on (the highway
+    # starting on a freeway's tip). It stays there: slid to the freeway's edge it stood 2.5 m off the tip, joined
+    # nothing, and the freeway ran on past it 200 m along the highway (Nov 18 2026)
+    tips = []
+    for label, a in actors.items():
+        if label.endswith(("Freeways", "Highways")):
+            deg: dict = {}
+            for s in a["segments"]:
+                if s["mesh"]:
+                    for i in (s["a"], s["b"]):
+                        deg[i] = deg.get(i, 0) + 1
+            tips += [(label, p) for p in a["points"] if deg.get(p["i"]) == 1]
     moved = 0
     for label, a in actors.items():
         if not label.endswith(("Freeways", "Highways")):
@@ -5499,6 +5584,13 @@ def weld_ends(actors: dict, edge: dict | None = None) -> int:
             p = by.get(i)
             if not p or len(ss) != 1 or not ss[0]["mesh"] or (p["mesh"] and p["mesh"] not in CONNECTOR_HALF):
                 continue  # only a road's own open end (one with its connector is welded again: its road may move)
+            other = next((q for lab2, q in tips if lab2 != label and math.hypot(q["x"] - p["x"], q["y"] - p["y"]) < 50), None)
+            if other:
+                if label.endswith("Highways") and abs(other["z"] - p["z"]) > 1:  # (the freeway's height wins)
+                    p["z"] = other["z"]
+                    st.retangent(by, ss[0])
+                    moved += 1
+                continue
             own = half_of.get(ss[0]["mesh"].split("/")[-1], 650.0)
             mine = own_run(touch, by, i)
             o0 = by[ss[0]["b"] if ss[0]["a"] == i else ss[0]["a"]]

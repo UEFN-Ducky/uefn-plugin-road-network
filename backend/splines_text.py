@@ -627,13 +627,15 @@ STRAIGHT_Z_CM = 200.0   # ...and, on a deck or ramp (never shaping the ground), 
 # landscape's Splines layer cuts / fills the ground to it (a point per bump made every street wave up and down).
 
 
-def straighten(points: list, segments: list, xy_tol: float = STRAIGHT_XY_CM, z_tol: float = STRAIGHT_Z_CM) -> tuple:
+def straighten(points: list, segments: list, xy_tol: float = STRAIGHT_XY_CM, z_tol: float = STRAIGHT_Z_CM,
+               keep_z: bool = False) -> tuple:
     """Copies of (points, segments) with every run of plain road points cut to the fewest straight segments.
     A run goes from one kept point (junction, piece, end, bridge / kind change) to the next through points
     with exactly two segments of the same kind; a point stays only where the road really bends (further than
     xy_tol off the straight line in plan, or z_tol in height). A road drawn through a point every few metres,
     each draped on its own bump, waved; two points and one segment run straight (the Splines layer shapes the
-    ground to it)."""
+    ground to it). keep_z: every road keeps its height bends (freeways and highways stand on the ground as meshes:
+    one straight line over 1 km of hills ran 15-105 m inside them, Nov 18 2026)."""
     pts = {p["i"]: dict(p) for p in points}
     segs = [dict(s) for s in segments]
     at: dict = {}
@@ -659,7 +661,7 @@ def straighten(points: list, segments: list, xy_tol: float = STRAIGHT_XY_CM, z_t
             t = max(0.0, min(1.0, ((p["x"] - a["x"]) * dx + (p["y"] - a["y"]) * dy) / (L * L)))
             off_xy = abs((p["x"] - a["x"]) * dy - (p["y"] - a["y"]) * dx) / L
             off_z = abs(p["z"] - (a["z"] + (b["z"] - a["z"]) * t))
-            score = max(off_xy / xy_tol, 0.0 if a.get("raise", True) else off_z / z_tol)
+            score = max(off_xy / xy_tol, 0.0 if a.get("raise", True) and not keep_z else off_z / z_tol)
             if score > worst:
                 best, worst = k, score
         return best, worst > 1.0
@@ -703,10 +705,24 @@ def straighten(points: list, segments: list, xy_tol: float = STRAIGHT_XY_CM, z_t
     new_segs += [s for s in segs if id(s) not in done]  # loops of plain points stay as they were
     out_pts = [p for i, p in pts.items() if i not in drop]
     by_i = {p["i"]: p for p in out_pts}
-    for s in new_segs:
-        if s["a"] in by_i and s["b"] in by_i:
-            retangent(by_i, s)
-    return out_pts, [s for s in new_segs if s["a"] in by_i and s["b"] in by_i]
+    kept = [s for s in new_segs if s["a"] in by_i and s["b"] in by_i]
+    for s in kept:
+        retangent(by_i, s)
+    # a kept run point's pitch from the neighbours it has now: the one it had came from a point 20 m away, and a
+    # tangent as long as the new chord carried that slope far off (67 degrees on a 620 m deck: a road in the sky)
+    near: dict = {}
+    for s in kept:
+        near.setdefault(s["a"], []).append(by_i[s["b"]])
+        near.setdefault(s["b"], []).append(by_i[s["a"]])
+    for i in {r for s in kept for r in (s["a"], s["b"])} - {p["i"] for p in out_pts if p.get("mesh")}:
+        p = by_i[i]
+        f = forward({"pitch": 0.0, "yaw": p["yaw"]})
+        ahead = [q for q in near.get(i, []) if (q["x"] - p["x"]) * f[0] + (q["y"] - p["y"]) * f[1] >= 0]
+        behind = [q for q in near.get(i, []) if q not in ahead]
+        za, zb = (ahead or [p])[0], (behind or [p])[0]
+        dh = math.dist((za["x"], za["y"]), (zb["x"], zb["y"]))
+        p["pitch"] = math.degrees(math.atan2(za["z"] - zb["z"], dh)) if dh > 1 else 0.0
+    return out_pts, kept
 
 
 def fit_3way(arm_angles: list) -> tuple:

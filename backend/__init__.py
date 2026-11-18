@@ -741,7 +741,8 @@ def register(api) -> None:
         head, pts, segs = load_actor(nid, aslug)
         if not head:
             return None, None
-        return head, st.serialize(*st.straighten(pts, segs), terrain=terrain)  # long roads straight, not a point per bump
+        fw = str(head.get("label") or "").endswith(("Freeways", "Highways"))  # (they keep their height bends)
+        return head, st.serialize(*st.straighten(pts, segs, keep_z=fw), terrain=terrain)  # long roads straight, not a point per bump
 
     def copy_text(net_id: str = "", actor: str = "") -> dict:
         head, text = text_for(net_id, actor)
@@ -1360,6 +1361,11 @@ def register(api) -> None:
         # a freeway ends at the shore when only open water lies beyond it, and each city's streets give way to its
         # neighbours' ramps where those reach over its land
         cg.shore_plan(towns, opts, wet)
+        if base:  # a scanned landscape is never reshaped: a Blender interchange model only where it is flat already
+            cg.slope_plan(towns, opts, road_ground)  # (our own ground is levelled under each model: grade_to_roads)
+        else:
+            for t in towns:
+                t.pop("ic_steep", None)
         cg.share_freeways(towns, opts)
         progress(2, "Laying roads, freeways, bridges and runways")
         actors = cg.generate(towns, road_ground, folder, int(seed), opts, keep, wet, bridges, airports, airport_builds)
@@ -3195,7 +3201,7 @@ def register(api) -> None:
                 continue
             _h, pts, segs = load_actor(nid, aslug)
             if segs:
-                p2, s2 = st.straighten(pts, segs)  # a point only where a road turns: straight from corner to corner
+                p2, s2 = st.straighten(pts, segs, keep_z=label.endswith(("Freeways", "Highways")))  # straight from corner to corner
                 acts[label] = {"points": p2, "segments": s2}
         if not acts:
             return {"ok": False, "error": "No road actors to push (generate the world first)."}

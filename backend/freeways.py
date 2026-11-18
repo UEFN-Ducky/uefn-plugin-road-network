@@ -274,7 +274,7 @@ def place_model(out: "Plan", kind: str, f: Frame, group, road: str = "", across:
             b += MODEL_CELL
         a += MODEL_CELL
     out.mark(marks, group)
-    socks = []
+    socks, cross = [], []
     for s in m["sockets"]:
         la, lb = s["x"], -s["y"]  # Blender +Y is UEFN -Y
         socks.append([round(v) for v in f.w(la, lb)])
@@ -285,8 +285,9 @@ def place_model(out: "Plan", kind: str, f: Frame, group, road: str = "", across:
             bld = Builder(group + (s["name"],))
             bld.edge([(*f.w(la, lb), 0.0), (*f.w(la, sign * end), 0.0)], road, "stub")
             out.add(bld, road, group)
+            cross.append([round(v) for v in f.w(la, sign * end)])  # citygen.generate joins it to the streets
     return {"mesh": m["mesh"], "yaw": round(math.degrees(math.atan2(f.ay, f.ax)), 2),
-            "width": max(m["size"]) / 2, "sockets": socks}
+            "width": max(m["size"]) / 2, "size": m["size"], "sockets": socks, "cross": cross}
 
 
 # ------------------------------------------------------------------ planner
@@ -536,8 +537,10 @@ def plan(city: dict, o: dict) -> Plan:
     use_models = o.get("interchange_models", "yes") == "yes"
     on_map = lambda x, y: not box or box[0] + MAP_EDGE <= x <= box[2] - MAP_EDGE and box[1] + MAP_EDGE <= y <= box[3] - MAP_EDGE
     free = lambda x, y: on_map(x, y) and not (hard and hard(x, y))
+    # a model is flat: where the ground under it is not (citygen.slope_plan found it), the generated ramps
+    on_slope = lambda x, y: any(math.hypot(x - a, y - b) < 1000 for a, b in city.get("ic_steep") or ())
     stack_model = models().get("stack") if use_models and stacked else None
-    if stack_model and not model_fits(city, sx, sy, stack_model, free):
+    if stack_model and (on_slope(sx, sy) or not model_fits(city, sx, sy, stack_model, free)):
         stack_model = None  # too big for this city: the generated stack
     for name, normal_axis, at, axis in mains:
         stack_along = stack_at[1] if name == "ns" else stack_at[0]
@@ -589,7 +592,7 @@ def plan(city: dict, o: dict) -> Plan:
                 continue  # its ramps would be on reserved land
             kind = "diamond" if share <= down else "parclo" if share <= normal else "diamond_frontage"
             m = models().get(kind) if use_models else None
-            if m and not (model_fits(city, cx, cy, m, free) and -back + model_reach(m, "a") <= t <= ahead - model_reach(m, "a")):
+            if m and (on_slope(cx, cy) or not (model_fits(city, cx, cy, m, free) and -back + model_reach(m, "a") <= t <= ahead - model_reach(m, "a"))):
                 m = None  # a city too small for the model (or the map's edge, reserved land): the generated ramps
             mine = model_reach(m, "a") if m else DIAMOND_A
             if any(abs(t - d) < max(IC_SPACING, mine + theirs + 20000) for d, theirs in done):
