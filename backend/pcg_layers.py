@@ -956,6 +956,51 @@ STACKED = ("Container stacks",)  # site pieces that stand on a yard, not on a ro
 YARDS = ("Port yards",)  # paved yards no building may stand on (whatever placed the building: a city lot, a site)
 
 
+def fit_yards(placed: dict, samples: list) -> dict:
+    """Container yards planned before waterfront.yard_spot knew the streets (the Valley's) lie across them: slide
+    each along its quay, or shorten it, until no road surface (surface_samples) crosses its paving, and take its
+    stacks with it (the ones past its new ends go). No spot clear: no yard and no stacks. Returns what changed."""
+    from .waterfront import yard_spot
+    yards = [p for name in YARDS for p in (placed.get(name) or {}).get("points") or []]
+    stacks = [layer for name in STACKED if (layer := placed.get(name))]
+    roads = [(x, y, x, y, h) for x, y, h in samples]
+    moved = gone = 0
+    for p in list(yards):
+        tx, ty = math.cos(math.radians(p[3])), math.sin(math.radians(p[3]))
+        hl, hd = p[4] * 50, p[5] * 50
+        spot = yard_spot(roads, p[0], p[1], tx, ty, -ty, tx, hl * 2, backs=(0.0,))  # (which side is inland: unknown)
+        if spot == (p[0], p[1], hl * 2):
+            continue
+        new = spot
+
+        def mine(s):
+            return abs((s[0] - p[0]) * tx + (s[1] - p[1]) * ty) < hl and abs((s[1] - p[1]) * tx - (s[0] - p[0]) * ty) < hd
+        for layer in stacks:
+            keep = []
+            for s in layer.get("points") or []:
+                if not mine(s):
+                    keep.append(s)
+                elif new:
+                    s = [new[0] + s[0] - p[0], new[1] + s[1] - p[1], *s[2:]]
+                    if abs((s[0] - new[0]) * tx + (s[1] - new[1]) * ty) <= new[2] / 2 - 700:
+                        keep.append(s)
+            layer["points"] = keep
+            layer["shown"] = layer["count"] = len(keep)
+        for name in YARDS:
+            layer = placed.get(name) or {}
+            pts = layer.get("points") or []
+            if p in pts:
+                i = pts.index(p)
+                if new:
+                    pts[i] = [new[0], new[1], *p[2:4], new[2] / 100, *p[5:]]
+                    moved += 1
+                else:
+                    pts.pop(i)
+                    gone += 1
+                layer["shown"] = layer["count"] = len(pts)
+    return {k: v for k, v in (("moved", moved), ("removed", gone)) if v}
+
+
 def clear_yards(placed: dict) -> dict:
     """No building on a container yard. The port claims its land from the street grid's lots, but buildings placed
     later (planned sites, infill) knew nothing of it: a 24 m warehouse stood among the stacks (Valley 2_1, Nov 17
@@ -2669,6 +2714,17 @@ def _demo() -> None:
             "Warehouses": {"kind": "buildings", "count": 2, "shown": 2,
                            "points": [[322, 476, 0, -150, 1, 8, 0, 24.0, 12.0], [-13000, -9000, 0, 0, 1, 8, 0, 24.0, 12.0]]}}
     assert clear_yards(port) == {"Warehouses": 1} and port["Warehouses"]["points"][0][0] == -13000
+    # a yard (along x, 200 m) with a street across its middle slides or shrinks clear of it, its stacks with it;
+    # a stack that ends up on the street or past the new ends goes. A yard no street touches stays where it is
+    road = [(0.0, y, 500.0) for y in range(-6000, 6001, 300)]
+    yard = {"Port yards": {"kind": "site", "points": [[0, 0, 0, 0.0, 200.0, 80.0, 1.0]]},
+            "Container stacks": {"kind": "site", "points": [[a * 1400, b * 1000, 0, 0.0, 1, 1, 1]
+                                                            for a in range(-6, 7) for b in (-2, 0, 2)]}}
+    assert fit_yards(yard, road) == {"moved": 1}
+    y0 = yard["Port yards"]["points"][0]
+    assert abs(y0[0]) >= y0[4] * 50 + 800, ("the street is beside the yard now", y0)
+    assert all(abs(s[0] - y0[0]) <= y0[4] * 50 - 700 for s in yard["Container stacks"]["points"])
+    assert clear_roads(yard, road) == {} and fit_yards(yard, road) == {}
     # a field gets the biggest real pitch that fits, at scale 1, turned to fit; too small for 5-a-side: none
     assert fit_pitch(110, 75) == ("pitch11", 0) and fit_pitch(46, 70) == ("pitch7", 90) and fit_pitch(30, 20) is None
     sport = site_layers([{"private": {"grounds": [[0, 0, 0.0, 70.0, 50.0, "field", "school"],

@@ -131,7 +131,8 @@ OWN_HEIGHT = ("deck", "float", "pile", "slip", "boat", "float_home", "stilt_hous
 NO_PAD += ("deck", "float", "riprap", "sand", "promenade", "launch")
 
 
-def yard_spot(roads: list, x: float, y: float, tx: float, ty: float, nx: float, ny: float, length: float):
+def yard_spot(roads: list, x: float, y: float, tx: float, ty: float, nx: float, ny: float, length: float,
+              backs: tuple = (0.0, 1500.0, 3000.0)):
     """Where a container yard goes: its spot (x, y), shore direction (tx, ty) and inland normal (nx, ny), slid
     along the shore and inland, and shortened, until no street (roads: (x0, y0, x1, y1, half width) cm) crosses
     its paving. The yard was laid behind the quay wherever that fell, and a street with its junction ran through
@@ -151,7 +152,7 @@ def yard_spot(roads: list, x: float, y: float, tx: float, ty: float, nx: float, 
         L = length * scale
         if L < 4000:
             break
-        for back in (0.0, 1500.0, 3000.0):  # (never toward the water: the quay is there)
+        for back in backs:  # (never toward the water: the quay is there)
             for slide in (0.0, 1500.0, -1500.0, 3000.0, -3000.0, 4500.0, -4500.0, 6000.0, -6000.0):
                 cx, cy = x + tx * slide + nx * back, y + ty * slide + ny * back
                 if clear(cx, cy, L / 2):
