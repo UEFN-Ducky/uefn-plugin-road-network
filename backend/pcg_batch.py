@@ -141,6 +141,21 @@ def batches(jobs: list, max_points: int = MAX_POINTS, max_tiles: int = MAX_TILES
     return out
 
 
+def with_retry(jobs: list, failed: dict, between=None):
+    """batches(jobs), then ONE more pass over the jobs that failed. The caller fills failed {key: error} while
+    it builds; a retried job that works again drops out of it, so what is left after the loop failed twice.
+    between() runs before the second pass (clear UEFN's popups)."""
+    yield from batches(jobs)
+    again = [j for j in jobs if j["key"] in failed]
+    if not again:
+        return
+    if between:
+        between()
+    for j in again:
+        failed.pop(j["key"])
+    yield from batches(again)
+
+
 def script(jobs: list) -> str:
     """The editor script that builds these tiles. The jobs travel as one JSON string literal."""
     return _SCRIPT.replace("__JOBS__", repr(json.dumps(jobs, separators=(",", ":")))).replace("__CHUNK__", str(CHUNK))

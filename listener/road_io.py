@@ -1188,6 +1188,38 @@ def road_network_collision_ready(meshes: list | None = None) -> dict:
     return {"ok": True, "need": need, "missing": missing}
 
 
+@register("road_network_collision_count")
+def road_network_collision_count(prefix: str = "", solid: list | None = None, fix: bool = True) -> dict:
+    """Count collision on what a PCG build really placed: every instanced mesh component on actors labelled
+    `prefix...`. A component of a `solid` mesh (object paths) left at No Collision is switched to Query and
+    Physics when fix=true (players AND physics cars stop). Returns per-mesh counts."""
+    if not prefix:
+        return {"ok": False, "error": "Give prefix, the build's actor label start (City Builder <world>)."}
+    want = {p.split(".")[0] for p in solid or []}
+    sub = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+    blocking = off = fixed = instances = 0
+    open_meshes: dict = {}
+    for actor in sub.get_all_level_actors():
+        if not actor.get_actor_label().startswith(prefix):
+            continue
+        for comp in actor.get_components_by_class(unreal.InstancedStaticMeshComponent):
+            sm = comp.get_editor_property("static_mesh")
+            path = sm.get_path_name().split(".")[0] if sm else ""
+            instances += comp.get_instance_count()
+            if comp.get_collision_enabled() != unreal.CollisionEnabled.NO_COLLISION:
+                blocking += 1
+            elif path in want:
+                if fix:
+                    comp.set_collision_enabled(unreal.CollisionEnabled.QUERY_AND_PHYSICS)
+                    fixed += 1
+                else:
+                    open_meshes[path.rsplit("/", 1)[-1]] = open_meshes.get(path.rsplit("/", 1)[-1], 0) + 1
+            else:
+                off += 1  # leaves, flat paint: no collision on purpose
+    return {"ok": True, "components_blocking": blocking, "components_fixed": fixed, "components_no_collision": off,
+            "solid_still_open": open_meshes, "instances": instances}
+
+
 @register("road_network_ism_ready")
 def road_network_ism_ready(meshes: list | None = None) -> dict:
     """Make the materials of these meshes usable on instanced meshes (PCG spawns instances; a material without

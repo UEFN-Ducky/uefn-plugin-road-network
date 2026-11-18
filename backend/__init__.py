@@ -3328,11 +3328,12 @@ def register(api) -> None:
                         "half": size / 2 + 5000.0}
 
             nodes, messages, done, gone = 0, [], [], []
+            failed_tiles: dict = {}  # key -> error; a tile that fails gets one more try, then the build goes on
             todo = [tile_job(k, None) for k in remove] + [tile_job(k, new[k]) for k in build]
             try:
                 # one editor script per batch of tiles (pcg_batch): metered like any call, so the memory guard
                 # refuses the next batch when one grew UEFN by GBs, and UEFN settles between batches
-                for batch in pcg_batch.batches(todo):
+                for batch in pcg_batch.with_retry(todo, failed_tiles, lambda: editor_heal.heal("", api.call_tool)):
                     if job["stop"]:
                         return {"ok": False, "error": f"Stopped after {len(done)} of {len(build)} tiles.", "built": done,
                                 "note": "Build again: finished tiles are kept and skipped."}
@@ -3341,15 +3342,15 @@ def register(api) -> None:
                                {"script": {"language": "Python", "content": pcg_batch.script(batch)}}, timeout=900)
                     res = out.get("returnValue") if isinstance(out, dict) else out
                     res = json.loads(res) if isinstance(res, str) else (res or {})
-                    failed = ""
                     for j in batch:
                         r = res.get(j["key"])
-                        if r is None:
-                            continue  # the script stopped before this tile: it stays as it was
+                        if r is None:  # the script stopped before this tile: it stays as it was, tried again
+                            failed_tiles[j["key"]] = "the batch stopped before this tile"
+                            continue
                         if r.get("error"):
                             # its old volume may be gone already: never trust the stored one again
                             state["tiles"][j["key"]] = {"hash": "failed", "graph_path": j["graph_path"], "volume": ""}
-                            failed = f"tile {j['key']}: {r['error']}"
+                            failed_tiles[j["key"]] = str(r["error"])[:200]
                         elif r.get("removed"):
                             state["tiles"].pop(j["key"], None)
                             gone.append(j["key"])
@@ -3368,13 +3369,19 @@ def register(api) -> None:
                     push({"what": "progress", "id": nid, "title": "Pushing the city to UEFN", "step": job["done"],
                           "of": job["total"], "text": f"{job['done']} of {job['total']} tiles, about "
                                                       f"{max(1, round(left / 60))} min left"})
-                    if failed:
-                        raise ValueError(failed)
                     uefn_memory.settle(base, slack=2.0, timeout=60)
             except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
                 return {"ok": False, "error": f"Stopped after {len(done)} of {len(build)} tiles: {exc}",
                         "built": done, "note": "Build again: finished tiles are kept and skipped.",
                         "memory": uefn_memory.report(5)}
+            # recount what was really placed: a solid mesh's component left at No Collision is switched on,
+            # so 'collision' in the result is a count from the level, never just what the build asked for
+            if done:
+                try:
+                    collision["level"] = listener_long("road_network_collision_count", {
+                        "prefix": f"City Builder {name} ", "solid": solid, "fix": True})
+                except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
+                    collision["level"] = {"ok": False, "error": f"couldn't count collision in the level: {exc}"[:200]}
             # graph folders no tile uses any more: one delete each (never anything outside WorldGen/CityPCG*)
             in_use = {(t.get("graph_path") or "").rsplit("/", 1)[0] for t in state["tiles"].values()}
             cleaned = []
@@ -3393,7 +3400,9 @@ def register(api) -> None:
                         "note": "Build again: finished tiles are kept and skipped.", "memory": uefn_memory.report(5)}
             if not trees.get("ok"):
                 return {**trees, "built": done, "note": "Build again: finished tiles are kept and skipped."}
-            return {"ok": True, "id": nid, "built_tiles": done, "old_graph_folders_removed": cleaned, "removed_tiles": gone, "unchanged_tiles": len(same),
+            return {"ok": True, "id": nid, "partial": bool(failed_tiles),
+                    "failed_tiles": [{"key": k, "error": e} for k, e in sorted(failed_tiles.items())],
+                    "built_tiles": done, "old_graph_folders_removed": cleaned, "removed_tiles": gone, "unchanged_tiles": len(same),
                     "tree_props": trees, "ground_paint": paint_ground(),
                     "legacy_removed": legacy_removed, "nodes": nodes, "meshes": len(groups), "built": baked,
                     "no_kit_piece": missing, "messages": messages[:20], "memory": uefn_memory.report(5)["worst"],
