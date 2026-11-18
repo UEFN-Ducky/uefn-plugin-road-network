@@ -1417,7 +1417,7 @@ async function loadPcgPreviewNow() {
   for (const [i, ls] of calls.entries()) {  // the first call computes the whole city; the rest read it from the cache
     card("Placing the city", { text: i ? `${ls.map((l) => l.name).join(", ")}` : "Placing every building, prop and tree…",
       step: i, of: calls.length });
-    const r = await rpc("pcg_preview", { net_id: net, layer_id: ls.map((l) => l.id).join(",") });
+    const r = await cachedRpc("pcg_preview", { net_id: net, layer_id: ls.map((l) => l.id).join(",") });
     if (net !== state.net) return;  // (openNet took the card down; the new world's run owns it now)
     if (r.ok === false && ls[0].id !== "road-walls") { card(""); settleCity(); state.lifted = null; buildScene(); return showError(r.error, () => loadPcgPreview()); }
     if (r.ok !== false) {
@@ -2659,17 +2659,17 @@ async function loadGeometry(keep, quiet = false) {
 // A whole city is several MB: the terrain comes first, then each actor in pages of PAGE points
 // and segments, so no single reply nears the panel bridge's 1 MB line.
 const PAGE = 2500;
-// re-polled geometry: send the last reply's etag, Ducky answers {unchanged} instead of the same MB again
-const geoCache = new Map();  // key -> { etag, reply }; Map keeps insertion order, so the first key is the oldest
+// re-polled big reads (geometry, the city preview): send the last reply's etag, Ducky answers {unchanged} instead of the same MB again
+const replyCache = new Map();  // key -> { etag, reply }; Map keeps insertion order, so the first key is the oldest
 async function cachedRpc(method, params = {}) {
   const key = method + JSON.stringify(params);
-  const hit = geoCache.get(key);
+  const hit = replyCache.get(key);
   const out = await rpc(method, { ...params, _etag: hit?.etag ?? "" });
-  if (out?.unchanged && hit) { geoCache.delete(key); geoCache.set(key, hit); return { ...hit.reply }; }
+  if (out?.unchanged && hit) { replyCache.delete(key); replyCache.set(key, hit); return { ...hit.reply }; }
   if (out?.ok !== false && out?.etag) {
-    geoCache.delete(key);
-    geoCache.set(key, { etag: out.etag, reply: out });
-    if (geoCache.size > 40) geoCache.delete(geoCache.keys().next().value);
+    replyCache.delete(key);
+    replyCache.set(key, { etag: out.etag, reply: out });
+    if (replyCache.size > 40) replyCache.delete(replyCache.keys().next().value);
   }
   return { ...out };  // a copy: callers set ok/error on the reply
 }
