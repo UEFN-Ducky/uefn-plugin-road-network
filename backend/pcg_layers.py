@@ -968,6 +968,7 @@ def fit_yards(placed: dict, samples: list) -> dict:
     cranes = [p for name in CRANES for p in (placed.get(name) or {}).get("points") or []]
     roads = [(x, y, x, y, h) for x, y, h in samples]
     moved = gone = 0
+    why = []  # each yard that found no spot: where, and the road it stood on (along, inland, half width; cm)
     for p in list(yards):
         tx, ty = math.cos(math.radians(p[3])), math.sin(math.radians(p[3]))
         nx, ny, backs = -ty, tx, (0.0,)
@@ -975,7 +976,7 @@ def fit_yards(placed: dict, samples: list) -> dict:
             c = min(cranes, key=lambda q: math.hypot(q[0] - p[0], q[1] - p[1]))
             if (p[0] - c[0]) * nx + (p[1] - c[1]) * ny < 0:
                 nx, ny = -nx, -ny
-            backs = (0.0, 1500.0, 3000.0)
+            backs = (-2500.0, 0.0, 1500.0, 3000.0)  # (25 m toward the water at most: onto its quay, not past it)
         hl, hd = p[4] * 50, p[5] * 50
         new = yard_spot(roads, p[0], p[1], tx, ty, nx, ny, hl * 2, backs=backs)
         if new and math.hypot(new[0] - p[0], new[1] - p[1]) < 1 and abs(new[2] - hl * 2) < 1 and abs(new[3] - hd * 2) < 1:
@@ -1005,8 +1006,13 @@ def fit_yards(placed: dict, samples: list) -> dict:
                 else:
                     pts.pop(i)
                     gone += 1
+                    on_it = sorted({(round(((x - p[0]) * tx + (y - p[1]) * ty) / 100) * 100,
+                                     round(((x - p[0]) * nx + (y - p[1]) * ny) / 100) * 100, round(h))
+                                    for x, y, h in samples if on((x, y), p[0], p[1], hl + 2000, hd + 2000)})
+                    why.append({"at": [round(p[0]), round(p[1])], "yaw": p[3], "size_m": [p[4], p[5]],
+                                "roads_on_it": on_it[::max(1, len(on_it) // 40)]})
                 layer["shown"] = layer["count"] = len(pts)
-    return {k: v for k, v in (("moved", moved), ("removed", gone)) if v}
+    return {k: v for k, v in (("moved", moved), ("removed", gone), ("no_spot", why)) if v}
 
 def clear_yards(placed: dict) -> dict:
     """No building on a container yard. The port claims its land from the street grid's lots, but buildings placed

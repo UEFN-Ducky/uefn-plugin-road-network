@@ -132,9 +132,9 @@ NO_PAD += ("deck", "float", "riprap", "sand", "promenade", "launch")
 
 
 def yard_spot(roads: list, x: float, y: float, tx: float, ty: float, nx: float, ny: float, length: float,
-              backs: tuple = (0.0, 1500.0, 3000.0)):
+              backs: tuple = (-2500.0, 0.0, 1500.0, 3000.0)):
     """Where a container yard goes: its spot (x, y), shore direction (tx, ty) and inland normal (nx, ny), slid
-    along the shore and inland, shortened and made shallower, until no street (roads: (x0, y0, x1, y1, half
+    along the shore, inland or onto its quay, shortened and made shallower, until no street (roads: (x0, y0, x1, y1, half
     width) cm) crosses its paving: the biggest yard that fits, the nearest its planned spot of those. The yard was
     laid behind the quay wherever that fell, and a street with its junction ran through the middle of the
     container stacks (Valley 2_1, Nov 17 2026). Returns (x, y, length, depth), or None: no yard here."""
@@ -1066,6 +1066,11 @@ def _demo() -> None:
                        for x0, y0, x1, y1, h in road for k in range(41)
                        for px, py in [(x0 + (x1 - x0) * k / 40, y0 + (y1 - y0) * k / 40)]), ("a street in the yard", road)
         assert L * D >= 9000 * 4000, ("still a yard", L, D)
+    # the Valley's: two streets crossing the yard on the slant, meeting at its inland edge; the land left is the
+    # wedge on the water side (local cm: along, inland)
+    vee = [(-9100, -2400, -1000, 3800, 1400.0), (-2300, 4700, 8700, -700, 875.0)]
+    x, y, L, D = yard_spot(vee, 0, 0, 1, 0, 0, 1, 14400)
+    assert y < 0 and L * D >= 6000 * 4000, ("a yard on the water side of the streets", x, y, L, D)
     grid = [(gx, -20000, gx, 20000, 500.0) for gx in range(-30000, 30001, 2500)]
     assert yard_spot(grid, 0, 0, 1, 0, 0, 1, 20000) is None
     print("waterfront ok", len(got["rows"]), "pieces", len(wb), "waterfront buildings")
