@@ -546,6 +546,18 @@ function cullFar() {  // tiles of small things (addChunks far) past their distan
   }
 }
 let shadowsStale = true;
+// what a frame costs, in the corner of the view: frames a second while drawing, draw calls, triangles
+const perf = Object.assign(document.createElement("div"), { className: "rn-perf" });
+perf.style.cssText = "position:absolute;right:8px;bottom:8px;font:11px monospace;opacity:.7;pointer-events:none;color:var(--fg-dim)";
+view.appendChild(perf);
+let perfN = 0, perfT = 0;
+function showPerf(now) {
+  perfN++;
+  if (now - perfT < 500) return;
+  const { calls, triangles } = renderer.info.render;
+  perf.textContent = `${Math.round(perfN * 1000 / (now - perfT))} fps · ${calls} calls · ${(triangles / 1e6).toFixed(2)}M tris`;
+  perfN = 0; perfT = now;
+}
 function loop(now) {
   flyStep(now || performance.now());
   const gliding = liveReady && stepGhosts();  // teammates' bodies on their way to where they now look
@@ -559,6 +571,7 @@ function loop(now) {
     renderer.shadowMap.needsUpdate = shadowsStale && !moving;
     if (!moving) shadowsStale = false;
     renderer.render(scene, camera);
+    showPerf(now || performance.now());
     placeLabels();
     if (liveReady) placePeerLabels();
     needsDraw = false;
@@ -781,16 +794,27 @@ function buildScene() {
     }
     for (const p of actor.pts) box.expandByPoint(toV(p[1], p[2], p[3]));
   }
+  // each colour's triangles in 1 km tiles (one material shared): a world-wide mesh is never culled
   for (const [key, arr] of Object.entries(byColor)) {
     const [mat, city = ""] = key.split("#"), [c, dim] = mat.split("|");
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.Float32BufferAttribute(arr, 3));
-    geo.computeVertexNormals();
-    const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: dim ? col(c).multiplyScalar(0.45) : col(c), roughness: 0.75,
-      side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2 }));
-    mesh.receiveShadow = true;
-    mesh.userData.city = city;
-    groups.roads.add(mesh);
+    const material = new THREE.MeshStandardMaterial({ color: dim ? col(c).multiplyScalar(0.45) : col(c), roughness: 0.75,
+      side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2 });
+    const tiles = new Map();
+    for (let k = 0; k < arr.length; k += 9) {
+      const t = `${Math.floor(arr[k] / 1000)}_${Math.floor(arr[k + 2] / 1000)}`;
+      const out = tiles.get(t) || tiles.set(t, []).get(t);
+      for (let q = 0; q < 9; q++) out.push(arr[k + q]);
+    }
+    for (const part of tiles.values()) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(part, 3));
+      geo.computeVertexNormals();
+      geo.computeBoundingSphere();
+      const mesh = new THREE.Mesh(geo, material);
+      mesh.receiveShadow = true;
+      mesh.userData.city = city;
+      groups.roads.add(mesh);
+    }
   }
   if (g.props?.length) {  // every prop in ONE InstancedMesh
     const hgt = 20, d = new THREE.Object3D();
