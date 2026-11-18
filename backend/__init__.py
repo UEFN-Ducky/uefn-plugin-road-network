@@ -2157,7 +2157,7 @@ def register(api) -> None:
             # (swept after the ports and airports are in: a container yard keeps its trees out and its stacks off
             # the streets like any other paved slab)
             surface = pl.surface_samples(actors, cities) + caps
-            _PREVIEW_CACHE["swept"] = {"yards_fitted": pl.fit_yards(placed, surface),
+            _PREVIEW_CACHE["swept"] = {"yards_fitted": pl.fit_yards(placed, surface, ground),
                                        "off_yards": pl.clear_yards(placed),
                                        "off_roads": pl.clear_roads(placed, surface),
                                        "out_of_buildings": pl.clear_buildings(placed)}
