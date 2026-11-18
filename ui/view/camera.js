@@ -183,6 +183,7 @@ const GPU = (() => {
   const gl = renderer.getContext(), ext = gl.getExtension("WEBGL_debug_renderer_info");
   return String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)).replace(/^ANGLE \(|\)$/g, "").slice(0, 60);
 })();
+const SOFTWARE = /SwiftShader|Basic Render|llvmpipe|software/i.test(GPU);
 function showPerf(now, js) {
   perfN++; perfJs += js;
   if (now - perfT < 500) return;
@@ -199,7 +200,9 @@ function loop(now) {
     camera.updateMatrixWorld();
     const moving = !camera.matrixWorld.equals(lastCam);
     lastCam.copy(camera.matrixWorld);
-    if (FULL_DPR > 1 && renderer.getPixelRatio() !== (moving ? 1 : FULL_DPR)) renderer.setPixelRatio(moving ? 1 : FULL_DPR);
+    // moving: 1 pixel per screen pixel, or half that when there is no GPU (software WebGL draws every pixel on the CPU)
+    const dpr = moving ? (SOFTWARE ? 0.5 : Math.min(1, FULL_DPR)) : FULL_DPR;
+    if (renderer.getPixelRatio() !== dpr) renderer.setPixelRatio(dpr);
     if (moving || rt.needsDraw) cullFar();
     if (rt.needsDraw || gliding) shadowsStale = true;  // something may have changed: redraw them once at rest
     renderer.shadowMap.needsUpdate = shadowsStale && !moving;
