@@ -132,12 +132,15 @@ NO_PAD += ("deck", "float", "riprap", "sand", "promenade", "launch")
 
 
 def yard_spot(roads: list, x: float, y: float, tx: float, ty: float, nx: float, ny: float, length: float,
-              backs: tuple = (-2500.0, 0.0, 1500.0, 3000.0)):
-    """Where a container yard goes: its spot (x, y), shore direction (tx, ty) and inland normal (nx, ny), slid
-    along the shore, inland or onto its quay, shortened and made shallower, until no street (roads: (x0, y0, x1, y1, half
-    width) cm) crosses its paving: the biggest yard that fits, the nearest its planned spot of those. The yard was
-    laid behind the quay wherever that fell, and a street with its junction ran through the middle of the
-    container stacks (Valley 2_1, Nov 17 2026). Returns (x, y, length, depth), or None: no yard here."""
+              within: bool = False):
+    """Where a container yard goes: its spot (x, y), shore direction (tx, ty) and inland normal (nx, ny), length
+    along the shore; shortened, made shallower and slid until no street (roads: (x0, y0, x1, y1, half width) cm)
+    crosses its paving: the biggest yard that fits, the nearest its planned spot of those. The yard was laid behind
+    the quay wherever that fell, and a street with its junction ran through the middle of the container stacks
+    (Valley 2_1, Nov 17 2026). Planning (within=False) it may slide 60 m along the shore and 30 m inland, never
+    toward the water (the bank is there). A yard already built (within=True) stays on its own levelled platform: the
+    part of it no street crosses (moved off it, it stood on the bank 18 m above the ground, and the hill covered
+    its inland side). Returns (x, y, length, depth), or None: no yard here."""
     near = [r for r in roads if min(math.hypot(r[0] - x, r[1] - y), math.hypot(r[2] - x, r[3] - y))
             < length + 2 * YARD_DEPTH_CM + math.hypot(r[2] - r[0], r[3] - r[1])]
     pts = []
@@ -149,19 +152,24 @@ def yard_spot(roads: list, x: float, y: float, tx: float, ty: float, nx: float, 
         return not any(abs((px - cx) * tx + (py - cy) * ty) < hl + h + 300
                        and abs((px - cx) * nx + (py - cy) * ny) < hd + h + 300 for px, py, h in pts)
     best = None  # (area, -move, spot)
-    for L in (length * s for s in (1.0, 0.8, 0.6, 0.45)):
+    for L in (length * s for s in (1.0, 0.8, 0.6, 0.45, 0.35)):
         for D in (YARD_DEPTH_CM * s for s in (1.0, 0.75, 0.5)):
             if L < 4000 or (best and L * D < best[0]):
                 continue
-            shrink = (YARD_DEPTH_CM - D) / 2  # a shallower yard keeps to its quay side, or to its inland side
-            for back in sorted({b + d for b in backs for d in (-shrink, 0.0, shrink)}):
-                for slide in range(-6000, 6001, 1000):
+            if within:  # (500 cm steps over the old footprint)
+                sl, bk = (length - L) / 2, (YARD_DEPTH_CM - D) / 2
+                slides = [s * 500.0 for s in range(-int(sl // 500), int(sl // 500) + 1)]
+                backs = [b * 500.0 for b in range(-int(bk // 500), int(bk // 500) + 1)]
+            else:
+                slides = [s * 1000.0 for s in range(-6, 7)]
+                backs = [0.0, 1500.0, 3000.0]
+            for back in backs:
+                for slide in slides:
                     cx, cy = x + tx * slide + nx * back, y + ty * slide + ny * back
                     move = math.hypot(slide, back)
                     if (not best or (L * D, -move) > best[:2]) and clear(cx, cy, L / 2, D / 2):
                         best = (L * D, -move, (cx, cy, L, D))
     return best[2] if best else None
-
 def _dice(*key) -> float:
     """A draw in [0, 1) that belongs to its key: the same stretch of the same shore draws the same every run."""
     return zlib.crc32(repr(key).encode()) / 4294967296.0
@@ -1069,8 +1077,9 @@ def _demo() -> None:
     # the Valley's: two streets crossing the yard on the slant, meeting at its inland edge; the land left is the
     # wedge on the water side (local cm: along, inland)
     vee = [(-9100, -2400, -1000, 3800, 1400.0), (-2300, 4700, 8700, -700, 875.0)]
-    x, y, L, D = yard_spot(vee, 0, 0, 1, 0, 0, 1, 14400)
-    assert y < 0 and L * D >= 6000 * 4000, ("a yard on the water side of the streets", x, y, L, D)
+    x, y, L, D = yard_spot(vee, 0, 0, 1, 0, 0, 1, 14400, within=True)
+    assert y < 0 and L * D >= 5000 * 4000, ("a yard on the water side of the streets", x, y, L, D)
+    assert abs(x) + L / 2 <= 7200 and abs(y) + D / 2 <= YARD_DEPTH_CM / 2, ("on its own platform", x, y, L, D)
     grid = [(gx, -20000, gx, 20000, 500.0) for gx in range(-30000, 30001, 2500)]
     assert yard_spot(grid, 0, 0, 1, 0, 0, 1, 20000) is None
     print("waterfront ok", len(got["rows"]), "pieces", len(wb), "waterfront buildings")
