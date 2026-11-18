@@ -3146,7 +3146,8 @@ def register(api) -> None:
         return {m.group(0) for m in re.finditer(r"n?-?\d+_-?\d+", str(tiles or ""))}
 
     def pcg_build(net_id: str = "", confirm: bool = False, force: bool = False, wait: bool = True,
-                  stop: bool = False, nature_only: bool = False, city_only: bool = False, tiles: str = "") -> dict:
+                  stop: bool = False, nature_only: bool = False, city_only: bool = False, tiles: str = "",
+                  allow_misfits: bool = True) -> dict:
         """The world's previewed city as PCG in the open UEFN level, in tiles (one graph + volume each).
         Only tiles whose content changed since the last build are rebuilt, tiles gone from the plan are
         removed, and every other tile, the roads and the rest of the level are left alone: edit the plan,
@@ -3174,6 +3175,10 @@ def register(api) -> None:
         got = pcg_preview(nid)
         if not got.get("ok"):
             return got
+        # buried / floating buildings never reach UEFN unasked (the AI's tool path; the panel's own push warns)
+        misfit = "" if nature_only else cg.misfit_gate(fit_summary())
+        if misfit and not allow_misfits:
+            return {"ok": False, "error": misfit, "ground_fit": fit_summary()}
         real = tree_props(nid)
         groups, baked, missing = kit_bake.bake(got.get("layers") or {}, root, interiors_of(nid), real)
         name = doc.get("name") or nid
@@ -3226,7 +3231,7 @@ def register(api) -> None:
                     "build": build, "remove": remove, "unchanged": len(same),
                     "tree_props": {**prop_info, "tiles_to_place": len(p_build), "tiles_to_remove": len(p_remove),
                                    "tiles_unchanged": len(p_same)},
-                    "last_build": (last or {}).get("result")}
+                    "last_build": (last or {}).get("result"), **({"ground_warning": misfit} if misfit else {})}
         if not build and not remove and not p_build and not p_remove:
             return {"ok": True, "id": nid, "note": "Nothing changed since the last build: every tile left as it is.",
                     "unchanged": len(same), "last_build": (last or {}).get("result")}
@@ -4496,7 +4501,7 @@ def register(api) -> None:
     @tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_build(net_id: str = "", confirm: bool = False, force: bool = False,
                                stop: bool = False, nature_only: bool = False, city_only: bool = False,
-                               tiles: str = "") -> dict:
+                               tiles: str = "", allow_misfits: bool = False) -> dict:
         """Build the world's previewed city in the open UEFN level as PCG of the project's own kit, in 400 m
         tiles (one graph + volume each). Incremental: only tiles whose lots changed since the last build are
         rebuilt, tiles gone from the plan are removed, the rest of the city, the roads and the level are left
@@ -4507,8 +4512,10 @@ def register(api) -> None:
         nature_only=true builds and removes only the trees / bushes / rocks tiles: no city tile is touched.
         city_only=true is the other way round: only city tiles; the forest tiles and the prop trees stay as they are.
         tiles='2_1' (or '2_1, 2_2', or the volume's label 'City Builder Valley 2_1'): only those tiles are built or
-        removed, one batch, every other tile left alone; with force=true they are rebuilt even if unchanged."""
-        return safe(pcg_build)(net_id, confirm, force, False, stop, nature_only, city_only, tiles)
+        removed, one batch, every other tile left alone; with force=true they are rebuilt even if unchanged.
+        Refused while buildings are still buried or floating (road_network_ground_fit): fix them, or
+        allow_misfits=true when the person said to push anyway."""
+        return safe(pcg_build)(net_id, confirm, force, False, stop, nature_only, city_only, tiles, allow_misfits)
 
     @tool(intent=PCG_INTENT, listener=False)
     def road_network_pcg_place(net_id: str = "", confirm: bool = False) -> dict:

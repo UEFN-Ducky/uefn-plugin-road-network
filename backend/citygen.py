@@ -819,6 +819,16 @@ def ground_fit(ground, buildings: list, keep: int = 50) -> dict:
             "ok": not bad, "misfits": bad[:keep]}
 
 
+def misfit_gate(fit: dict | None) -> str:
+    """'' when a push may go, else why not: buildings still buried or floating after the build gave each the
+    foundation it needs (ground_fit's `after`). No fit yet (no ground to check against) never blocks."""
+    if not fit or not (fit.get("buried") or fit.get("floating")):
+        return ""
+    spots = ", ".join(f"{m['label']} (x={m['x']} y={m['y']})" for m in (fit.get("misfits") or [])[:10])
+    return (f"Not pushed: {fit.get('buried', 0)} buildings buried and {fit.get('floating', 0)} floating on this "
+            f"ground: {spots}. Fix them (road_network_edit move/delete, or the lots) or push with allow_misfits=true.")
+
+
 def _under(x, y, yaw, w_m, d_m) -> list:
     """The nine spots a building is checked at: its corners, the middle of each edge and its centre."""
     c, s = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
