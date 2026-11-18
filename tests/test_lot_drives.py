@@ -68,6 +68,21 @@ def test_private_street_carries_on_from_a_street_that_just_ends():
     assert not any(p["x"] == 10500 for p in out["points"]), "its end inside the street's end is gone"
 
 
+def test_drives_to_one_junction_all_join_it():
+    g = lambda x, y: 0.0  # noqa: E731
+    nodes = {"A": [0, 0], "B": [20000, 12000], "C": [0, 20000], "D": [-20000, 12000]}
+    roads = cg.build_actor(nodes, [["A", n, "6S"] for n in "BCD"], g, "/Game/X")
+    lots = [[500, -12000, 0.0, 4000, 2000, 500, -13000, "shop", False],
+            [6000, -9000, 0.0, 4000, 2000, 6000, -10000, "shop", False],
+            [-8000, -11000, 0.0, 4000, 2000, -8000, -12000, "shop", False]]
+    drives = cg.lot_drives(lots, [], [], cg.ground_roads([roads]))
+    acc = cg.access_actor({"private": {"streets": drives}}, [], g, "/Game/X")
+    out, _rest, joins = cg.join_private(roads, acc, "/Game/X")
+    assert joins == 3, "a drive never takes another's end for its street"
+    j = next(p for p in out["points"] if p["x"] == 0 and p["y"] == 0)
+    assert len([s for s in out["segments"] if j["i"] in (s["a"], s["b"])]) == 6
+
+
 def test_link_meets_its_host_at_the_host_height_and_once():
     roads = _actor([(0, 0, 0, 0, 400.0), (1, 10000, 0, 0, 400.0)], [(2, 0, 1, "PR")])
     path = _actor([(10, 5000, 3000, 800, 400.0), (11, 5000, 300, 800, 400.0)], [(20, 10, 11, "PR")])

@@ -3335,8 +3335,11 @@ def join_private(roads: dict, access: dict, folder: str) -> tuple:
             t = max(0.0, min(1.0, ((E["x"] - a["x"]) * dx + (E["y"] - a["y"]) * dy) / L2))
             px, py = a["x"] + dx * t, a["y"] + dy * t
             d = math.hypot(E["x"] - px, E["y"] - py)
-            if d <= half(s) + JOIN_REACH_CM and (best is None or d < best[0]):
-                best = (d, s, t, px, py)
+            # a street in reach wins over a private street nearer still: two drives to one street end took each
+            # other's end, chained up and never reached the street (Valley, Nov 18 2026)
+            key = (s["mesh"] == pr_mesh, d)
+            if d <= half(s) + JOIN_REACH_CM and (best is None or key < best[0]):
+                best = (key, s, t, px, py)
         if best is None:
             continue
         _d, host, t, px, py = best
@@ -3353,6 +3356,8 @@ def join_private(roads: dict, access: dict, folder: str) -> tuple:
                 q = rp[cur]
                 step = math.hypot(q["x"] - cx, q["y"] - cy)
                 if step >= left:
+                    if step - left < 100 and not plain(cur):
+                        return None  # a cut on a junction's mouth: join that junction (no sliver of road)
                     f = left / (step or 1.0)
                     return gone, s, cur, (cx + (q["x"] - cx) * f, cy + (q["y"] - cy) * f)
                 if not plain(cur):
