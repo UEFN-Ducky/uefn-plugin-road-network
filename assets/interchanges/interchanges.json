@@ -1,0 +1,276 @@
+{
+ "units": "cm",
+ "frame": "+X along the freeway (E/W sockets), +Y along the cross road (N/S); origin = the crossing; yaw = road heading out of the model",
+ "kinds": {
+  "diamond": {
+   "mesh": "IC_Diamond",
+   "size": [
+    200000,
+    200000
+   ],
+   "sockets": [
+    {
+     "name": "E",
+     "road": "FW",
+     "x": 100000,
+     "y": 0,
+     "z": 0,
+     "yaw": 0,
+     "width": 3300
+    },
+    {
+     "name": "N",
+     "road": "XR",
+     "x": 0,
+     "y": 100000,
+     "z": 0,
+     "yaw": 90,
+     "width": 2100
+    },
+    {
+     "name": "S",
+     "road": "XR",
+     "x": 0,
+     "y": -100000,
+     "z": 0,
+     "yaw": -90,
+     "width": 2100
+    },
+    {
+     "name": "W",
+     "road": "FW",
+     "x": -100000,
+     "y": 0,
+     "z": 0,
+     "yaw": 180,
+     "width": 3300
+    }
+   ]
+  },
+  "diamond_frontage": {
+   "mesh": "IC_DiamondFrontage",
+   "size": [
+    200000,
+    200000
+   ],
+   "sockets": [
+    {
+     "name": "E",
+     "road": "FW",
+     "x": 100000,
+     "y": 0,
+     "z": 0,
+     "yaw": 0,
+     "width": 3300
+    },
+    {
+     "name": "N",
+     "road": "XR",
+     "x": 0,
+     "y": 100000,
+     "z": 0,
+     "yaw": 90,
+     "width": 2100
+    },
+    {
+     "name": "S",
+     "road": "XR",
+     "x": 0,
+     "y": -100000,
+     "z": 0,
+     "yaw": -90,
+     "width": 2100
+    },
+    {
+     "name": "W",
+     "road": "FW",
+     "x": -100000,
+     "y": 0,
+     "z": 0,
+     "yaw": 180,
+     "width": 3300
+    }
+   ]
+  },
+  "parclo": {
+   "mesh": "IC_Parclo",
+   "size": [
+    200000,
+    200000
+   ],
+   "sockets": [
+    {
+     "name": "E",
+     "road": "FW",
+     "x": 100000,
+     "y": 0,
+     "z": 0,
+     "yaw": 0,
+     "width": 3300
+    },
+    {
+     "name": "N",
+     "road": "XR",
+     "x": 0,
+     "y": 100000,
+     "z": 0,
+     "yaw": 90,
+     "width": 2100
+    },
+    {
+     "name": "S",
+     "road": "XR",
+     "x": 0,
+     "y": -100000,
+     "z": 0,
+     "yaw": -90,
+     "width": 2100
+    },
+    {
+     "name": "W",
+     "road": "FW",
+     "x": -100000,
+     "y": 0,
+     "z": 0,
+     "yaw": 180,
+     "width": 3300
+    }
+   ]
+  },
+  "cloverleaf": {
+   "mesh": "IC_Cloverleaf",
+   "size": [
+    200000,
+    200000
+   ],
+   "sockets": [
+    {
+     "name": "E",
+     "road": "FW",
+     "x": 100000,
+     "y": 0,
+     "z": 0,
+     "yaw": 0,
+     "width": 3300
+    },
+    {
+     "name": "N",
+     "road": "FW",
+     "x": 0,
+     "y": 100000,
+     "z": 0,
+     "yaw": 90,
+     "width": 3300
+    },
+    {
+     "name": "S",
+     "road": "FW",
+     "x": 0,
+     "y": -100000,
+     "z": 0,
+     "yaw": -90,
+     "width": 3300
+    },
+    {
+     "name": "W",
+     "road": "FW",
+     "x": -100000,
+     "y": 0,
+     "z": 0,
+     "yaw": 180,
+     "width": 3300
+    }
+   ]
+  },
+  "trumpet": {
+   "mesh": "IC_Trumpet",
+   "size": [
+    200000,
+    200000
+   ],
+   "sockets": [
+    {
+     "name": "E",
+     "road": "FW",
+     "x": 100000,
+     "y": 0,
+     "z": 0,
+     "yaw": 0,
+     "width": 3300
+    },
+    {
+     "name": "N",
+     "road": "FW",
+     "x": 0,
+     "y": 100000,
+     "z": 0,
+     "yaw": 90,
+     "width": 3300
+    },
+    {
+     "name": "S",
+     "road": "FW",
+     "x": 0,
+     "y": -100000,
+     "z": 0,
+     "yaw": -90,
+     "width": 3300
+    },
+    {
+     "name": "W",
+     "road": "FW",
+     "x": -100000,
+     "y": 0,
+     "z": 0,
+     "yaw": 180,
+     "width": 3300
+    }
+   ]
+  },
+  "stack": {
+   "mesh": "IC_Stack",
+   "size": [
+    247259,
+    247259
+   ],
+   "sockets": [
+    {
+     "name": "E",
+     "road": "FW",
+     "x": 100000,
+     "y": 0,
+     "z": 90,
+     "yaw": 0,
+     "width": 6400
+    },
+    {
+     "name": "N",
+     "road": "FW",
+     "x": 0,
+     "y": 100000,
+     "z": 90,
+     "yaw": 90,
+     "width": 6400
+    },
+    {
+     "name": "S",
+     "road": "FW",
+     "x": 0,
+     "y": -100000,
+     "z": 90,
+     "yaw": -90,
+     "width": 6400
+    },
+    {
+     "name": "W",
+     "road": "FW",
+     "x": -100000,
+     "y": 0,
+     "z": 90,
+     "yaw": 180,
+     "width": 6400
+    }
+   ]
+  }
+ }
+}

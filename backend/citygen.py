@@ -128,6 +128,9 @@ CHOICES = {
     # urban freeways through each big city, planned before its blocks (freeways.py): viaducts over the grid,
     # service interchanges on the main roads, a stack where two freeways cross
     "freeways": (("yes", "no"), "yes"),
+    # the six Blender interchange models (assets/interchanges) where one fits wholly inside the city's circle,
+    # joined to the freeway and the cross road at its sockets; elsewhere the generated ramps
+    "interchange_models": (("yes", "no"), "yes"),
     # demand-driven urban planner (urban.py): schools, emergency services, retail, parks, utilities and transit
     # placed from population, road travel time and coverage, as complete developments
     "planner": (("yes", "no"), "yes"),
@@ -3035,7 +3038,7 @@ def freeway_plan(city: dict, opts: dict | None = None):
     o = city_options(city, opts)
     key = repr((city.get("name"), city["x"], city["y"], city["radius"], city.get("seed"), city.get("map"),
                 city.get("turn"), city.get("shape"), city.get("yield_to"), city.get("fw_shore"),
-                [o[k] for k in ("freeways", "block_m", "block_ratio", "downtown", "normal", "collector_every", "core_roads",
+                [o[k] for k in ("freeways", "interchange_models", "block_m", "block_ratio", "downtown", "normal", "collector_every", "core_roads",
                                 "neighbourhood_roads", "canals")],
                 [(a.get("center"), a.get("heading"), a.get("type")) for a in city.get("airports") or []],
                 [(y.get("frame"), y.get("L"), y.get("D"), y.get("bank"))
@@ -4894,7 +4897,7 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
         fw = freeway_plan(c, o)
         fn, fe = over_water(fw.nodes, fw.edges, wet, bridges=bridges) if wet else (fw.nodes, fw.edges)
         if fe:
-            out[f"{c['name']} Freeways"] = build_actor(fn, fe, ground, folder)
+            out[f"{c['name']} Freeways"] = model_pieces(build_actor(fn, fe, ground, folder), fw.interchanges, ground, folder)
     if wet and hw_edges:  # a highway crosses any water on a bridge (a long one if it has to)
         long = {k: 1e9 for k in (*HIGHWAYS, "2L", "ER", "ED", "BR", "BRR")}
         hw_nodes, hw_edges = over_water(hw_nodes, hw_edges, wet, long, bridges)
@@ -4935,6 +4938,27 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
         if not weld_ends(out, edge):
             break
     return out
+
+
+INTERCHANGE_FOLDER = "Interchanges"  # under the roads folder: the IC_* models (assets/interchanges)
+
+
+def model_pieces(a: dict, ics: list, ground, folder: str) -> dict:
+    """Each Blender interchange model (freeways.place_model) as a piece on its own point, and every road end on
+    one of its sockets held there (marked 'IC_Socket'): weld_ends never runs a freeway on into the model."""
+    socks = [s for ic in ics if ic.get("model") for s in ic["model"]["sockets"]]
+    for p in a["points"]:
+        if not p["mesh"] and any(math.hypot(p["x"] - x, p["y"] - y) < 100 for x, y in socks):
+            p["mesh"] = "IC_Socket"
+    i = max([p["i"] for p in a["points"]] + [s["i"] for s in a["segments"]] + [0]) + 1
+    for ic in ics:
+        m = ic.get("model")
+        if m:
+            x, y = ic["at"]
+            a["points"].append(_point(i, x, y, ground(x, y), m["yaw"], m["width"], lifted=True,
+                                      piece=f"{folder}/{INTERCHANGE_FOLDER}/{m['mesh']}"))
+            i += 1
+    return a
 
 
 WELD_REACH_CM = 2600.0  # an open end this close (in plan) to another road is meant to join it
@@ -6213,6 +6237,22 @@ def _demo() -> None:
     assert "stack" in kinds and {"diamond", "parclo"} & set(kinds), kinds
     rep = freeway_report(big)
     assert rep["validation"]["ok"], {k: v for k, v in rep["validation"].items() if v}
+    # Blender interchange models: only where the whole square is inside the city's circle, freeway cut at its
+    # sockets; 'no' (or a city too small for one) keeps the generated ramps
+    from . import freeways as _fw
+    if _fw.models():
+        huge = {"name": "Huge", "x": 0, "y": 0, "radius": 450000, "seed": 7, "style": "mixed"}
+        got = [i for i in freeway_plan(huge).interchanges if i.get("model")]
+        assert got, [i["kind"] for i in freeway_plan(huge).interchanges]
+        half = {k: math.hypot(*m["size"]) / 2 for k, m in _fw.models().items()}
+        assert all(math.hypot(*i["at"]) + half[i["kind"]] <= 450000 for i in got), "inside the city circle"
+        world = generate([huge], lambda x, y: 0.0, "/G", seed=1)["Huge Freeways"]
+        held = {(round(p["x"]), round(p["y"])) for p in world["points"] if p["mesh"] == "IC_Socket"}
+        for i in got:
+            for sx_, sy_ in i["model"]["sockets"]:
+                assert any(math.hypot(sx_ - x, sy_ - y) < 100 for x, y in held), (i["kind"], sx_, sy_)
+        assert sum(1 for p in world["points"] if "/Interchanges/IC_" in "".join(p["lines"])) == len(got)
+        assert not any(i.get("model") for i in freeway_plan(huge, {"interchange_models": "no"}).interchanges)
     # every ramp lands on its road in jittered (mixed) cities of any seed: main roads are straight lines
     for s in range(1, 9):
         r = freeway_report({"name": "K", "x": 0, "y": 0, "radius": 160000, "seed": s, "style": "mixed"},

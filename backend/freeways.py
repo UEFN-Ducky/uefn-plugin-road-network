@@ -22,7 +22,9 @@ Everything is in a frame per interchange: a along the freeway, b along the cross
 
 from __future__ import annotations
 
+import json
 import math
+import os
 
 LEVEL_CM = 750.0
 CLEAR_CM = 700.0  # 5.5 m clearance + 1.5 m deck: any two roads crossing in plan need this much between them
@@ -214,6 +216,78 @@ def interchange(kind: str, f: Frame, hA: float, hB: float, liftA, liftB, tag: tu
     return bld
 
 
+# ------------------------------------------------------------------ interchange models (Blender)
+# The six interchanges modelled in Blender ('Roads - Interchanges': IC_Diamond, IC_DiamondFrontage, IC_Parclo,
+# IC_Cloverleaf, IC_Trumpet, IC_Stack), each with four SOCKET_E/N/W/S empties where its roads leave it. A model
+# that fits stands in for the generated ramps: the freeway is cut out of its square and ends on its E / W sockets,
+# a short stub of the cross road leaves each N / S socket for the street grid. Frame: Blender +X along the freeway,
+# +Y along the cross road, cm. UEFN imports Blender's +Y as its -Y, so a socket's local y is negated here.
+MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "interchanges")
+MODEL_FADE = 1.6 * 2 * LEVEL_CM / MAX_GRADE["freeway"]  # a freeway comes down from two levels to a model's grade
+MODEL_CELL = 5000.0  # the model's square is marked taken on a 50 m grid ...
+MODEL_CELL_HALF = 3600.0  # ... each mark this wide, so the whole square is covered
+_MODELS: dict | None = None
+
+
+def models() -> dict:
+    """{kind: {mesh, size: [x, y] cm, sockets: [{name, road 'FW' | 'XR', x, y, z, yaw, width}]}} from
+    assets/interchanges/interchanges.json (exported from Blender), {} without it."""
+    global _MODELS
+    if _MODELS is None:
+        _MODELS = {}
+        path = os.path.join(MODEL_DIR, "interchanges.json")
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as fh:
+                _MODELS = json.load(fh)["kinds"]
+    return _MODELS
+
+
+def model_reach(m: dict, axis: str) -> float:
+    """How far the model's sockets sit from its centre along the freeway ('a': E / W) or the cross road ('b')."""
+    names = "EW" if axis == "a" else "NS"
+    return max(abs(s["x"] if axis == "a" else s["y"]) for s in m["sockets"] if s["name"] in names)
+
+
+def model_fits(city: dict, cx: float, cy: float, m: dict, inside=None) -> bool:
+    """The whole model square lies inside the city's circle (and, `inside(x, y)`, on free land)."""
+    half = math.hypot(*m["size"]) / 2
+    if math.hypot(cx - city["x"], cy - city["y"]) + half > city["radius"]:
+        return False
+    ring = [(0.0, 0.0)] + [(math.cos(k * math.pi / 4) * half, math.sin(k * math.pi / 4) * half) for k in range(8)]
+    return inside is None or all(inside(cx + dx, cy + dy) for dx, dy in ring)
+
+
+def place_model(out: "Plan", kind: str, f: Frame, group, road: str = "", across: float = 0.0) -> dict:
+    """Put the model for `kind` on frame f: its square taken (no street or lot inside it), a stub of the cross
+    road `road` from each N / S cross-road socket out to the first street of the grid (streets sit every
+    `across` cm, the freeway half a block off them). Returns the interchange's 'model' entry."""
+    m = models()[kind]
+    sx, sy = m["size"][0] / 2, m["size"][1] / 2
+    marks = []
+    a = -sx
+    while a <= sx:
+        b = -sy
+        while b <= sy:
+            x, y = f.w(a, b)
+            marks.append((x, y, 0.0, MODEL_CELL_HALF, False))
+            b += MODEL_CELL
+        a += MODEL_CELL
+    out.mark(marks, group)
+    socks = []
+    for s in m["sockets"]:
+        la, lb = s["x"], -s["y"]  # Blender +Y is UEFN -Y
+        socks.append([round(v) for v in f.w(la, lb)])
+        if s["road"] == "XR" and road and across > 0:
+            reach = abs(lb) + 6000.0  # past the street cut round the square
+            end = (math.floor(reach / across - 0.5) + 1.5) * across
+            sign = 1.0 if lb > 0 else -1.0
+            bld = Builder(group + (s["name"],))
+            bld.edge([(*f.w(la, lb), 0.0), (*f.w(la, sign * end), 0.0)], road, "stub")
+            out.add(bld, road, group)
+    return {"mesh": m["mesh"], "yaw": round(math.degrees(math.atan2(f.ay, f.ax)), 2),
+            "width": max(m["size"]) / 2, "sockets": socks}
+
+
 # ------------------------------------------------------------------ planner
 FW_MIN_R = 60000.0  # a city smaller than 600 m radius gets no urban freeway (the regional highway is enough)
 STACK_MIN_R = 200000.0  # two freeways and a stack only from 2 km radius (its flyovers reach 1.15 km out each
@@ -244,6 +318,13 @@ class Plan:
         self.nodes, self.edges, self.lines, self.interchanges = {}, [], [], []
         self._grid: dict = {}
         self._builds: list = []
+        self._marks: list = []  # (marks, group): land a model interchange takes
+
+    def mark(self, marks: list, group=None) -> None:
+        """Take land with no road on it (a model's square): [(x, y, lift, half, near_end)]."""
+        self._marks.append((marks, group))
+        for p in marks:
+            self._grid.setdefault((int(p[0] // 10000), int(p[1] // 10000)), []).append(p)
 
     def add(self, bld: Builder, ground_kind: str, group=None):
         self._builds.append((bld, ground_kind, group))
@@ -255,7 +336,7 @@ class Plan:
                 via = [[x, y, z, k] for (x, y, z), k in zip(pts[1:-1], kinds[1:])]
                 kind = kinds[0]
             self.edges.append([a, b, kind, via])
-            half = {"freeway": FW_HALF, "frontage": 525.0}.get(r["cls"], RAMP_HALF)
+            half = {"freeway": FW_HALF, "frontage": 525.0, "stub": 1400.0}.get(r["cls"], RAMP_HALF)
             name = f"{r['cls']} {len(self.lines)}"
             self.lines.append({"name": name, "cls": r["cls"], "kind": kind, "points": r["points"], "half": half,
                                "group": group})
@@ -272,10 +353,13 @@ class Plan:
         if not groups:
             return
         keep = [b for b in self._builds if b[2] not in groups]
+        marks = [m for m in self._marks if m[1] not in groups]
         ics = [i for i in self.interchanges if i.get("group") not in groups]
         self.__init__()
         for bld, gk, g in keep:
             self.add(bld, gk, g)
+        for m, g in marks:
+            self.mark(m, g)
         self.interchanges = ics
 
     def low_points(self) -> list:
@@ -448,37 +532,40 @@ def plan(city: dict, o: dict) -> Plan:
     passes = lambda name, t: name in reach_of and -reach_of[name][0] + 4000 <= t <= reach_of[name][1] - 4000
     stacked = bool(two and passes("ns", stack_at[1]) and passes("ew", stack_at[0]) and not (hard and hard(sx, sy))
                    and not near_edge and (city.get("fw_shore") or {}).get("stack", True))
+    use_models = o.get("interchange_models", "yes") == "yes"
+    on_map = lambda x, y: not box or box[0] + MAP_EDGE <= x <= box[2] - MAP_EDGE and box[1] + MAP_EDGE <= y <= box[3] - MAP_EDGE
+    free = lambda x, y: on_map(x, y) and not (hard and hard(x, y))
+    stack_model = models().get("stack") if use_models and stacked else None
+    if stack_model and not model_fits(city, sx, sy, stack_model, free):
+        stack_model = None  # too big for this city: the generated stack
     for name, normal_axis, at, axis in mains:
         stack_along = stack_at[1] if name == "ns" else stack_at[0]
         upper = name == "ns"
         sides, (back, ahead) = sides_of[name], reach_of[name]
-        lf = lambda t, sa=stack_along, up=upper and stacked, sd=sides: lift(t, (t - sa) if up else None, sd)
+        lf0 = lambda t, sa=stack_along, up=upper and stacked, sd=sides: lift(t, (t - sa) if up else None, sd)
         first = int(-end // 2000) if back >= end + 2000 else -int(back // 2000)
         last = int(end // 2000) if ahead >= end + 2000 else int(ahead // 2000)
         ts = [k * 2000.0 for k in range(first, last + 1)]
-        pts = []
-        for t in ts:
-            lx, ly = normal_axis[0] * at + axis[0] * t, normal_axis[1] * at + axis[1] * t
-            pts.append((*W(lx, ly), lf(t)))
+        P = lambda t: W(normal_axis[0] * at + axis[0] * t, normal_axis[1] * at + axis[1] * t)
         if hard:  # stop short of an airport or a shipyard: keep the run through the city centre
             mid = min(range(len(ts)), key=lambda k: abs(ts[k]))
             lo = hi = mid
-            while lo > 0 and not hard(*pts[lo - 1][:2]):
+            while lo > 0 and not hard(*P(ts[lo - 1])):
                 lo -= 1
-            while hi < len(pts) - 1 and not hard(*pts[hi + 1][:2]):
+            while hi < len(ts) - 1 and not hard(*P(ts[hi + 1])):
                 hi += 1
-            pts = pts[lo:hi + 1]
-        if len(pts) < 2:
+            ts = ts[lo:hi + 1]
+        if len(ts) < 2:
             continue
-        bld = Builder(("fw", name))
-        bld.edge(pts, "ED", "freeway")
-        out.add(bld, "6L", ("main", name))
-        # service interchanges on the main roads this freeway crosses
         ax_w = (c * axis[0] - s * axis[1], s * axis[0] + c * axis[1])
+        # service interchanges on the main roads this freeway crosses, chosen before the freeway is laid: a model
+        # interchange cuts the freeway and brings it down to its own grade
         # (no stack built: no room kept for one. Riverton's stack would have stood in the water, and the freeway
         # that was left had no interchange at all for 1.6 km either side of where it was not)
-        done = [stack_along] if stacked else []
-        gap = STACK_GAP if stacked else 0.0
+        reach_d = (model_reach(stack_model, "a" if upper else "b") if stack_model else STACK_FLY)
+        done = [(stack_along, reach_d)] if stacked else []  # (along, how far its ramps / square reach)
+        cuts = [(stack_along, reach_d)] if stack_model else []
+        spots = []
         step, across = (by, bx) if name == "ns" else (bx, by)  # the grid along this freeway, and across it
         n_max = int(R // step)
         soaked = set(((city.get("fw_shore") or {}).get("wet_ic") or {}).get(name) or ())
@@ -488,12 +575,9 @@ def plan(city: dict, o: dict) -> Plan:
                 continue  # only collectors and the main axis
             if n in soaked:
                 continue  # a ramp of it would stand in the water (shore_reach)
-            if any(abs(t - d) < (gap if d == stack_along and stacked else IC_SPACING) for d in done):
-                continue
             if not -back + IC_ROOM <= t <= ahead - IC_ROOM:
                 continue  # its ramps would run past the map's edge
-            lx, ly = normal_axis[0] * at + axis[0] * t, normal_axis[1] * at + axis[1] * t
-            cx, cy = W(lx, ly)
+            cx, cy = P(t)
             if box and min(room(cx, cy, 1, 0), room(cx, cy, -1, 0), room(cx, cy, 0, 1), room(cx, cy, 0, -1)) < IC_ROOM:
                 continue
             share = cg.zone_share(city, cx, cy)
@@ -503,15 +587,46 @@ def plan(city: dict, o: dict) -> Plan:
                             for a in (k * math.pi / 4 for k in range(8))):
                 continue  # its ramps would be on reserved land
             kind = "diamond" if share <= down else "parclo" if share <= normal else "diamond_frontage"
+            m = models().get(kind) if use_models else None
+            if m and not (model_fits(city, cx, cy, m, free) and -back + model_reach(m, "a") <= t <= ahead - model_reach(m, "a")):
+                m = None  # a city too small for the model (or the map's edge, reserved land): the generated ramps
+            mine = model_reach(m, "a") if m else DIAMOND_A
+            if any(abs(t - d) < max(IC_SPACING, mine + theirs + 20000) for d, theirs in done):
+                continue
             road = o["core_roads"] if share <= down or not n else "4L" if share <= normal else o["neighbourhood_roads"]
+            spots.append((n, t, cx, cy, kind, road, m))
+            done.append((t, mine))
+            if m:
+                cuts.append((t, mine))
+
+        def lf(t, lf0=lf0, cuts=tuple(cuts)):  # down to grade at every model's sockets
+            return lf0(t) * min([1.0] + [_smooth((abs(t - tm) - h) / MODEL_FADE) for tm, h in cuts])
+
+        spans = [(ts[0], ts[-1])]  # the freeway, less every model's square: it ends on the model's sockets
+        for tm, h in cuts:
+            spans = [part for lo, hi in spans for part in ((lo, min(hi, tm - h)), (max(lo, tm + h), hi)) if part[1] - part[0] >= 2000]
+        for k, (lo, hi) in enumerate(spans):
+            run = [lo] + [t for t in ts if lo < t < hi] + [hi]
+            bld = Builder(("fw", name) + ((k,) if k else ()))
+            bld.edge([(*P(t), lf(t)) for t in run], "ED", "freeway")
+            out.add(bld, "6L", ("main", name))
+        for n, t, cx, cy, kind, road, m in spots:
             f = Frame(cx, cy, *ax_w)
-            bld = interchange(kind, f, FW_HALF, cg.HALF.get(road, 1400.0), lambda a, t=t, lf=lf: lf(t + a), lambda b: 0.0,
-                              ("ic", name, n), frontage_b=across / 2, frontage_a=math.ceil((DIAMOND_A + 4000) / step) * step)
-            out.add(bld, "6L", ("ic", name, n))
-            out.interchanges.append({"kind": kind, "at": [round(cx), round(cy)], "freeway": name, "cross_road": road,
-                                     "b_axis": [round(-ax_w[1], 4), round(ax_w[0], 4)], "group": ("ic", name, n)})
-            done.append(t)
-    if stacked:
+            entry = {"kind": kind, "at": [round(cx), round(cy)], "freeway": name, "cross_road": road,
+                     "b_axis": [round(-ax_w[1], 4), round(ax_w[0], 4)], "group": ("ic", name, n)}
+            if m:
+                entry["model"] = place_model(out, kind, f, ("ic", name, n), road, across)
+            else:
+                bld = interchange(kind, f, FW_HALF, cg.HALF.get(road, 1400.0), lambda a, t=t, lf=lf: lf(t + a), lambda b: 0.0,
+                                  ("ic", name, n), frontage_b=across / 2, frontage_a=math.ceil((DIAMOND_A + 4000) / step) * step)
+                out.add(bld, "6L", ("ic", name, n))
+            out.interchanges.append(entry)
+    if stack_model:
+        cx, cy = W(*stack_at)
+        f = Frame(cx, cy, -s, c)  # a along the north-south freeway, b along the east-west one (sockets: all four FW)
+        out.interchanges.append({"kind": "stack", "at": [round(cx), round(cy)], "freeway": "ns+ew", "group": ("stack",),
+                                 "model": place_model(out, "stack", f, ("stack",))})
+    elif stacked:
         # (its flyovers reach 1.15 km out: all on the map, and on land)
         cx, cy = W(*stack_at)
         f = Frame(cx, cy, -s, c)  # a along the north-south freeway (upper), b along the east-west one

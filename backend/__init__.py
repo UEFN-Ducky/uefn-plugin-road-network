@@ -2858,6 +2858,22 @@ def register(api) -> None:
             late = late or bool(got.get("late"))
             made += got.get("paths") or []
             errors += got.get("errors") or []
+        # the Blender interchange models (assets/interchanges, freeways.models) a big city places as pieces
+        from . import freeways as fwy
+        ic_dir = f"{root}/WorldGen/Roads/{cg.INTERCHANGE_FOLDER}"
+        ics = {m["mesh"]: os.path.join(fwy.MODEL_DIR, m["mesh"] + ".fbx") for m in fwy.models().values()}
+        have = listener("road_network_assets_exist", {"paths": [f"{ic_dir}/{n}" for n in ics]}).get("exist") or {} if ics else {}
+        for n, fbx in ics.items():
+            if have.get(f"{ic_dir}/{n}") or not os.path.isfile(fbx):
+                continue
+            try:
+                got = listener_long("import_asset", {"source_file": fbx, "destination_path": ic_dir, "replace_existing": False})
+            except Exception as exc:
+                got = {"ok": False, "error": str(exc)}
+            if isinstance(got, dict) and got.get("ok") is not False and not got.get("error"):
+                made.append(f"{ic_dir}/{n}")
+            else:
+                errors.append(f"{n}: {got.get('error') if isinstance(got, dict) else got}")
         if made:
             listener_long("road_network_save_assets", {"paths": made})
         if late:  # a lost reply lost that piece's paths too: save whatever content is still unsaved
