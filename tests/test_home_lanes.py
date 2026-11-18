@@ -33,6 +33,17 @@ def test_organic_look_wanders_over_a_calm_world():
     assert cg.city_options({"style": "mixed"}, world)["wobble"] == 0.04
 
 
+def test_district_cut_off_on_land_is_joined():
+    n = cg.LOOSE_MIN
+    nodes = {("w", k): [0.0, k * 10000.0] for k in range(n)}
+    nodes.update({("e", k): [5000.0, k * 10000.0 + 300.0] for k in range(n)})
+    edges = [[(s, k), (s, k + 1), "2S"] for s in "we" for k in range(n - 1)]
+    assert len(cg.join_parts(nodes, edges, None, "6L")[1]) == len(edges), "no bridge to build: left alone as before"
+    got = cg.join_parts(nodes, edges, None, "6L", land="2S")[1]
+    new = got[len(edges):]
+    assert len(new) == 1 and new[0][2] == "2S" and {new[0][0][0], new[0][1][0]} == {"w", "e"}, new
+
+
 def test_other_lots_untouched():
     lot = [0, 0, 0.0, 1600, 3500, 1750, 0, "house", False]
     assert cg.home_lanes([lot], []) == [] and lot[2] == 0.0

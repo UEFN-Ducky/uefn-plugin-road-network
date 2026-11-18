@@ -2427,12 +2427,14 @@ LOOSE_MIN = 8  # a part of the street network that nothing joins to the rest is 
 PART_BRIDGE_CM = 200000.0  # ... and such a part gets a bridge of its own to the rest when one this short will do
 
 
-def join_parts(nodes: dict, edges: list, wet, kind: str, bridges: list | None = None) -> tuple:
+def join_parts(nodes: dict, edges: list, wet, kind: str, bridges: list | None = None, land: str = "") -> tuple:
     """A district on the far bank that no bridge reaches (its own street's crossing would have cut across another
     bridge, or was too long) is joined all the same: one bridge straight from one of its junctions to the nearest
     junction of the rest of the city, the shortest pair that crosses no street and no bridge, leaves neither
     junction along a street that is already there, and is no longer than PART_BRIDGE_CM. A district of fewer
-    than LOOSE_MIN junctions gets none (one_network takes it out)."""
+    than LOOSE_MIN junctions gets none (one_network takes it out). With `land` (a street kind) a district cut off
+    on dry land is joined too, by that street: Valley's Northgate lake homes and Riverton's gate were parted
+    from their cities by 45 to 85 m of grass (Nov 18 2026)."""
     def crosses(p, q, a, b):
         d = lambda o, u, v: (u[0] - o[0]) * (v[1] - o[1]) - (u[1] - o[1]) * (v[0] - o[0])
         return d(p, q, a) * d(p, q, b) < 0 and d(a, b, p) * d(a, b, q) < 0
@@ -2474,9 +2476,14 @@ def join_parts(nodes: dict, edges: list, wet, kind: str, bridges: list | None = 
                        for n in (a, b) for m in adj[n]):
                     continue  # (it would leave a junction along a street that is there: one road drawn twice)
                 plans: list = []
-                got_n, got_e = over_water({a: nodes[a], b: nodes[b]}, [[a, b, kind]], wet, bridges=plans, stubs=False)
-                if len(got_e) == 1 and got_e[0][:2] == [a, b] and len(got_e[0]) > 3 and got_e[0][3]:
-                    new = (got_e[0], plans)
+                got_e = over_water({a: nodes[a], b: nodes[b]}, [[a, b, kind]], wet, bridges=plans, stubs=False)[1] \
+                    if wet else [[a, b, kind]]
+                if len(got_e) == 1 and got_e[0][:2] == [a, b]:
+                    if len(got_e[0]) > 3 and got_e[0][3]:
+                        new = (got_e[0], plans)
+                    elif land:
+                        new = ([a, b, land], [])
+                if new:
                     break
             if new:
                 break
@@ -3648,7 +3655,11 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
         roads += [(*p[:2], *q[:2], 400.0) for s in out["streets"] for p, q in zip(s, s[1:])]
         wf = waterfront.plan(city, water, out["lots"], ring_of, industrial, ground, nodes, pop, roads)
         out["lots"], out["water"] = wf["lots"], wf["rows"]
-        out["streets"] += home_lanes(out["lots"], roads)
+        # (a lane joins a street on the ground: one joined to a bridge's deck ran 12 m up to it)
+        on_ground = [(*nodes[a][:2], *nodes[b][:2], HALF.get(k, 500.0)) for a, b, k, *via in edges
+                     if a in nodes and b in nodes and not (via and via[0])]
+        on_ground += [(*p[:2], *q[:2], 400.0) for s in out["streets"] for p, q in zip(s, s[1:])]
+        out["streets"] += [s for s in home_lanes(out["lots"], on_ground) if not (wet and any(wet(*p[:2]) for p in s))]
         out["waterfront"] = {k: wf[k] for k in ("segments", "developments", "shoreline_m", "made_m", "report", "shipyards")}
     # the blocks' own trees keep off what is not a block's ground: a made shore, a shipyard, an airfield, a keep zone
     from . import airport, shipyard, waterfront
@@ -4837,6 +4848,9 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
         edges[:] = [e for e in edges if e[0] not in gone and e[1] not in gone]
     if wet or any(canal_lines(c, o) for c in cities):  # cross roads added after city_graph bridge or stop too
         graphs = [over_water(n, e, water_of(c, o, wet), bridges=bridges, stubs=False) for c, (n, e) in zip(cities, graphs)]
+    # every city one network, whatever above parted it: a district left on its own is joined to the rest
+    graphs = [join_parts(n, e, water_of(c, o, wet), o["core_roads"], bridges, land=o["neighbourhood_roads"])
+              for c, (n, e) in zip(cities, graphs)]
     out = {f"{c['name']} Roads": build_actor(n, e, ground, folder) for c, (n, e) in zip(cities, graphs)}
     level_joins(out, cities, join_rows)  # each city graded its half on its own: the two meet at one height
     for ap in airports or []:  # airports: the airside graph (runways + taxiways) and the landside roads
