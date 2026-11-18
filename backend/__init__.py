@@ -1392,6 +1392,11 @@ def register(api) -> None:
                     layout["parking"] += got["parking"]
                     layout["stalls"] += got["stalls"]
                     layout["airport"] += got["rows"]
+            # every building and lane can be driven to: a drive to the nearest street where none reaches it
+            # (its own Roads only: a drive is joined inside that one actor; airport buildings got theirs in generate)
+            mine = [a for label, a in actors.items() if label == f"{t['name']} Roads"]
+            layout["streets"] += cg.lot_drives(layout["lots"], layout["streets"], layout.get("blocks") or [],
+                                              cg.ground_roads(mine), wet)
             put_city(nid, cslug, {**t, "name": t["name"], "roads": f"{t['name']} Roads",
                                                  "districts": cg.districts(t, opts),
                                                  # BlockGenerator + neighbourhoods: lots, private streets, parking

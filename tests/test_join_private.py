@@ -51,11 +51,15 @@ def test_join_private():
     assert pl.cap_private(capped["points"], capped["segments"], []) == 0, "never a second turnaround"
     back_c = cg.unjoin_private(capped)
     assert (len(back_c["points"]), len(back_c["segments"])) == before, "the turnaround comes out with its street"
-    # a private street ending right at an existing crossing joins nothing rather than cutting into that junction
+    # a private street ending right at an existing junction joins it as one more arm (never cuts the street open
+    # inside it, and never ends there on its own: that was a dead end in the junction, at its own height)
     cross = cg.build_actor({0: [0, 0], 1: [100000, 0], 2: [50000, -30000], 3: [50000, 0]},
                            [[0, 3, "4L"], [3, 1, "4L"], [2, 3, "4L"]], FLAT, "/Game/X/Roads")
-    _j, _r, n3 = cg.join_private(cross, access, "/Game/X/Roads")
-    assert n3 == 0, n3
+    j3, _r, n3 = cg.join_private(cross, access, "/Game/X/Roads")
+    four = [w for w in st.pending_nodes(j3["points"], j3["segments"]) if len(w[1]) == 4]
+    assert n3 == 1 and len(four) == 1, (n3, [len(w[1]) for w in st.pending_nodes(j3["points"], j3["segments"])])
+    back3 = cg.unjoin_private(j3)
+    assert (len(back3["points"]), len(back3["segments"])) == (len(cross["points"]), len(cross["segments"]))
     # walkways / driveways / sidewalks: one network, every loose end tied to the road it meets by a link
     paths = cg.build_actor({"w0": [20000, half + 200], "w1": [20000, half + 1500]}, [["w0", "w1", "WK"]], FLAT, "/Game/X/Roads")
     net, links = cg.join_links(joined, [rest, paths], "/Game/X/Roads")

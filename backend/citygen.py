@@ -3236,6 +3236,26 @@ for _k, _m in ROAD_MESH.items():
         _KIND_OF_MESH[_m] = _k
 
 
+PR_GRADE = 0.10  # a joined private street climbs to (or down to) its street's height at most this steeply
+
+
+def _ramp(rp: dict, rs: list, start, came, z0: float) -> None:
+    """From the mouth (`came`, at height z0) along a private street: each point no further from z0 than PR_GRADE of
+    the way it has come, until one already is (in place in `rp`)."""
+    d, cur = 0.0, start
+    while cur in rp:
+        q, p = rp[cur], rp[came]
+        d += math.hypot(q["x"] - p["x"], q["y"] - p["y"])
+        lo, hi = z0 - PR_GRADE * d, z0 + PR_GRADE * d
+        if lo <= q["z"] <= hi:
+            return
+        q["z"] = min(max(q["z"], lo), hi)
+        on = [x for x in rs if cur in (x["a"], x["b"]) and came not in (x["a"], x["b"])]
+        if len(on) != 1:
+            return
+        came, cur = cur, on[0]["b"] if on[0]["a"] == cur else on[0]["a"]
+
+
 def unjoin_private(roads: dict) -> dict:
     """The roads actor as it was before join_private: every joined private street out, every host road whole again."""
     pts = [p for p in roads["points"] if not p.get("join")]
@@ -3345,8 +3365,21 @@ def join_private(roads: dict, access: dict, folder: str) -> tuple:
 
         back = walk(host, host["a"], MOUTH_CM)
         fwd = walk(host, host["b"], MOUTH_CM)
+        hub = None
         if not back or not fwd:
-            continue  # too close to another junction or a piece: left as it is
+            # too close to a junction to cut the host open: it joins that junction as one more arm. Left as it was,
+            # it was capped there, a dead end inside the junction at its own height (12 m under Valley's Riverton
+            # street, Nov 18 2026)
+            # (the host's own end, or the junction a mouth of it leads into; or where the host just ends, its end)
+            near = [rp[host["a"]], rp[host["b"]]]
+            near += [rp[o] for q in near for x in nbrs(q["i"]) if not x["mesh"]
+                     for o in (x["a"], x["b"]) if o in rp and str(rp[o].get("mesh") or "").startswith("SM_Junc")]
+            ok = [q for q in near if str(q.get("mesh") or "").startswith("SM_Junc") or
+                  (not q.get("mesh") and len([x for x in nbrs(q["i"]) if x["mesh"]]) == 1)]
+            hub = min(ok, key=lambda q: math.hypot(q["x"] - E["x"], q["y"] - E["y"])) if ok else None
+            if hub is None or math.hypot(hub["x"] - E["x"], hub["y"] - E["y"]) > hub["w"] + JOIN_REACH_CM:
+                continue  # beside a piece, or too far off: left as it is
+            px, py, pz = hub["x"], hub["y"], hub["z"]
         # the private street's side: drop its points inside the junction, the mouth on its line MOUTH_CM out
         run, s, cur = [e], next(iter(nbrs(e))), e
         while True:
@@ -3362,6 +3395,29 @@ def join_private(roads: dict, access: dict, folder: str) -> tuple:
         vl = math.hypot(vx, vy) or 1.0
         if vl <= MOUTH_CM + 100:
             continue  # a stub shorter than the junction: nothing to join
+        mx, my = px + vx / vl * MOUTH_CM, py + vy / vl * MOUTH_CM
+        if hub is not None:
+            for i in run:
+                rp.pop(i, None)
+            rs = [x for x in rs if x is not s and x["a"] not in run and x["b"] not in run]
+            if not str(hub.get("mesh") or "").startswith("SM_Junc"):
+                # where the street just ends, the private street carries straight on from its end
+                new = [_segment(next(nid), hub["i"], nxt, "PR", folder)]
+                came = hub["i"]
+            else:
+                if not hub.get("join"):  # (one a join made already keeps its own undo)
+                    rp[hub["i"]] = dict(hub, mesh=JUNCTION, join=True, undo={"points": [dict(hub)], "segments": []})
+                m3 = _point(next(nid), mx, my, pz, math.degrees(math.atan2(vy, vx)), HALF["PR"])
+                m3["join"] = True
+                rp[m3["i"]] = m3
+                new = [_segment(next(nid), hub["i"], m3["i"], "", folder), _segment(next(nid), m3["i"], nxt, "PR", folder)]
+                came = m3["i"]
+            for x in new:
+                x["join"] = True
+            rs += new
+            _ramp(rp, rs, nxt, came, pz)
+            joins += 1
+            continue
         undo = {"points": [dict(rp[i]) for i in back[0] + fwd[0]],
                 "segments": [dict(x) for x in rs if x["a"] in back[0] + fwd[0] or x["b"] in back[0] + fwd[0] or x is host]}
         tmpl = dict(host)
@@ -3376,7 +3432,6 @@ def join_private(roads: dict, access: dict, folder: str) -> tuple:
         j.update(join=True, undo=undo)
         m1 = _point(next(nid), back[3][0], back[3][1], pz, math.degrees(math.atan2(-uy, -ux)), half(host))
         m2 = _point(next(nid), fwd[3][0], fwd[3][1], pz, math.degrees(math.atan2(uy, ux)), half(host))
-        mx, my = px + vx / vl * MOUTH_CM, py + vy / vl * MOUTH_CM
         m3 = _point(next(nid), mx, my, pz, math.degrees(math.atan2(vy, vx)), HALF["PR"])
         for p in (j, m1, m2, m3):
             p["join"] = True
@@ -3388,6 +3443,7 @@ def join_private(roads: dict, access: dict, folder: str) -> tuple:
         for x in new:
             x["join"] = True
         rs += new
+        _ramp(rp, rs, nxt, m3["i"], pz)
         joins += 1
     by_i = rp
     for s in rs:
@@ -3789,15 +3845,8 @@ def home_lanes(lots: list, roads: list) -> list:
     and Riverton had 17 houses with no road (Nov 17 2026). Each home is turned round (in place in `lots`); a
     row with no street at its door gets a private lane along the fronts, joined at its nearer end to the nearest
     street. roads: [(x0, y0, x1, y1, half width)]. Returns the lanes, [[x, y], ...] each (private streets).
-    ponytail: a row with no street within LANE_REACH_CM keeps its lane unjoined; reach further if one shows up."""
-    def nearest(p):  # (distance from the street's edge, the point on its centre line)
-        best = (math.inf, None)
-        for x0, y0, x1, y1, h in roads:
-            dx, dy = x1 - x0, y1 - y0
-            t = max(0.0, min(1.0, ((p[0] - x0) * dx + (p[1] - y0) * dy) / ((dx * dx + dy * dy) or 1.0)))
-            q = (x0 + dx * t, y0 + dy * t)
-            best = min(best, (math.dist(p, q) - h, q), key=lambda b: b[0])
-        return best
+    A row with no street within LANE_REACH_CM keeps its lane unjoined here: lot_drives reaches further for it."""
+    nearest = lambda p: _nearest_road(p, roads)  # noqa: E731
     rows, lanes = [], []
     for r in lots:
         if r[7] != "house" or [round(r[3]), round(r[4])] != HOME_LOT:
@@ -3819,6 +3868,114 @@ def home_lanes(lots: list, roads: list) -> list:
         if len(row) > 1:
             lanes.append([[round(v) for v in p] for p in row])
     return lanes
+
+
+def _nearest_road(p, roads: list) -> tuple:
+    """(distance from the nearest street's edge, the point on its centre line) of roads [(x0, y0, x1, y1, half)]."""
+    best = (math.inf, None)
+    for x0, y0, x1, y1, h in roads:
+        dx, dy = x1 - x0, y1 - y0
+        t = max(0.0, min(1.0, ((p[0] - x0) * dx + (p[1] - y0) * dy) / ((dx * dx + dy * dy) or 1.0)))
+        q = (x0 + dx * t, y0 + dy * t)
+        if math.dist(p, q) - h < best[0]:
+            best = (math.dist(p, q) - h, q)
+    return best
+
+
+def ground_roads(actors: list) -> list:
+    """[(x0, y0, x1, y1, half width)]: every street of these spline actors that lies on the ground (no bridge, ramp,
+    freeway or runway): what a private drive may join."""
+    out = []
+    for a in actors:
+        at = {p["i"]: p for p in a["points"]}
+        for s in a["segments"]:
+            p, q, m = at.get(s["a"]), at.get(s["b"]), str(s.get("mesh") or "")
+            if p and q and m.startswith("SM_Road_") and "Freeway" not in m and \
+                    all(x.get("raise", True) for x in (s, p, q)):
+                out.append((p["x"], p["y"], q["x"], q["y"], max(p["w"], q["w"])))
+    return out
+
+
+DOOR_CM = 2500.0  # a street this close to a lot's front is at its door
+DRIVE_REACH_CM = 25000.0  # ... else a private drive runs to the nearest street this close
+ACCESS_REACH_CM = 60000.0  # lanes that reach no street (a shipyard's, 373 m out at Valley's Northgate): one access road
+
+
+def lot_edge(r: list, q) -> tuple:
+    """Where a lot's outline meets the line from its middle to q: its edge on the way to that street."""
+    L = math.dist(r[:2], q) or 1.0
+    ux, uy = (q[0] - r[0]) / L, (q[1] - r[1]) / L
+    nl = math.dist(r[:2], r[5:7]) or 1.0
+    nx, ny = (r[5] - r[0]) / nl, (r[6] - r[1]) / nl
+    along, across = abs(ux * nx + uy * ny), abs(-ux * ny + uy * nx)
+    s = min(r[4] / 2 / along if along > 1e-6 else math.inf, r[3] / 2 / across if across > 1e-6 else math.inf)
+    return r[0] + ux * s, r[1] + uy * s
+
+
+def airport_drives(lots: list, nodes: dict, edges: list) -> None:
+    """An airport building no landside road reaches gets a drive in the landside network itself, to its nearest
+    junction on the ground: its substation stood 119 m out (Nov 18 2026), and a drive in the city's own actor
+    cannot join the airport's (UEFN joins points of one actor only). In place in nodes / edges."""
+    flat = [e for e in edges if e[0] in nodes and e[1] in nodes and not str(e[2]).startswith("E")]  # (no ramp)
+    lines = [(*nodes[e[0]][:2], *nodes[e[1]][:2], HALF.get(e[2], 500.0)) for e in flat]
+    ends = sorted({n for e in flat for n in e[:2]}, key=str)
+    for k, r in enumerate(lots):
+        if not lines or _nearest_road((r[5], r[6]), lines)[0] < DOOR_CM:
+            continue
+        n = min(ends, key=lambda m: math.dist(nodes[m][:2], r[:2]))
+        if math.dist(nodes[n][:2], r[:2]) <= DRIVE_REACH_CM:
+            nodes[("drive", k)] = list(lot_edge(r, nodes[n][:2]))
+            edges.append([("drive", k), n, "PR"])
+
+
+def lot_drives(lots: list, streets: list, blocks: list, roads: list, wet=None) -> list:
+    """Every lot and every private lane can be driven to: a lot outside the street blocks (a waterfront restaurant
+    or hotel, a shipyard's sheds, an airport's substation) with no street at its door, and a lane with neither end
+    on a street, get a private drive to the nearest street on the ground, over no water. Valley had 31 such
+    buildings 30 to 180 m from any road, and a lane of two homes on its own (Nov 18 2026). roads: ground_roads.
+    Returns the drives, [[x, y], [x, y]] each (private streets).
+    ponytail: a drive runs straight, past whatever stands between; route it round lots if one is seen crossing."""
+    every = roads + [(*p[:2], *q[:2], HALF["PR"]) for s in streets for p, q in zip(s, s[1:])]
+    polys = [b[4] for b in blocks if len(b) > 4 and b[4]]
+    out = []
+
+    def drive(a, q, reach=DRIVE_REACH_CM):
+        n = max(1, int(math.dist(a, q) // 500))
+        if math.dist(a, q) <= reach and not (wet and any(
+                wet(a[0] + (q[0] - a[0]) * k / n, a[1] + (q[1] - a[1]) * k / n) for k in range(n + 1))):
+            out.append([[round(a[0]), round(a[1])], [round(q[0]), round(q[1])]])
+    for r in lots:
+        if any(_inside(poly, r[0], r[1]) for poly in polys) or _nearest_road((r[5], r[6]), every)[0] < DOOR_CM:
+            continue  # a block's lot (its streets, or its complex's, are round it), or one with a street at its door
+        q = _nearest_road((r[0], r[1]), every)[1]
+        if q is not None:
+            drive(lot_edge(r, q), q)  # from the lot's edge, the way to that street
+    # lanes and drives that touch are one group: a group with no end on a street gets one access road, from its
+    # point nearest a street
+    lanes = [s for s in streets + out if len(s) > 1]
+    group = list(range(len(lanes)))
+
+    def top(k):
+        while group[k] != k:
+            group[k] = group[group[k]]
+            k = group[k]
+        return k
+    for i, a in enumerate(lanes):
+        for j in range(i + 1, len(lanes)):
+            b = lanes[j]
+            if any(_dist_seg(e[:2], p[:2], q[:2]) < 500 for x, y in ((a, b), (b, a)) for e in (x[0], x[-1])
+                   for p, q in zip(y, y[1:])):
+                group[top(i)] = top(j)
+    parts: dict = {}
+    for k, s in enumerate(lanes):
+        parts.setdefault(top(k), []).append(s)
+    for part in parts.values():
+        if any(_nearest_road(e[:2], roads)[0] < JOIN_REACH_CM for s in part for e in (s[0], s[-1])):
+            continue
+        best = min(((_nearest_road(p[:2], roads), p) for s in part for p in s), key=lambda t: t[0][0], default=None)
+        if best and best[0][1] is not None:
+            drive(tuple(best[1][:2]), best[0][1], ACCESS_REACH_CM)
+    return out
 
 
 FRONT_LOT_D_CM = 3000.0  # a lot along a street with open land behind it: 16 m of frontage, 30 m deep
@@ -4921,6 +5078,7 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
         out[label] = build_actor(an, ae, flat, folder)
         rn, re_ = got["landside"]
         if re_:
+            airport_drives(got["lots"], rn, re_)
             out[f"{label} Roads"] = build_actor(rn, re_, ground, folder)
             meet_city(out[f"{label} Roads"], out.get(f"{ap['city']} Roads"), [l["to_city_node"] for l in got["links"]])
         if airport_builds is not None:
