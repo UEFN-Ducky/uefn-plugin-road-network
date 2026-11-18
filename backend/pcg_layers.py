@@ -1329,6 +1329,14 @@ def dead_ends(actors: list, terrain: dict | None = None) -> list:
     return out
 
 
+def cap_all(actors: list, terrain: dict | None = None) -> int:
+    """Close every street that ends with its turnaround on the spline (splines_text.cap_ends) as soon as the roads
+    are made, so the preview and every push show the cul-de-sac (Build pieces only builds its mesh; a capped end is
+    no dead end any more, so it is never capped twice). actors: every road actor [(points, segments)]."""
+    from .splines_text import cap_ends
+    return sum(cap_ends(pts, segs, found) for (pts, segs), found in zip(actors, dead_ends(actors, terrain)))
+
+
 def road_ends(actors: list, terrain: dict | None = None) -> dict:
     """Where each dead end's turnaround lies ([x, y, z, yaw, sx, sy, sz], radius = sx * 1000): the area kept
     clear of PCG. The turnaround itself is a 1-arm junction piece on the road's spline (splines_text.cap_ends,
@@ -2496,6 +2504,13 @@ def _demo() -> None:
     assert sorted(r[:2] for r in caps["points"]) == [[0, 0], [20000, 9000]], caps["points"]
     assert caps["points"][0][2] == 123 and caps["points"][0][4] == 1.225 and caps["keep_z"] and caps["pad"] is False
     assert not road_ends([town_a], {"min": [-3000, -90000], "max": [33000, 90000]})["Road ends"]["points"][0][0] == 0, "none at the map's edge"
+    # ... and the roads get it as they are made: one turnaround node per dead end, never a second one
+    as_made = lambda p: {**p, "yaw": 0.0, "pitch": 0.0, "lines": []}  # noqa: E731
+    made = ([as_made(p) for p in town_a[0]], [{**s, "i": k, "ta": 0.0, "tb": 0.0, "raise": True, "lines": []}
+                                          for k, s in enumerate(town_a[1])])
+    world = {"min": [-90000, -90000], "max": [90000, 90000]}
+    assert cap_all([made], world) == 3 and sum(1 for p in made[0] if p["mesh"] == "SM_Junc_End") == 3  # alone, its east end too
+    assert cap_all([made], world) == 0 and not road_ends([made], world), "a capped end is no dead end"
     # ... and no tree inside a building (the forest is placed first; a house built along a road knows nothing of it)
     grove = {"Trees": {"kind": "foliage", "role": "tree", "count": 4, "shown": 4,
                        "points": [[10000, 10000, 0, 0, 1], [10300, 10350, 0, 0, 1], [10450, 10000, 0, 0, 1], [10700, 10000, 0, 0, 1]]},

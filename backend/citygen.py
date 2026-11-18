@@ -278,7 +278,8 @@ HIGHWAYS = CHOICES["highway"][0]
 FEATURES = ("airports", "shipyards", "freeways", "waterfront", "canals", "planner")
 
 
-CITY_SHARES = ("downtown", "normal")  # ... and its own district sizes (shares of its radius), kept with them
+CITY_SHARES = ("downtown", "normal",  # ... and its own district sizes (shares of its radius), kept with them
+               "wobble", "prune")  # ponytail: a city's own street curviness rides the same path (clamped by OPTIONS)
 CORE_MAX = 0.6  # a city's centre district may be moved this far toward its edge (a share of the way there)
 
 

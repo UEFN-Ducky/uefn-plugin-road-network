@@ -1344,6 +1344,9 @@ def register(api) -> None:
         cg.share_freeways(towns, opts)
         progress(2, "Laying roads, freeways, bridges and runways")
         actors = cg.generate(towns, road_ground, folder, int(seed), opts, keep, wet, bridges, airports, airport_builds)
+        # every street that ends closes in a cul-de-sac now, before the ground is graded to it: not only once
+        # Build pieces ran in UEFN (a regenerate dropped every turnaround until then)
+        pl.cap_all([(a["points"], a["segments"]) for a in actors.values()], ter)
         if not base:  # our own terrain is cut and filled to the roads (a scanned landscape never is)
             ter = cg.grade_to_roads(ter, actors)
             for label, a in actors.items():  # so freeways and highways stand on it as meshes, never reshaping it
