@@ -1586,6 +1586,8 @@ def register(api) -> None:
         doc = dict(before)
         world_opts = ((data.get(f"net.{nid}") or {}).get("generated") or {}).get("options") or {}
         if style:
+            if style == "organic" and before.get("style") != "organic":  # it wanders, whatever the world's wobble
+                doc["features"] = {**cg.ORGANIC_LOOK, **(doc.get("features") or {})}
             doc["style"] = style
         if x is not None and y is not None and str(x) != "" and str(y) != "":
             doc["x"], doc["y"] = round(float(x)), round(float(y))  # moved: generate again rebuilds it there

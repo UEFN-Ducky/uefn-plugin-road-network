@@ -286,6 +286,11 @@ CITY_SHARES = ("downtown", "normal",  # ... and its own district sizes (shares o
 CORE_MAX = 0.6  # a city's centre district may be moved this far toward its edge (a share of the way there)
 
 
+# a city switched to Organic gets these as its own (unless it has its own already): on Valley's world wobble of
+# 0.04, Northgate set to Organic came out the same ruled grid (Nov 17 2026)
+ORGANIC_LOOK = {"wobble": 0.3, "suburbs": "winding"}
+
+
 def city_options(city: dict, opts: dict | None = None) -> dict:
     """The world's options with this city's own feature choices and district sizes on top."""
     return options({**(opts or {}), **{k: v for k, v in (city.get("features") or {}).items()
@@ -3643,6 +3648,7 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
         roads += [(*p[:2], *q[:2], 400.0) for s in out["streets"] for p, q in zip(s, s[1:])]
         wf = waterfront.plan(city, water, out["lots"], ring_of, industrial, ground, nodes, pop, roads)
         out["lots"], out["water"] = wf["lots"], wf["rows"]
+        out["streets"] += home_lanes(out["lots"], roads)
         out["waterfront"] = {k: wf[k] for k in ("segments", "developments", "shoreline_m", "made_m", "report", "shipyards")}
     # the blocks' own trees keep off what is not a block's ground: a made shore, a shipyard, an airfield, a keep zone
     from . import airport, shipyard, waterfront
@@ -3703,6 +3709,49 @@ def city_layout(city: dict, opts: dict | None = None, wet=None, ground=None, kee
 
 def city_lots(city: dict, opts: dict | None = None) -> list:
     return city_layout(city, opts)["lots"]
+
+
+HOME_LOT = [1700, 2400]  # a home on the water (waterfront.HOUSE_LOT)
+LANE_OUT_CM = 300.0  # its lane runs this far out from the lot's front edge
+LANE_REACH_CM = 15000.0  # ... and joins a street no further than this from the row's end
+
+
+def home_lanes(lots: list, roads: list) -> list:
+    """Homes on the water face the land, their lawns down to the water, and every one can be driven to. They
+    were laid facing the lake, their drives ran into the lawn, and no street came near them: Valley's Northgate
+    and Riverton had 17 houses with no road (Nov 17 2026). Each home is turned round (in place in `lots`); a
+    row with no street at its door gets a private lane along the fronts, joined at its nearer end to the nearest
+    street. roads: [(x0, y0, x1, y1, half width)]. Returns the lanes, [[x, y], ...] each (private streets).
+    ponytail: a row with no street within LANE_REACH_CM keeps its lane unjoined; reach further if one shows up."""
+    def nearest(p):  # (distance from the street's edge, the point on its centre line)
+        best = (math.inf, None)
+        for x0, y0, x1, y1, h in roads:
+            dx, dy = x1 - x0, y1 - y0
+            t = max(0.0, min(1.0, ((p[0] - x0) * dx + (p[1] - y0) * dy) / ((dx * dx + dy * dy) or 1.0)))
+            q = (x0 + dx * t, y0 + dy * t)
+            best = min(best, (math.dist(p, q) - h, q), key=lambda b: b[0])
+        return best
+    rows, lanes = [], []
+    for r in lots:
+        if r[7] != "house" or [round(r[3]), round(r[4])] != HOME_LOT:
+            continue
+        nx, ny = (r[5] - r[0]) / (r[4] / 2), (r[6] - r[1]) / (r[4] / 2)  # toward the water (the old front)
+        r[2] = round((r[2] + 180.0 + 180.0) % 360.0 - 180.0, 1)
+        r[5], r[6] = round(r[0] - nx * r[4] / 2), round(r[1] - ny * r[4] / 2)
+        at = (r[5] - nx * LANE_OUT_CM, r[6] - ny * LANE_OUT_CM)
+        if nearest((r[5], r[6]))[0] < 600.0:
+            continue  # a street at its door already
+        if rows and math.dist(rows[-1][-1], at) < 2.5 * HOME_LOT[0]:
+            rows[-1].append(at)
+        else:
+            rows.append([at])
+    for row in rows:
+        (da, qa), (db, qb) = nearest(row[0]), nearest(row[-1])
+        if min(da, db) < LANE_REACH_CM:
+            row = [qa] + row if da <= db else row + [qb]
+        if len(row) > 1:
+            lanes.append([[round(v) for v in p] for p in row])
+    return lanes
 
 
 FRONT_LOT_D_CM = 3000.0  # a lot along a street with open land behind it: 16 m of frontage, 30 m deep
