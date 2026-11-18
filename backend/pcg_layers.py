@@ -953,36 +953,44 @@ NATURAL = ("tree", "street_tree", "bush", "rock")
 
 
 STACKED = ("Container stacks",)  # site pieces that stand on a yard, not on a road: kept off every road too
+CRANES = ("Port cranes",)  # on a port's quay: which side of its yard the water is
 YARDS = ("Port yards",)  # paved yards no building may stand on (whatever placed the building: a city lot, a site)
 
 
 def fit_yards(placed: dict, samples: list) -> dict:
-    """Container yards planned before waterfront.yard_spot knew the streets (the Valley's) lie across them: slide
-    each along its quay, or shorten it, until no road surface (surface_samples) crosses its paving, and take its
-    stacks with it (the ones past its new ends go). No spot clear: no yard and no stacks. Returns what changed."""
+    """Container yards planned before waterfront.yard_spot knew the streets (the Valley's) lie across them: give
+    each the biggest spot near it that no road surface (surface_samples) crosses (slid along its quay or inland,
+    shorter, shallower), and take its stacks with it (the ones off its new paving go). No spot clear: no yard and
+    no stacks. Returns what changed."""
     from .waterfront import yard_spot
     yards = [p for name in YARDS for p in (placed.get(name) or {}).get("points") or []]
     stacks = [layer for name in STACKED if (layer := placed.get(name))]
+    cranes = [p for name in CRANES for p in (placed.get(name) or {}).get("points") or []]
     roads = [(x, y, x, y, h) for x, y, h in samples]
     moved = gone = 0
     for p in list(yards):
         tx, ty = math.cos(math.radians(p[3])), math.sin(math.radians(p[3]))
+        nx, ny, backs = -ty, tx, (0.0,)
+        if cranes:  # inland: away from the quay, where its cranes stand
+            c = min(cranes, key=lambda q: math.hypot(q[0] - p[0], q[1] - p[1]))
+            if (p[0] - c[0]) * nx + (p[1] - c[1]) * ny < 0:
+                nx, ny = -nx, -ny
+            backs = (0.0, 1500.0, 3000.0)
         hl, hd = p[4] * 50, p[5] * 50
-        spot = yard_spot(roads, p[0], p[1], tx, ty, -ty, tx, hl * 2, backs=(0.0,))  # (which side is inland: unknown)
-        if spot == (p[0], p[1], hl * 2):
+        new = yard_spot(roads, p[0], p[1], tx, ty, nx, ny, hl * 2, backs=backs)
+        if new and math.hypot(new[0] - p[0], new[1] - p[1]) < 1 and abs(new[2] - hl * 2) < 1 and abs(new[3] - hd * 2) < 1:
             continue
-        new = spot
 
-        def mine(s):
-            return abs((s[0] - p[0]) * tx + (s[1] - p[1]) * ty) < hl and abs((s[1] - p[1]) * tx - (s[0] - p[0]) * ty) < hd
+        def on(s, cx, cy, l, d):
+            return abs((s[0] - cx) * tx + (s[1] - cy) * ty) <= l and abs((s[0] - cx) * nx + (s[1] - cy) * ny) <= d
         for layer in stacks:
             keep = []
             for s in layer.get("points") or []:
-                if not mine(s):
+                if not on(s, p[0], p[1], hl, hd):
                     keep.append(s)
                 elif new:
                     s = [new[0] + s[0] - p[0], new[1] + s[1] - p[1], *s[2:]]
-                    if abs((s[0] - new[0]) * tx + (s[1] - new[1]) * ty) <= new[2] / 2 - 700:
+                    if on(s, new[0], new[1], new[2] / 2 - 700, new[3] / 2 - 500):
                         keep.append(s)
             layer["points"] = keep
             layer["shown"] = layer["count"] = len(keep)
@@ -992,14 +1000,13 @@ def fit_yards(placed: dict, samples: list) -> dict:
             if p in pts:
                 i = pts.index(p)
                 if new:
-                    pts[i] = [new[0], new[1], *p[2:4], new[2] / 100, *p[5:]]
+                    pts[i] = [new[0], new[1], *p[2:4], new[2] / 100, new[3] / 100, *p[6:]]
                     moved += 1
                 else:
                     pts.pop(i)
                     gone += 1
                 layer["shown"] = layer["count"] = len(pts)
     return {k: v for k, v in (("moved", moved), ("removed", gone)) if v}
-
 
 def clear_yards(placed: dict) -> dict:
     """No building on a container yard. The port claims its land from the street grid's lots, but buildings placed
