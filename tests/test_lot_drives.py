@@ -95,6 +95,18 @@ def test_link_meets_its_host_at_the_host_height_and_once():
     assert links == 1, "two ends that meet: one link, not one each way"
 
 
+def test_driveway_short_of_the_street_runs_on_to_it():
+    roads = _actor([(0, 0, 0, 0, 875.0), (1, 20000, 0, 0, 875.0)], [(2, 0, 1, "2S")])
+    drive = _actor([(10, 10000, 4000, 0, 175.0), (11, 10000, 3000, 0, 175.0)], [(20, 10, 11, "DW")])
+    out, links = cg.join_links(roads, [drive], "/Game/X")
+    P = {p["i"]: p for p in out["points"]}
+    dw = [s for s in out["segments"] if "Driveway" in s["mesh"]]
+    assert links == 1 and len(dw) == 2, "30 m out: its own mesh on to the street, then tied"
+    assert any(round(P[s["b"]]["y"]) == 875 for s in dw), "the new end is at the street's edge"
+    far = _actor([(10, 10000, 9000, 0, 175.0), (11, 10000, 8000, 0, 175.0)], [(20, 10, 11, "DW")])
+    assert cg.join_links(roads, [far], "/Game/X")[1] == 0, "past FAR_LINK_CM: left alone"
+
+
 def test_ramp_climbs_to_the_street_at_most_ten_percent():
     rp = {k: {"i": k, "x": k * 1000.0, "y": 0.0, "z": -1200.0} for k in range(1, 20)}
     rp[0] = {"i": 0, "x": 0.0, "y": 0.0, "z": 0.0}  # the mouth, at the street's height

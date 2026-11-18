@@ -3485,6 +3485,9 @@ LINK_REACH_CM = 600.0  # a walkway / driveway / sidewalk end this far past a hos
 SNAP_CM = 2500.0
 
 
+FAR_LINK_CM = 6000.0  # ... and a driveway / walkway further out than that runs on to a street this close
+
+
 def join_links(roads: dict, extra: list, folder: str) -> tuple:
     """Every spline in ONE actor and none on its own: each actor in `extra` (sidewalks, walkways, driveways) moves into
     `roads`, and every loose end (one segment) is tied to the nearest road / sidewalk it reaches with a mesh-less link
@@ -3511,6 +3514,8 @@ def join_links(roads: dict, extra: list, folder: str) -> tuple:
     def half(s):
         return HALF.get(_KIND_OF_MESH.get(s["mesh"], ""), 200.0)
 
+    path_meshes = {ROAD_MESH[k].rsplit("/", 1)[-1] for k in ("WK", "DW", "DD", "SW")}
+
     def component(e):  # every point joined to e through segments that draw a mesh (its own road / path)
         seen, stack = {e}, [e]
         while stack:
@@ -3527,7 +3532,7 @@ def join_links(roads: dict, extra: list, folder: str) -> tuple:
         if len(at[e]) != 1:
             continue  # an end another end just linked to: tied already (two links once, one each way)
         E, own = rp[e], component(e)
-        best = None
+        best = far = None
         for s in rs:
             if not s["mesh"] or s["a"] in own or s["b"] in own:
                 continue
@@ -3541,6 +3546,26 @@ def join_links(roads: dict, extra: list, folder: str) -> tuple:
             d = math.hypot(E["x"] - px, E["y"] - py)
             if d <= half(s) + LINK_REACH_CM and (best is None or d < best[0]):
                 best = (d, s, t, px, py)
+            if d <= half(s) + FAR_LINK_CM and s["mesh"] not in path_meshes and (far is None or d < far[0]):
+                far = (d, s, t, px, py)
+        o0 = rp[at[e][0]["b"] if at[e][0]["a"] == e else at[e][0]["a"]]
+        if best is None and far and at[e][0]["mesh"] in path_meshes and \
+                math.hypot(o0["x"] - far[3], o0["y"] - far[4]) > far[0] and \
+                not any(not s["mesh"] for c in own for s in at.get(c, [])):  # (its street end, if not tied yet)
+            # a driveway / walkway that stops short of every street (12 to 52 m, 43 at Valley, Nov 18 2026) runs on
+            # in its own mesh to the nearest street's edge: a new end there, tied to it below
+            k = (far[0] - half(far[1])) / (far[0] or 1.0)
+            seg0 = at[e][0]
+            n = _point(next(nid), E["x"] + (far[3] - E["x"]) * k, E["y"] + (far[4] - E["y"]) * k, E["z"],
+                       E.get("yaw", 0.0), E.get("w", 200.0))
+            n["join"] = True
+            rp[n["i"]] = n
+            ext = dict(seg0, i=next(nid), a=e, b=n["i"], ta=0.0, tb=0.0, join=True)
+            rs.append(ext)
+            at[e].append(ext)
+            at[n["i"]] = [ext]
+            e, E = n["i"], n
+            best = (half(far[1]), *far[1:])
         if best is None:
             continue
         _d, host, t, px, py = best
