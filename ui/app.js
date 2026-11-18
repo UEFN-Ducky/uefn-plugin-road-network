@@ -1,6 +1,7 @@
 import * as THREE from "./vendor/three@0.160.0/build/three.module.min.js";
 import { h, icon, iconHTML, slider, segmented, toggle, chip, choices, field, section, foldedSections, button } from "./controls.js";
 import { syncPlan, parseLiveView } from "./sync.js";
+import { marchHeightfield } from "./ground.js";
 
 // ------------------------------------------------------------------ bridge
 const CHANNEL = "uefn-plugin-ui";
@@ -125,6 +126,9 @@ const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// the sun never moves with the camera: the shadow map (every building, tree and the terrain drawn again) is
+// redrawn when the view comes to rest, never on each frame of a fly / orbit (loop)
+renderer.shadowMap.autoUpdate = false;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -532,10 +536,23 @@ function resize() {
   needsDraw = true;
 }
 new ResizeObserver(resize).observe(view);
+const lastCam = new THREE.Matrix4();
+let shadowsStale = true;
 function loop(now) {
   flyStep(now || performance.now());
   const gliding = liveReady && stepGhosts();  // teammates' bodies on their way to where they now look
-  if (visible && (needsDraw || gliding)) { renderer.render(scene, camera); placeLabels(); if (liveReady) placePeerLabels(); needsDraw = false; }
+  if (visible && (needsDraw || gliding || shadowsStale)) {
+    camera.updateMatrixWorld();
+    const moving = !camera.matrixWorld.equals(lastCam);
+    lastCam.copy(camera.matrixWorld);
+    if (needsDraw || gliding) shadowsStale = true;  // something may have changed: redraw them once at rest
+    renderer.shadowMap.needsUpdate = shadowsStale && !moving;
+    if (!moving) shadowsStale = false;
+    renderer.render(scene, camera);
+    placeLabels();
+    if (liveReady) placePeerLabels();
+    needsDraw = false;
+  }
   requestAnimationFrame(loop);
 }
 function clear(group) {
@@ -708,6 +725,9 @@ function buildScene() {
       legend["Road"] = MAT.asphalt;
       legend["Sidewalk"] = MAT.sidewalk;
     }
+    // every junction's disc in two InstancedMeshes per road actor (shown / click-only), never a mesh each:
+    // a mesh per junction was thousands of draw calls, and the click-only ones were drawn at opacity 0 too
+    const discs = { shown: [], hidden: [] }, disc = new THREE.Object3D();
     for (const p of actor.pts) {
       if (!p[7] || p[7] === "SM_Junc_Empty") continue;
       if (joined.has(`${aslug}:${p[0]}`)) continue;  // its merge lane / street mouth is drawn (drawJoins)
@@ -721,14 +741,24 @@ function buildScene() {
       const giant = (p[6] || 0) > 8000;
       const r = giant ? 40 : Math.max(6, (p[6] || 600) / 100);
       if (giant) legend["Broken node (run Check and repair)"] = "red";
-      const disc = new THREE.Mesh(new THREE.CircleGeometry(r, 24), new THREE.MeshStandardMaterial({ color: col(giant ? "red" : "fg-dim"), roughness: 0.8,
-        side: THREE.DoubleSide, transparent: drawn, opacity: drawn ? 0 : 1, depthWrite: !drawn }));
-      disc.rotation.x = -Math.PI / 2;
+      disc.rotation.set(-Math.PI / 2, 0, 0);
       disc.position.copy(toV(p[1], p[2], p[3] + 70));
-      disc.receiveShadow = true;
-      disc.userData = { actor: aslug, point: p };
-      groups.pieces.add(disc);
+      disc.scale.setScalar(r);
+      disc.updateMatrix();
+      discs[drawn ? "hidden" : "shown"].push([disc.matrix.clone(), col(giant ? "red" : "fg-dim"), p]);
       legend["Junction"] = "fg-dim";
+    }
+    for (const [kind, list] of Object.entries(discs)) {
+      if (!list.length) continue;
+      const mat = kind === "shown" ? new THREE.MeshStandardMaterial({ roughness: 0.8, side: THREE.DoubleSide })
+        : new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+      const mesh = new THREE.InstancedMesh(new THREE.CircleGeometry(1, 24), mat, list.length);
+      list.forEach(([m, c], i) => { mesh.setMatrixAt(i, m); if (kind === "shown") mesh.setColorAt(i, c); });
+      mesh.computeBoundingSphere();
+      mesh.visible = kind === "shown";  // the click-only discs are never drawn; the ray still finds them
+      mesh.receiveShadow = true;
+      mesh.userData = { actor: aslug, points: list.map((row) => row[2]), shared: true };
+      groups.pieces.add(mesh);
     }
     if (state.view.points && (!state.actor || state.actor === aslug)) {
       const arr = [];
@@ -752,12 +782,13 @@ function buildScene() {
     mesh.userData.city = city;
     groups.roads.add(mesh);
   }
-  for (const pr of g.props || []) {
-    const hgt = 20;
-    const m = new THREE.Mesh(new THREE.BoxGeometry(2.6, hgt, 2.6), new THREE.MeshStandardMaterial({ color: col("muted"), roughness: 0.9 }));
-    m.position.copy(toV(pr.x, pr.y, pr.z - hgt * 50));
-    m.castShadow = true;
-    groups.props.add(m);
+  if (g.props?.length) {  // every prop in ONE InstancedMesh
+    const hgt = 20, d = new THREE.Object3D();
+    const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(2.6, hgt, 2.6), new THREE.MeshStandardMaterial({ color: col("muted"), roughness: 0.9 }), g.props.length);
+    g.props.forEach((pr, i) => { d.position.copy(toV(pr.x, pr.y, pr.z - hgt * 50)); d.updateMatrix(); mesh.setMatrixAt(i, d.matrix); });
+    mesh.computeBoundingSphere();
+    mesh.castShadow = true;
+    groups.props.add(mesh);
   }
   const t = g.terrain || {};
   let span = box.isEmpty() ? 2000 : box.getSize(new THREE.Vector3()).length();
@@ -1535,7 +1566,7 @@ function pick(e) {
   if (!hits.length) return inspectAt();
   const hit = hits[0], aslug = hit.object.userData.actor;
   if (hit.object.isPoints) select(aslug, hit.object.userData.pts[hit.index]);
-  else select(aslug, hit.object.userData.point);
+  else select(aslug, hit.object.userData.points?.[hit.instanceId] ?? hit.object.userData.point);
   openTab("edit");
   const label = state.geo?.actors?.[aslug]?.label || aslug;
   showInspect({ title: label, road: aslug, rows: [["Road", label], ["In UEFN", "live splines: rebuilt on their own, no tile"]] });
@@ -3732,11 +3763,18 @@ async function deleteCity(c) {
     return out.ok === false && /^No city /.test(out.error || "") ? { ok: true, gone: true } : out;
   });
 }
+function groundMarch(r) {  // the terrain under a view ray (ground.js), never a raycast of the terrain mesh
+  const t = state.geo?.terrain;
+  if (!state.view.terrain) return null;
+  const o = r.origin, d = r.direction;
+  const s = marchHeightfield([o.x, o.y, o.z], [d.x, d.y, d.z], t, state.view.zx || 1);
+  return s === null ? null : r.at(s, new THREE.Vector3());
+}
 function groundAt(e) {
   const r = renderer.domElement.getBoundingClientRect();
   ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), camera);
-  const hit = ray.intersectObjects(groups.terrain.children, false)[0];
-  if (hit) return hit.point;
+  const hit = groundMarch(ray.ray);
+  if (hit) return hit;
   const out = new THREE.Vector3();
   return ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), out) ? out : null;
 }
