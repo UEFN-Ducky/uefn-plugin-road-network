@@ -3,7 +3,7 @@ import { $, ctl, presetValues, savePrefs, state } from "../core.js";
 import { regenerate, renderCitiesPane, showSide } from "./cities.js";
 import { renderPcgPane } from "./pcg.js";
 import { renderEditPane, renderUefnPane } from "./uefn.js";
-import { generate, generateTerrain } from "./world.js";
+import { generate } from "./world.js";
 import { buildScene } from "../view/scene.js";
 import { DEBUG_VIEWS } from "../view/terrain.js";
 
@@ -68,9 +68,10 @@ function built() {
 function runGenerate() {
   const s = scope();
   if (s.kind === "city") return regenerate(`Rebuilding ${s.c.name}`);  // the world with its cities as they are: only this one's changes show
-  // new ground under a built world: the whole world is rebuilt on it (same cities), so trees, props and roads come
-  // with it. The quick preview only redrew the ground and left them standing on the old one
-  return s.kind === "terrain" && !built() ? generateTerrain() : generate();
+  // new ground is always saved: a built world is rebuilt on it (same cities), so trees, props and roads come with
+  // it; a world not built yet is saved as ground only. The quick preview saved nothing: a tab switch reloaded the
+  // saved world and the new ground was gone
+  return generate({ terrainOnly: s.kind === "terrain" });
 }
 function syncGenerate() {
   if (!ctl.generate) return;
@@ -79,7 +80,7 @@ function syncGenerate() {
   const [label, title] = s.kind === "city" ? [`Regenerate ${s.c.name}`, `Rebuilds ${s.c.name}: its streets, blocks and buildings (offline, nothing changes in UEFN)`]
     : s.kind === "terrain" ? ["Regenerate terrain", again
       ? "New ground with a new terrain seed: different mountains, rivers and lakes. The cities keep their layout; roads, trees and props are rebuilt on the new ground"
-      : "New ground with a new terrain seed: different mountains, rivers and lakes (a quick look: Generate world builds on it)"]
+      : "New ground with a new terrain seed: different mountains, rivers and lakes, saved as this world's ground (Generate world adds the cities on it)"]
     : again ? ["Regenerate everything", "Rebuilds this whole world: the terrain, every city and every road (offline, nothing changes in UEFN)"]
     : ["Generate world", "Builds the terrain, cities and roads of a new world (offline, nothing changes in UEFN)"];
   ctl.generate.querySelector("span").textContent = label;
