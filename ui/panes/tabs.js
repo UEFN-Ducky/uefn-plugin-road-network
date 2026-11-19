@@ -65,7 +65,6 @@ function runGenerate() {
   if (s.kind === "city") return regenerate(`Rebuilding ${s.c.name}`);  // the world with its cities as they are: only this one's changes show
   return s.kind === "terrain" ? generateTerrain() : generate();
 }
-let liveTimer = 0;
 function syncGenerate() {
   if (!ctl.generate) return;
   const s = scope();
@@ -78,13 +77,11 @@ function syncGenerate() {
   ctl.generate.querySelector("span").textContent = label;
   ctl.generate.title = title;
 }
-// a generate setting changed: remember it and rebuild what the button would (always live)
+// a generate setting changed: only remembered; nothing is rebuilt until the foot button is pressed
 function setGen(key, v) {
   state.gen[key] = v;
   savePrefs();
   syncGenerate();
-  clearTimeout(liveTimer);
-  liveTimer = setTimeout(runGenerate, 650);
 }
 const m = (v) => `${Math.round(v)} m`;
 const pct = (v) => `${Math.round(v * 100)} %`;
@@ -240,7 +237,6 @@ function buildPanes() {
     roadKinds, junctions, coast);
   // ---- Footer
   ctl.generate = button("Generate world", "refresh", () => {
-    clearTimeout(liveTimer);
     if (scope().kind === "terrain") newTerrainSeed();
     runGenerate();
   }, "primary");
@@ -259,4 +255,4 @@ function syncControls() {
 }
 
 
-export { TABS, GEN_TABS, renderTabs, openTab, liveTimer, syncGenerate, setGen, m, pct, sl, buildPanes, syncControls };
+export { TABS, GEN_TABS, renderTabs, openTab, syncGenerate, setGen, m, pct, sl, buildPanes, syncControls };
