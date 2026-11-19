@@ -10,7 +10,7 @@ import { renderSelection, renderStats, renderUefnPane } from "./uefn.js";
 import { askChat, lakeBanner, settleCity } from "../view/edit.js";
 import { ROLE_COLOR, renderPcgCounts } from "../view/pcg.js";
 import { buildScene, drawLakes, lake, lakesOf } from "../view/scene.js";
-import { themeColors } from "../view/terrain.js";
+import { themeColors, unpackTerrain } from "../view/terrain.js";
 
 // ------------------------------------------------------------------ data
 const currentNet = () => state.nets.find((n) => n.id === state.net);
@@ -158,7 +158,7 @@ async function loadAllGeometry(net, step = null) {
     step?.(done, batches.length + 1, `Roads: ${done} of ${batches.length} parts (${slugs.map((s) => actors[s].label).join(", ")})`);
   })).catch((err) => { base.ok = false; base.error = err.message; });
   step?.(batches.length, batches.length + 1, "Cities and their plans…");
-  return { ...base, actors };
+  return { ...base, terrain: unpackTerrain(base.terrain), actors };
 }
 function renderActors(geo) {
   const rows = Object.entries(geo.actors || {});
@@ -191,7 +191,8 @@ async function generateTerrain() {
   if (out.ok === false) return showError(out.error);
   showError("");
   // rawTerrain too: buildScene draws the raw ground it cached, and the old one would stay on screen
-  state.geo = { ...(state.geo || {}), terrain: out.terrain, rawTerrain: out.terrain };
+  const ter = unpackTerrain(out.terrain);
+  state.geo = { ...(state.geo || {}), terrain: ter, rawTerrain: ter };
   buildScene();
 }
 

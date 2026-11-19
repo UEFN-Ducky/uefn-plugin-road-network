@@ -224,9 +224,15 @@ def test_terrain_only_world(monkeypatch):
     saved = files[store["net.bare.scan"]["terrain"]["file"]]["heights"]
     prev = ctx.terrain_preview("Bare", seed=4, size_km=6.0, relief_m=60.0,
                                options=json.dumps({"preset": "Alpine", "mountain_m": 2000}))
-    assert prev["ok"] and prev["terrain"]["heights"] != saved
-    assert max(max(r) for r in prev["terrain"]["heights"]) > 150000
-    assert set(prev["terrain"]["maps"]) <= set(cg.PANEL_MAPS)  # only what the 3D view draws goes to the panel
+    # the panel gets the ground packed (int32 cm heights, biome / river bytes) and only the maps it draws
+    import array
+    import base64
+    packed = prev["terrain"]["packed"]
+    heights = array.array("i", base64.b64decode(packed["h"]))
+    assert prev["ok"] and len(heights) == cg.GROUND_GRID ** 2 and list(heights[:5]) != [round(v) for v in saved[0][:5]]
+    assert max(heights) > 150000
+    assert set(packed) <= {"h", *cg.PANEL_MAPS} and len(base64.b64decode(packed["biome"])) == cg.GROUND_GRID ** 2
+    assert len(json.dumps(prev["terrain"])) < 1_000_000  # under the panel bridge's 1 MB line
     assert files[store["net.bare.scan"]["terrain"]["file"]]["heights"] is saved
 
 

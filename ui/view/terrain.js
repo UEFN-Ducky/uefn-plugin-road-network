@@ -224,6 +224,23 @@ function terrainMesh(t) {
   return { mesh, lo, hi };
 }
 
+// the backend sends the ground packed (citygen panel_maps): heights int32 cm, biome and river bytes, base64.
+// Back into the shape the view reads: heights[j][i] (null = no ground) and flat maps
+const HOLE = -2147483648;
+function unpackTerrain(t) {
+  if (!t?.packed) return t;
+  const bytes = (s) => Uint8Array.from(atob(s), (ch) => ch.charCodeAt(0));
+  const n = t.grid, h = new Int32Array(bytes(t.packed.h).buffer), heights = [];
+  for (let j = 0; j < n; j++) {
+    const row = new Array(n);
+    for (let i = 0; i < n; i++) { const v = h[j * n + i]; row[i] = v === HOLE ? null : v; }
+    heights.push(row);
+  }
+  const maps = {};
+  for (const k of ["biome", "river"]) if (t.packed[k]) maps[k] = Array.from(bytes(t.packed[k]));
+  const { packed, ...rest } = t;
+  return { ...rest, heights, ...(Object.keys(maps).length ? { maps } : {}) };
+}
 const terrainKey = (t) => t?.heights?.length ? `${t.grid}|${t.min}|${t.max}|${t.heights[0][0]}|${t.heights[t.grid >> 1]?.[t.grid >> 1]}|${t.heights[t.grid - 1]?.[t.grid - 1]}` : "";
 function sampleZ(t, x, y) {
   const n = t.grid;
@@ -248,4 +265,4 @@ function groundAt(e) {
   return ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), out) ? out : null;
 }
 
-export { BIOME_COLORS, DEBUG_VIEWS, themeColors, detailTex, smooth, terrainMesh, terrainKey, sampleZ, groundMarch, groundAt };
+export { BIOME_COLORS, DEBUG_VIEWS, themeColors, detailTex, smooth, terrainMesh, terrainKey, unpackTerrain, sampleZ, groundMarch, groundAt };

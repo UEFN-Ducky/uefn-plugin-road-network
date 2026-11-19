@@ -66,15 +66,15 @@ def register(ctx) -> None:
 
     def panel_terrain(nid: str, most: int = 512) -> dict:
         """The ground for the 3D view: a fine scan thinned to at most `most` cells a side (display only)."""
-        ter = cg.panel_maps(scan_terrain(nid))
+        ter = scan_terrain(nid)
         n = int(ter.get("grid") or 0)
         if n <= most or not ter.get("heights"):
-            return ter
+            return cg.panel_maps(ter)
         s = -(-n // most)
         while n % s:
             s += 1
         rows = [r[::s] for r in ter["heights"][::s]]
-        return {**ter, "grid": len(rows), "heights": rows}
+        return cg.panel_maps({**{k: v for k, v in ter.items() if k != "maps"}, "grid": len(rows), "heights": rows})
 
     def actor_docs(nid: str) -> dict:
         # the heads only: items() under this prefix would read and decode every point and segment chunk too

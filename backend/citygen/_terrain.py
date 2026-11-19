@@ -242,11 +242,34 @@ GROUND_GRID = 320  # cells a side of a generated world's ground: ~19 m a cell on
 PANEL_MAPS = ("biome", "river")  # what the 3D view colours with; the rest stay server side (Debug looks come as PNGs)
 
 
+PANEL_HOLE = -2147483648  # a cell with no ground under it, in the packed heights
+
+
 def panel_maps(ter: dict) -> dict:
-    """The ground as the panel needs it: only the maps it draws (a 320 grid with all five is ~4 MB)."""
-    if not ter.get("maps"):
+    """The ground as the panel needs it, packed: heights as little-endian int32 cm and the maps it draws as bytes,
+    base64 (ui/view/terrain.js unpackTerrain). As JSON numbers a 320 grid ran ~2 MB and stalled the panel bridge;
+    packed it is ~0.8 MB."""
+    import array as _array
+    import base64 as _b64
+    import sys as _sys
+    if not ter.get("heights"):
         return ter
-    return {**ter, "maps": {k: v for k, v in ter["maps"].items() if k in PANEL_MAPS}}
+
+    def pack(vals, code):
+        a = _array.array(code, vals)
+        if _sys.byteorder != "little":
+            a.byteswap()
+        return _b64.b64encode(a.tobytes()).decode("ascii")
+
+    def flat(m):
+        return [v for r in m for v in r] if m and isinstance(m[0], list) else list(m)
+    packed = {"h": pack((PANEL_HOLE if v is None else round(v) for r in ter["heights"] for v in r), "i")}
+    maps = ter.get("maps") or {}
+    if maps.get("biome"):
+        packed["biome"] = pack((max(0, min(255, round(v or 0))) for v in flat(maps["biome"])), "B")
+    if maps.get("river"):
+        packed["river"] = pack((1 if (v or 0) > 0 else 0 for v in flat(maps["river"])), "B")
+    return {**{k: v for k, v in ter.items() if k not in ("heights", "maps")}, "packed": packed}
 LAST_WORLD = None  # the last engine World made here, every map: the caller keeps it for debug views (never saved)
 
 
