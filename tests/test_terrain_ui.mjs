@@ -81,4 +81,16 @@ for (const look of ["natural", "height", "slope", "biome", "rivers"]) assert.ok(
 assert.ok(tabs.includes("debug:${v}") && view.includes("look.startsWith(\"debug:\")"), "debug looks drape the terrain_map PNG");
 assert.ok(!/#[0-9a-f]{3,6}\b|rgb\(/i.test(view.slice(view.indexOf("const BIOME_COLORS"), view.indexOf("const smooth"))), "no colour literals");
 
+// ---- a saved world opens with its own preset; one from before the engine stays Classic (ui/panes/world.js)
+const world = read("ui/panes/world.js"), wa = world.indexOf("function worldGen("), wb = world.indexOf("\n}\n", wa);
+assert.ok(wa > 0 && wb > wa, "worldGen in world.js");
+const worldGen = new Function(`${world.slice(wa, wb + 2)}; return worldGen;`)();
+const gen = { ...ui.GEN_DEFAULTS };
+assert.equal(worldGen({ seed: 3, options: { hill_km: 2 } }, "Old", gen).preset, "Classic", "pre-engine world stays Classic");
+assert.equal(worldGen({ seed: 3 }, "Older", gen).preset, "Classic", "no options at all: Classic");
+assert.equal(worldGen({ options: { preset: "Alpine" } }, "New", gen).preset, "Alpine", "a saved preset is kept");
+assert.equal(worldGen({ options: {} }, "X", gen).seed, gen.seed, "missing fields fall back to the panel's");
+assert.equal(ui.GEN_DEFAULTS.preset, "Coastal", "new worlds start on Coastal");
+assert.ok(world.includes("Object.assign(state.gen, worldGen("), "openNet uses worldGen");
+
 console.log("terrain ui ok");

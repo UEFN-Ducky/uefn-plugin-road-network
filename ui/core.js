@@ -87,7 +87,7 @@ const TERRAIN_KEYS = {
 };
 const TERRAIN_CHOICES = { coast: ["one", ["none", "one", "two", "island", "archipelago"]] };
 const TERRAIN_PRESETS = {
-  Coastal: { mountain_intensity: 0.55, flatland: 0.6, hills: 0.55, coast: "one", mountain_m: 1600, mountain_cover: 0.27, plateaus: 0.05 },
+  Coastal: { mountain_intensity: 0.55, flatland: 0.6, hills: 0.55, coast: "one", mountain_m: 1600, mountain_cover: 0.25, plateaus: 0.05 },
   Plains: { mountain_m: 300, mountain_cover: 0.05, mountain_intensity: 0.2, flatland: 0.9, hills: 0.25, plateaus: 0.05, coast: "none", relief_m: 30, hill_km: 4 },
   Mountainous: { mountain_m: 2200, mountain_cover: 0.45, mountain_intensity: 0.85, flatland: 0.25, hills: 0.6, coast: "none", relief_m: 120 },
   Alpine: { mountain_m: 2500, mountain_cover: 0.5, mountain_intensity: 0.95, flatland: 0.2, hills: 0.6, coast: "none", snowline_m: 1400, temp_c: 8, lakes: 0.7, relief_m: 140 },
@@ -114,7 +114,7 @@ const GEN_DEFAULTS = {
   name: "Valley", cities: 3, size_km: 6, relief_m: 60, seed: 7, ground: "new",
   hill_km: 2, roughness: 0.5, detail: 5, ridges: 0, peaks: 0, flatten_m: 300, sea_m: -1000, water_depth_m: 12, terrace_m: 0, smooth: 0.5, landscape_px: 2017,
   // the engine's sliders, as the Coastal preset sets them (presetValues("Coastal"))
-  preset: "Coastal", mountain_m: 1600, mountain_cover: 0.27, mountain_intensity: 0.55, flatland: 0.6, hills: 0.55, plateaus: 0.05,
+  preset: "Coastal", mountain_m: 1600, mountain_cover: 0.25, mountain_intensity: 0.55, flatland: 0.6, hills: 0.55, plateaus: 0.05,
   coast: "one", coast_side_deg: 0, erosion: 0.5, rivers: 0.5, lakes: 0.4, temp_c: 14, rain: 0.5, snowline_m: 1900,
   block_m: 100, block_ratio: 1, wobble: 0.12, follow_hills: 0.8, green_lots: 0, prune: 0.22, downtown: 0.4, normal: 0.75, highway: "4L", highway_curve: 0.08,
   core_roads: "4L", neighbourhood_roads: "2S", suburb_roads: "2L", one_way_core: "no", interchange: "direct", overpasses: "yes",

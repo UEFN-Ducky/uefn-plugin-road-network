@@ -35,6 +35,12 @@ async function loadNets(autoOpen = true) {
   if (!state.net && state.nets[0]) openNet(state.nets[0].id);
   else if (!state.net) buildScene();
 }
+// the generate settings a saved world opens with. A world saved before the terrain engine has no preset in its
+// options: it stays Classic, so regenerating it never moves its ground onto the engine (new worlds start on Coastal)
+function worldGen(g, name, gen) {
+  return { name, seed: g.seed ?? gen.seed, size_km: g.size_km ?? gen.size_km, relief_m: g.relief_m ?? gen.relief_m,
+    cities: g.cities ?? gen.cities, ground: g.ground_from ? "net" : "new", preset: "Classic", ...(g.options || {}) };
+}
 async function openNet(id) {
   state.net = id; state.framed = false; state.sel = null; state.actor = ""; state.pcg = {}; state.exact = null;
   state.cityPick = ""; state.block = null;
@@ -46,8 +52,7 @@ async function openNet(id) {
   document.querySelectorAll("[data-net]").forEach((b) => b.toggleAttribute("aria-current", b.dataset.net === id));
   const g = currentNet()?.generated;
   if (g) {  // the generate tabs show this world's own settings
-    Object.assign(state.gen, { name: currentNet().name, seed: g.seed ?? state.gen.seed, size_km: g.size_km ?? state.gen.size_km,
-      relief_m: g.relief_m ?? state.gen.relief_m, cities: g.cities ?? state.gen.cities, ground: g.ground_from ? "net" : "new", ...(g.options || {}) });
+    Object.assign(state.gen, worldGen(g, currentNet().name, state.gen));
     syncControls();
     syncGenerate();
   }
