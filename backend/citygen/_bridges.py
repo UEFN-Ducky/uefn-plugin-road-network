@@ -291,12 +291,51 @@ def cross_water(nodes: dict, edges: list, wet) -> tuple:
     return {n: p for n, p in nodes.items() if n in used}, out
 
 
-def wet_from(ter: dict):
-    """(x, y) -> True where the terrain is under its water line; None when the terrain has no water."""
-    sea = (ter or {}).get("sea")
-    if sea is None or not (ter or {}).get("heights"):
+RIVER_WET_MIN_CM = 600.0  # a river is wet at least this far each side of its line: over_water samples every 10 m
+RIVER_BUCKET_CM = 20000.0
+
+
+def _river_wet(ter: dict):
+    """(x, y) -> True within a river's half width of its line (terrain engine: ter rivers + river_widths_cm)."""
+    lines, widths = ter.get("rivers") or [], ter.get("river_widths_cm") or []
+    buckets: dict = {}
+    for k, line in enumerate(lines):
+        half = max(RIVER_WET_MIN_CM, (widths[k] if k < len(widths) else 0.0) / 2)
+        for a, b in zip(line, line[1:]):
+            seg = (a[0], a[1], b[0], b[1], half)
+            for bi in range(int((min(a[0], b[0]) - half) // RIVER_BUCKET_CM), int((max(a[0], b[0]) + half) // RIVER_BUCKET_CM) + 1):
+                for bj in range(int((min(a[1], b[1]) - half) // RIVER_BUCKET_CM), int((max(a[1], b[1]) + half) // RIVER_BUCKET_CM) + 1):
+                    buckets.setdefault((bi, bj), []).append(seg)
+    if not buckets:
         return None
-    return lambda x, y: (st.sample_grid(ter, x, y) if st.sample_grid(ter, x, y) is not None else sea + 1) < sea
+    return lambda x, y: any(_dist_seg((x, y), s[:2], s[2:4]) <= s[4] for s in
+                            buckets.get((int(x // RIVER_BUCKET_CM), int(y // RIVER_BUCKET_CM)), ()))
+
+
+def _lake_wet(ter: dict):
+    """(x, y) -> True in a lake cell of the engine's lake map (flat, its own n over the terrain's bounds)."""
+    lake = (ter.get("maps") or {}).get("lake")
+    if not lake:
+        return None
+    n = math.isqrt(len(lake))
+    (x0, y0), (x1, y1) = ter["min"], ter["max"]
+    return lambda x, y: (0 <= x - x0 < x1 - x0 and 0 <= y - y0 < y1 - y0 and
+                         lake[int((y - y0) / (y1 - y0) * n) * n + int((x - x0) / (x1 - x0) * n)] > 0.5)
+
+
+def wet_from(ter: dict):
+    """(x, y) -> True where the terrain is under its water line, on an engine river or in an engine lake; None when
+    the terrain has no water."""
+    ter = ter or {}
+    if not ter.get("heights"):
+        return None
+    sea = ter.get("sea")
+    tests = [f for f in (_lake_wet(ter), _river_wet(ter)) if f]
+    if sea is not None:
+        tests.insert(0, lambda x, y: (st.sample_grid(ter, x, y) if st.sample_grid(ter, x, y) is not None else sea + 1) < sea)
+    if not tests:
+        return None
+    return tests[0] if len(tests) == 1 else (lambda x, y: any(f(x, y) for f in tests))
 
 
 def over_water(nodes: dict, edges: list, wet, span: dict | None = None, bridges: list | None = None,

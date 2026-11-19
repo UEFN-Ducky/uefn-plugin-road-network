@@ -288,6 +288,8 @@ from ..terrain import config as _tcfg  # noqa: E402
 OPTIONS.update({k: v for k, v in _tcfg.KEYS.items() if k not in OPTIONS and k not in ("detail", "relief_m")})
 CHOICES["preset"] = (tuple(_tcfg.PRESETS), "Classic")
 CHOICES["coast"] = (_tcfg.CHOICES["coast"][1], _tcfg.CHOICES["coast"][0])
+# the keys an engine preset sets: options() leaves out the ones nobody gave, so the preset's own values fill them
+ENGINE_KEYS = tuple(k for k in (*_tcfg.KEYS, *_tcfg.CHOICES) if k in OPTIONS or k in CHOICES)
 
 
 # what one city may have or not, over the world's choice (city["features"], the Cities list's remove / + Add)
@@ -323,6 +325,10 @@ def options(given: dict | None = None) -> dict:
         out[key] = int(round(v)) if isinstance(default, int) else v
     for key, (allowed, default) in CHOICES.items():
         out[key] = given.get(key) if given.get(key) in allowed else default
+    if out["preset"] != "Classic":
+        for key in ENGINE_KEYS:
+            if key not in given:
+                del out[key]
     return out
 
 

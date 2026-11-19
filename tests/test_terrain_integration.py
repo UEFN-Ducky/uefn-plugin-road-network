@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import math
 import struct
 import sys
 import zlib
@@ -25,6 +26,11 @@ def test_classic_is_the_old_ground():
         assert _sig(cg.terrain(seed, 600000.0, 6000.0, CITIES, grid=48, opts=opts)) == want, seed
         assert _sig(cg.terrain(seed, 600000.0, 6000.0, CITIES, grid=48, opts={**opts, "preset": "Classic"})) == want
     assert cg.options({})["preset"] == "Classic"
+    # an engine preset's own values fill the terrain keys nobody gave (they were all defaulted: presets looked alike)
+    assert "mountain_m" not in cg.options({"preset": "Alpine"})
+    assert cg.options({"preset": "Alpine", "mountain_m": 900})["mountain_m"] == 900
+    a, b = (cg.terrain(2, 600000.0, 6000.0, CITIES, grid=32, opts={"preset": p})["heights"] for p in ("Alpine", "Plains"))
+    assert a != b
 
 
 def test_coastal_runs_the_engine_in_cm():
@@ -91,6 +97,32 @@ def test_terrain_map_rpc():
         assert _decode(base64.b64decode(out["png"]))[:3] == (256, 256, 3)
     assert not ctx.terrain_map("Valley", "accum")["ok"]  # not kept in the stored world, no run this session
     assert not ctx.terrain_map("Nowhere", "biome")["ok"]
+
+
+def test_rivers_and_lakes_are_wet_and_bridged():
+    t = cg.terrain(5, 600000.0, 6000.0, CITIES, grid=40, opts={"preset": "Alpine"})
+    wet = cg.wet_from(t)
+    lake = t["maps"]["lake"]
+    n = math.isqrt(len(lake))
+    cell = 600000.0 / n
+    k = next(k for k, v in enumerate(lake) if v > 0.5)
+    assert wet(-300000.0 + cell * (k % n + 0.5), -300000.0 + cell * (k // n + 0.5))
+    # a highway square across a river's middle, both ends on dry land, gets a bridge
+    crossings = []
+    for line in t["rivers"]:
+        for a, b in zip(line, line[1:]):
+            mx, my = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+            ux, uy = (b[0] - a[0]), (b[1] - a[1])
+            L = math.hypot(ux, uy) or 1.0
+            p, q = (mx - uy / L * 20000, my + ux / L * 20000), (mx + uy / L * 20000, my - ux / L * 20000)
+            if not wet(*p) and not wet(*q):
+                crossings.append((p, q))
+    assert crossings
+    p, q = crossings[0]
+    bridges = []
+    nodes, edges = cg.over_water({"a": [*p, 0.0], "b": [*q, 0.0]}, [("a", "b", "4L")], wet, bridges=bridges)
+    assert bridges and edges
+    assert cg.wet_from(cg.terrain(5, 600000.0, 6000.0, CITIES, grid=40)) is None  # Classic, no sea: no water
 
 
 def test_engine_holds_keep_zones_and_digs_lakes():

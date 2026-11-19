@@ -234,7 +234,7 @@ def terrain(seed: int, size_cm: float, relief_cm: float, cities: list, grid: int
     return out
 
 
-ENGINE_MAPS = ("biome", "river", "build", "road_cost")  # the engine maps a world keeps (flat, row-major, grid size)
+ENGINE_MAPS = ("biome", "river", "lake", "build", "road_cost")  # engine maps a world keeps (flat j*n+i, grid size)
 LAST_WORLD = None  # the last engine World made here, every map: the caller keeps it for debug views (never saved)
 
 
@@ -254,7 +254,9 @@ def _engine_terrain(seed, size_cm, relief_cm, cities, grid, center, o, keep, lak
     world = LAST_WORLD = generate(cfg, grid, lo[0] / 100.0, lo[1] / 100.0, size_cm / 100.0, cities=towns, keep=held)
     out = world.to_citygen()
     out["maps"] = {k: [round(v, 3) for v in world.maps[k]] for k in ENGINE_MAPS if k in world.maps}
+    # river polylines (cm) for the panel and wet_from, their widths beside them (a point's third number is its z)
     out["rivers"] = [[[round(x), round(y)] for x, y in r["pts"]] for r in world.maps.get("river_lines") or []]
+    out["river_widths_cm"] = [round(r.get("width_cm", 0.0)) for r in world.maps.get("river_lines") or []]
     if not (lakes or keep):
         return out
     xs = [lo[0] + size_cm * (i + 0.5) / grid for i in range(grid)]
