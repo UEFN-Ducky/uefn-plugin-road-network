@@ -148,8 +148,8 @@ def test_region_shares_follow_config():
         g, cfg, maps = _world(**opts)
         sh = shares(maps)
         assert abs(sh['mountains'] - cfg['mountain_cover']) <= 0.05, sh
-        rest = [k for k in range(g.n * g.n) if maps['land'][k] >= 0.5 and maps['mountains'][k] < 0.5
-                and maps['foothills'][k] < 0.5]
+        rest = [k for k in range(g.n * g.n)
+                if maps['land'][k] - maps['mountains'][k] - maps['foothills'][k] >= 0.5]  # the land left over
         hills = sum(1 for k in rest if maps['hills'][k] >= 0.5) / len(rest)
         plat = sum(1 for k in rest if maps['plateaus'][k] >= 0.5) / len(rest)
         assert abs(hills - cfg['hills'] * (1 - cfg['flatland'])) <= 0.05, (hills, opts)

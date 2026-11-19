@@ -29,7 +29,7 @@ CHOICES = {
 
 PRESETS = {
     'Coastal': {'mountain_intensity': 0.55, 'flatland': 0.6, 'hills': 0.55, 'coast': 'one',
-                'mountain_m': 1600.0, 'mountain_cover': 0.27, 'plateaus': 0.05},
+                'mountain_m': 1600.0, 'mountain_cover': 0.25, 'plateaus': 0.05},
     'Plains': {'mountain_m': 300.0, 'mountain_cover': 0.05, 'mountain_intensity': 0.2, 'flatland': 0.9,
                'hills': 0.25, 'plateaus': 0.05, 'coast': 'none', 'relief_m': 30.0, 'hill_km': 4.0},
     'Mountainous': {'mountain_m': 2200.0, 'mountain_cover': 0.45, 'mountain_intensity': 0.85, 'flatland': 0.25,

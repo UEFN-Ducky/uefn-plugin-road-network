@@ -34,7 +34,8 @@ def foothill_top(cfg) -> float:
 
 def hill_height(grid, cfg, noise, maps):
     """Stage 5a -> hill_h: hills (0.5-2.5 x relief_m at hill_km spacing), a soft roll on plains (none at
-    flatland 1), foothills rising to foothill_top() at the range edge, the range's plinth, valleys pressed down."""
+    flatland 1), valleys pressed down; plinth: foothills rising to foothill_top() at the range edge and on
+    under the range (the mountain layer is max-ed with it, never stacked on it)."""
     sc = cfg.get('hill_km', 2.0) * 1000.0
     f = grid.field(lambda x, y: noise.fbm(x / sc - 3.7, y / sc + 15.2, 4), sc / 10)
     relief = cfg.get('relief_m', 60.0)
@@ -42,12 +43,12 @@ def hill_height(grid, cfg, noise, maps):
     top = foothill_top(cfg)
     dip = min(60.0, 0.05 * cfg.get('mountain_m', 0.0))
     hm, pm, fm, mm, vm = (maps[k] for k in ('hills', 'plains', 'foothills', 'mountains', 'valleys'))
-    out = grid.new()
+    out, plinth = grid.new(), grid.new()
     for k in range(len(out)):
         t = _f01(f[k])
-        out[k] = (hm[k] * relief * (0.5 + 2.0 * t) + pm[k] * roll * f[k]
-                  + (fm[k] + mm[k]) * top * (0.55 + 0.45 * t) - vm[k] * dip)
-    maps['hill_h'] = out
+        out[k] = hm[k] * relief * (0.5 + 2.0 * t) + pm[k] * roll * f[k] - vm[k] * dip
+        plinth[k] = (fm[k] + mm[k]) * top * (0.55 + 0.45 * t)
+    maps['hill_h'], maps['plinth'] = out, plinth
     return maps
 
 
@@ -66,7 +67,7 @@ def plateau_height(grid, cfg, noise, maps):
 
 def mountain_fallback(grid, cfg, noise, maps):
     """Stage 4 stand-in when mountains.py is not there -> mountain_h: ridged noise in the mask's core."""
-    peak = cfg.get('mountain_m', 0.0) * (0.4 + 0.6 * cfg.get('mountain_intensity', 0.5)) - foothill_top(cfg)
+    peak = cfg.get('mountain_m', 0.0) * (0.4 + 0.6 * cfg.get('mountain_intensity', 0.5)) - 40.0
     mm = maps['mountains']
     out = grid.new()
     if peak > 0:
@@ -78,13 +79,17 @@ def mountain_fallback(grid, cfg, noise, maps):
 
 
 def blend(grid, cfg, noise, maps):
-    """Stage 6 -> height = macro + hills (or the plateau top where it stands) + the mountain layer."""
-    macro, hh, w, top = maps['macro'], maps['hill_h'], maps['plateau_w'], maps['plateau_top']
-    mh = maps.get('mountain_h')
+    """Stage 6 -> height = macro + hills (or the plateau top where it stands) + max(plinth, mountain layer).
+    The mountain layer is maps['ridge'] (mountains.py) or maps['mountain_h'] (fallback); a pass (maps['passes'])
+    lowers the plinth too, so the notch is not filled back in."""
+    macro, hh, w, top, plinth = (maps[k] for k in ('macro', 'hill_h', 'plateau_w', 'plateau_top', 'plinth'))
+    mh = maps.get('ridge', maps.get('mountain_h'))
+    ps = maps.get('passes')
     out = grid.new()
     for k in range(len(out)):
         base = macro[k] + hh[k]
-        out[k] = base + (top - base) * w[k] + (mh[k] if mh is not None else 0.0)
+        p = plinth[k] * (1.0 - 0.6 * ps[k]) if ps is not None else plinth[k]
+        out[k] = base + (top - base) * w[k] + max(p, mh[k] if mh is not None else 0.0)
     maps['height'] = out
     return maps
 

@@ -26,7 +26,7 @@ def land_mask(grid, cfg, noise, maps):
     def edge(x, y):
         """Metres inside the coastline (negative at sea)."""
         wx, wy = noise.warp(x, y, warp_amt, warp_sc, 2)
-        jag = noise.fbm(x / jag_sc + 31.7, y / jag_sc - 12.9, 4)  # bays and headlands
+        jag = noise.fbm(x / jag_sc + 31.7, y / jag_sc - 12.9, 3)  # bays and headlands
         if mode == 'island':
             return (0.7 - math.hypot(wx - cx, wy - cy) / half + 0.22 * jag) * half
         if mode == 'archipelago':
@@ -36,15 +36,23 @@ def land_mask(grid, cfg, noise, maps):
         t = min(0.42 - ((wx - cx) * dx + (wy - cy) * dy) / half for dx, dy in dirs)
         return (t + 0.12 * jag) * half
 
-    e = grid.field(edge, min(jag_sc / 6, size / 48))
-    c = grid.cell
+    e = grid.field(edge, jag_sc / 4)
+    c, n = grid.cell, grid.n
     land = array('d', (smoothstep(-c * 0.5, c * 0.5, v) for v in e))
     sea = array('d', (0.0 if v >= 0.5 else 1.0 for v in land))
-    to_sea, to_land = grid.dist_to(sea), grid.dist_to(land)
+    # one distance pass, to the shore cells (land with a sea neighbour), signed by side
+    shore = grid.new()
+    for k in range(n * n):
+        if not sea[k]:
+            i, j = k % n, k // n
+            if (i and sea[k - 1]) or (i < n - 1 and sea[k + 1]) or (j and sea[k - n]) or (j < n - 1 and sea[k + n]):
+                shore[k] = 1.0
+    to_shore = grid.dist_to(shore)
     inf = float('inf')
     cd = grid.new()
-    for k in range(len(cd)):
-        d = to_sea[k] if land[k] >= 0.5 else -to_land[k]
-        cd[k] = FAR_M if d == inf else (-FAR_M if d == -inf else d)
+    for k in range(n * n):
+        d = to_shore[k]
+        d = FAR_M if d == inf else d + c * 0.5
+        cd[k] = d if not sea[k] else -d
     maps['land'], maps['coast_dist'], maps['sea'] = land, cd, sea
     return maps
