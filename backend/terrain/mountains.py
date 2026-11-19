@@ -238,21 +238,33 @@ def _cross(a, b, c, d):
     return None
 
 
-def passes(grid, network, cities, height=None, depth=0.42, reach=5000.0, notch=1500.0, across=3000.0):
-    """Saddles where nearest-neighbour city links cross a spine. For each crossing, the lowest spine point within
-    `reach` m is notched to `depth` x the local ridge top over a `notch` m wide cut (across the whole ridge).
+_ALL_PAIRS_MAX = 12  # up to 12 cities every pair may get a highway (66 links); more: each city's 3 nearest
+
+
+def _pairs(pts):
+    m = len(pts)
+    if m <= _ALL_PAIRS_MAX:
+        return [(a, b) for a in range(m) for b in range(a + 1, m)]
+    # ponytail: k-nearest links past 12 cities; feed the real highway plan in if it links farther pairs
+    out = set()
+    for a in range(m):
+        near = sorted((b for b in range(m) if b != a),
+                      key=lambda q: math.hypot(pts[q][0] - pts[a][0], pts[q][1] - pts[a][1]))[:3]
+        out.update((min(a, b), max(a, b)) for b in near)
+    return sorted(out)
+
+
+def passes(grid, network, cities, height=None, depth=0.42, reach=5000.0, notch=1500.0, across=3000.0, merge=2000.0):
+    """Saddles where city links (every pair up to 12 cities) cross a spine. For each crossing, the lowest spine point
+    within `reach` m is notched to `depth` x the local ridge top over a `notch` m wide cut (across the whole ridge);
+    a crossing with a pass already within `merge` m of its saddle and `reach` m of the crossing reuses it.
     Lowers `height` in place when given. Returns (passes [(x, y, h)], passes map 0..1). Cities: (x, y) or {x, y}."""
     pmap = grid.new()
     pts = [_xy(c) for c in cities]
-    pairs = set()
-    for a in range(len(pts)):
-        others = [b for b in range(len(pts)) if b != a]
-        if others:
-            b = min(others, key=lambda q: math.hypot(pts[q][0] - pts[a][0], pts[q][1] - pts[a][1]))
-            pairs.add((min(a, b), max(a, b)))
+    pairs = _pairs(pts)
     out = []
     n, xs, ys = grid.n, grid.xs, grid.ys
-    for a, b in sorted(pairs):
+    for a, b in pairs:
         for spine in network['spines']:
             hit = None
             for q in range(len(spine) - 1):
@@ -266,6 +278,9 @@ def passes(grid, network, cities, height=None, depth=0.42, reach=5000.0, notch=1
             low = near[min(range(len(near)), key=crest.__getitem__)]
             top = max(crest)
             px, py = spine[low][0], spine[low][1]
+            if any(math.hypot(qx - px, qy - py) <= merge and math.hypot(qx - hit[0], qy - hit[1]) <= reach
+                   for qx, qy, _ in out):
+                continue
             h = depth * top
             # local spine direction at the saddle: the notch runs across it
             p0, p1 = spine[max(low - 1, 0)], spine[min(low + 1, len(spine) - 1)]

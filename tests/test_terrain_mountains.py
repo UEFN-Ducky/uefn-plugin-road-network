@@ -79,6 +79,37 @@ def test_pass_between_cities():
     assert passes(g, net, [ca], h)[0] == []  # one city: no link, no pass
 
 
+def test_pass_for_every_crossing_pair():
+    g, mask, nz = _world()
+    net = ridge_network(g, CFG, nz, mask)
+    h, _ = ridge_height(g, CFG, nz, mask, net)
+    before = h[:]
+    a = math.radians(30)
+
+    def at(u, v):  # u along the range axis, v across it
+        return (12000 + u * math.cos(a) - v * math.sin(a), 12000 + u * math.sin(a) + v * math.cos(a))
+    cities = [at(-4000, -6000), at(-4000, 6000), at(4000, 6000)]  # 0-1 and 0-2 cross the range, 1-2 does not
+    ps, _ = passes(g, net, cities, h)
+    sp = net['spines'][0]
+    crossing = [(p, q) for p, q in ((0, 1), (0, 2), (1, 2)) if _crosses(cities[p], cities[q], sp)]
+    assert sorted(crossing) == [(0, 1), (0, 2)]
+    for p, q in crossing:
+        ok = False
+        for px, py, ph in ps:
+            peak = max(g.sample(before, x, y) for x, y, _ in sp if math.hypot(x - px, y - py) <= 5000)
+            if (_seg_dist(px, py, cities[p], cities[q]) <= 5000 and ph < 0.5 * peak
+                    and g.sample(h, px, py) < 0.5 * peak):
+                ok = True
+        assert ok, (p, q)
+    for i, (x1, y1, _) in enumerate(ps):  # merged: no two passes closer than 2 km
+        assert all(math.hypot(x1 - x2, y1 - y2) > 2000 for x2, y2, _ in ps[i + 1:])
+
+
+def _crosses(c1, c2, sp):
+    from backend.terrain.mountains import _cross
+    return any(_cross(c1, c2, s0, s1) for s0, s1 in zip(sp, sp[1:]))
+
+
 def _coastal(intensity, mountain_m=2000.0):
     from backend.terrain import engine, terrain_config
     cfg = terrain_config({'preset': 'Coastal', 'seed': 7, 'mountain_m': mountain_m, 'mountain_intensity': intensity})
