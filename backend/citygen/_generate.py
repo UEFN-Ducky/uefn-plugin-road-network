@@ -2,11 +2,13 @@ from __future__ import annotations
 
 def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None = None, keep: list | None = None,
              wet=None, bridges: list | None = None, airports: list | None = None,
-             airport_builds: dict | None = None) -> dict:
+             airport_builds: dict | None = None, terrain: dict | None = None) -> dict:
     """{label: {points, segments}}: one '<City> Roads' actor per city and one 'Highways' actor.
     A highway ends 40 m outside its city's gate street, where the city's own stub road ends; there it
     meets the city through the chosen interchange (direct, a trumpet loop, a cloverleaf piece, or a
-    stack: an elevated deck on ramps), and it bridges over every street it crosses on the way."""
+    stack: an elevated deck on ramps), and it bridges over every street it crosses on the way.
+    terrain: an engine terrain() with maps.road_cost: each highway then takes the cheapest way (cost_route),
+    through the passes, instead of its one gentle curve."""
     o = options(opts)
     graphs = [city_graph(c, o, wet, bridges) for c in cities]
     # a Blender interchange's cross road ends where the grid's next street would be: in an organic or mixed city
@@ -88,6 +90,8 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
         bend = rnd.uniform(-1, 1) * o["highway_curve"] * L  # one gentle curve per highway
         via = [[x0 + (x1 - x0) * t + nx * bend * math.sin(math.pi * t), y0 + (y1 - y0) * t + ny * bend * math.sin(math.pi * t)]
                for t in (k / steps for k in range(1, steps))]
+        if terrain and (terrain.get("maps") or {}).get("road_cost"):
+            via = cost_route(terrain, ends[0], ends[1])
         box = cities[a].get("map")
         if box:  # its curve stays on the map
             via = [[min(max(v[0], box[0] + 5000), box[2] - 5000), min(max(v[1], box[1] + 5000), box[3] - 5000)] for v in via]
@@ -267,6 +271,70 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
 
 
 INTERCHANGE_FOLDER = "Interchanges"  # under the roads folder: the IC_* models (assets/interchanges)
+
+
+ROUTE_N = 128  # A* cells across the map for highway routing
+ROUTE_TOL_CM = 15000.0  # Douglas-Peucker tolerance of the routed line
+ROUTE_STEP_CM = 20000.0  # the routed line gets a via point at least this often (the highway drapes on them)
+
+
+def _simplify(pts: list, tol: float) -> list:
+    """Douglas-Peucker: the fewest of pts (ends kept) with none of the rest farther than tol from the line."""
+    if len(pts) < 3:
+        return list(pts)
+    (ax, ay), (bx, by) = pts[0], pts[-1]
+    L = math.hypot(bx - ax, by - ay) or 1.0
+    k, far = max(((k, abs((bx - ax) * (ay - p[1]) - (ax - p[0]) * (by - ay)) / L) for k, p in enumerate(pts[1:-1], 1)),
+                 key=lambda t: t[1])
+    if far <= tol:
+        return [pts[0], pts[-1]]
+    return _simplify(pts[:k + 1], tol)[:-1] + _simplify(pts[k:], tol)
+
+
+def cost_route(ter: dict, p, q, n: int = ROUTE_N) -> list:
+    """Via points (cm, ends left out) of the cheapest way from p to q over the engine's road_cost map
+    (8-way A* on an n x n grid over the terrain): round steep ground and through passes. Simplified at
+    ROUTE_TOL_CM, then split so no two via points lie more than ROUTE_STEP_CM apart."""
+    import heapq
+    cost, g = ter["maps"]["road_cost"], ter["grid"]
+    (mx, my), (Mx, My) = ter["min"], ter["max"]
+    cw, ch = (Mx - mx) / n, (My - my) / n
+    # ponytail: nearest terrain cell per route cell; bilinear if the terrain grid is much coarser than n
+    c = [cost[min(g - 1, j * g // n) * g + min(g - 1, i * g // n)] for j in range(n) for i in range(n)]
+    low = min(c) or 1e-6
+    cell = lambda x, y: (min(n - 1, max(0, int((x - mx) / cw))), min(n - 1, max(0, int((y - my) / ch))))
+    (si, sj), (gi, gj) = cell(*p[:2]), cell(*q[:2])
+    start, goal = sj * n + si, gj * n + gi
+    h = lambda k: low * math.hypot((k % n - gi) * cw, (k // n - gj) * ch)
+    best, came, heap = {start: 0.0}, {}, [(h(start), start)]
+    steps = [(di, dj, math.hypot(di * cw, dj * ch)) for di in (-1, 0, 1) for dj in (-1, 0, 1) if di or dj]
+    while heap:
+        f, k = heapq.heappop(heap)
+        if k == goal:
+            break
+        d = best[k]
+        if f - h(k) > d + 1e-6:
+            continue
+        i, j = k % n, k // n
+        for di, dj, L in steps:
+            a, b = i + di, j + dj
+            if 0 <= a < n and 0 <= b < n:
+                m = b * n + a
+                nd = d + L * (c[k] + c[m]) / 2
+                if nd < best.get(m, 1e30):
+                    best[m], came[m] = nd, k
+                    heapq.heappush(heap, (nd + h(m), m))
+    path, k = [], goal
+    while k in came:
+        path.append(k)
+        k = came[k]
+    pts = [list(p[:2])] + [[mx + (k % n + 0.5) * cw, my + (k // n + 0.5) * ch] for k in reversed(path[1:])] + [list(q[:2])]
+    line = _simplify(pts, ROUTE_TOL_CM)
+    via = []
+    for a, b in zip(line, line[1:]):
+        m = max(1, math.ceil(math.dist(a, b) / ROUTE_STEP_CM))
+        via += [[a[0] + (b[0] - a[0]) * t / m, a[1] + (b[1] - a[1]) * t / m] for t in range(1, m + 1)]
+    return via[:-1]
 
 
 def model_pieces(a: dict, ics: list, ground, folder: str) -> dict:

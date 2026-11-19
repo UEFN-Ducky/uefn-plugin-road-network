@@ -27,5 +27,35 @@ def test_cities_on_buildable_ground():
                 assert ((a["x"] - b["x"]) ** 2 + (a["y"] - b["y"]) ** 2) ** 0.5 > a["radius"] + b["radius"] + 49000
 
 
+def _ridge_world(n=128, size_m=8000.0):
+    """A 500 m range along x = 0 with one 100 m pass at y = 1500 m, as an engine terrain() in cm."""
+    import math
+    from backend.terrain.grid import Grid
+    from backend.terrain import suitability
+    g = Grid(n, -size_m / 2, -size_m / 2, size_m)
+    hm = lambda x, y: 500.0 * math.exp(-(x / 300.0) ** 2) * (1 - 0.8 * math.exp(-((y - 1500.0) / 400.0) ** 2))
+    maps = {"height": g.new()}
+    for j, y in enumerate(g.ys):
+        for i, x in enumerate(g.xs):
+            maps["height"][j * n + i] = hm(x, y)
+    suitability.run(g, {}, None, maps)
+    ter = {"min": [g.x0 * 100, g.y0 * 100], "max": [(g.x0 + size_m) * 100, (g.y0 + size_m) * 100], "grid": n,
+           "maps": {"road_cost": list(maps["road_cost"])}}
+    return ter, hm
+
+
+def test_highway_crosses_at_the_pass():
+    ter, hm = _ridge_world()
+    a, b = [-250000.0, 0.0], [250000.0, 0.0]
+    line = [a] + cg.cost_route(ter, a, b) + [b]
+    top = 0.0
+    for p, q in zip(line, line[1:]):
+        for t in range(41):
+            x, y = p[0] + (q[0] - p[0]) * t / 40, p[1] + (q[1] - p[1]) * t / 40
+            top = max(top, hm(x / 100, y / 100))
+    assert top <= 100.0 + 50.0, top  # the pass is 100 m high; straight over the crest would be 500 m
+    assert all(((u[0] - v[0]) ** 2 + (u[1] - v[1]) ** 2) ** 0.5 <= 20001 for u, v in zip(line, line[1:]))
+
+
 def test_classic_unchanged():
     assert cg.place_cities(7, 3, BOUNDS) == cg.place_cities(7, 3, BOUNDS, opts={"preset": "Classic"})
