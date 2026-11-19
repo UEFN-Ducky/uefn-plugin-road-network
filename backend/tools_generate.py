@@ -336,8 +336,10 @@ def register(ctx) -> None:
         # a freeway ends at the shore when only open water lies beyond it, and each city's streets give way to its
         # neighbours' ramps where those reach over its land
         cg.shore_plan(towns, opts, wet)
-        if base:  # a scanned landscape is never reshaped: a Blender interchange model only where it is flat already
-            cg.slope_plan(towns, opts, road_ground)  # (our own ground is levelled under each model: grade_to_roads)
+        # a scanned landscape is never reshaped, nor is natural city ground: a Blender interchange model only where
+        # it is flat already (levelled, a parclo's square stood as a 1.4 km grey plate on a hillside, Nov 19 2026)
+        if base or opts["city_ground"] != "flatten":
+            cg.slope_plan(towns, opts, road_ground)  # (flatten: the ground is levelled under each model: grade_to_roads)
         else:
             for t in towns:
                 t.pop("ic_steep", None)
