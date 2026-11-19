@@ -47,7 +47,7 @@ function renderHistory() {
     const row = (ent, cls, title, go) => {
       const b = h("button", { type: "button", class: `rn-hist__row ${cls}`, title }, icon(cls === "is-redo" ? "redo" : "clock", 14),
         h("span", { class: "rn-hist__name" }, ent.label), h("span", { class: "rn-hist__at" }, ago(ent.at)));
-      b.addEventListener("click", go);
+      b.addEventListener("click", () => { setHistOpen(false); go(); });
       return b;
     };
     const redo = hist.redo.map((ent, i) => row(ent, "is-redo", `Redo up to here: ${ent.label}`, () => stepHistory(false, hist.redo.length - i)));
@@ -56,7 +56,51 @@ function renderHistory() {
       ...(redo.length ? [h("div", { class: "rn-hist__now" }, "The world as it is now")] : []), ...undo]
       : [h("div", { class: "rn-hint" }, state.net ? "Nothing to go back to yet. Every change you make is listed here." : "Open a world.")]));
   }
+  const tools = $("histTools");
+  if (tools) {
+    const mini = (label, ic, n, back) => {
+      const b = h("button", { type: "button", class: "rn-mini", title: `${label} (Ctrl+${back ? "Z" : "Y"})` }, icon(ic, 12), ` ${label}`);
+      b.disabled = !n;
+      b.addEventListener("click", () => stepHistory(back));
+      return b;
+    };
+    tools.replaceChildren(mini("Undo", "undo", hist.undo.length, true), mini("Redo", "redo", hist.redo.length, false));
+  }
+  const btn = $("histBtn");
+  if (btn) btn.title = hist.undo.length ? `History: ${hist.undo.length} change${hist.undo.length > 1 ? "s" : ""} to go back to` : "History";
   renderTools();
+}
+
+// the header's History dropdown: opens under its button, closes on a pick, Escape or a click outside it
+function setHistOpen(open) {
+  const btn = $("histBtn"), panel = $("histPanel");
+  if (!btn || !panel) return;
+  panel.hidden = !open;
+  btn.setAttribute("aria-expanded", String(open));
+  btn.classList.toggle("is-on", open);
+  if (open) {
+    loadHistory();
+    panel.querySelector(".rn-hist__row, button:not(:disabled)")?.focus();
+  }
+}
+{
+  const btn = $("histBtn"), panel = $("histPanel");
+  if (btn && panel) {
+    btn.replaceChildren(icon("clock", 16));
+    btn.addEventListener("click", () => setHistOpen(panel.hidden));
+    document.addEventListener("pointerdown", (e) => {
+      if (!panel.hidden && !panel.contains(e.target) && !btn.contains(e.target)) setHistOpen(false);
+    });
+    panel.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { e.stopPropagation(); setHistOpen(false); btn.focus(); }
+      else if (e.key === "ArrowDown" || e.key === "ArrowUp") {  // walk the rows
+        const rows = [...panel.querySelectorAll(".rn-hist__row")];
+        const i = rows.indexOf(document.activeElement);
+        rows[Math.max(0, Math.min(rows.length - 1, i + (e.key === "ArrowDown" ? 1 : -1)))]?.focus();
+        e.preventDefault();
+      }
+    });
+  }
 }
 
 rt.historySoon = historySoon;  // core's rpc() asks for it after every change (core imports none of ours)

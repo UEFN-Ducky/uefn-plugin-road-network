@@ -249,6 +249,15 @@
                border-radius: 999px; padding: 2px 8px; font: inherit; font-size: 11px; cursor: pointer; }
     .rn-mini:hover { color: var(--fg); background: var(--bg-hover); }
     .rn-mini:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+    .rn-histdrop { position: relative; }
+    #histBtn.is-on { background: var(--bg-hover); color: var(--fg); }
+    .rn-histpanel { position: absolute; right: 0; top: calc(100% + 6px); z-index: 60; width: min(340px, calc(100vw - 24px));
+                    background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-lg);
+                    padding: 6px; display: flex; flex-direction: column; gap: 4px; animation: rn-pop 140ms ease; }
+    .rn-histpanel[hidden] { display: none; }
+    .rn-histpanel__head { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px 4px; }
+    .rn-histpanel__head .rn-section { margin: 0; padding: 0; }
+    .rn-histpanel__list { max-height: min(60vh, 480px); overflow-y: auto; }
     .rn-hist__row { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: transparent; color: var(--fg); font: inherit;
                     font-size: 12px; padding: 5px 8px; border-radius: var(--radius-sm); cursor: pointer; text-align: left; }
     .rn-hist__row:hover { background: var(--bg-hover); }
@@ -319,6 +328,15 @@
     <div id="headActions" class="dk-row"></div>
     <div class="rn-spacer"></div>
     <div id="headPush" class="dk-row"></div>
+    <!-- history: every change of this world, go back to any of them (history.js) -->
+    <div class="rn-histdrop">
+      <button type="button" class="dk-btn dk-btn--ghost dk-btn--icon" id="histBtn" aria-haspopup="dialog" aria-expanded="false"
+              aria-controls="histPanel" title="History: go back to any change" aria-label="History"></button>
+      <div class="rn-histpanel" id="histPanel" role="dialog" aria-label="History" hidden>
+        <div class="rn-histpanel__head"><span class="rn-section">History</span><span class="dk-row" id="histTools"></span></div>
+        <div class="rn-list rn-histpanel__list" id="historyList"><div class="rn-hint">Open a world.</div></div>
+      </div>
+    </div>
     <button type="button" class="dk-btn dk-btn--ghost dk-btn--icon rn-fold" id="foldRight" aria-controls="rightPanel"></button>
   </header>
   <div class="dk-layout">
@@ -340,10 +358,6 @@
           <div class="rn-list" id="actors"><div class="rn-hint">Open a world.</div></div>
           <div class="rn-section">Pull from UEFN</div>
           <div class="rn-pull" id="pullRow"></div>
-        </div>
-        <div id="leftHistory" class="rn-left-block">
-          <div class="rn-section">History</div>
-          <div class="rn-list" id="historyList"><div class="rn-hint">Open a world.</div></div>
         </div>
         <div id="nets" hidden></div>
       </div>
