@@ -392,6 +392,8 @@ def register(ctx) -> None:
         # once more each. ponytail: a change landing between those calls is caught by the panel's next load
         reuse = again and cur == nid and "out" in _PREVIEW_CACHE
         if not reuse:
+            if panel:  # (reading a big world's ground and hashing it takes seconds before the first layer)
+                push({"what": "progress", "id": nid, "step": 0, "of": 100, "text": "Reading the world…"})
             terrain = scan_terrain(nid) or {}
             actors = world_actors(nid)
             cities = list(city_docs(nid).values())
@@ -433,10 +435,17 @@ def register(ctx) -> None:
                 clock[:] = [now, text]
                 if text:
                     push({"what": "progress", "id": nid, "step": step, "of": 100, "text": text})
+            # the bar by work, not by layer count: the forest layers are nearly all of it (a terrain-only world sat
+            # at 0-3 % through them, then jumped through 32 empty layers in a blink)
+            # ponytail: a fixed weight per kind; time each kind if the bar still lurches
+            lays = sorted((pl.clean(l) for l in docs.values() if l.get("enabled", True)), key=lambda l: (l["order"], l["name"]))
+            ws = [20 if l["kind"] in pl.SCATTERED else 1 for l in lays]
+            done_w = [sum(ws[:i]) for i in range(len(ws) + 1)]
             placed = pl.preview(list(docs.values()), cities, terrain, pl.road_samples(actors), ground,
                                 limit=6000, juncs=pl.junctions(actors), keep=keep, foliage_limit=FOREST_LIMIT, memo=memo,
                                 arms=pl.arm_samples(actors),
-                                on_layer=lambda i, n, name: tick(int(60 * i / max(1, n)), f"Placing {name.lower()} (layer {i + 1} of {n})…"))
+                                on_layer=lambda i, n, name: tick(int(60 * done_w[min(i, len(ws))] / max(1, done_w[-1])),
+                                                                 f"Placing {name.lower()} (layer {i + 1} of {n})…"))
             tick(60, "Keeping everything off the roads and out of the buildings…")
             _PREVIEW_CACHE["placing"] = dict(memo.last)
             # (no loose wall slabs along the roads: every road piece carries its own side walls down into the

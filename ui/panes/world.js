@@ -250,7 +250,9 @@ window.addEventListener("message", (ev) => {
         // a job nobody started from this panel still shows its bar here: never a silent half hour
         loading.job = true;
         busy(e.title, { text: e.text, step: e.step || 0, of: e.of || 0 });
-      } else if (loading.title) busy(loading.title, { text: e.text, step: (e.step || 0) + 1, of: (e.of || 1) + 1 });
+      } else if (loading.title) {  // (a card that counts further, the city's load, keeps its own total)
+        busy(loading.title, { text: e.text, step: (e.step || 0) + 1, of: Math.max(loading.of, (e.of || 1) + 1) });
+      }
     } else if (e.what === "hold") {
       refreshHolds();  // a ducky on this PC took or let go of a city
     } else if (e.what === "city") {

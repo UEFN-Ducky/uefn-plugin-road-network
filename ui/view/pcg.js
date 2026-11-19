@@ -360,9 +360,12 @@ async function loadPcgPreviewNow() {
   // (a teammate's change: their PC already showed it here, this one only catches up, so no card over the map)
   const hush = !live.sharing && Date.now() < (live.quietUntil || 0);
   const card = (msg, opts) => { if (!hush && (!loading.title || loading.title === "Placing the city")) busy(msg, opts); };
+  // one bar for the whole load: the first call's own 0-100 progress (world.js), then each later call a step past
+  // it (it fell back from 90 % to 14 % when the second call started)
+  const of = 100 + calls.length;
   for (const [i, ls] of calls.entries()) {  // the first call computes the whole city; the rest read it from the cache
     card("Placing the city", { text: i ? `${ls.map((l) => l.name).join(", ")}` : "Placing every building, prop and tree…",
-      step: i, of: calls.length });
+      step: i ? 100 + i : 0, of });
     // again: the later calls read the placement the first one checked, without re-reading the whole world
     const r = await cachedRpc("pcg_preview", { net_id: net, layer_id: ls.map((l) => l.id).join(","), ...(i ? { again: 1 } : {}) });
     if (net !== state.net) return;  // (openNet took the card down; the new world's run owns it now)
@@ -377,7 +380,7 @@ async function loadPcgPreviewNow() {
   for (const l of todo) if (l.name in picked) out[l.name] = picked[l.name];
   Object.assign(out, picked);
   // the ground follows the city: re-cut from this layout, every time the city changes
-  card("Placing the city", { text: "Fitting the ground to the roads and the lots…", step: calls.length, of: calls.length });
+  card("Placing the city", { text: "Fitting the ground to the roads and the lots…", step: of, of });
   const gr = await rpc("ground_fit", { net_id: net });
   card("");
   if (net !== state.net) return;
