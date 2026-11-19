@@ -91,7 +91,11 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
         via = [[x0 + (x1 - x0) * t + nx * bend * math.sin(math.pi * t), y0 + (y1 - y0) * t + ny * bend * math.sin(math.pi * t)]
                for t in (k / steps for k in range(1, steps))]
         if terrain and (terrain.get("maps") or {}).get("road_cost"):
-            via = cost_route(terrain, ends[0], ends[1])
+            routed = cost_route(terrain, ends[0], ends[1])
+            if routed is None:  # no way under ROUTE_MAX_GRADE: the plain curve, and the city says so
+                cities[a].setdefault("unrouted", []).append(cities[b].get("name"))
+            else:
+                via = routed
         box = cities[a].get("map")
         if box:  # its curve stays on the map
             via = [[min(max(v[0], box[0] + 5000), box[2] - 5000), min(max(v[1], box[1] + 5000), box[3] - 5000)] for v in via]
@@ -291,23 +295,40 @@ def _simplify(pts: list, tol: float) -> list:
     return _simplify(pts[:k + 1], tol)[:-1] + _simplify(pts[k:], tol)
 
 
-def cost_route(ter: dict, p, q, n: int = ROUTE_N) -> list:
-    """Via points (cm, ends left out) of the cheapest way from p to q over the engine's road_cost map
-    (8-way A* on an n x n grid over the terrain): round steep ground and through passes. Simplified at
-    ROUTE_TOL_CM, then split so no two via points lie more than ROUTE_STEP_CM apart."""
+def terrain_z(ter: dict, x: float, y: float) -> float:
+    """A terrain() world's ground (cm) at (x, y) cm, bilinear between its cell centres."""
+    g, rows, (mx, my), (Mx, My) = ter["grid"], ter["heights"], ter["min"], ter["max"]
+    u = min(max((x - mx) / (Mx - mx) * g - 0.5, 0.0), g - 1.0)
+    v = min(max((y - my) / (My - my) * g - 0.5, 0.0), g - 1.0)
+    i, j = min(int(u), g - 2), min(int(v), g - 2)
+    fu, fv = u - i, v - j
+    return ((rows[j][i] * (1 - fu) + rows[j][i + 1] * fu) * (1 - fv)
+            + (rows[j + 1][i] * (1 - fu) + rows[j + 1][i + 1] * fu) * fv)
+
+
+ROUTE_CLIMB = 25.0  # cost of a metre up or down, in metres of flat road: a 500 m crest is worth a 25 km detour
+ROUTE_MAX_GRADE = 0.08  # no step of a routed highway steeper than this
+
+
+def cost_route(ter: dict, p, q, n: int = ROUTE_N) -> list | None:
+    """Via points (cm, ends left out) of the cheapest way from p to q (8-way A* on an n x n grid over the terrain):
+    the engine's road_cost per metre, ROUTE_CLIMB per metre climbed or descended, and no step steeper than
+    ROUTE_MAX_GRADE, so a highway crosses a range at its pass. Simplified at ROUTE_TOL_CM, then split so no two
+    via points lie more than ROUTE_STEP_CM apart. None when no way stays under the grade."""
     import heapq
     cost, g = ter["maps"]["road_cost"], ter["grid"]
     (mx, my), (Mx, My) = ter["min"], ter["max"]
     cw, ch = (Mx - mx) / n, (My - my) / n
     # ponytail: nearest terrain cell per route cell; bilinear if the terrain grid is much coarser than n
     c = [cost[min(g - 1, j * g // n) * g + min(g - 1, i * g // n)] for j in range(n) for i in range(n)]
+    z = [terrain_z(ter, mx + (i + 0.5) * cw, my + (j + 0.5) * ch) / 100.0 for j in range(n) for i in range(n)]
     low = min(c) or 1e-6
     cell = lambda x, y: (min(n - 1, max(0, int((x - mx) / cw))), min(n - 1, max(0, int((y - my) / ch))))
     (si, sj), (gi, gj) = cell(*p[:2]), cell(*q[:2])
     start, goal = sj * n + si, gj * n + gi
-    h = lambda k: low * math.hypot((k % n - gi) * cw, (k // n - gj) * ch)
+    h = lambda k: low * math.hypot((k % n - gi) * cw, (k // n - gj) * ch) / 100.0
     best, came, heap = {start: 0.0}, {}, [(h(start), start)]
-    steps = [(di, dj, math.hypot(di * cw, dj * ch)) for di in (-1, 0, 1) for dj in (-1, 0, 1) if di or dj]
+    steps = [(di, dj, math.hypot(di * cw, dj * ch) / 100.0) for di in (-1, 0, 1) for dj in (-1, 0, 1) if di or dj]
     while heap:
         f, k = heapq.heappop(heap)
         if k == goal:
@@ -320,10 +341,15 @@ def cost_route(ter: dict, p, q, n: int = ROUTE_N) -> list:
             a, b = i + di, j + dj
             if 0 <= a < n and 0 <= b < n:
                 m = b * n + a
-                nd = d + L * (c[k] + c[m]) / 2
+                rise = abs(z[m] - z[k])
+                if rise > L * ROUTE_MAX_GRADE:
+                    continue
+                nd = d + L * (c[k] + c[m]) / 2 + ROUTE_CLIMB * rise
                 if nd < best.get(m, 1e30):
                     best[m], came[m] = nd, k
                     heapq.heappush(heap, (nd + h(m), m))
+    if goal != start and goal not in came:
+        return None
     path, k = [], goal
     while k in came:
         path.append(k)

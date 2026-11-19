@@ -44,33 +44,72 @@ def test_cities_on_dry_buildable_ground(half_cm):
 
 
 def _ridge_world(n=128, size_m=8000.0):
-    """A 500 m range along x = 0 with one 100 m pass at y = 1500 m, as an engine terrain() in cm."""
+    """A 500 m range along x = 0 (2 km wide) with one 100 m pass at y = 2500 m, as an engine terrain() in cm."""
     import math
     from backend.terrain.grid import Grid
     from backend.terrain import suitability
     g = Grid(n, -size_m / 2, -size_m / 2, size_m)
-    hm = lambda x, y: 500.0 * math.exp(-(x / 300.0) ** 2) * (1 - 0.8 * math.exp(-((y - 1500.0) / 400.0) ** 2))
+    hm = lambda x, y: 500.0 * math.exp(-(x / 2000.0) ** 2) * (1 - 0.8 * math.exp(-((y - 2500.0) / 1500.0) ** 2))
     maps = {"height": g.new()}
     for j, y in enumerate(g.ys):
         for i, x in enumerate(g.xs):
             maps["height"][j * n + i] = hm(x, y)
     suitability.run(g, {}, None, maps)
     ter = {"min": [g.x0 * 100, g.y0 * 100], "max": [(g.x0 + size_m) * 100, (g.y0 + size_m) * 100], "grid": n,
+           "heights": [[maps["height"][j * n + i] * 100 for i in range(n)] for j in range(n)],
            "maps": {"road_cost": list(maps["road_cost"])}}
     return ter, hm
 
 
-def test_highway_crosses_at_the_pass():
-    ter, hm = _ridge_world()
-    a, b = [-250000.0, 0.0], [250000.0, 0.0]
-    line = [a] + cg.cost_route(ter, a, b) + [b]
-    top = 0.0
+def _top_m(ter, line):
+    top = -1e9
     for p, q in zip(line, line[1:]):
         for t in range(41):
-            x, y = p[0] + (q[0] - p[0]) * t / 40, p[1] + (q[1] - p[1]) * t / 40
-            top = max(top, hm(x / 100, y / 100))
-    assert top <= 100.0 + 50.0, top  # the pass is 100 m high; straight over the crest would be 500 m
+            top = max(top, cg.terrain_z(ter, p[0] + (q[0] - p[0]) * t / 40, p[1] + (q[1] - p[1]) * t / 40) / 100)
+    return top
+
+
+def _saddle_m(ter, p, q):
+    """The lowest crest any way from p to q must cross (minimax over the terrain's cells), metres."""
+    import heapq
+    n, rows, (mx, my), (Mx, My) = ter["grid"], ter["heights"], ter["min"], ter["max"]
+    cell = lambda x, y: (min(n - 1, int((x - mx) / (Mx - mx) * n)), min(n - 1, int((y - my) / (My - my) * n)))
+    (si, sj), goal = cell(*p), cell(*q)
+    best, heap = {(si, sj): rows[sj][si]}, [(rows[sj][si], si, sj)]
+    while heap:
+        top, i, j = heapq.heappop(heap)
+        if (i, j) == goal:
+            return top / 100
+        for a in (i - 1, i, i + 1):
+            for b in (j - 1, j, j + 1):
+                if 0 <= a < n and 0 <= b < n:
+                    t = max(top, rows[b][a])
+                    if t < best.get((a, b), 1e30):
+                        best[(a, b)] = t
+                        heapq.heappush(heap, (t, a, b))
+
+
+def test_highway_crosses_at_the_pass():
+    ter, hm = _ridge_world()
+    a, b = [-350000.0, -150000.0], [350000.0, -150000.0]  # 4 km from the pass: road_cost alone went over the crest
+    line = [a] + cg.cost_route(ter, a, b) + [b]
+    assert _top_m(ter, line) <= 100.0 + 50.0, _top_m(ter, line)  # the pass is 100 m; over the crest 500 m
     assert all(((u[0] - v[0]) ** 2 + (u[1] - v[1]) ** 2) ** 0.5 <= 20001 for u, v in zip(line, line[1:]))
+    wall = {**ter, "heights": [[r * 20 for r in row] for row in ter["heights"]]}  # 2 km at its pass: too steep
+    assert cg.cost_route(wall, a, b) is None
+
+
+def test_highways_on_20km_coastal_take_the_passes():
+    half = 1000000.0
+    opts = {"preset": "Coastal"}
+    towns = cg.place_cities(7, 3, ((-half, -half), (half, half)), None, 1.0, 50000.0, opts=opts)
+    ter = cg.terrain(7, 2 * half, 6000.0, towns, opts=opts)
+    for i, j in cg.links(towns):
+        p, q = [towns[i]["x"], towns[i]["y"]], [towns[j]["x"], towns[j]["y"]]
+        via = cg.cost_route(ter, p, q)
+        assert via is not None, (i, j)
+        top, saddle = _top_m(ter, [p] + via + [q]), _saddle_m(ter, p, q)
+        assert top <= saddle + 50 or top < 300, (i, j, top, saddle)
 
 
 def test_trees_follow_biomes():
