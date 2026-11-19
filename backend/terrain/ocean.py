@@ -71,16 +71,14 @@ def _canyon_mask(grid, noise, cdb, heads, reach):
 
 
 def _zones(grid, maps):
-    """(zone, harbour): 1 inside a city or keep zone (its ground is set by the blend stage), fading out over
-    600 m; the harbour fades out to 2.5 radii + 600 m, so a coastal town's roads and gates stay in shallow water."""
+    """1 inside a city or keep zone (no beach or cliff there), fading out over 600 m. The sea under a city stays
+    sea: holding the town's level there filled a bay in as a grey plate."""
     zones = [(z['x'], z['y'], z.get('radius', 0.0)) for z in maps.get('_flat') or []]
-    out, port = grid.new(), grid.new()
+    out = grid.new()
     if zones:
         for k, x, y in grid.points():
-            ds = [(math.hypot(x - zx, y - zy), r) for zx, zy, r in zones]
-            out[k] = max(1.0 - smoothstep(1.1 * r, 1.1 * r + 600.0, d) for d, r in ds)
-            port[k] = max(1.0 - smoothstep(1.1 * r, 2.5 * r + 600.0, d) for d, r in ds)
-    return out, port
+            out[k] = max(1.0 - smoothstep(1.1 * r, 1.1 * r + 600.0, math.hypot(x - zx, y - zy)) for zx, zy, r in zones)
+    return out
 
 
 def stage(grid, cfg, noise, maps):
@@ -112,7 +110,7 @@ def stage(grid, cfg, noise, maps):
 
     # beach suitability B = C (the band below) x S (gentle ground) x G (soft rock, away from the ranges)
     soft_slope = grid.slope(grid.blur(h, max(1, int(100.0 / cell))))
-    zone, port = _zones(grid, maps)
+    zone = _zones(grid, maps)
     fine = 1.0 - smoothstep(30.0, 80.0, cell)  # dunes and cliffs are narrower than a coarse cell: spikes there
     near_m = max(NEAR_M, 2.5 * cell)  # a coarse grid: the first sea cell is a whole cell out, never a wall
 
@@ -172,9 +170,8 @@ def stage(grid, cfg, noise, maps):
                     * smoothstep(25.0, 60.0, d) * (1.0 - smoothstep(200.0, 320.0, d))
             new = s0 - base - relief - cut + bar
             new = min(new, s0 - 0.3 - 0.01 * d)  # never out of the water: an islet would have no land mask
-            hk = h[k] + (new - h[k]) * smoothstep(0.0, near_m, d) * (1.0 - port[k])  # a town keeps its level
-            if zone[k] < 0.5:
-                hk = min(hk, s0 - 0.3)  # the old near-shore ground could stand dry inside the sea mask
+            hk = h[k] + (new - h[k]) * smoothstep(0.0, near_m, d)
+            hk = min(hk, s0 - 0.3)  # the old near-shore ground could stand dry inside the sea mask
             depth_m[k] = s0 - hk
             canyon[k] = cw * smoothstep(30.0, 300.0, d)
             mud = smoothstep(0.6 * dsh, 1.6 * dsh, base) * (0.6 + 0.4 * deep)

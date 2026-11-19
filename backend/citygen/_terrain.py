@@ -348,7 +348,10 @@ def _engine_terrain(seed, size_cm, relief_cm, cities, grid, center, o, keep, lak
              "radius": math.hypot(k["x1"] - k["x0"], k["y1"] - k["y0"]) / 200.0, "z": k["z"] / 100.0 - shift}
             for k in keep or []]
     global LAST_WORLD
-    world = LAST_WORLD = generate(cfg, grid, lo[0] / 100.0, lo[1] / 100.0, size_cm / 100.0, cities=towns, keep=held)
+    # city_ground 'natural' (the default): the city fits itself to the land, nothing is pressed flat under it (the
+    # engine levelled every city whatever this said)
+    world = LAST_WORLD = generate(cfg, grid, lo[0] / 100.0, lo[1] / 100.0, size_cm / 100.0, cities=towns, keep=held,
+                                  flatten_cities=o["city_ground"] == "flatten")
     out = world.to_citygen()
     if shift:
         out["heights"] = [[round(v + shift * 100.0, 1) for v in r] for r in out["heights"]]

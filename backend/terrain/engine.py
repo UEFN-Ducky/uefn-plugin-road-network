@@ -39,16 +39,17 @@ def _hills(grid, cfg, noise, maps):
 
 def _flatten(grid, cfg, noise, maps):
     """Blend, then cities and keep zones: flat at the local plains level (keep: its own z) inside radius x 1.1,
-    blended back over FLATTEN_BLEND_M."""
+    blended back over FLATTEN_BLEND_M. Land only: the sea and lakes under a city stay water (levelled with them,
+    a city over a bay filled it in as a grey plate to its centre's height)."""
     hills.blend(grid, cfg, noise, maps)
     zones = [(c['x'], c['y'], c.get('radius', 0.0), c.get('z')) for c in maps.get('_flat', [])]
     if not zones:
         return maps
-    h, macro = maps['height'], maps['macro']
+    h, macro, land = maps['height'], maps['macro'], maps['land']
     levels = [(x, y, r * 1.1, grid.sample(macro, x, y) if z is None else z) for x, y, r, z in zones]
     for k, x, y in grid.points():
         for cx, cy, r, z in levels:
-            w = 1.0 - smoothstep(r, r + FLATTEN_BLEND_M, math.hypot(x - cx, y - cy))
+            w = (1.0 - smoothstep(r, r + FLATTEN_BLEND_M, math.hypot(x - cx, y - cy))) * land[k]
             if w > 0:
                 h[k] += (z - h[k]) * w
     return maps
@@ -140,10 +141,12 @@ class World:
                 'grid': g.n, 'heights': rows, 'sea': sea, 'z_scale': z, 'maps': self.maps}
 
 
-def generate(cfg, n, x0, y0, size_m, cities=(), keep=(), quality='final') -> World:
+def generate(cfg, n, x0, y0, size_m, cities=(), keep=(), quality='final', flatten_cities=True) -> World:
     """Run the stages on an n x n grid from the (x0, y0) corner over size_m metres.
     cfg: terrain_config() output (a raw opts dict is accepted too). cities / keep: dicts with x, y, radius in metres
-    (keep may add z, the level it is held at). quality 'preview' caps n at PREVIEW_MAX_N and skips erosion."""
+    (keep may add z, the level it is held at). quality 'preview' caps n at PREVIEW_MAX_N and skips erosion.
+    flatten_cities=False: the cities only keep their passes through the ranges; the ground under them is left as it
+    is (city_ground 'natural': the city fits itself to the land)."""
     if 'classic' not in cfg:
         cfg = terrain_config(cfg)
     if quality == 'preview':
@@ -151,7 +154,7 @@ def generate(cfg, n, x0, y0, size_m, cities=(), keep=(), quality='final') -> Wor
     grid, noise = Grid(n, x0, y0, size_m), Noise(cfg['seed'])
     cities = [{'x': float(c['x']), 'y': float(c['y']), 'radius': float(c.get('radius', 0.0))} for c in cities]
     keep = [dict(k) for k in keep]
-    maps = {'cities': [(c['x'], c['y']) for c in cities], '_flat': cities + keep}
+    maps = {'cities': [(c['x'], c['y']) for c in cities], '_flat': (cities if flatten_cities else []) + keep}
     meta = {'seed': cfg['seed'], 'preset': cfg.get('preset'), 'quality': quality, 'stage_ms': {}, 'ran': []}
     key = repr((n, float(x0), float(y0), float(size_m), cfg['seed']))
     for name, fn, reads in _stages():

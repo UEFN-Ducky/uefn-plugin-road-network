@@ -1,4 +1,5 @@
 """Terrain engine pipeline: stage cache, preview speed, metadata, city flattening, citygen shape."""
+import math
 import os
 import sys
 import time
@@ -58,6 +59,20 @@ def test_cities_are_flattened():
     g, h = w.grid, w.maps['height']
     inside = [h[k] for k, x, y in g.points() if (x - city['x']) ** 2 + (y - city['y']) ** 2 < (city['radius']) ** 2]
     assert inside and max(inside) - min(inside) < 1.0
+
+
+def test_city_on_the_shore_never_fills_the_sea_and_natural_leaves_the_ground():
+    engine.clear_cache()
+    cfg = terrain_config({'preset': 'Coastal', 'seed': 7, 'mountain_m': 0.0, 'erosion': 0.0})
+    base = engine.generate(cfg, 96, -SIZE / 2, -SIZE / 2, SIZE)
+    g, cd = base.grid, base.maps['coast_dist']
+    k0 = min((k for k in range(len(cd)) if 300.0 < cd[k] < 800.0), key=lambda k: cd[k])  # a city on the beach
+    city = {'x': g.xs[k0 % g.n], 'y': g.ys[k0 // g.n], 'radius': 1500.0}
+    flat = engine.generate(cfg, 96, -SIZE / 2, -SIZE / 2, SIZE, cities=[city])
+    wet = [k for k, x, y in g.points() if base.maps['land'][k] < 0.5 and math.hypot(x - city['x'], y - city['y']) < 1650.0]
+    assert wet and all(flat.maps['height'][k] < 0.0 for k in wet)  # the bay under the city is still water
+    nat = engine.generate(cfg, 96, -SIZE / 2, -SIZE / 2, SIZE, cities=[city], flatten_cities=False)
+    assert list(nat.maps['height']) == list(base.maps['height'])  # natural: the land as it was
 
 
 def test_core_ships_alone(monkeypatch):
