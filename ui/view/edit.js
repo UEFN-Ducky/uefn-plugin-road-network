@@ -486,8 +486,7 @@ async function revealLayers(layers, first) {
     rt.needsDraw = true;
     if (rising) requestAnimationFrame(step);
   };
-  requestAnimationFrame(step);
-  await new Promise((done) => setTimeout(done, 170 + fresh_.length * gap));
+  requestAnimationFrame(step);  // (not waited on: the next batch loads while this one rises)
 }
 function startCityDrag(c) {
   if (heldElsewhere(c)) { rt.drag.cityCand = null; rt.drag.cityMove = false; return; }

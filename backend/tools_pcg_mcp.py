@@ -250,7 +250,7 @@ def register(ctx) -> None:
     panel_rpc("pcg_plan", lambda net_id="", road_tag="": safe(pcg_plan)(net_id, road_tag))
     panel_rpc("pcg_assets", lambda net_id="", asset_set="", interiors="", trees="", trees_max=0:
               safe(pcg_assets)(net_id, asset_set, interiors, trees, trees_max))
-    panel_rpc("pcg_preview", lambda net_id="", layer_id="": safe(panel_preview)(net_id, layer_id))
+    panel_rpc("pcg_preview", lambda net_id="", layer_id="", again=False: safe(panel_preview)(net_id, layer_id, bool(again)))
     panel_rpc("ground_fit", lambda net_id="": safe(ground_fit)(net_id))
     panel_rpc("pcg_exact", lambda net_id="", x=0.0, y=0.0, radius_m=400.0: safe(pcg_exact)(
         net_id, float(x), float(y), float(radius_m)))

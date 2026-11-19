@@ -363,7 +363,8 @@ async function loadPcgPreviewNow() {
   for (const [i, ls] of calls.entries()) {  // the first call computes the whole city; the rest read it from the cache
     card("Placing the city", { text: i ? `${ls.map((l) => l.name).join(", ")}` : "Placing every building, prop and tree…",
       step: i, of: calls.length });
-    const r = await cachedRpc("pcg_preview", { net_id: net, layer_id: ls.map((l) => l.id).join(",") });
+    // again: the later calls read the placement the first one checked, without re-reading the whole world
+    const r = await cachedRpc("pcg_preview", { net_id: net, layer_id: ls.map((l) => l.id).join(","), ...(i ? { again: 1 } : {}) });
     if (net !== state.net) return;  // (openNet took the card down; the new world's run owns it now)
     if (r.ok === false && ls[0].id !== "road-walls") { card(""); settleCity(); state.lifted = null; buildScene(); return showError(r.error, () => loadPcgPreview()); }
     if (r.ok !== false) {

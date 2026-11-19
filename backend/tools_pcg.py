@@ -357,11 +357,12 @@ def register(ctx) -> None:
 
     _PANEL_WANTS: dict = {}  # the world the panel last asked a city for: an older world's placement stops
 
-    def panel_preview(net_id: str = "", layer_id: str = "") -> dict:
+    def panel_preview(net_id: str = "", layer_id: str = "", again: bool = False) -> dict:
         _PANEL_WANTS["net"] = slug(net_id)
-        return pcg_preview(net_id, layer_id, panel=True)
+        return pcg_preview(net_id, layer_id, panel=True, again=again)
 
-    def pcg_preview(net_id: str = "", layer_id: str = "", summary: bool = False, panel: bool = False) -> dict:
+    def pcg_preview(net_id: str = "", layer_id: str = "", summary: bool = False, panel: bool = False,
+                    again: bool = False) -> dict:
         """Every enabled layer placed offline with the graph's rules; one layer per call when layer_id is
         given (keeps each reply small). Points: [x, y, z, yaw, scale(, height m for buildings)].
         panel: the panel's own call, stopped (at the next layer or stage) once it opens another world."""
@@ -386,28 +387,33 @@ def register(ctx) -> None:
                 _PREVIEW_CACHE.update(back[0])
                 _GROUND.update(back[1])
             _PREVIEW_CACHE["nid"] = nid
-        terrain = scan_terrain(nid) or {}
-        actors = world_actors(nid)
-        cities = list(city_docs(nid).values())
-        # Every layer avoids the ones before it, so one layer still needs the whole preview: compute it
-        # once per input set and serve the panel's per-layer calls from that.
-        keep = ((data.get(f"net.{nid}") or {}).get("generated") or {}).get("keep") or []
-        # pickle, not sorted JSON: the same inputs read back the same way give the same bytes, several times faster
-        gen = (data.get(f"net.{nid}") or {}).get("generated") or {}
-        # the ground the buildings stand on: this world's own heightmap (lots cut in) once it has one; a world laid
-        # over another's landscape keeps that landscape as scanned until its heightmap is made
-        # ... and a world whose ground was pulled from UEFN stands on it exactly as it is there: no road grading, no
-        # lot pads cut over it (the person shapes that landscape in UEFN; City Builder never writes it)
-        cut = (not gen.get("ground_from") or bool(gen.get("heightmap"))) and \
-            (data.get(f"net.{nid}.scan") or {}).get("source") != "uefn"
-        # ponytail: one world is worked on at a time (the cache has one entry too), so its landscape size is global
-        cg.HEIGHTMAP_RES = cg.landscape_res(gen.get("options"))
-        # (without each city's plan report: the placement reads its lots, never the report, and the report's wording
-        # alone changes on the rebuild after an edit)
-        edits = edit_list(nid)
-        key = hashlib.sha1(pickle.dumps([nid, docs, [{k: v for k, v in c.items() if k != "plan"} for c in cities],
-                                         terrain, actors, keep, cut, cg.HEIGHTMAP_RES, edits], protocol=5)).hexdigest()
-        if _PREVIEW_CACHE.get("key") != key:  # ponytail: one entry, the world being looked at
+        # the panel's later calls of one load (again): the first call just checked the inputs, so they read the
+        # placement as it stands instead of re-reading and hashing the whole world (terrain, every actor and city)
+        # once more each. ponytail: a change landing between those calls is caught by the panel's next load
+        reuse = again and cur == nid and "out" in _PREVIEW_CACHE
+        if not reuse:
+            terrain = scan_terrain(nid) or {}
+            actors = world_actors(nid)
+            cities = list(city_docs(nid).values())
+            # Every layer avoids the ones before it, so one layer still needs the whole preview: compute it
+            # once per input set and serve the panel's per-layer calls from that.
+            keep = ((data.get(f"net.{nid}") or {}).get("generated") or {}).get("keep") or []
+            # pickle, not sorted JSON: the same inputs read back the same way give the same bytes, several times faster
+            gen = (data.get(f"net.{nid}") or {}).get("generated") or {}
+            # the ground the buildings stand on: this world's own heightmap (lots cut in) once it has one; a world laid
+            # over another's landscape keeps that landscape as scanned until its heightmap is made
+            # ... and a world whose ground was pulled from UEFN stands on it exactly as it is there: no road grading, no
+            # lot pads cut over it (the person shapes that landscape in UEFN; City Builder never writes it)
+            cut = (not gen.get("ground_from") or bool(gen.get("heightmap"))) and \
+                (data.get(f"net.{nid}.scan") or {}).get("source") != "uefn"
+            # ponytail: one world is worked on at a time (the cache has one entry too), so its landscape size is global
+            cg.HEIGHTMAP_RES = cg.landscape_res(gen.get("options"))
+            # (without each city's plan report: the placement reads its lots, never the report, and the report's wording
+            # alone changes on the rebuild after an edit)
+            edits = edit_list(nid)
+            key = hashlib.sha1(pickle.dumps([nid, docs, [{k: v for k, v in c.items() if k != "plan"} for c in cities],
+                                             terrain, actors, keep, cut, cg.HEIGHTMAP_RES, edits], protocol=5)).hexdigest()
+        if not reuse and _PREVIEW_CACHE.get("key") != key:  # ponytail: one entry, the world being looked at
             ground = st.grid_sampler(terrain) if terrain.get("heights") else (lambda x, y: 0.0)
             ground = cg.on_made(cities, ground)  # (a shipyard's platform and a made shore: at their own levels)
             # the whole city, unit by unit: what no change can reach is put back as it stood (pl.PreviewMemo), so an
