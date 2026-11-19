@@ -67,3 +67,33 @@ def test_dist_to_single_cell():
         true = math.hypot((i - 10) * g.cell, (j - 20) * g.cell)
         assert abs(d[g.idx(i, j)] - true) <= g.cell
     assert d[g.idx(30, 20)] == 200.0
+
+
+# ---- config ----
+
+from backend.terrain.config import CHOICES, KEYS, PRESETS, terrain_config  # noqa: E402
+
+
+def test_presets_validate():
+    assert len(PRESETS) == 11 and 'Classic' in PRESETS and 'Coastal' in PRESETS
+    for name, p in PRESETS.items():
+        assert set(p) <= set(KEYS) | set(CHOICES) | {'classic'}, name
+        for k, v in p.items():
+            if k in KEYS:
+                assert KEYS[k][1] <= v <= KEYS[k][2], (name, k)
+            if k in CHOICES:
+                assert v in CHOICES[k][1], (name, k)
+        cfg = terrain_config({'preset': name})
+        assert cfg['preset'] == name and cfg['classic'] == (name == 'Classic')
+        assert all(KEYS[k][1] <= cfg[k] <= KEYS[k][2] for k in KEYS)
+
+
+def test_clamp_and_user_beats_preset():
+    cfg = terrain_config({'preset': 'Coastal', 'mountain_m': 1800})
+    assert cfg['mountain_intensity'] == 0.55 and cfg['mountain_m'] == 1800.0 and cfg['coast'] == 'one'
+    cfg = terrain_config({'mountain_m': 99999, 'mountain_cover': 0.0, 'rain': 'wet', 'coast': 'moon',
+                          'nonsense': 1, 'seed': '7'})
+    assert cfg['mountain_m'] == 2500.0 and cfg['mountain_cover'] == 0.05 and cfg['rain'] == KEYS['rain'][0]
+    assert cfg['coast'] == PRESETS['Coastal']['coast'] and 'nonsense' not in cfg and cfg['seed'] == 7
+    assert terrain_config({'preset': 'Alpine'})['snowline_m'] == 1400.0
+    assert terrain_config({'preset': 'Desert', 'rain': 0.8})['rain'] == 0.8
