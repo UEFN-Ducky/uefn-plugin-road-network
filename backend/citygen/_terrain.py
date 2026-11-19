@@ -336,18 +336,23 @@ def _engine_terrain(seed, size_cm, relief_cm, cities, grid, center, o, keep, lak
     half = size_cm / 2
     lo = [center[0] - half, center[1] - half]
     cfg = {**{k: v for k, v in o.items() if k != "detail"}, "seed": seed, "relief_m": relief_cm / 100.0}
-    if o["sea_m"] > OPTIONS["sea_m"][1] and terrain_config(cfg)["coast"] != "none":
-        # the engine builds its coast, shelf and beaches at the Water level: a plane put over a world shaped for
-        # 0 m flooded its plains into a flat sheet a few metres deep
-        cfg["sea_level_m"] = o["sea_m"]
+    # Water level on and a coast: the engine's world (its sea at 0) is moved up or down onto that level, so its shelf,
+    # beaches and sea floor meet the water where it is. A plane put at -85 m over a world shaped for 0 m left the
+    # coast high and dry and the flooded lowlands a flat sheet.
+    shift = o["sea_m"] if o["sea_m"] > OPTIONS["sea_m"][1] and terrain_config(cfg)["coast"] != "none" else 0.0
+    if shift:
+        cfg["sea_level_m"] = 0.0
     towns = [{"x": c["x"] / 100.0, "y": c["y"] / 100.0, "radius": c.get("radius", 0.0) / 100.0} for c in cities]
     # ponytail: a keep rectangle goes in as the circle round it; a rect zone in the engine if a long one matters
     held = [{"x": (k["x0"] + k["x1"]) / 200.0, "y": (k["y0"] + k["y1"]) / 200.0,
-             "radius": math.hypot(k["x1"] - k["x0"], k["y1"] - k["y0"]) / 200.0, "z": k["z"] / 100.0}
+             "radius": math.hypot(k["x1"] - k["x0"], k["y1"] - k["y0"]) / 200.0, "z": k["z"] / 100.0 - shift}
             for k in keep or []]
     global LAST_WORLD
     world = LAST_WORLD = generate(cfg, grid, lo[0] / 100.0, lo[1] / 100.0, size_cm / 100.0, cities=towns, keep=held)
     out = world.to_citygen()
+    if shift:
+        out["heights"] = [[round(v + shift * 100.0, 1) for v in r] for r in out["heights"]]
+        out["z_scale"] = z_scale(out)
     out["maps"] = {k: [round(v, 3) for v in world.maps[k]] for k in ENGINE_MAPS if k in world.maps}
     # river polylines (cm) for the panel and wet_from, their widths beside them (a point's third number is its z)
     out["rivers"] = [[[round(x), round(y)] for x, y in r["pts"]] for r in world.maps.get("river_lines") or []]
