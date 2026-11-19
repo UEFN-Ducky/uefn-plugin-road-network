@@ -256,6 +256,7 @@ OPTIONS = {
     # the map they cover. The heightmap's Z scale grows with them (z_scale)
     "mountain_m": (0.0, 0.0, 2500.0),
     "mountain_cover": (0.3, 0.05, 0.8),
+    "terrain_seed": (0, 0, 999999),    # the ground's own seed (0 = the world seed): new mountains, same cities
     # cities
     "city_size": (1.0, 0.3, 4.0),     # every city's radius x this (new cities; regenerating scales the old ones)
     "city_gap_m": (300.0, 0.0, 6000.0),  # open country between two cities' edges, at least

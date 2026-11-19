@@ -27,6 +27,14 @@ def test_mountains_in_places_flat_elsewhere():
     assert math.isclose(ground(x, y), flat["heights"][j][i], rel_tol=0.25)
 
 
+def test_terrain_seed_gives_new_ground():
+    for preset in ("Classic", "Coastal"):
+        base = {"preset": preset, "mountain_m": 1200}
+        world = cg.terrain(7, 600000.0, 6000.0, CITIES, grid=40, opts=base)["heights"]
+        assert world == cg.terrain(7, 600000.0, 6000.0, CITIES, grid=40, opts={**base, "terrain_seed": 0})["heights"]  # 0 = the world seed
+        assert world != cg.terrain(7, 600000.0, 6000.0, CITIES, grid=40, opts={**base, "terrain_seed": 4242})["heights"]
+
+
 def test_no_mountains_keeps_old_ground():
     ter = cg.terrain(7, 600000.0, 6000.0, CITIES, grid=40)
     assert cg.z_scale(ter) == 100.0

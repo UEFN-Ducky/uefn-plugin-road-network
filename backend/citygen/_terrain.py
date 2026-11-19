@@ -141,6 +141,7 @@ def terrain(seed: int, size_cm: float, relief_cm: float, cities: list, grid: int
     {min, max, grid, heights[j][i]} with cell centres, so the 3D view and drape read it as is.
     lakes (lake_list): lakes drawn by hand, dug into the natural ground before anything is levelled on it."""
     o = options(opts)
+    seed = o["terrain_seed"] or seed
     if o["preset"] != "Classic":
         return _engine_terrain(seed, size_cm, relief_cm, cities, grid, center, o, keep, lakes)
     fbm = _fbm(seed, o["detail"], o["roughness"], o["ridges"])

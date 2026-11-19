@@ -111,7 +111,7 @@ function presetValues(name) {
   return out;
 }
 const GEN_DEFAULTS = {
-  name: "Valley", cities: 3, size_km: 6, relief_m: 60, seed: 7, ground: "new",
+  name: "Valley", cities: 3, size_km: 6, relief_m: 60, seed: 7, terrain_seed: 0, ground: "new",
   hill_km: 2, roughness: 0.5, detail: 5, ridges: 0, peaks: 0, flatten_m: 300, sea_m: -1000, water_depth_m: 12, terrace_m: 0, smooth: 0.5, landscape_px: 2017,
   // the engine's sliders, as the Coastal preset sets them (presetValues("Coastal"))
   preset: "Coastal", mountain_m: 1600, mountain_cover: 0.25, mountain_intensity: 0.55, flatland: 0.6, hills: 0.55, plateaus: 0.05,
@@ -121,7 +121,7 @@ const GEN_DEFAULTS = {
   city_size: 1, city_gap_m: 300, freeways: "yes", waterfront: "yes", canals: "none", shipyards: "auto",
   airports: "auto", military_base: "no", wind_deg: 240, city_ground: "natural", island: "none",
 };
-const OPTION_KEYS = ["hill_km", "roughness", "detail", "ridges", "peaks", "flatten_m", "sea_m", "water_depth_m", "terrace_m", "smooth", "landscape_px",
+const OPTION_KEYS = ["terrain_seed", "hill_km", "roughness", "detail", "ridges", "peaks", "flatten_m", "sea_m", "water_depth_m", "terrace_m", "smooth", "landscape_px",
   "preset", "mountain_m", "mountain_cover", "mountain_intensity", "flatland", "hills", "plateaus", "coast", "coast_side_deg", "erosion",
   "rivers", "lakes", "temp_c", "rain", "snowline_m", "block_m", "block_ratio", "wobble", "follow_hills", "green_lots",
   "prune", "downtown", "normal", "highway", "highway_curve", "core_roads", "neighbourhood_roads", "suburb_roads", "one_way_core",

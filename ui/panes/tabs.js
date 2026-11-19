@@ -54,6 +54,12 @@ function scope() {
   if (c && state.tab !== "pcg" && state.tab !== "edit") return { kind: "city", c };
   return { kind: state.tab === "terrain" ? "terrain" : "all" };
 }
+// the Terrain tab's button: a new terrain seed each press, so the mountains, rivers and lakes come out all new
+function newTerrainSeed() {
+  state.gen.terrain_seed = 1 + Math.floor(Math.random() * 999998);
+  ctl.terrain_seed?.set(state.gen.terrain_seed);
+  savePrefs();
+}
 function runGenerate() {
   const s = scope();
   if (s.kind === "city") return regenerate(`Rebuilding ${s.c.name}`);  // the world with its cities as they are: only this one's changes show
@@ -66,7 +72,7 @@ function syncGenerate() {
   const name = (state.gen.name || "").trim().toLowerCase();
   const again = !!name && state.nets.some((n) => n.generated && n.name.toLowerCase() === name);
   const [label, title] = s.kind === "city" ? [`Regenerate ${s.c.name}`, `Rebuilds ${s.c.name}: its streets, blocks and buildings (offline, nothing changes in UEFN)`]
-    : s.kind === "terrain" ? ["Regenerate terrain", "Redoes only the ground: mountains, rivers, lakes and biomes. Cities and roads are not touched"]
+    : s.kind === "terrain" ? ["Regenerate terrain", "New ground with a new terrain seed: different mountains, rivers and lakes. Cities and roads are not touched"]
     : again ? ["Regenerate everything", "Rebuilds this whole world: the terrain, every city and every road (offline, nothing changes in UEFN)"]
     : ["Generate world", "Builds the terrain, cities and roads of a new world (offline, nothing changes in UEFN)"];
   ctl.generate.querySelector("span").textContent = label;
@@ -146,6 +152,8 @@ function buildPanes() {
   const zx = slider({ label: "Height exaggeration", min: 1, max: 5, step: 0.25, value: state.view.zx || 1, fmt: (v) => `×${v}`,
     hint: "Preview only: the heightmap and roads keep real heights",
     onChange: (v) => { state.view.zx = v; savePrefs(); state.framed = false; buildScene(); } });
+  ctl.terrain_seed = field({ label: "Terrain seed", value: state.gen.terrain_seed, onChange: (v) => setGen("terrain_seed", Math.max(0, parseInt(v, 10) || 0)),
+    button: { icon: "dice", title: "New terrain seed: all new mountains, rivers and lakes", onClick: (input) => { newTerrainSeed(); input.value = state.gen.terrain_seed; setGen("terrain_seed", state.gen.terrain_seed); } } });
   // a preset fills its values into every engine slider; moving one afterwards keeps the preset and overrides that key
   ctl.preset = choices({ label: "Preset", value: state.gen.preset, options: PRESET_OPTIONS, onChange: (v) => {
     Object.assign(state.gen, presetValues(v));
@@ -154,7 +162,8 @@ function buildPanes() {
   } });
   const deg = (v) => `${Math.round(v)}°`;
   $("pane-terrain").replaceChildren(
-    section("Preset", ctl.preset.el),
+    section("Preset", ctl.preset.el, ctl.terrain_seed.el,
+      h("div", { class: "rn-hint" }, "Regenerate terrain picks a new terrain seed each time. Type one back to get that ground again; 0 = the world seed.")),
     section("Mountains", sl("mountain_m", "Mountain height", 0, 2500, 25, (v) => v ? m(v) : "Off",
         "Mountain ranges in some places only, as tall as this, on top of the ground; the rest stays as flat as Ground height. Cities and the way between them stay clear. Above 256 m the heightmap's Z scale grows to fit (shown under This world)"),
       sl("mountain_cover", "Mountain area", 0.05, 0.8, 0.05, pct, "How much of the map the ranges cover"),
@@ -230,7 +239,11 @@ function buildPanes() {
       sl("normal", "Normal city ring", 0.2, 0.95, 0.01, pct, "Streets with pavements up to here; housing beyond")),
     roadKinds, junctions, coast);
   // ---- Footer
-  ctl.generate = button("Generate world", "refresh", () => { clearTimeout(liveTimer); runGenerate(); }, "primary");
+  ctl.generate = button("Generate world", "refresh", () => {
+    clearTimeout(liveTimer);
+    if (scope().kind === "terrain") newTerrainSeed();
+    runGenerate();
+  }, "primary");
   $("foot").replaceChildren(ctl.generate);
   syncGenerate();
   renderCitiesPane();
