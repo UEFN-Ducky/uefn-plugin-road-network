@@ -279,6 +279,12 @@ OPTIONS = {
     "normal": (0.75, 0.2, 0.95),       # normal-city ring; housing beyond it
     "highway_curve": (0.08, 0.0, 0.3), # how far a highway bows out, share of its length
     "wind_deg": (240.0, 0.0, 360.0),   # prevailing wind (degrees, map yaw): runways are turned into it
+    # vegetation (pcg_layers.with_veg / biome_trees): the wild forest and scrub outside the cities
+    "tree_density": (1.0, 0.0, 3.0),   # x every tree layer's density (0 = no wild trees)
+    "bush_density": (1.0, 0.0, 3.0),   # x every bush layer's density
+    "forest_cover": (0.55, 0.05, 1.0), # share of the land in forest; the rest meadow and clearings
+    "tree_shore_m": (25.0, 0.0, 80.0), # how far trees keep from the sea, lakes and rivers (conifers 1.2x, bushes 0.3x)
+    "groves": (0.85, 0.0, 1.0),        # in open country: 0 = trees one by one, 1 = all in groves
 }
 HIGHWAYS = CHOICES["highway"][0]
 

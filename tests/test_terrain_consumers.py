@@ -172,6 +172,31 @@ def test_plants_keep_off_the_shore():
     share = sum(row) / len(row)
     same = sum(a == b for a, b in zip(row, row[1:])) / (len(row) - 1)
     assert 0.02 < share < 0.4 and same > 1 - 2 * share * (1 - share) + 0.05, (share, same)
+    # ... and a meadow keeps about its TREE_DENSITY share of the candidates (0.3), not a few %
+    many = [big(x * 1000.0, y * 1000.0) for x in range(0, 400, 4) for y in range(0, 400, 4)]
+    assert 0.2 < sum(many) / len(many) < 0.4, sum(many) / len(many)
+    # the Shore gap slider moves the line: at 50 m a broadleaf 30 m from the water goes, at 0 m only the sand stops it
+    wide = biome_trees({"grid": n, "heights": heights, "sea": 0.0, "min": [0, 0], "max": [20000, 20000],
+                        "maps": {"biome": biome}, "veg": {"tree_shore_m": 50}})
+    assert not wide(*at(130), "broadleaf") and wide(*at(155), "broadleaf")
+    none = biome_trees({"grid": n, "heights": heights, "sea": 0.0, "min": [0, 0], "max": [20000, 20000],
+                        "maps": {"biome": biome}, "veg": {"tree_shore_m": 0}})
+    assert none(*at(116), "broadleaf") and not none(*at(108), "broadleaf")
+
+
+def test_vegetation_sliders_scale_the_wild_layers():
+    from backend.pcg_layers import NATURE, with_veg, patch_rank
+    import random
+    out = {l["name"]: l for l in with_veg([dict(l) for l in NATURE] + [{"name": "Park trees", "kind": "scatter", "role": "tree",
+                                                                       "where": "cities", "density": 2.0}],
+                                          {"tree_density": 2.0, "bush_density": 0.0, "forest_cover": 0.8})}
+    assert out["Trees"]["density"] == 16.0 and out["Trees"]["cover"] == 0.8
+    assert out["Bushes"]["enabled"] is False and out["Rocks"]["density"] == 0.1
+    assert out["Park trees"]["density"] == 2.0, "a city's own trees keep their layer's settings"
+    assert with_veg(NATURE, {}) is NATURE
+    r = random.Random(3)
+    ranks = [patch_rank(r.uniform(-1e7, 1e7), r.uniform(-1e7, 1e7)) for _ in range(4000)]
+    assert abs(sum(v < 0.3 for v in ranks) / len(ranks) - 0.3) < 0.04, "cover 0.3 is 30 % of the land"
 
 
 def _ground(ter):

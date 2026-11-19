@@ -11,7 +11,7 @@ import zlib
 from .graph import avoid_list
 from .land import (DIRTY_CM, TILE_CM, _city_sig, _height, _lot_hits_road, _Rects, _u01, _where_test, core_peak,
                    biome_trees, inside, open_land, tree_kind)
-from .layers import FAR_KEEP, FORM_NAMES, PLANNED_ROLES, clean, patch
+from .layers import FAR_KEEP, FORM_NAMES, PLANNED_ROLES, clean, patch, patch_rank
 from .lots import BIG_SITE_M, _lot_ground
 from .samples import BASE_RADIUS, SCATTERED, _Hash, junction_corners, street_samples
 
@@ -232,8 +232,8 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                     if discs and far < 1.0 and not any((x - cx) ** 2 + (y - cy) ** 2 <= r * r for cx, cy, r in discs) \
                             and _u01("far", seed, name, round(x), round(y)) >= far:
                         continue  # past the cities' reach: the share of it the budget leaves (the spot's own draw)
-                    if layer["cover"] < 1.0 and patch(x, y) > layer["cover"] - 0.12 * _u01("edge", seed, round(x), round(y)):
-                        continue  # a meadow, not a forest (thinning out over its last 0.12: woodland at the edge)
+                    if layer["cover"] < 1.0 and patch_rank(x, y) > layer["cover"] * (1.0 + 0.15 * _u01("edge", seed, round(x), round(y))) - 0.075:
+                        continue  # a meadow, not a forest (cover = share of the land; it thins out over its edge: woodland)
                     cs.append((x, y, yaw))
                 return cs
             spans = [(lo[0], lo[1], hi[0], hi[1])]

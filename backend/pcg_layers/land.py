@@ -91,8 +91,11 @@ def biome_trees(terrain: dict | None):
     if not biome:
         return None
     from ..terrain.climate import BIOMES
-    from .layers import patch
+    from .layers import patch_rank
     n, heights, sea = terrain["grid"], terrain["heights"], terrain.get("sea")
+    veg = terrain.get("veg") or {}  # the World panel's Vegetation sliders
+    shore = float(veg.get("tree_shore_m", SHORE_M["broadleaf"])) / SHORE_M["broadleaf"]  # every kind's distance scales
+    groves = min(max(float(veg.get("groves", 0.85)), 0.0), 1.0)
     (mx, my), (Mx, My) = terrain["min"], terrain["max"]
     river, lake = maps.get("river"), maps.get("lake")
     cx, cy = n / (Mx - mx), n / (My - my)
@@ -116,8 +119,8 @@ def biome_trees(terrain: dict | None):
             return False
         # ponytail: 8 samples at the exclusion distance (and half of it), not a distance map; misses a creek
         # narrower than a grid cell between two of them
-        r = SHORE_M[kind] * 100
-        if any(wet(x + dx * rr, y + dy * rr, 0.0) for dx, dy in ring for rr in (r, r * 0.5)):
+        r = SHORE_M[kind] * 100 * shore
+        if r > 0 and any(wet(x + dx * rr, y + dy * rr, 0.0) for dx, dy in ring for rr in (r, r * 0.5)):
             return False
         if name == "beach":
             dens = ON_SAND.get(kind, 0.0)
@@ -131,7 +134,8 @@ def biome_trees(terrain: dict | None):
             return False
         if dens >= 1.0:
             return True
-        return 0.85 * patch(x + 7300.0, y - 1900.0, GROVE_CM) + 0.15 * _u01("biome_tree", round(x), round(y)) < dens
+        return groves * patch_rank(x + 7300.0, y - 1900.0, GROVE_CM) + \
+            (1.0 - groves) * _u01("biome_tree", round(x), round(y)) < dens
     return keep
 
 

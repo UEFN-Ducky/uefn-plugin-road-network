@@ -434,8 +434,9 @@ def register(ctx) -> None:
             # (without each city's plan report: the placement reads its lots, never the report, and the report's wording
             # alone changes on the rebuild after an edit)
             edits = edit_list(nid)
+            veg = {k: v for k, v in (gen.get("options") or {}).items() if k in pl.VEG_KEYS}
             key = hashlib.sha1(pickle.dumps([nid, docs, [{k: v for k, v in c.items() if k != "plan"} for c in cities],
-                                             terrain, actors, keep, cut, cg.HEIGHTMAP_RES, edits], protocol=5)).hexdigest()
+                                             terrain, actors, keep, cut, cg.HEIGHTMAP_RES, edits, veg], protocol=5)).hexdigest()
         if not reuse and _PREVIEW_CACHE.get("key") != key:  # ponytail: one entry, the world being looked at
             ground = st.grid_sampler(terrain) if terrain.get("heights") else (lambda x, y: 0.0)
             ground = cg.on_made(cities, ground)  # (a shipyard's platform and a made shore: at their own levels)
@@ -463,7 +464,7 @@ def register(ctx) -> None:
             lays = sorted((pl.clean(l) for l in docs.values() if l.get("enabled", True)), key=lambda l: (l["order"], l["name"]))
             ws = [20 if l["kind"] in pl.SCATTERED else 1 for l in lays]
             done_w = [sum(ws[:i]) for i in range(len(ws) + 1)]
-            placed = pl.preview(list(docs.values()), cities, terrain, pl.road_samples(actors), ground,
+            placed = pl.preview(pl.with_veg(list(docs.values()), veg), cities, {**terrain, "veg": veg}, pl.road_samples(actors), ground,
                                 limit=6000, juncs=pl.junctions(actors), keep=keep, foliage_limit=FOREST_LIMIT, memo=memo,
                                 arms=pl.arm_samples(actors),
                                 on_layer=lambda i, n, name: tick(int(60 * done_w[min(i, len(ws))] / max(1, done_w[-1])),

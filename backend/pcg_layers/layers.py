@@ -311,6 +311,38 @@ def patch(x: float, y: float, cell: float = PATCH_CM) -> float:
     return total / norm
 
 
+# the World panel's Vegetation sliders (generate options): tree_density / bush_density scale every tree / bush layer's
+# density, forest_cover sets their cover, tree_shore_m and groves go to land.biome_trees
+VEG_KEYS = ("tree_density", "bush_density", "forest_cover", "tree_shore_m", "groves")
+
+
+def with_veg(layers: list, veg: dict | None) -> list:
+    """Copies of the layers with the Vegetation sliders applied to the foliage / scatter layers of trees and bushes
+    (a park's or a street's own trees keep their layer's settings: they are not 'outside')."""
+    if not veg:
+        return layers
+    out = []
+    for layer in layers:
+        role = layer.get("role")
+        if layer.get("kind") in ("foliage", "scatter") and role in ("tree", "bush") and layer.get("where", "outside") == "outside":
+            layer = dict(layer)
+            mul = float(veg.get("tree_density" if role == "tree" else "bush_density", 1.0))
+            if "density" in layer:
+                layer["density"] = layer["density"] * mul
+            if "forest_cover" in veg:
+                layer["cover"] = float(veg["forest_cover"]) + (0.05 if role == "bush" else 0.0)
+            if mul <= 0:
+                layer["enabled"] = False
+        out.append(layer)
+    return out
+
+
+def patch_rank(x: float, y: float, cell: float = PATCH_CM) -> float:
+    """patch() as a share 0..1 of the map below it (its values bunch round 0.5, sd 0.144): `patch_rank < 0.3` is 30 %
+    of the land. Compared raw, a 0.3 share kept 3 % (a meadow's groves were gone) and a 0.55 forest cover was 63 %."""
+    return 0.5 * (1.0 + math.erf((patch(x, y, cell) - 0.5) / (0.1441 * math.sqrt(2.0))))
+
+
 PRESETS = ("full_city", "city", "buildings", "street", "nature", "forest", "forest_and_streets")  # the built-in sets
 
 
