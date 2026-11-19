@@ -1,6 +1,6 @@
 import { button, choices, field, h, icon, section, segmented, slider, toggle } from "../controls.js";
 import { $, ctl, presetValues, savePrefs, state } from "../core.js";
-import { renderCitiesPane, showSide } from "./cities.js";
+import { regenerate, renderCitiesPane, showSide } from "./cities.js";
 import { renderPcgPane } from "./pcg.js";
 import { renderEditPane, renderUefnPane } from "./uefn.js";
 import { generate, generateTerrain } from "./world.js";
@@ -47,24 +47,38 @@ function openTab(id) {
   savePrefs();
 }
 
-// a generate setting changed: remember it, and rebuild right away when live preview is on
+// What the foot button (and every live change) redoes follows what is picked: a picked city only that city,
+// the Terrain tab only the ground, anything else the whole world.
+function scope() {
+  const c = state.cities.find((x) => x.id === state.cityPick);
+  if (c && state.tab !== "pcg" && state.tab !== "edit") return { kind: "city", c };
+  return { kind: state.tab === "terrain" ? "terrain" : "all" };
+}
+function runGenerate() {
+  const s = scope();
+  if (s.kind === "city") return regenerate(`Rebuilding ${s.c.name}`);  // the world with its cities as they are: only this one's changes show
+  return s.kind === "terrain" ? generateTerrain() : generate();
+}
 let liveTimer = 0;
-// The button at the foot says what it will do: a world of this name is rebuilt whole (terrain, every city, every
-// road), a new name makes a new world. One city is rebuilt from the Cities tab, not from here.
 function syncGenerate() {
   if (!ctl.generate) return;
+  const s = scope();
   const name = (state.gen.name || "").trim().toLowerCase();
   const again = !!name && state.nets.some((n) => n.generated && n.name.toLowerCase() === name);
-  ctl.generate.querySelector("span").textContent = again ? "Regenerate everything" : "Generate world";
-  ctl.generate.title = again ? "Rebuilds this whole world: the terrain, every city and every road (offline, nothing changes in UEFN)"
-    : "Builds the terrain, cities and roads of a new world (offline, nothing changes in UEFN)";
+  const [label, title] = s.kind === "city" ? [`Regenerate ${s.c.name}`, `Rebuilds ${s.c.name}: its streets, blocks and buildings (offline, nothing changes in UEFN)`]
+    : s.kind === "terrain" ? ["Regenerate terrain", "Redoes only the ground: mountains, rivers, lakes and biomes. Cities and roads are not touched"]
+    : again ? ["Regenerate everything", "Rebuilds this whole world: the terrain, every city and every road (offline, nothing changes in UEFN)"]
+    : ["Generate world", "Builds the terrain, cities and roads of a new world (offline, nothing changes in UEFN)"];
+  ctl.generate.querySelector("span").textContent = label;
+  ctl.generate.title = title;
 }
+// a generate setting changed: remember it and rebuild what the button would (always live)
 function setGen(key, v) {
   state.gen[key] = v;
   savePrefs();
   syncGenerate();
-  // on the Terrain tab live preview redoes only the ground (seconds); elsewhere the whole world
-  if (state.live) { clearTimeout(liveTimer); liveTimer = setTimeout(() => (state.tab === "terrain" ? generateTerrain() : generate()), 650); }
+  clearTimeout(liveTimer);
+  liveTimer = setTimeout(runGenerate, 650);
 }
 const m = (v) => `${Math.round(v)} m`;
 const pct = (v) => `${Math.round(v * 100)} %`;
@@ -140,9 +154,7 @@ function buildPanes() {
   } });
   const deg = (v) => `${Math.round(v)}°`;
   $("pane-terrain").replaceChildren(
-    section("Preset", ctl.preset.el, button("Generate terrain", "terrain", () => generateTerrain()),
-      h("div", { class: "rn-hint" }, "Only the ground: mountains, rivers, lakes and biomes in seconds. Your cities and roads are not touched "
-        + "and nothing is saved until Regenerate everything. With Live preview on, this tab redoes just the ground.")),
+    section("Preset", ctl.preset.el),
     section("Mountains", sl("mountain_m", "Mountain height", 0, 2500, 25, (v) => v ? m(v) : "Off",
         "Mountain ranges in some places only, as tall as this, on top of the ground; the rest stays as flat as Ground height. Cities and the way between them stay clear. Above 256 m the heightmap's Z scale grows to fit (shown under This world)"),
       sl("mountain_cover", "Mountain area", 0.05, 0.8, 0.05, pct, "How much of the map the ranges cover"),
@@ -218,9 +230,8 @@ function buildPanes() {
       sl("normal", "Normal city ring", 0.2, 0.95, 0.01, pct, "Streets with pavements up to here; housing beyond")),
     roadKinds, junctions, coast);
   // ---- Footer
-  ctl.live = toggle({ label: "Live preview", iconName: "play", value: state.live, onChange: (v) => { state.live = v; savePrefs(); } });
-  ctl.generate = button("Generate world", "refresh", () => generate(), "primary");
-  $("foot").replaceChildren(ctl.live.el, ctl.generate);
+  ctl.generate = button("Generate world", "refresh", () => { clearTimeout(liveTimer); runGenerate(); }, "primary");
+  $("foot").replaceChildren(ctl.generate);
   syncGenerate();
   renderCitiesPane();
   renderPcgPane();
@@ -232,7 +243,6 @@ function syncControls() {
   for (const [k, c] of Object.entries(ctl)) if (k in state.gen && c?.set) c.set(state.gen[k]);
   ctl.look?.set(state.view.look);
   ctl.shadows?.set(state.view.shadows);
-  ctl.live?.set(state.live);
 }
 
 

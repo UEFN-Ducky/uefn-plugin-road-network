@@ -1,7 +1,7 @@
 import { button, choices, h, icon, section, segmented, slider } from "../controls.js";
 import { $, alert, busy, groups, loading, rpc, rt, showError, state, toV } from "../core.js";
 import { heldElsewhere, holderOf, keepHold, live, peersIdle, tellGroup } from "../live.js";
-import { GEN_TABS, TABS, m } from "./tabs.js";
+import { GEN_TABS, TABS, m, syncGenerate } from "./tabs.js";
 import { setTool } from "./tools.js";
 import { currentNet, loadGeometry, loadNets, optionsOf } from "./world.js";
 import { flyTo } from "../view/camera.js";
@@ -84,7 +84,8 @@ function showSide() {
     back.addEventListener("click", () => selectCity(""));
     $("paneTitle").replaceChildren(icon("city", 16), h("span", { style: "flex: 1" }, c.name), back);
   } else $("paneTitle").replaceChildren(icon(ic, 16), h("span", {}, label));
-  $("foot").hidden = city || !GEN_TABS.has(state.tab);
+  $("foot").hidden = !city && !GEN_TABS.has(state.tab);
+  syncGenerate();  // the foot button says what it redoes: this city, the ground or everything
 }
 const ZONE_LABEL = { downtown: "Downtown", normal: "Normal", housing: "Housing", industrial: "Industry" };
 const insidePoly = (poly, x, y) => {

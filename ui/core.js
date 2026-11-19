@@ -159,7 +159,7 @@ function family(mesh) {
   for (const f of FAMILY) if (f[0].test(mesh)) return f;
   return [null, 500, "fg-dim", "Other"];
 }
-const savePrefs = () => call("prefs.set", { id: "ui", value: { gen: state.gen, view: state.view, tab: state.tab, tune: state.tune, live: state.live } }).catch(() => {});  // view.leftW: the sidebar width
+const savePrefs = () => call("prefs.set", { id: "ui", value: { gen: state.gen, view: state.view, tab: state.tab, tune: state.tune } }).catch(() => {});  // view.leftW: the sidebar width
 
 // ------------------------------------------------------------------ 3D scene
 const view = $("view");

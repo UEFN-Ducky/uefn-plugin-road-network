@@ -21,7 +21,6 @@ import { themeColors } from "./view/terrain.js";
   rt.hiddenLayers = new Set(state.view.hidden || []);  // the layers hidden with the eye in Layer order
   Object.assign(state.tune, v.tune || {});
   state.tab = TABS.some((t) => t[0] === v.tab) ? v.tab : "world";
-  state.live = !!v.live;
   const last = await call("prefs.get", { id: "last_net" }, 8000).catch(() => null);
   if (last?.value) state.net = last.value;
   themeColors();
