@@ -97,3 +97,66 @@ def test_clamp_and_user_beats_preset():
     assert cfg['coast'] == PRESETS['Coastal']['coast'] and 'nonsense' not in cfg and cfg['seed'] == 7
     assert terrain_config({'preset': 'Alpine'})['snowline_m'] == 1400.0
     assert terrain_config({'preset': 'Desert', 'rain': 0.8})['rain'] == 0.8
+
+
+# ---- stage 1 + 2: coast and regions ----
+
+from backend.terrain.coast import land_mask  # noqa: E402
+from backend.terrain.regions import region_masks, shares  # noqa: E402
+
+MASKS = ('mountains', 'foothills', 'hills', 'plateaus', 'plains', 'valleys', 'wetlands')
+
+
+def _world(n=96, size=30000.0, **opts):
+    cfg = terrain_config({'preset': 'Coastal', 'seed': 7, **opts})
+    g, nz, maps = Grid(n, -size / 2, -size / 2, size), Noise(cfg['seed']), {}
+    land_mask(g, cfg, nz, maps)
+    region_masks(g, cfg, nz, maps)
+    return g, cfg, maps
+
+
+def _side_mean(g, arr, lo, hi, axis):
+    vals = [arr[g.idx(i, j)] for j in range(g.n) for i in range(g.n)
+            if lo <= ((i if axis == 0 else j) + 0.5) / g.n < hi]
+    return sum(vals) / len(vals)
+
+
+def test_coast_on_the_chosen_side():
+    for deg, axis, sea_hi in ((0, 0, True), (180, 0, False), (90, 1, True), (270, 1, False)):
+        g, _, maps = _world(n=64, coast_side_deg=deg)
+        far = (0.9, 1.0) if sea_hi else (0.0, 0.1)
+        near = (0.0, 0.1) if sea_hi else (0.9, 1.0)
+        assert _side_mean(g, maps['land'], *far, axis) < 0.2, deg
+        assert _side_mean(g, maps['land'], *near, axis) > 0.95, deg
+        k_land = max(range(g.n * g.n), key=lambda k: maps['coast_dist'][k])
+        assert maps['land'][k_land] >= 0.5 and min(maps['coast_dist']) < 0
+
+
+def test_coast_modes():
+    g, _, maps = _world(n=64, coast='none')
+    assert min(maps['land']) == 1.0 and min(maps['coast_dist']) > 1e6
+    g, _, maps = _world(n=64, coast='island')
+    edge = [maps['land'][g.idx(i, j)] for j in range(g.n) for i in range(g.n) if min(i, j, g.n - 1 - i, g.n - 1 - j) == 0]
+    assert max(edge) < 0.5 and maps['land'][g.idx(32, 32)] == 1.0
+    g, _, maps = _world(n=64, coast='archipelago')
+    share = sum(1 for v in maps['land'] if v >= 0.5) / len(maps['land'])
+    assert 0.1 < share < 0.7
+
+
+def test_region_shares_follow_config():
+    for opts in ({}, {'mountain_cover': 0.4, 'hills': 0.8, 'flatland': 0.3, 'plateaus': 0.3}):
+        g, cfg, maps = _world(**opts)
+        sh = shares(maps)
+        assert abs(sh['mountains'] - cfg['mountain_cover']) <= 0.05, sh
+        rest = [k for k in range(g.n * g.n) if maps['land'][k] >= 0.5 and maps['mountains'][k] < 0.5
+                and maps['foothills'][k] < 0.5]
+        hills = sum(1 for k in rest if maps['hills'][k] >= 0.5) / len(rest)
+        plat = sum(1 for k in rest if maps['plateaus'][k] >= 0.5) / len(rest)
+        assert abs(hills - cfg['hills'] * (1 - cfg['flatland'])) <= 0.05, (hills, opts)
+        assert abs(plat - cfg['plateaus'] * (1 - cfg['flatland'])) <= 0.05, (plat, opts)
+        for k in range(g.n * g.n):
+            vals = [maps[m][k] for m in MASKS]
+            assert all(0.0 <= v <= 1.0 for v in vals)
+            assert sum(vals) <= maps['land'][k] + 1e-9
+        # inland: no mountain within 2 km of the sea
+        assert all(maps['mountains'][k] < 0.01 for k in range(g.n * g.n) if maps['coast_dist'][k] < 2000)

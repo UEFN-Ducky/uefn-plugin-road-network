@@ -27,6 +27,34 @@ class Grid:
                 yield k, x, y
                 k += 1
 
+    def field(self, fn, step: float) -> array:
+        """fn(x, y) for every cell. A smooth field (features >> step) is evaluated on a lattice at world multiples
+        of `step` metres and filled in bilinearly: same values on any grid size, a fraction of the noise calls."""
+        n = self.n
+        if step <= self.cell * 1.5:
+            return array('d', (fn(x, y) for _, x, y in self.points()))
+        a0, b0 = math.floor(self.xs[0] / step), math.floor(self.ys[0] / step)
+        na, nb = math.floor(self.xs[-1] / step) - a0 + 2, math.floor(self.ys[-1] / step) - b0 + 2
+        lat = [[fn((a0 + a) * step, (b0 + b) * step) for a in range(na)] for b in range(nb)]
+        cols = []
+        for x in self.xs:
+            f = x / step - a0
+            a = min(int(f), na - 2)
+            cols.append((a, f - a))
+        out = self.new()
+        k = 0
+        for y in self.ys:
+            f = y / step - b0
+            b = min(int(f), nb - 2)
+            u = f - b
+            r0, r1 = lat[b], lat[b + 1]
+            for a, t in cols:
+                p = r0[a] + (r0[a + 1] - r0[a]) * t
+                q = r1[a] + (r1[a + 1] - r1[a]) * t
+                out[k] = p + (q - p) * u
+                k += 1
+        return out
+
     def sample(self, arr, x: float, y: float) -> float:
         """Bilinear between cell centres, clamped at the edge."""
         n = self.n
