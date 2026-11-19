@@ -197,7 +197,8 @@ def register(ctx) -> None:
         # options left out keep this world's last values; so do its keep-out zones (options.keep)
         last = (data.get(f"net.{nid}") or {}).get("generated") or {}
         keep = cg.keep_zones(given.pop("keep") if "keep" in given else last.get("keep"))
-        lakes = cg.lake_list(given.pop("lakes") if "lakes" in given else last.get("lakes"))  # drawn by hand (lake_save)
+        # drawn by hand (lake_save): a list. options.lakes as a number is the terrain engine's Lakes slider, an option
+        lakes = cg.lake_list(given.pop("lakes") if isinstance(given.get("lakes"), list) else last.get("lakes"))
         opts = cg.options({**last.get("options", {}), **given})
         folder = folder or road_folder()
         if not folder:

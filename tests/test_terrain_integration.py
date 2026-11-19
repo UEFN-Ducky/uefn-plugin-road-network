@@ -174,6 +174,13 @@ def test_live_generate_routes_highways_on_the_terrain(monkeypatch):
     assert not (_generate_terrain_arg(monkeypatch, {})["terrain"].get("maps") or {})  # Classic: no cost map
 
 
+def test_lakes_slider_is_an_option_not_drawn_lakes(monkeypatch):
+    # the panel sends the engine's Lakes slider as options.lakes (a number): generate crashed in lake_list
+    got = _generate_terrain_arg(monkeypatch, {"preset": "Coastal", "lakes": 0.7})
+    assert got["terrain"]["heights"]
+    assert cg.lake_list(0.7) == []
+
+
 def test_engine_highway_follows_cost_route(monkeypatch):
     ter = cg.terrain(4, 600000.0, 6000.0, CITIES, grid=40, opts={"preset": "Coastal"})
     towns = [{**c, "name": n, "style": "mixed", "seed": k} for k, (c, n) in enumerate(zip(CITIES, ("A", "B")))]

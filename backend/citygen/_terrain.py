@@ -79,6 +79,8 @@ LAKE_BANK_CM = (3000.0, 60000.0)  # ... over at least 30 m and never more than 6
 def lake_list(raw) -> list:
     """The lakes drawn by hand on a world, cleaned: [{id, pts [[x, y], ...] (cm, along its middle), width_m}]."""
     out, used = [], set()
+    if not isinstance(raw, (list, tuple)):  # a number here is the engine's Lakes slider, never drawn lakes
+        return out
     lo, _new, hi = LAKE_WIDTH_M
     for r in raw or []:
         try:
