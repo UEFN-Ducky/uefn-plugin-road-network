@@ -39,7 +39,7 @@ def test_small_island_gets_its_mountains():
     # a 6 km island has no ground 8 km inland: the inland band shrinks to the land, so the sliders still raise ranges
     opts = {"preset": "Island", "mountain_m": 2500, "mountain_cover": 0.8, "mountain_intensity": 1.0, "flatland": 0.0}
     hs = [v for r in cg.terrain(7, 600000.0, 6000.0, CITIES, grid=64, opts=opts)["heights"] for v in r]
-    assert max(hs) > 150000
+    assert 100000 < max(hs) < 200000  # a real range, yet sized to the land: 2.5 km on a 3 km island was one cone
 
 
 def test_peaks_are_pointed_not_walled_domes():
@@ -51,6 +51,19 @@ def test_peaks_are_pointed_not_walled_domes():
         assert sum(v > top * 0.9 for r in H for v in r) < 300  # a summit, not a plateau (the dome had ~1200)
         steep = max(abs(H[j][i + 1] - H[j][i]) for j in range(n) for i in range(n - 1)) / (600000.0 / n)
         assert steep < 6.0  # no vertical walls (was 9.6)
+
+
+def test_islands_differ_per_seed():
+    # each seed: its own off-centre, turned, bay-cut island (it was the same centred disc every time)
+    lands = []
+    for seed in (11, 420, 7777):
+        cg.terrain(seed, 600000.0, 12000.0, [], grid=48, opts={"preset": "Island"})
+        lands.append([v >= 0.5 for v in cg.LAST_WORLD.maps["land"]])
+    for a in range(3):
+        for b in range(a + 1, 3):
+            both = sum(x and y for x, y in zip(lands[a], lands[b]))
+            either = sum(x or y for x, y in zip(lands[a], lands[b]))
+            assert both / either < 0.85
 
 
 def test_water_level_sets_the_sea_on_every_preset():

@@ -6,7 +6,7 @@ from array import array
 
 INERTIA, CAPACITY, DEPOSIT, ERODE, EVAPORATE, LIFE = 0.05, 4.0, 0.3, 0.3, 0.01, 30
 GRAVITY, MIN_CAPACITY = 4.0, 0.01
-TALUS = math.tan(math.radians(35.0))
+TALUS = math.tan(math.radians(40.0))  # rock crests stand steeper than loose scree; at 35 every summit was planed off
 
 # radius-2 brush: weight = 2 - distance, normalised
 _BRUSH = [(di, dj, 2.0 - math.hypot(di, dj)) for dj in range(-2, 3) for di in range(-2, 3) if math.hypot(di, dj) < 2.0]
@@ -129,3 +129,20 @@ def erode(grid, cfg, noise, maps):
         h = thermal(h, grid, 3 + int(round(5 * min(amount, 1.0))))
     maps['height'] = h
     return maps
+
+
+def erode_keep_top(grid, cfg, noise, maps):
+    """The engine's erosion stage: erode(), then the upper half stretched back so the tallest peak is still the
+    Mountain height asked for (erosion wore summits down a few %). Ground under top / 2 (cities, passes, plains)
+    is not touched; erode() itself keeps volume."""
+    top = max(maps['height'])
+    erode(grid, cfg, noise, maps)
+    h = maps['height']
+    new, t = max(h), top * 0.5
+    if top > 0 and t < new < top:
+        s = (top - t) / (new - t)
+        maps['height'] = array('d', (t + (v - t) * s if v > t else v for v in h))
+    return maps
+
+
+stage = erode_keep_top  # engine.ENTRY looks for 'stage' first

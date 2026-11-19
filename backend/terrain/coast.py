@@ -1,5 +1,6 @@
 """Stage 1: world layout and coastline. Adds land (0..1 soft), coast_dist (m, + on land, - at sea) and sea (0/1)."""
 import math
+import random
 from array import array
 
 from .grid import smoothstep
@@ -22,13 +23,25 @@ def land_mask(grid, cfg, noise, maps):
         dirs.append((math.cos(a + math.pi / 2), math.sin(a + math.pi / 2)))
     warp_amt, warp_sc = size * 0.07, size * 0.22
     jag_sc = max(size * 0.06, 600.0)
+    # island: an off-centre ellipse, its own size, shape and turn per seed (a centred disc read as a platform)
+    rng = random.Random(noise.seed * 31 + 5)
+    icx, icy = cx + rng.uniform(-0.06, 0.06) * size, cy + rng.uniform(-0.06, 0.06) * size
+    rot = rng.uniform(0.0, math.pi)
+    ra, rb = rng.uniform(0.7, 0.85), rng.uniform(0.4, 0.65)
+    ca, sa = math.cos(rot), math.sin(rot)
 
     def edge(x, y):
         """Metres inside the coastline (negative at sea)."""
         wx, wy = noise.warp(x, y, warp_amt, warp_sc, 2)
         jag = noise.fbm(x / jag_sc + 31.7, y / jag_sc - 12.9, 3)  # bays and headlands
         if mode == 'island':
-            return (0.7 - math.hypot(wx - cx, wy - cy) / half + 0.22 * jag) * half
+            u, v = ((wx - icx) * ca + (wy - icy) * sa) / half, (-(wx - icx) * sa + (wy - icy) * ca) / half
+            # one scale per job, amplitudes falling: peninsulas and big bays, coves, then shoreline detail
+            # (fbm mostly stays within +-0.35, hence the large factors)
+            shape = (1.0 - math.hypot(u / ra, v / rb) + 1.1 * noise.fbm(x, y, 2, scale=size * 0.28)
+                     + 0.35 * noise.fbm(x + 71.0, y - 13.0, 2, scale=size * 0.08)
+                     + 0.1 * noise.fbm(x - 5.0, y + 44.0, 2, scale=size * 0.025)) * rb * half
+            return min(shape, 0.92 * half - max(abs(x - cx), abs(y - cy)))  # never runs off the map
         if mode == 'archipelago':
             r = math.hypot(wx - cx, wy - cy) / half
             blobs = noise.fbm(wx / (size * 0.16) - 40.1, wy / (size * 0.16) + 7.7, 3)
@@ -36,7 +49,7 @@ def land_mask(grid, cfg, noise, maps):
         t = min(0.42 - ((wx - cx) * dx + (wy - cy) * dy) / half for dx, dy in dirs)
         return (t + 0.12 * jag) * half
 
-    e = grid.field(edge, jag_sc / 4)
+    e = grid.field(edge, min(jag_sc / 4, size * 0.006))
     c, n = grid.cell, grid.n
     land = array('d', (smoothstep(-c * 0.5, c * 0.5, v) for v in e))
     sea = array('d', (0.0 if v >= 0.5 else 1.0 for v in land))

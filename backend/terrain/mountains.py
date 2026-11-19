@@ -12,7 +12,12 @@ from .grid import smoothstep
 
 _ON = 0.5          # mask value that counts as mountain
 TAPER_M = 1500.0   # a range fades to nothing over this far inside its region's edge (foothills, never a wall)
-MAX_FLANK = 0.75   # steepest average flank (rise / run, ~37 degrees): the range widens to keep its slopes under it
+ROOM_M = 1000.0    # foothill run outside a region that a range's flanks may use
+RISE = 0.8         # a range is at most RISE x (its region's depth + ROOM_M) tall: a 2.5 km cone on a 3 km island is no range
+VALLEY = 0.3       # how deep drainage cuts the valleys (share of their height per run), + 0.25 x intensity
+APRON_M = 1500.0   # the foothill apron reaches this far past a range's half-width
+APEX = 1.0         # steepest flank just under a crest (rise / run, 45 degrees)
+BODY = 0.3         # valley floors between side ridges sit at this share of the envelope
 _MIN_CELLS = 4     # smaller specks get no range
 
 
@@ -28,6 +33,11 @@ def _width(cfg) -> float:
     """Ridge half-width: ridge_width_m when given, else 3 km at intensity 0 down to 1 km at 1 (narrower = sharper)."""
     w = cfg.get('ridge_width_m', 3000.0 - 1000.0 * _intensity(cfg))
     return min(max(float(w), 1000.0), 3000.0)
+
+
+def _sharp(inten) -> float:
+    """(1 - d/w)^sharp: a pointed crest, flanks concave toward the foot; higher = sharper."""
+    return 1.3 + 0.5 * inten
 
 
 def _regions(grid, mask):
@@ -102,11 +112,12 @@ def _peakline(noise, line, top, inten):
     if m == 1:
         return [top]
     hs = []
-    e, amp, sc = 1.2 - inten, 0.12 + 0.2 * inten, 4000.0 - 1500.0 * inten
+    # several summits and saddles along every crest: a lone hump was the cone people saw
+    e, amp, sc = 0.9 - 0.6 * inten, 0.3 + 0.25 * inten, 2500.0 - 1200.0 * inten
     for i, (x, y) in enumerate(line):
         u = (i + 0.5) / m
         env = math.sin(math.pi * u) ** e
-        hs.append(env * (1.0 - amp + amp * noise.fbm(x, y, 3, scale=sc)))
+        hs.append(env * (1.0 - amp + amp * noise.fbm(x, y, 2, scale=sc)))  # 2 octaves: a 3rd made one-point spikes
     hi = max(hs) or 1.0
     return [h / hi * top for h in hs]
 
@@ -119,16 +130,26 @@ def ridge_network(grid, cfg, noise, mountains_mask):
     inten = _intensity(cfg)
     step = max(2.0 * grid.cell, 150.0)
     regions = _regions(grid, mountains_mask)
-    out = {'spines': [], 'branches': [], 'peaks': []}
+    out = {'spines': [], 'branches': [], 'peaks': [], 'widths': [], 'bwidths': []}
+    w0 = _width(cfg)
     if not regions or top <= 0:
         return out
     big = max(len(r) for r in regions)
+    inside = grid.dist_to(array('d', (1.0 - m for m in mountains_mask)))
     for ri, cells in enumerate(regions):
         rtop = top * max(0.5, math.sqrt(len(cells) / big))
+        rtop = min(rtop, RISE * (max(inside[k] for k in cells) + ROOM_M))
         line, halfw = _spine(grid, noise, cells, step)
         hs = _peakline(noise, line, rtop, inten)
         spine = [(x, y, h) for (x, y), h in zip(line, hs)]
         out['spines'].append(spine)
+        # a range no wider than its region (x 1.3, the foothills take the rest): a 2.5 km half-width over a
+        # 1 km wide region made the whole island one cone
+        rw = min(w0, max(halfw * 1.3, 6.0 * grid.cell))  # under ~6 cells the summit is a spike erosion chops off
+        # and wide enough that the flank just under the crest is at most APEX (rise / run): steeper, erosion planed
+        # a third off every summit
+        rw = max(rw, _sharp(inten) * rtop / APEX)
+        out['widths'].append(rw)
         # peaks: crest maxima within ~1.5 km either side, above half the range top
         win = max(1, int(1500.0 / step))
         for i, (x, y, h) in enumerate(spine):
@@ -159,9 +180,48 @@ def ridge_network(grid, cfg, noise, mountains_mask):
                 br.append((bx, by, h * (0.85 - 0.5 * f)))
             if len(br) > 1:
                 out['branches'].append(br)
+                out['bwidths'].append(rw * 0.6)
             side = -side
             s += rng.uniform(1500.0, 3000.0)
     return out
+
+
+CARVE_PASSES = 12
+
+
+def _carve(grid, height, cells, amp, ref_cells):
+    """Stream-power valleys, in place: each pass sends every cell to its lowest neighbour, adds up the cells
+    draining through it, and lowers it by amp / passes of its height x sqrt(drainage / ref_cells) (capped at 1).
+    Channels that gather more water cut deeper and pull in more, so spurs stand between drained valleys. A cell
+    never goes below its downhill neighbour, so no pit is made (the hydrology stage fills pits flat)."""
+    n, c = grid.n, grid.cell
+    nb = [(di, dj, c * math.hypot(di, dj)) for dj in (-1, 0, 1) for di in (-1, 0, 1) if di or dj]
+    rate = amp / CARVE_PASSES
+    for _ in range(CARVE_PASSES):
+        recv = {}
+        for k in cells:
+            i, j, hk = k % n, k // n, height[k]
+            best, bq = 0.0, -1
+            for di, dj, dist in nb:
+                ii, jj = i + di, j + dj
+                if 0 <= ii < n and 0 <= jj < n:
+                    q = jj * n + ii
+                    s = (hk - height[q]) / dist
+                    if s > best:
+                        best, bq = s, q
+            if bq >= 0:
+                recv[k] = (bq, c * math.hypot((bq % n) - i, (bq // n) - j))
+        acc = dict.fromkeys(cells, 1.0)
+        for k in sorted(cells, key=height.__getitem__, reverse=True):
+            r = recv.get(k)
+            if r and r[0] in acc:
+                acc[r[0]] += acc[k]
+        for k in sorted(cells, key=height.__getitem__):  # downstream first: a receiver is final before its donors
+            r = recv.get(k)
+            if not r:
+                continue
+            cut = height[k] * rate * min(1.0, math.sqrt(acc[k] / ref_cells))
+            height[k] = max(height[k] - cut, height[r[0]] + 1e-3 * r[1])
 
 
 def ridge_height(grid, cfg, noise, mountains_mask, net=None):
@@ -173,18 +233,16 @@ def ridge_height(grid, cfg, noise, mountains_mask, net=None):
     if not net['spines']:
         return height, strength
     inten = _intensity(cfg)
-    top0 = max(p[2] for line in net['spines'] for p in line)
-    # a range is as wide as its height needs: flanks average at most MAX_FLANK (rise / run); a 2.5 km peak on a
-    # 1 km half-width stood as a wall
-    w0 = max(_width(cfg), top0 / MAX_FLANK)
-    sharp = 1.3 + 0.5 * inten  # (1 - d/w)^sharp: a pointed crest, flanks concave toward the foot; higher = sharper
+    w0 = _width(cfg)
+    sharp = _sharp(inten)
     segs = []
-    for lines, wf in ((net['spines'], 1.0), (net['branches'], 0.6)):
-        for line in lines:
+    for lines, ws in ((net['spines'], net.get('widths')), (net['branches'], net.get('bwidths'))):
+        for li, line in enumerate(lines):
+            w = ws[li] if ws else w0
             if len(line) == 1:
-                segs.append(line[0] + line[0] + (w0 * wf,))
+                segs.append(line[0] + line[0] + (w,))
             for a, b in zip(line, line[1:]):
-                segs.append(a + b + (w0 * wf,))
+                segs.append(a + b + (w,))
     for x1, y1, h1, x2, y2, h2, w in segs:
         dx, dy = x2 - x1, y2 - y1
         ll = dx * dx + dy * dy
@@ -215,15 +273,23 @@ def ridge_height(grid, cfg, noise, mountains_mask, net=None):
     # and multiplying by it stood every range on vertical walls
     inside = grid.dist_to(array('d', (1.0 - m for m in mountains_mask)))
     taper = [smoothstep(0.0, min(TAPER_M, w0), d) for d in inside]
-    crag = 0.05 + 0.1 * inten  # rock texture on the flanks; at 0.1 + 0.2 its 4th octave stood up as 70-degree walls
+    wm = max(net.get('widths') or [w0])
+    sc = max(wm * 0.35, 5.0 * c)  # spur spacing: a few down every flank
+    cells = []
     for k in range(n * n):
-        f = strength[k]
-        if f <= 0.0:
+        if strength[k] <= 0.0:
             continue
-        r = noise.ridged(xs[k % n], ys[k // n], 3, scale=1500.0)
-        # crags fade out toward the summits: a noise spike on a top is what thermal erosion would chop off
-        near = min(height[k] / top, 1.0)
-        height[k] = (height[k] + crag * top * r * f * (1.0 - near ** 3)) * taper[k]
+        # the body is warped ridged noise under the ridge envelope: side ridges and the valleys between them at
+        # several scales (the envelope alone is a smooth tent); full height kept toward the crest line
+        wx, wy = noise.warp(xs[k % n], ys[k // n], sc * 0.6, sc * 2.5, 2)
+        r = noise.ridged(wx + 913.0, wy - 377.0, 5, scale=sc * 2.0)
+        u = min(height[k] / top, 1.0)
+        # the top fifth keeps the envelope whole: noise right under a summit left a one-cell needle erosion chopped
+        s = smoothstep(0.4, 0.8, u)
+        body = BODY + (1.0 - BODY) * (r + (1.0 - r) * s)
+        height[k] *= body * taper[k]
+        cells.append(k)
+    _carve(grid, height, cells, VALLEY + 0.25 * inten, (sc / c) ** 2)
     hi = max(height)
     if hi > 0:
         s = top / hi
@@ -320,6 +386,15 @@ def stage(grid, cfg, noise, maps):
     (0..1, notched where nearest-city links cross a spine; cities from maps['cities'] as (x, y) metres)."""
     net = ridge_network(grid, cfg, noise, maps['mountains'])
     maps['ridge'], maps['ridge_strength'] = ridge_height(grid, cfg, noise, maps['mountains'], net)
+    # apron 0..1: falls steadily from the ridge lines out past the range into its foothills; the plinth under the
+    # range follows it (built from region masks it had a moat at the region edge, filled flat by hydrology)
+    d = grid.dist_to(array('d', (1.0 if s >= 0.9 else 0.0 for s in maps['ridge_strength'])))
+    reach = max(net['widths'] or [_width(cfg)]) + APRON_M
+    # the distance is wobbled by noise at two scales: a bare distance field is flat-faced (planes meeting in creases)
+    wob = grid.field(lambda x, y: noise.fbm(x, y - 211.0, 2, scale=reach * 0.6)
+                     + 0.4 * noise.fbm(x + 57.0, y, 2, scale=reach * 0.15), reach * 0.03)
+    ap = array('d', (smoothstep(reach, 0.0, v * max(0.3, 1.0 + 0.9 * w)) for v, w in zip(d, wob)))
+    maps['apron'] = grid.blur(ap, max(1, int(300.0 / grid.cell)))  # and blurred: its creases still showed
     net['passes'], maps['passes'] = passes(grid, net, maps.get('cities', []), maps['ridge'])
     maps['ridge_net'] = net
     return maps

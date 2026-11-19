@@ -13,15 +13,22 @@ def _f01(v):
     return min(max(0.5 + v, 0.0), 1.0)
 
 
+def soft_coast(grid, maps):
+    """coast_dist blurred over ~400 m. A distance field has sharp creases (from every bay to the island's middle):
+    ground shaped by it straight came out in flat panels meeting along those lines."""
+    return grid.blur(maps['coast_dist'], max(1, int(400.0 / grid.cell)))
+
+
 def macro_height(grid, cfg, noise, maps):
     """Stage 3 -> macro: plains 1.5-40 m over the sea level, tilting up away from the coast; the sea floor drops
     to -50 m within 2.5 km of the shore."""
-    land, cd = maps['land'], maps['coast_dist']
+    land = maps['land']
+    cd = soft_coast(grid, maps)
     s0 = cfg.get('sea_level_m', 0.0)
     wob = grid.field(lambda x, y: noise.fbm(x / 8000.0 + 12.1, y / 8000.0 - 4.4, 3), 500.0)
     out = grid.new()
     for k in range(len(out)):
-        tilt = smoothstep(0.0, 12000.0, cd[k])
+        tilt = smoothstep(0.0, 12000.0, cd[k] * max(0.3, 1.0 + 0.8 * wob[k]))  # wobbled: a bare distance is flat-faced
         land_h = s0 + 1.5 + 38.5 * (0.55 * tilt + 0.45 * _f01(wob[k]))
         sea_h = s0 - 2.0 - 48.0 * smoothstep(0.0, 2500.0, -cd[k])
         out[k] = land[k] * land_h + (1.0 - land[k]) * sea_h
@@ -29,8 +36,11 @@ def macro_height(grid, cfg, noise, maps):
     return maps
 
 
-def foothill_top(cfg) -> float:
-    return min(800.0, 0.35 * cfg.get('mountain_m', 0.0))
+def foothill_top(cfg, ridge=None) -> float:
+    """Plinth height: a quarter of the ranges' real top (mountains.py caps it to the land), at most 800 m. Sized
+    from mountain_m alone, an 800 m smooth plinth buried a 1 km range and only its cone tip showed."""
+    top = max(ridge) if ridge else cfg.get('mountain_m', 0.0)
+    return min(800.0, 0.25 * top)
 
 
 def hill_height(grid, cfg, noise, maps):
@@ -38,20 +48,24 @@ def hill_height(grid, cfg, noise, maps):
     flatland 1), valleys pressed down; plinth: foothills rising to foothill_top() at the range edge and on
     under the range (the mountain layer is max-ed with it, never stacked on it)."""
     sc = cfg.get('hill_km', 2.0) * 1000.0
-    f = grid.field(lambda x, y: noise.fbm(x / sc - 3.7, y / sc + 15.2, 4), sc / 10)
+    # sampled every sc / 40: at sc / 10 (200 m) the bilinear fill between samples showed as flat panels and creases
+    f = grid.field(lambda x, y: noise.fbm(x / sc - 3.7, y / sc + 15.2, 4), sc / 40)
     relief = cfg.get('relief_m', 60.0)
-    roll = (1.0 - cfg.get('flatland', 0.5)) * relief * 0.3
-    top = foothill_top(cfg)
+    roll = (1.0 - cfg.get('flatland', 0.5)) * relief * 0.6  # plains swell gently, never dead level
+    top = foothill_top(cfg, maps.get('ridge'))
     dip = min(60.0, 0.05 * cfg.get('mountain_m', 0.0))
     hm, pm, fm, mm, vm = (maps[k] for k in ('hills', 'plains', 'foothills', 'mountains', 'valleys'))
-    cd = maps['coast_dist']
+    cd = soft_coast(grid, maps)
+    hm = grid.blur(hm, max(1, int(sc * 0.15 / grid.cell)))  # the ranked mask switches on in one cell: hills stood on walls
+    ap = maps.get('apron')  # mountains.py: falls steadily away from the ridge lines, so the plinth has no moat
     out, plinth = grid.new(), grid.new()
     for k in range(len(out)):
         t = _f01(f[k])
         out[k] = hm[k] * relief * (0.5 + 2.0 * t) + pm[k] * roll * f[k] - vm[k] * dip
         # down to the shore over PLINTH_SHORE_M: the land mask ends in one cell, and an 800 m plinth stood as a
         # wall in the sea all round a mountain island
-        plinth[k] = (fm[k] + mm[k]) * top * (0.55 + 0.45 * t) * smoothstep(0.0, PLINTH_SHORE_M, cd[k])
+        under = ap[k] * (0.85 + 0.15 * t) if ap is not None else (fm[k] + mm[k]) * (0.55 + 0.45 * t)
+        plinth[k] = under * top * smoothstep(0.0, PLINTH_SHORE_M, cd[k])
     maps['hill_h'], maps['plinth'] = out, plinth
     return maps
 

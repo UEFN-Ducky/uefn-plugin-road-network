@@ -133,5 +133,5 @@ def test_seeded_and_empty():
     g, mask, nz = _world(5)
     assert ridge_height(g, CFG, nz, mask)[0] == ridge_height(g, CFG, Noise(5), mask)[0]
     empty = g.new()
-    assert ridge_network(g, CFG, nz, empty) == {'spines': [], 'branches': [], 'peaks': []}
+    assert ridge_network(g, CFG, nz, empty) == {'spines': [], 'branches': [], 'peaks': [], 'widths': [], 'bwidths': []}
     assert max(ridge_height(g, CFG, nz, empty)[0]) == 0.0
