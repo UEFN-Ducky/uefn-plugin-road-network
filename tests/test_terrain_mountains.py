@@ -1,0 +1,68 @@
+import math
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+from backend.terrain import Grid, Noise  # noqa: E402
+from backend.terrain.mountains import ridge_network, ridge_height  # noqa: E402
+
+CFG = {'mountain_m': 2000.0, 'mountain_intensity': 1.0}
+
+
+def _world(seed=3):
+    """A 24 km grid with one long range: a rotated ellipse 16 x 5 km."""
+    g = Grid(96, 0.0, 0.0, 24000.0)
+    mask = g.new()
+    a = math.radians(30)
+    for k, x, y in g.points():
+        u = (x - 12000) * math.cos(a) + (y - 12000) * math.sin(a)
+        v = -(x - 12000) * math.sin(a) + (y - 12000) * math.cos(a)
+        if (u / 8000) ** 2 + (v / 2500) ** 2 <= 1:
+            mask[k] = 1.0
+    return g, mask, Noise(seed)
+
+
+def _seg_dist(px, py, a, b):
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    ll = dx * dx + dy * dy
+    t = min(max(((px - a[0]) * dx + (py - a[1]) * dy) / ll, 0), 1) if ll else 0
+    return math.hypot(px - a[0] - dx * t, py - a[1] - dy * t)
+
+
+def test_network_shape():
+    g, mask, nz = _world()
+    net = ridge_network(g, CFG, nz, mask)
+    assert len(net['spines']) == 1 and len(net['spines'][0]) > 10
+    assert len(net['branches']) >= 3
+    assert net['peaks'] and abs(max(p[2] for p in net['peaks']) - 2000.0) < 1e-6
+    sp = net['spines'][0]
+    for br in net['branches']:  # 35-70 degrees off the local spine direction
+        x, y = br[0][0], br[0][1]
+        i = min(range(len(sp) - 1), key=lambda q: math.hypot(sp[q][0] - x, sp[q][1] - y))
+        t = math.atan2(sp[i + 1][1] - sp[i][1], sp[i + 1][0] - sp[i][0])
+        b = math.atan2(br[1][1] - y, br[1][0] - x)
+        d = abs((b - t + math.pi) % (2 * math.pi) - math.pi)
+        assert 25 <= math.degrees(d) <= 95  # 35-70 plus the noise bend on the first segment
+
+
+def test_ridge_height():
+    g, mask, nz = _world()
+    net = ridge_network(g, CFG, nz, mask)
+    h, _ = ridge_height(g, CFG, nz, mask, net)
+    k = max(range(len(h)), key=h.__getitem__)
+    assert 1800.0 <= h[k] <= 2200.0
+    px, py = g.xs[k % g.n], g.ys[k // g.n]
+    sp = net['spines'][0]
+    assert min(_seg_dist(px, py, a, b) for a, b in zip(sp, sp[1:])) <= 300.0
+    dist = g.dist_to(mask)
+    assert all(h[q] == 0.0 for q in range(len(h)) if dist[q] > 3000.0)
+    assert min(h) >= 0.0
+
+
+def test_seeded_and_empty():
+    g, mask, nz = _world(5)
+    assert ridge_height(g, CFG, nz, mask)[0] == ridge_height(g, CFG, Noise(5), mask)[0]
+    empty = g.new()
+    assert ridge_network(g, CFG, nz, empty) == {'spines': [], 'branches': [], 'peaks': []}
+    assert max(ridge_height(g, CFG, nz, empty)[0]) == 0.0
