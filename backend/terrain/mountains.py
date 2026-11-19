@@ -135,7 +135,6 @@ def ridge_network(grid, cfg, noise, mountains_mask):
             i = min(int(s / step), len(spine) - 2)
             x, y, h = spine[i]
             tx, ty = spine[i + 1][0] - x, spine[i + 1][1] - y
-            tl = math.hypot(tx, ty) or 1.0
             a = math.atan2(ty, tx) + side * math.radians(rng.uniform(35.0, 70.0))
             u = s / length
             blen = max(halfw * 1.8, 600.0) * (1.0 - 0.7 * abs(2 * u - 1))
@@ -212,9 +211,79 @@ def ridge_height(grid, cfg, noise, mountains_mask, net=None):
     return height, strength
 
 
+def _xy(c):
+    return (float(c['x']), float(c['y'])) if isinstance(c, dict) else (float(c[0]), float(c[1]))
+
+
+def _cross(a, b, c, d):
+    """Point where segment ab crosses segment cd, else None."""
+    rx, ry, sx, sy = b[0] - a[0], b[1] - a[1], d[0] - c[0], d[1] - c[1]
+    den = rx * sy - ry * sx
+    if abs(den) < 1e-9:
+        return None
+    t = ((c[0] - a[0]) * sy - (c[1] - a[1]) * sx) / den
+    u = ((c[0] - a[0]) * ry - (c[1] - a[1]) * rx) / den
+    if 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0:
+        return a[0] + rx * t, a[1] + ry * t
+    return None
+
+
+def passes(grid, network, cities, height=None, depth=0.42, reach=5000.0, notch=1500.0, across=3000.0):
+    """Saddles where nearest-neighbour city links cross a spine. For each crossing, the lowest spine point within
+    `reach` m is notched to `depth` x the local ridge top over a `notch` m wide cut (across the whole ridge).
+    Lowers `height` in place when given. Returns (passes [(x, y, h)], passes map 0..1). Cities: (x, y) or {x, y}."""
+    pmap = grid.new()
+    pts = [_xy(c) for c in cities]
+    pairs = set()
+    for a in range(len(pts)):
+        others = [b for b in range(len(pts)) if b != a]
+        if others:
+            b = min(others, key=lambda q: math.hypot(pts[q][0] - pts[a][0], pts[q][1] - pts[a][1]))
+            pairs.add((min(a, b), max(a, b)))
+    out = []
+    n, xs, ys = grid.n, grid.xs, grid.ys
+    for a, b in sorted(pairs):
+        for spine in network['spines']:
+            hit = None
+            for q in range(len(spine) - 1):
+                hit = _cross(pts[a], pts[b], spine[q], spine[q + 1])
+                if hit:
+                    break
+            if not hit:
+                continue
+            near = [i for i, p in enumerate(spine) if math.hypot(p[0] - hit[0], p[1] - hit[1]) <= reach]
+            crest = [grid.sample(height, spine[i][0], spine[i][1]) if height is not None else spine[i][2] for i in near]
+            low = near[min(range(len(near)), key=crest.__getitem__)]
+            top = max(crest)
+            px, py = spine[low][0], spine[low][1]
+            h = depth * top
+            # local spine direction at the saddle: the notch runs across it
+            p0, p1 = spine[max(low - 1, 0)], spine[min(low + 1, len(spine) - 1)]
+            tx, ty = p1[0] - p0[0], p1[1] - p0[1]
+            tl = math.hypot(tx, ty) or 1.0
+            tx, ty = tx / tl, ty / tl
+            half, c = notch * 0.5, grid.cell
+            r = math.hypot(half, across)
+            for j in range(max(0, int((py - r - grid.y0) / c)), min(n - 1, int((py + r - grid.y0) / c)) + 1):
+                for i in range(max(0, int((px - r - grid.x0) / c)), min(n - 1, int((px + r - grid.x0) / c)) + 1):
+                    dx, dy = xs[i] - px, ys[j] - py
+                    w = smoothstep(half, 0.0, abs(dx * tx + dy * ty)) * smoothstep(across, across * 0.6, abs(dx * ty - dy * tx))
+                    if w <= 0.0:
+                        continue
+                    k = j * n + i
+                    if w > pmap[k]:
+                        pmap[k] = w
+                    if height is not None and height[k] > h:
+                        height[k] -= (height[k] - h) * w
+            out.append((px, py, h))
+    return out, pmap
+
+
 def stage(grid, cfg, noise, maps):
-    """Adds maps['ridge'] (mountain height, m), maps['ridge_strength'] (0..1) and maps['ridge_net']."""
+    """Adds maps['ridge'] (mountain height, m), maps['ridge_strength'] (0..1), maps['ridge_net'] and maps['passes']
+    (0..1, notched where nearest-city links cross a spine; cities from maps['cities'] as (x, y) metres)."""
     net = ridge_network(grid, cfg, noise, maps['mountains'])
     maps['ridge'], maps['ridge_strength'] = ridge_height(grid, cfg, noise, maps['mountains'], net)
+    net['passes'], maps['passes'] = passes(grid, net, maps.get('cities', []), maps['ridge'])
     maps['ridge_net'] = net
     return maps

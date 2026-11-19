@@ -5,7 +5,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from backend.terrain import Grid, Noise  # noqa: E402
-from backend.terrain.mountains import ridge_network, ridge_height  # noqa: E402
+from backend.terrain.mountains import passes, ridge_network, ridge_height  # noqa: E402
 
 CFG = {'mountain_m': 2000.0, 'mountain_intensity': 1.0}
 
@@ -58,6 +58,25 @@ def test_ridge_height():
     dist = g.dist_to(mask)
     assert all(h[q] == 0.0 for q in range(len(h)) if dist[q] > 3000.0)
     assert min(h) >= 0.0
+
+
+def test_pass_between_cities():
+    g, mask, nz = _world()
+    net = ridge_network(g, CFG, nz, mask)
+    h, _ = ridge_height(g, CFG, nz, mask, net)
+    before = h[:]
+    a = math.radians(30)
+    off = (-math.sin(a) * 6000, math.cos(a) * 6000)  # either side of the range, across its axis
+    ca, cb = (12000 + off[0], 12000 + off[1]), (12000 - off[0], 12000 - off[1])
+    ps, pmap = passes(g, net, [ca, {'x': cb[0], 'y': cb[1]}], h)
+    assert len(ps) == 1
+    px, py, ph = ps[0]
+    sp = net['spines'][0]
+    peak = max(g.sample(before, x, y) for x, y, _ in sp if math.hypot(x - px, y - py) <= 5000)
+    assert g.sample(h, px, py) < 0.5 * peak and ph < 0.5 * peak
+    assert _seg_dist(px, py, ca, cb) <= 5000.0
+    assert max(pmap) > 0.9 and min(pmap) == 0.0
+    assert passes(g, net, [ca], h)[0] == []  # one city: no link, no pass
 
 
 def test_seeded_and_empty():
