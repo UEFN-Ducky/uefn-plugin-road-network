@@ -281,6 +281,14 @@ OPTIONS = {
 }
 HIGHWAYS = CHOICES["highway"][0]
 
+# the terrain engine's sliders and pickers (backend/terrain/config.py, metres). 'Classic' is the old ground below,
+# any other preset runs the engine. Its `detail` (0..1) and `relief_m` are left out: citygen's detail is octaves,
+# and relief comes in as terrain()'s relief_cm
+from ..terrain import config as _tcfg  # noqa: E402
+OPTIONS.update({k: v for k, v in _tcfg.KEYS.items() if k not in OPTIONS and k not in ("detail", "relief_m")})
+CHOICES["preset"] = (tuple(_tcfg.PRESETS), "Classic")
+CHOICES["coast"] = (_tcfg.CHOICES["coast"][1], _tcfg.CHOICES["coast"][0])
+
 
 # what one city may have or not, over the world's choice (city["features"], the Cities list's remove / + Add)
 FEATURES = ("airports", "shipyards", "freeways", "waterfront", "canals", "planner", "suburbs")

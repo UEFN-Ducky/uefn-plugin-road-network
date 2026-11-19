@@ -139,6 +139,8 @@ def terrain(seed: int, size_cm: float, relief_cm: float, cities: list, grid: int
     {min, max, grid, heights[j][i]} with cell centres, so the 3D view and drape read it as is.
     lakes (lake_list): lakes drawn by hand, dug into the natural ground before anything is levelled on it."""
     o = options(opts)
+    if o["preset"] != "Classic":
+        return _engine_terrain(seed, size_cm, relief_cm, cities, grid, center, o, keep, lakes)
     fbm = _fbm(seed, o["detail"], o["roughness"], o["ridges"])
     half = size_cm / 2
     lo, hi = [center[0] - half, center[1] - half], [center[0] + half, center[1] + half]
@@ -228,6 +230,40 @@ def terrain(seed: int, size_cm: float, relief_cm: float, cities: list, grid: int
             row.append(round(h, 1))
         rows.append(row)
     out = {"min": lo, "max": hi, "grid": grid, "heights": rows, "sea": sea}
+    out["z_scale"] = z_scale(out)
+    return out
+
+
+ENGINE_MAPS = ("biome", "river", "build", "road_cost")  # the engine maps a world keeps (flat, row-major, grid size)
+
+
+def _engine_terrain(seed, size_cm, relief_cm, cities, grid, center, o, keep, lakes) -> dict:
+    """A preset world from the terrain engine (backend/terrain, metres) in terrain()'s cm shape. The engine levels
+    the cities and keep zones itself; lakes drawn by hand are dug in after."""
+    from ..terrain import generate
+    half = size_cm / 2
+    lo = [center[0] - half, center[1] - half]
+    cfg = {**{k: v for k, v in o.items() if k != "detail"}, "seed": seed, "relief_m": relief_cm / 100.0}
+    towns = [{"x": c["x"] / 100.0, "y": c["y"] / 100.0, "radius": c.get("radius", 0.0) / 100.0} for c in cities]
+    # ponytail: a keep rectangle goes in as the circle round it; a rect zone in the engine if a long one matters
+    held = [{"x": (k["x0"] + k["x1"]) / 200.0, "y": (k["y0"] + k["y1"]) / 200.0,
+             "radius": math.hypot(k["x1"] - k["x0"], k["y1"] - k["y0"]) / 200.0, "z": k["z"] / 100.0}
+            for k in keep or []]
+    world = generate(cfg, grid, lo[0] / 100.0, lo[1] / 100.0, size_cm / 100.0, cities=towns, keep=held)
+    out = world.to_citygen()
+    out["maps"] = {k: [round(v, 3) for v in world.maps[k]] for k in ENGINE_MAPS if k in world.maps}
+    if not (lakes or keep):
+        return out
+    xs = [lo[0] + size_cm * (i + 0.5) / grid for i in range(grid)]
+    ys = [lo[1] + size_cm * (j + 0.5) / grid for j in range(grid)]
+    rows, out["sea"] = _dig_lakes(out["heights"], xs, ys, lakes or [], out["sea"], o["water_depth_m"] * 100, 400.0)
+    blend = max(o["flatten_m"] * 100, 5000.0)
+    for j, y in enumerate(ys):  # last, as in Classic: the engine's erosion and detail run after its own levelling
+        for i, x in enumerate(xs):
+            for k in keep or []:
+                rows[j][i] += (k["z"] - rows[j][i]) * (1 - _smoothstep(0, blend, keep_gap(k, x, y)))
+    out["heights"] = [[round(v, 1) for v in r] for r in rows]
+    out.pop("z_scale")
     out["z_scale"] = z_scale(out)
     return out
 
