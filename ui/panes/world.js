@@ -175,6 +175,25 @@ function renderActors(geo) {
   }) : [h("div", { class: "rn-hint" }, "No road actors in this network.")]));
 }
 
+// only the ground, in seconds: nothing is saved and the cities and roads stay as they are (Regenerate everything
+// applies it). The newest run wins when sliders move quickly.
+let terrainSeq = 0;
+async function generateTerrain() {
+  const g = state.gen, name = (g.name || "").trim();
+  if (!name) { openTab("world"); return showError("Give the world a name."); }
+  if (state.generating) return;
+  const seq = ++terrainSeq;
+  busy(`Terrain for ${name}`, { text: "Shaping the ground, rivers and biomes…" });
+  const out = await rpc("terrain_preview", { name, seed: g.seed, size_km: g.size_km, relief_m: g.relief_m,
+    options: JSON.stringify(optionsOf(g)) });
+  if (seq !== terrainSeq) return;
+  busy("");
+  if (out.ok === false) return showError(out.error);
+  showError("");
+  state.geo = { ...(state.geo || {}), terrain: out.terrain };
+  buildScene();
+}
+
 async function generate() {
   const other = peerBusy();
   if (other) return flash(`${other.name} is rebuilding this world. Yours can start when theirs is in.`);
@@ -453,4 +472,4 @@ function eyeOf(l) {
 }
 
 
-export { currentNet, optionsOf, loadNets, openNet, loadSeq, loadGeometry, PAGE, replyCache, cachedRpc, loadAllGeometry, renderActors, generate, pullName, pullBtn, reloads, RELOAD_PAUSE_MS, reloadSoon, runReloads, applySync, renderHeader, syncSeq, loadSync, worldDrop, deleteWorld, deleteWorldButton, renderWorldPick, newWorld, renderLayerList };
+export { currentNet, optionsOf, loadNets, openNet, loadSeq, loadGeometry, PAGE, replyCache, cachedRpc, loadAllGeometry, renderActors, generate, generateTerrain, pullName, pullBtn, reloads, RELOAD_PAUSE_MS, reloadSoon, runReloads, applySync, renderHeader, syncSeq, loadSync, worldDrop, deleteWorld, deleteWorldButton, renderWorldPick, newWorld, renderLayerList };

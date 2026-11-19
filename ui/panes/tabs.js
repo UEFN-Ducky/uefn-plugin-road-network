@@ -3,7 +3,7 @@ import { $, ctl, presetValues, savePrefs, state } from "../core.js";
 import { renderCitiesPane, showSide } from "./cities.js";
 import { renderPcgPane } from "./pcg.js";
 import { renderEditPane, renderUefnPane } from "./uefn.js";
-import { generate } from "./world.js";
+import { generate, generateTerrain } from "./world.js";
 import { buildScene } from "../view/scene.js";
 import { DEBUG_VIEWS } from "../view/terrain.js";
 
@@ -63,7 +63,8 @@ function setGen(key, v) {
   state.gen[key] = v;
   savePrefs();
   syncGenerate();
-  if (state.live) { clearTimeout(liveTimer); liveTimer = setTimeout(() => generate(), 650); }
+  // on the Terrain tab live preview redoes only the ground (seconds); elsewhere the whole world
+  if (state.live) { clearTimeout(liveTimer); liveTimer = setTimeout(() => (state.tab === "terrain" ? generateTerrain() : generate()), 650); }
 }
 const m = (v) => `${Math.round(v)} m`;
 const pct = (v) => `${Math.round(v * 100)} %`;
@@ -139,7 +140,9 @@ function buildPanes() {
   } });
   const deg = (v) => `${Math.round(v)}°`;
   $("pane-terrain").replaceChildren(
-    section("Preset", ctl.preset.el),
+    section("Preset", ctl.preset.el, button("Generate terrain", "terrain", () => generateTerrain()),
+      h("div", { class: "rn-hint" }, "Only the ground: mountains, rivers, lakes and biomes in seconds. Your cities and roads are not touched "
+        + "and nothing is saved until Regenerate everything. With Live preview on, this tab redoes just the ground.")),
     section("Mountains", sl("mountain_m", "Mountain height", 0, 2500, 25, (v) => v ? m(v) : "Off",
         "Mountain ranges in some places only, as tall as this, on top of the ground; the rest stays as flat as Ground height. Cities and the way between them stay clear. Above 256 m the heightmap's Z scale grows to fit (shown under This world)"),
       sl("mountain_cover", "Mountain area", 0.05, 0.8, 0.05, pct, "How much of the map the ranges cover"),

@@ -713,6 +713,30 @@ def register(ctx) -> None:
                        + f"It makes a new landscape; your current one is not touched. "
                        f"Every building lot is already levelled into it (cut and fill), so buildings sit flat on hills."}
 
+    def terrain_preview(name: str = "", seed: int = 7, size_km: float = 6.0, relief_m: float = 60.0,
+                        center_x: float = 0.0, center_y: float = 0.0, options: str = "") -> dict:
+        """Only the ground, for trying terrain settings in seconds: the world's cities, roads and saved terrain are
+        not touched (Regenerate everything applies it). The cities that are there keep their ground flat as usual."""
+        nid = slug(name)
+        try:
+            given = json.loads(options) if str(options or "").strip() else {}
+        except ValueError as exc:
+            return {"ok": False, "error": f"options is not valid JSON: {exc}"}
+        last = (data.get(f"net.{nid}") or {}).get("generated") or {}
+        if last.get("ground_from"):
+            return {"ok": False, "error": "This world sits on a scanned landscape: its ground is never regenerated."}
+        keep = cg.keep_zones(given.pop("keep") if "keep" in given else last.get("keep"))
+        lakes = cg.lake_list(given.pop("lakes") if isinstance(given.get("lakes"), list) else last.get("lakes"))
+        opts = cg.options({**last.get("options", {}), **given})
+        size = max(1.0, min(20.0, float(size_km or 6))) * 100000.0
+        towns = [{"name": c.get("name"), "x": float(c["x"]), "y": float(c["y"]), "radius": float(c.get("radius") or 45000)}
+                 for c in city_docs(nid).values() if "x" in c and "y" in c] if nid else []
+        ter = cg.terrain(int(seed), size, max(0.0, float(relief_m)) * 100, towns, center=(center_x, center_y),
+                         opts=opts, keep=keep, lakes=lakes)
+        if ter.get("maps") and nid:  # the Debug looks show what is on screen
+            engine_maps[nid] = cg.LAST_WORLD.maps
+        return {"ok": True, "terrain": ter, "cities": len(towns)}
+
     def terrain_map(net_id: str = "", name: str = "") -> dict:
         """The panel's Debug look: one engine map of a world (bare name: height, biome, river ...) as a base64 RGB
         PNG, row 0 = the grid's j 0. Every map from this session's last generate, else the few the world keeps."""

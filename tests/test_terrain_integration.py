@@ -215,6 +215,13 @@ def test_terrain_only_world(monkeypatch):
     assert out["cities"] == [] and store["net.bare.scan"]["terrain"]["heights"]
     again = ctx.generate("Bare", seed=4, cities="", size_km=6.0, relief_m=60.0, folder="/G/WorldGen/Roads", options="")
     assert again["ok"] and again["cities"] == [], again  # regenerating keeps it terrain only
+    # Generate terrain: a new ground comes back, the saved one stays as it was
+    saved = store["net.bare.scan"]["terrain"]["heights"]
+    prev = ctx.terrain_preview("Bare", seed=4, size_km=6.0, relief_m=60.0,
+                               options=json.dumps({"preset": "Alpine", "mountain_m": 2000}))
+    assert prev["ok"] and prev["terrain"]["heights"] != saved
+    assert max(max(r) for r in prev["terrain"]["heights"]) > 150000
+    assert store["net.bare.scan"]["terrain"]["heights"] is saved
 
 
 def test_lakes_slider_is_an_option_not_drawn_lakes(monkeypatch):
