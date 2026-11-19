@@ -14,11 +14,11 @@ from . import kit_bake
 def register(ctx) -> None:
     (_GROUND, _PREVIEW_CACHE, _PREVIEW_MEMO, edit, edits, ground_fit, interiors_of, panel_preview,
      panel_rpc, pcg_assets, pcg_build, pcg_exact, pcg_layer_delete, pcg_layer_save, pcg_layers, pcg_place,
-     pcg_plan, pcg_preset, pcg_preview, preset_delete, preset_save, presets, road_folder, safe, slug,
+     pcg_plan, pcg_preset, pcg_preview, pcg_progress, preset_delete, preset_save, presets, road_folder, safe, slug,
      terrain_map, tool, tree_props) = ctx.take(
         "_GROUND _PREVIEW_CACHE _PREVIEW_MEMO edit edits ground_fit interiors_of panel_preview panel_rpc "
         "pcg_assets pcg_build pcg_exact pcg_layer_delete pcg_layer_save pcg_layers pcg_place pcg_plan "
-        "pcg_preset pcg_preview preset_delete preset_save presets road_folder safe slug terrain_map tool tree_props")
+        "pcg_preset pcg_preview pcg_progress preset_delete preset_save presets road_folder safe slug terrain_map tool tree_props")
 
     PCG_INTENT = r"\b(pcg|procedural|scatter|placement layers?|foliage|trees|rocks|street (trees|lamps))\b"
 
@@ -251,6 +251,7 @@ def register(ctx) -> None:
     panel_rpc("pcg_assets", lambda net_id="", asset_set="", interiors="", trees="", trees_max=0:
               safe(pcg_assets)(net_id, asset_set, interiors, trees, trees_max))
     panel_rpc("pcg_preview", lambda net_id="", layer_id="", again=False: safe(panel_preview)(net_id, layer_id, bool(again)))
+    panel_rpc("pcg_progress", lambda net_id="": safe(pcg_progress)(net_id))
     panel_rpc("ground_fit", lambda net_id="": safe(ground_fit)(net_id))
     panel_rpc("terrain_map", lambda net_id="", name="": safe(terrain_map)(net_id, name))
     panel_rpc("pcg_exact", lambda net_id="", x=0.0, y=0.0, radius_m=400.0: safe(pcg_exact)(

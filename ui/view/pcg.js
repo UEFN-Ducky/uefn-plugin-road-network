@@ -378,7 +378,13 @@ async function loadPcgPreviewNow() {
     card("Placing the city", { text: i ? `${ls.map((l) => l.name).join(", ")}` : "Placing every building, prop and tree…",
       step: i ? 100 + i : 0, of });
     // again: the later calls read the placement the first one checked, without re-reading the whole world
-    const r = await cachedRpc("pcg_preview", { net_id: net, layer_id: ls.map((l) => l.id).join(","), ...(i ? { again: 1 } : {}) });
+    // the first call places the whole city: its bar asks the backend how far it is (pushed progress never got here)
+    const poll = i ? 0 : setInterval(async () => {
+      const p = await rpc("pcg_progress", { net_id: net });
+      if (p?.text && p.text !== "Done" && net === state.net && loading.title === "Placing the city" && p.step >= loading.step) card("Placing the city", { text: p.text, step: p.step, of });
+    }, 600);
+    const r = await cachedRpc("pcg_preview", { net_id: net, layer_id: ls.map((l) => l.id).join(","), ...(i ? { again: 1 } : {}) })
+      .finally(() => clearInterval(poll));
     if (net !== state.net) return;  // (openNet took the card down; the new world's run owns it now)
     if (r.ok === false && ls[0].id !== "road-walls") { card(""); settleCity(); state.lifted = null; buildScene(); return showError(r.error, () => loadPcgPreview()); }
     if (r.ok !== false) {

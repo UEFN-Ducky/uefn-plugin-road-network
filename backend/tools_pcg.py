@@ -357,9 +357,29 @@ def register(ctx) -> None:
 
     _PANEL_WANTS: dict = {}  # the world the panel last asked a city for: an older world's placement stops
 
+    _PROGRESS: dict = {}  # world id -> (step 0-100, what it is doing): the panel polls it while it places
+    PANEL_FOLIAGE = 40000  # a forest layer's points sent to the panel: a view's worth (the bake keeps them all)
+
+    def pcg_progress(net_id: str = "") -> dict:
+        """How far the placement of this world is: polled by the panel's bar (the pushed progress events never
+        reached it: the bar sat at 0 % for the whole placement)."""
+        step, text = _PROGRESS.get(slug(net_id), (0, ""))
+        return {"ok": True, "step": step, "text": text}
+
     def panel_preview(net_id: str = "", layer_id: str = "", again: bool = False) -> dict:
         _PANEL_WANTS["net"] = slug(net_id)
-        return pcg_preview(net_id, layer_id, panel=True, again=again)
+        got = pcg_preview(net_id, layer_id, panel=True, again=again)
+        if got.get("layers"):  # (a copy: with no layer_id this is the cache itself)
+            got = {**got, "layers": dict(got["layers"])}
+        # forests come thinned to a view's worth: 200 000 trees a layer was ~6 MB a reply through the panel
+        # bridge, and the bar sat on it after the placement was done
+        # ponytail: an even stride; the panel draws a forest as dense as these, counts stay the full ones
+        for name, v in list((got.get("layers") or {}).items()):
+            pts = v.get("points") or []
+            if v.get("kind") == "foliage" and len(pts) > PANEL_FOLIAGE:
+                got["layers"][name] = {**v, "points": pts[::-(-len(pts) // PANEL_FOLIAGE)]}
+                got["layers"][name]["shown"] = len(got["layers"][name]["points"])
+        return got
 
     def pcg_preview(net_id: str = "", layer_id: str = "", summary: bool = False, panel: bool = False,
                     again: bool = False) -> dict:
@@ -392,7 +412,8 @@ def register(ctx) -> None:
         # once more each. ponytail: a change landing between those calls is caught by the panel's next load
         reuse = again and cur == nid and "out" in _PREVIEW_CACHE
         if not reuse:
-            if panel:  # (reading a big world's ground and hashing it takes seconds before the first layer)
+            _PROGRESS[nid] = (0, "Reading the world…")  # (a big world's ground read and hashed: seconds)
+            if panel:
                 push({"what": "progress", "id": nid, "step": 0, "of": 100, "text": "Reading the world…"})
             terrain = scan_terrain(nid) or {}
             actors = world_actors(nid)
@@ -433,6 +454,7 @@ def register(ctx) -> None:
                 if clock[1]:
                     took[clock[1]] = round(took.get(clock[1], 0.0) + now - clock[0], 2)
                 clock[:] = [now, text]
+                _PROGRESS[nid] = (step, text or "Done")
                 if text:
                     push({"what": "progress", "id": nid, "step": step, "of": 100, "text": text})
             # the bar by work, not by layer count: the forest layers are nearly all of it (a terrain-only world sat
