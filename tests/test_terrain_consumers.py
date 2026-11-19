@@ -91,5 +91,32 @@ def test_trees_follow_biomes():
     assert biome_trees({"heights": []}) is None
 
 
+def _ground(ter):
+    n, (mx, my), (Mx, My) = ter["grid"], ter["min"], ter["max"]
+    cell = lambda x, y: (min(n - 1, max(0, int((x - mx) / (Mx - mx) * n))), min(n - 1, max(0, int((y - my) / (My - my) * n))))
+    return cell, lambda x, y: ter["heights"][cell(x, y)[1]][cell(x, y)[0]]
+
+
+def test_preview_trees_follow_biomes():
+    from backend.pcg_layers.layers import NATURE, clean
+    from backend.pcg_layers.preview import preview
+    from backend.terrain.climate import BIOMES
+    trees = clean(dict(NATURE[0]))
+    ter = cg.terrain(7, 600000.0, 3000.0, [], grid=48, opts={"preset": "Alpine", "mountain_m": 2400, "mountain_cover": 0.8})
+    cell, z = _ground(ter)
+    pts = preview([trees], [], ter, [], z, foliage_limit=20000)["Trees"]["points"]
+    b = ter["maps"]["biome"]
+    names = [BIOMES[int(b[cell(p[0], p[1])[1] * ter["grid"] + cell(p[0], p[1])[0]])] for p in pts]
+    assert pts and not [s for s in names if s in ("snow", "cliff", "ocean")]
+    assert any(BIOMES[int(v)] in ("snow", "cliff") for v in b)  # the world has snow / cliff to avoid
+    # Classic: no biome map, the same trees as before
+    classic = cg.terrain(7, 600000.0, 3000.0, [], grid=48)
+    assert "maps" not in classic or not (classic.get("maps") or {}).get("biome")
+    _, cz = _ground(classic)
+    a = preview([trees], [], classic, [], cz, foliage_limit=20000)["Trees"]
+    bare = preview([trees], [], {k: v for k, v in classic.items() if k != "maps"}, [], cz, foliage_limit=20000)["Trees"]
+    assert a["points"] == bare["points"] and a["count"] == bare["count"]
+
+
 def test_classic_unchanged():
     assert cg.place_cities(7, 3, BOUNDS) == cg.place_cities(7, 3, BOUNDS, opts={"preset": "Classic"})

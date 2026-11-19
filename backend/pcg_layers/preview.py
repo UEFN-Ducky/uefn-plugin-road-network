@@ -10,7 +10,7 @@ import zlib
 
 from .graph import avoid_list
 from .land import (DIRTY_CM, TILE_CM, _city_sig, _height, _lot_hits_road, _Rects, _u01, _where_test, core_peak,
-                   inside, open_land)
+                   biome_trees, inside, open_land, tree_kind)
 from .layers import FAR_KEEP, FORM_NAMES, PLANNED_ROLES, clean, patch
 from .lots import BIG_SITE_M, _lot_ground
 from .samples import BASE_RADIUS, SCATTERED, _Hash, junction_corners, street_samples
@@ -137,6 +137,7 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
         ys = [r[1] for r in roads] + [c["y"] for c in cities] or [0]
         lo, hi = [min(xs) - 20000, min(ys) - 20000], [max(xs) + 20000, max(ys) + 20000]
     sea = terrain.get("sea")
+    by_biome = biome_trees(terrain)  # an engine world: trees follow its biomes (None on Classic: as before)
     road_hash = _Hash()
     for x, y, half, _, _ in roads:
         road_hash.add(x, y, half, (x, y, half))
@@ -324,6 +325,8 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
             if vacant is None:
                 vacant = open_land(cities)
             where_ok = (lambda x, y, out_=where_ok, free=vacant: out_(x, y) or free(x, y))  # (not outside: in a city)
+        if by_biome and layer["kind"] in SCATTERED and layer["role"] == "tree":
+            where_ok = (lambda x, y, ok=where_ok, k=tree_kind(layer): ok(x, y) and by_biome(x, y, k))
         candidates = 0
         why: dict = {}  # building layers: why each lot was passed over (road_network_pcg_preview `skipped`)
         no = lambda k: why.__setitem__(k, why.get(k, 0) + 1)

@@ -66,6 +66,14 @@ CONIFER_FROM_M = 900.0  # above this only conifers grow
 PALM_BIOMES = ("beach", "rainforest", "savanna")  # tropical and beach: the only places a palm grows
 
 
+def tree_kind(layer: dict) -> str:
+    """'conifer', 'palm' or 'broadleaf', from a tree layer's name and meshes."""
+    text = (str(layer.get("name")) + repr(layer.get("meshes"))).lower()
+    if any(w in text for w in ("conifer", "pine", "spruce", "fir")):
+        return "conifer"
+    return "palm" if "palm" in text else "broadleaf"
+
+
 def biome_trees(terrain: dict | None):
     """(x, y, kind='tree') -> keep this tree candidate, from an engine terrain's biome map (None without one: keep
     all). Never on snow, cliff or water (sea, lake, river); kept at TREE_DENSITY of its biome, the same draw for a
