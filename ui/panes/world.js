@@ -190,7 +190,8 @@ async function generateTerrain() {
   busy("");
   if (out.ok === false) return showError(out.error);
   showError("");
-  state.geo = { ...(state.geo || {}), terrain: out.terrain };
+  // rawTerrain too: buildScene draws the raw ground it cached, and the old one would stay on screen
+  state.geo = { ...(state.geo || {}), terrain: out.terrain, rawTerrain: out.terrain };
   buildScene();
 }
 
