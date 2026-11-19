@@ -264,8 +264,8 @@ def register(ctx) -> None:
         def progress(step: int, text: str) -> None:  # the panel's loading card follows these
             push({"what": "progress", "id": nid, "step": step, "of": steps, "text": text})
         progress(0, "Reading the ground" if base else "Shaping the terrain")
-        ter = base or cg.terrain(int(seed), size, max(0.0, float(relief_m)) * 100, towns, center=(center_x, center_y),
-                                 opts=opts, keep=keep, lakes=lakes)
+        ter = base or cg.terrain(int(seed), size, max(0.0, float(relief_m)) * 100, towns, grid=cg.GROUND_GRID,
+                                 center=(center_x, center_y), opts=opts, keep=keep, lakes=lakes)
         if not base and ter.get("maps"):  # an engine world: its full maps stay here for the panel's Debug looks
             engine_maps[nid] = cg.LAST_WORLD.maps
         else:
@@ -328,8 +328,15 @@ def register(ctx) -> None:
             if cslug not in {slug(t["name"]) for t in towns}:
                 drop_city(nid, cslug)
         stats_out = {label: store_actor(nid, label, a, name)["stats"] for label, a in actors.items()}
-        # terrain is a big blob (a 160 grid is ~200 KB): one doc, never edited by hand, so it never conflicts
-        data.put(f"net.{nid}.scan", {"name": f"{name} / terrain", "props": [], "terrain": ter})
+        # terrain is a big blob (a 320 grid with its maps is ~4 MB): a world file, the doc keeps its bounds (scan_terrain
+        # reads both back); never edited by hand, so it never conflicts
+        if ter.get("grid", 0) > 256:
+            path = f"world/{nid}/terrain.json"
+            sha = put_json_file(path, {"heights": ter["heights"], "maps": ter.get("maps") or {}})
+            doc_ter = {**{k: v for k, v in ter.items() if k not in ("heights", "maps")}, "file": path, "sha": sha}
+        else:
+            doc_ter = ter
+        data.put(f"net.{nid}.scan", {"name": f"{name} / terrain", "props": [], "terrain": doc_ter})
         # the world's water: its bodies and every bridge the roads needed (type, span, clearance, where its
         # towers stand: cg.bridge_towers builds them on the deck as it lies when the city is laid out)
         data.put(f"net.{nid}.water", {"name": f"{name} / water", "sea": water["sea"], "bodies": water["bodies"],
@@ -731,11 +738,11 @@ def register(ctx) -> None:
         size = max(1.0, min(20.0, float(size_km or 6))) * 100000.0
         towns = [{"name": c.get("name"), "x": float(c["x"]), "y": float(c["y"]), "radius": float(c.get("radius") or 45000)}
                  for c in city_docs(nid).values() if "x" in c and "y" in c] if nid else []
-        ter = cg.terrain(int(seed), size, max(0.0, float(relief_m)) * 100, towns, center=(center_x, center_y),
-                         opts=opts, keep=keep, lakes=lakes)
+        ter = cg.terrain(int(seed), size, max(0.0, float(relief_m)) * 100, towns, grid=cg.GROUND_GRID,
+                         center=(center_x, center_y), opts=opts, keep=keep, lakes=lakes)
         if ter.get("maps") and nid:  # the Debug looks show what is on screen
             engine_maps[nid] = cg.LAST_WORLD.maps
-        return {"ok": True, "terrain": ter, "cities": len(towns)}
+        return {"ok": True, "terrain": cg.panel_maps(ter), "cities": len(towns)}
 
     def terrain_map(net_id: str = "", name: str = "") -> dict:
         """The panel's Debug look: one engine map of a world (bare name: height, biome, river ...) as a base64 RGB

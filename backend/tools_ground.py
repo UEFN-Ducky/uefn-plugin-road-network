@@ -7,6 +7,7 @@ from __future__ import annotations
 import subprocess
 import time
 
+from . import citygen as cg
 from . import ramp_joins
 from . import road_profiles as rp
 from . import splines_text as st
@@ -53,6 +54,8 @@ def register(ctx) -> None:
         if ter.get("file") and not ter.get("heights"):
             got = read_json_file(ter["file"], cache=True)
             ter = {**ter, "heights": got.get("heights") or []}
+            if got.get("maps"):  # a generated world's engine maps live in the file with its heights
+                ter["maps"] = got["maps"]
         if ter and ter.get("sea") is None:
             # a ground pulled from UEFN is land only: the world's water level stays the one its water was laid at
             # (without it the panel drew no water and the forest grew on the sea bed)
@@ -63,7 +66,7 @@ def register(ctx) -> None:
 
     def panel_terrain(nid: str, most: int = 512) -> dict:
         """The ground for the 3D view: a fine scan thinned to at most `most` cells a side (display only)."""
-        ter = scan_terrain(nid)
+        ter = cg.panel_maps(scan_terrain(nid))
         n = int(ter.get("grid") or 0)
         if n <= most or not ter.get("heights"):
             return ter

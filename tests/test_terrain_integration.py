@@ -208,20 +208,26 @@ def test_terrain_only_world(monkeypatch):
     ctx.drop_city = ctx.drop_actor = ctx.put_city = ctx.record = ctx.pcg_preset = lambda *a, **k: None
     ctx.layer_docs = lambda nid: [1]
     ctx.sidewalks_stage = lambda nid: {"ok": True, "actors": {}}
+    files = {}
+    ctx.put_json_file = lambda path, obj: (files.__setitem__(path, obj), f"sha{len(files)}")[1]
     tools_generate.register(ctx)
     out = ctx.generate("Bare", seed=4, cities="0", size_km=6.0, relief_m=60.0, folder="/G/WorldGen/Roads",
                        options=json.dumps({"preset": "Coastal"}))
     assert out["ok"], out
-    assert out["cities"] == [] and store["net.bare.scan"]["terrain"]["heights"]
+    doc = store["net.bare.scan"]["terrain"]
+    # a 320 ground is a world file with its maps; the doc keeps the bounds and where the file is
+    assert out["cities"] == [] and doc["grid"] == cg.GROUND_GRID and "heights" not in doc
+    assert len(files[doc["file"]]["heights"]) == cg.GROUND_GRID and files[doc["file"]]["maps"]["road_cost"]
     again = ctx.generate("Bare", seed=4, cities="", size_km=6.0, relief_m=60.0, folder="/G/WorldGen/Roads", options="")
     assert again["ok"] and again["cities"] == [], again  # regenerating keeps it terrain only
     # Generate terrain: a new ground comes back, the saved one stays as it was
-    saved = store["net.bare.scan"]["terrain"]["heights"]
+    saved = files[store["net.bare.scan"]["terrain"]["file"]]["heights"]
     prev = ctx.terrain_preview("Bare", seed=4, size_km=6.0, relief_m=60.0,
                                options=json.dumps({"preset": "Alpine", "mountain_m": 2000}))
     assert prev["ok"] and prev["terrain"]["heights"] != saved
     assert max(max(r) for r in prev["terrain"]["heights"]) > 150000
-    assert store["net.bare.scan"]["terrain"]["heights"] is saved
+    assert set(prev["terrain"]["maps"]) <= set(cg.PANEL_MAPS)  # only what the 3D view draws goes to the panel
+    assert files[store["net.bare.scan"]["terrain"]["file"]]["heights"] is saved
 
 
 def test_lakes_slider_is_an_option_not_drawn_lakes(monkeypatch):

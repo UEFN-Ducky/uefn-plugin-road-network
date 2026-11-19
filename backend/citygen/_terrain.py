@@ -238,6 +238,15 @@ def terrain(seed: int, size_cm: float, relief_cm: float, cities: list, grid: int
 
 
 ENGINE_MAPS = ("biome", "river", "lake", "build", "road_cost")  # engine maps a world keeps (flat j*n+i, grid size)
+GROUND_GRID = 320  # cells a side of a generated world's ground: ~19 m a cell on a 6 km map (160 was ~38 m, blurry ridges)
+PANEL_MAPS = ("biome", "river")  # what the 3D view colours with; the rest stay server side (Debug looks come as PNGs)
+
+
+def panel_maps(ter: dict) -> dict:
+    """The ground as the panel needs it: only the maps it draws (a 320 grid with all five is ~4 MB)."""
+    if not ter.get("maps"):
+        return ter
+    return {**ter, "maps": {k: v for k, v in ter["maps"].items() if k in PANEL_MAPS}}
 LAST_WORLD = None  # the last engine World made here, every map: the caller keeps it for debug views (never saved)
 
 
