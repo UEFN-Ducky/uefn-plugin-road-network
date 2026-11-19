@@ -222,8 +222,7 @@ export function choices({ label, options, value, onChange }) {
   const rows = options.map(([val, title, hint, ic]) => {
     const r = h("button", { type: "button", class: "dk-choice rn-choice", role: "radio", "data-value": val },
       h("span", { class: "dk-choice__icon" }, icon(ic || "check", 16)),
-      h("span", { class: "dk-choice__text" }, h("span", {}, title), hint ? h("span", { class: "dk-choice__hint" }, hint) : null),
-      h("span", { class: "rn-choice__check" }, icon("check", 14)));
+      h("span", { class: "dk-choice__text" }, h("span", {}, title), hint ? h("span", { class: "dk-choice__hint" }, hint) : null));  // the app's dk-choice draws the check
     r.addEventListener("click", () => set(val, true));
     el.append(r);
     return r;

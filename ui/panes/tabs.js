@@ -152,11 +152,12 @@ function buildPanes() {
   ctl.terrain_seed = field({ label: "Terrain seed", value: state.gen.terrain_seed, onChange: (v) => setGen("terrain_seed", Math.max(0, parseInt(v, 10) || 0)),
     button: { icon: "dice", title: "New terrain seed: all new mountains, rivers and lakes", onClick: (input) => { newTerrainSeed(); input.value = state.gen.terrain_seed; setGen("terrain_seed", state.gen.terrain_seed); } } });
   // a preset fills its values into every engine slider; moving one afterwards keeps the preset and overrides that key
-  ctl.preset = choices({ label: "Preset", value: state.gen.preset, options: PRESET_OPTIONS, onChange: (v) => {
+  ctl.preset = choices({ label: "", value: state.gen.preset,  // the section is titled Preset already options: PRESET_OPTIONS, onChange: (v) => {
     Object.assign(state.gen, presetValues(v));
     syncControls();
     setGen("preset", v);
   } });
+  ctl.preset.el.setAttribute("aria-label", "Preset");
   const deg = (v) => `${Math.round(v)}°`;
   $("pane-terrain").replaceChildren(
     section("Preset", ctl.preset.el, ctl.terrain_seed.el,

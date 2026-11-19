@@ -35,6 +35,13 @@ def test_terrain_seed_gives_new_ground():
         assert world != cg.terrain(7, 600000.0, 6000.0, CITIES, grid=40, opts={**base, "terrain_seed": 4242})["heights"]
 
 
+def test_small_island_gets_its_mountains():
+    # a 6 km island has no ground 8 km inland: the inland band shrinks to the land, so the sliders still raise ranges
+    opts = {"preset": "Island", "mountain_m": 2500, "mountain_cover": 0.8, "mountain_intensity": 1.0, "flatland": 0.0}
+    hs = [v for r in cg.terrain(7, 600000.0, 6000.0, CITIES, grid=64, opts=opts)["heights"] for v in r]
+    assert max(hs) > 150000
+
+
 def test_no_mountains_keeps_old_ground():
     ter = cg.terrain(7, 600000.0, 6000.0, CITIES, grid=40)
     assert cg.z_scale(ter) == 100.0

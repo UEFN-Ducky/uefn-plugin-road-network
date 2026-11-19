@@ -36,7 +36,10 @@ def region_masks(grid, cfg, noise, maps):
         return (noise.fbm(wx / big + 101.3, wy / big - 57.1, 4) + 1.0) * 0.5
 
     ms = grid.field(mtn_score, big / 16)
-    score = array('d', (ms[k] * smoothstep(2000.0, 8000.0, cd[k]) for k in range(n2)))  # inland
+    # inland: 2..8 km from the sea, shrunk to the land there is (a small island has no ground 8 km inland and
+    # would get no mountains at all)
+    deep = max(max(cd), grid.cell)
+    score = array('d', (ms[k] * smoothstep(min(2000.0, deep * 0.15), min(8000.0, deep * 0.6), cd[k]) for k in range(n2)))
     on_land = [k for k in range(n2) if land[k] >= 0.5]
     n_land = max(len(on_land), 1)
     rk = _ranked(score, on_land, min(cover * n2 / n_land, 0.95), floor=1e-9)
