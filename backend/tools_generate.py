@@ -49,15 +49,34 @@ def register(ctx) -> None:
         folder = road_folder()  # nothing to read it off: the world's own roads folder
         return folder + "/Junctions/Kit" if folder else ""
 
+    def open_root() -> str:
+        """The content root of the island UEFN has open ('/<mount>'), '' when UEFN is closed."""
+        try:
+            got = api.call_tool("get_project_info", {}) or {}
+        except Exception:
+            return ""
+        root = str(got.get("content_root") or "") if isinstance(got, dict) else ""
+        return root.rstrip("/") if root.startswith("/") else ""
+
     def road_folder() -> str:
-        """The project's own road meshes folder: a generated world's own, else read off any stored network's
+        """The open island's road meshes folder. Worlds are shared between islands, so a stored folder counts only
+        when it lies in the open island (a world made in one island pushed its PCG graphs to that island's folder
+        from another, which UEFN refuses); none there: '<root>/WorldGen/Roads'. UEFN closed: the first stored one."""
+        root = open_root()
+        for folder in stored_road_folders():
+            if not root or folder.startswith(root + "/"):
+                return folder
+        return root + "/WorldGen/Roads" if root else ""
+
+    def stored_road_folders():
+        """Every road folder the stored worlds name: a generated world's own, else read off a stored network's
         first segments (an actor's file, or an older world's first segment chunk)."""
         keys = data.keys("net.")
         for key in keys:
             if re.fullmatch(r"net\.[^.]+", key):
                 folder = ((data.get(key) or {}).get("generated") or {}).get("folder")
                 if folder:
-                    return folder
+                    yield folder
         for key in keys:
             head_key = re.fullmatch(r"net\.[^.]+\.actor\.[^.]+", key)
             old_chunk = re.fullmatch(r"net\.[^.]+\.actor\.[^.]+\.s\.0", key)
@@ -70,8 +89,7 @@ def register(ctx) -> None:
                 for ln in s.get("lines", []):
                     m = re.search(r"'(/[^']+?/WorldGen/Roads)/SM_Road_", ln)
                     if m:
-                        return m.group(1)
-        return ""
+                        yield m.group(1)
 
     def heightmap_path(nid: str, png: bytes) -> str:
         # this PC's copy: rebuilt from the shared terrain every time it is asked for. Named by its content: UEFN

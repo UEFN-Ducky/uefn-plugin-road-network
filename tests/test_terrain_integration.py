@@ -284,3 +284,36 @@ def test_engine_holds_keep_zones_and_digs_lakes():
     assert t["sea"] is not None  # a lake on a coast-less world brings its own water line
     j, i = int((-200000 + 300000) / 600000 * 48), int((150000 + 300000) / 600000 * 48)
     assert t["heights"][j][i] < t["sea"]
+
+
+def test_road_folder_is_in_the_open_island():
+    """A world made in another island must not send its PCG graphs to that island's folder."""
+    from backend import Ctx
+    from backend import tools_generate
+
+    class Worlds(_Data):
+        docs = {"net.a": {"generated": {"folder": "/movie/Theater/WorldGen/Roads"}}}
+
+        def get(self, key):
+            return self.docs.get(key)
+
+        def keys(self, prefix=""):
+            return list(self.docs)
+
+    class Api:
+        root = "/island/"
+
+        def call_tool(self, name, args):
+            if self.root is None:
+                raise ConnectionError("UEFN closed")
+            return {"content_root": self.root}
+
+    ctx = Ctx()
+    ctx.holds_the_world = ctx.one_run_at_a_time = lambda fn: fn
+    ctx.data, ctx.api = Worlds(), Api()
+    tools_generate.register(ctx)
+    assert ctx.road_folder() == "/island/WorldGen/Roads"
+    ctx.api.root = "/movie/"
+    assert ctx.road_folder() == "/movie/Theater/WorldGen/Roads"
+    ctx.api.root = None
+    assert ctx.road_folder() == "/movie/Theater/WorldGen/Roads"
