@@ -152,9 +152,33 @@ function terrainMesh(t) {
   const bFlat = BIOME_COLORS.map(([, c]) => col(c));
   const bNat = bFlat.map((c) => { const hsl = {}; c.getHSL(hsl, THREE.SRGBColorSpace);
     return c.clone().setHSL(hsl.h, hsl.s * 0.45, 0.22 + hsl.l * 0.5, THREE.SRGBColorSpace); });
-  const water = tone("blue", 0.6, 0.45);
+  const water = tone("blue", 0.6, 0.45), deep = tone("blue", 0.45, 0.2);
   const colors = new Float32Array(nrm.count * 3);
   const c = new THREE.Color();
+  // biome colours blurred over their neighbours (2 box passes): one colour per cell read as a blocky grid
+  let bc = null;
+  if (biome && !debug && (look === "natural" || look === "biome" || look === "rivers")) {
+    const pal2 = look === "biome" ? bFlat : bNat;
+    bc = new Float32Array(n * n * 3);
+    for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+      const p = pal2[Math.round(mapAt(biome, n, j, i) ?? 3)] ?? pal2[3], k = (j * n + i) * 3;
+      bc[k] = p.r; bc[k + 1] = p.g; bc[k + 2] = p.b;
+    }
+    for (let pass = 0; pass < 2; pass++) {
+      const src = bc.slice();
+      for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+        let r = 0, g = 0, bl = 0, m = 0;
+        for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+          const jj = j + dj, ii = i + di;
+          if (jj < 0 || ii < 0 || jj >= n || ii >= n) continue;
+          const q = (jj * n + ii) * 3;
+          r += src[q]; g += src[q + 1]; bl += src[q + 2]; m++;
+        }
+        const k = (j * n + i) * 3;
+        bc[k] = r / m; bc[k + 1] = g / m; bc[k + 2] = bl / m;
+      }
+    }
+  }
   for (let k = 0; k < nrm.count; k++) {
     const j = Math.floor(k / n), i = k % n;
     const z = H[j][i] ?? lo;
@@ -164,16 +188,17 @@ function terrainMesh(t) {
     const b = biome ? mapAt(biome, n, j, i) : null;
     if (debug) {
       c.setRGB(1, 1, 1);  // the PNG gives the colour
-    } else if (look === "biome" && b !== null) {
-      c.copy(bFlat[Math.round(b)] ?? bFlat[3]);
+    } else if (look === "biome" && bc) {
+      c.setRGB(bc[k * 3], bc[k * 3 + 1], bc[k * 3 + 2]);
     } else if (look === "height") {
       if (tH < 0.33) c.copy(pal.low).lerp(pal.mid, tH / 0.33);
       else if (tH < 0.66) c.copy(pal.mid).lerp(pal.high, (tH - 0.33) / 0.33);
       else c.copy(pal.high).lerp(pal.top, (tH - 0.66) / 0.34);
     } else if (state.view.look === "slope") {
       c.copy(pal.mid).lerp(pal.high, smooth(0.02, 0.12, slope)).lerp(pal.top, smooth(0.12, 0.3, slope));
-    } else if (b !== null) {
-      c.copy(bNat[Math.round(b)] ?? bNat[3]);
+    } else if (bc) {
+      c.setRGB(bc[k * 3], bc[k * 3 + 1], bc[k * 3 + 2]);
+      c.lerp(pal.rock, smooth(0.12, 0.3, slope) * 0.7);  // steep faces show bare rock whatever grows round them
       c.multiplyScalar(0.94 + 0.08 * Math.abs(jitter));
     } else {
       c.copy(pal.grassLo).lerp(pal.grassHi, smooth(0.2, 0.75, tH));
@@ -183,6 +208,8 @@ function terrainMesh(t) {
       if (sea !== null) c.lerp(pal.sand, 1 - smooth(sea + 150, sea + 600, z));
       c.multiplyScalar(0.94 + 0.08 * Math.abs(jitter));
     }
+    // under the sea: sand at the shore going dark with depth (the sea plane over it no longer shows land colours)
+    if (sea !== null && z < sea && !debug && look !== "height" && look !== "slope") c.copy(pal.sand).lerp(deep, smooth(0, 3000, sea - z));
     if (look === "rivers" && !debug && mapAt(river, n, j, i) > 0) c.lerp(water, 0.85);
     colors[k * 3] = c.r; colors[k * 3 + 1] = c.g; colors[k * 3 + 2] = c.b;
   }

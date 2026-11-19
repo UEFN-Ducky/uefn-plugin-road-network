@@ -168,7 +168,8 @@ function buildScene() {
     if (t.sea !== null && t.sea !== undefined && state.view.water) {
       const w = (t.max[0] - t.min[0]) / 100, d = (t.max[1] - t.min[1]) / 100;
       const water = new THREE.Mesh(new THREE.PlaneGeometry(d, w), new THREE.MeshStandardMaterial({ color: tone("blue", 0.55, 0.4),
-        roughness: 0.12, metalness: 0.1, transparent: true, opacity: 0.84 }));
+        roughness: 0.12, metalness: 0.1, transparent: true, opacity: 0.84,
+        polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));  // wins over seabed at the same height (no flicker stripes)
       water.rotation.x = -Math.PI / 2;
       water.position.copy(toV((t.min[0] + t.max[0]) / 2, (t.min[1] + t.max[1]) / 2, t.sea));
       water.receiveShadow = true;
