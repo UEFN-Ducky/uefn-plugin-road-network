@@ -5,11 +5,14 @@ line and wiggled by noise; branches leave it every 1.5-3 km at 35-70 degrees and
 The tallest peak is mountain_m; mountain_intensity only shapes the ranges (width, crags, how many peaks near the top)."""
 import math
 import random
+from array import array
 from collections import deque
 
 from .grid import smoothstep
 
 _ON = 0.5          # mask value that counts as mountain
+TAPER_M = 1500.0   # a range fades to nothing over this far inside its region's edge (foothills, never a wall)
+MAX_FLANK = 0.75   # steepest average flank (rise / run, ~37 degrees): the range widens to keep its slopes under it
 _MIN_CELLS = 4     # smaller specks get no range
 
 
@@ -170,8 +173,11 @@ def ridge_height(grid, cfg, noise, mountains_mask, net=None):
     if not net['spines']:
         return height, strength
     inten = _intensity(cfg)
-    w0 = _width(cfg)
-    sharp = 0.8 + 0.8 * inten  # higher intensity: narrower, steeper crests
+    top0 = max(p[2] for line in net['spines'] for p in line)
+    # a range is as wide as its height needs: flanks average at most MAX_FLANK (rise / run); a 2.5 km peak on a
+    # 1 km half-width stood as a wall
+    w0 = max(_width(cfg), top0 / MAX_FLANK)
+    sharp = 1.3 + 0.5 * inten  # (1 - d/w)^sharp: a pointed crest, flanks concave toward the foot; higher = sharper
     segs = []
     for lines, wf in ((net['spines'], 1.0), (net['branches'], 0.6)):
         for line in lines:
@@ -197,22 +203,27 @@ def ridge_height(grid, cfg, noise, mountains_mask, net=None):
                 d = math.hypot(x - x1 - dx * t, y - y1 - dy * t)
                 if d >= w:
                     continue
-                f = smoothstep(w, 0.0, d) ** sharp
+                # a cone, not smoothstep: smoothstep is flat at d = 0, so every summit came out a dome
+                f = (1.0 - d / w) ** sharp
                 v = (h1 + (h2 - h1) * t) * f
                 if v > height[k]:
                     height[k] = v
                 if f > strength[k]:
                     strength[k] = f
     top = max(p[2] for line in net['spines'] for p in line)
-    crag = 0.1 + 0.2 * inten
+    # the range fades out over TAPER_M inside its region's edge (and the coast): the mask goes 0 -> 1 in one cell,
+    # and multiplying by it stood every range on vertical walls
+    inside = grid.dist_to(array('d', (1.0 - m for m in mountains_mask)))
+    taper = [smoothstep(0.0, min(TAPER_M, w0), d) for d in inside]
+    crag = 0.05 + 0.1 * inten  # rock texture on the flanks; at 0.1 + 0.2 its 4th octave stood up as 70-degree walls
     for k in range(n * n):
         f = strength[k]
         if f <= 0.0:
             continue
-        r = noise.ridged(xs[k % n], ys[k // n], 4, scale=1500.0)
+        r = noise.ridged(xs[k % n], ys[k // n], 3, scale=1500.0)
         # crags fade out toward the summits: a noise spike on a top is what thermal erosion would chop off
         near = min(height[k] / top, 1.0)
-        height[k] = (height[k] + crag * top * r * f * (1.0 - near ** 3)) * mountains_mask[k]
+        height[k] = (height[k] + crag * top * r * f * (1.0 - near ** 3)) * taper[k]
     hi = max(height)
     if hi > 0:
         s = top / hi

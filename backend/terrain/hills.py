@@ -6,6 +6,7 @@ from array import array
 from .grid import smoothstep
 
 TERRACES = 3
+PLINTH_SHORE_M = 2000.0  # the foothill plinth fades to the sea over this far inland
 
 
 def _f01(v):
@@ -43,11 +44,14 @@ def hill_height(grid, cfg, noise, maps):
     top = foothill_top(cfg)
     dip = min(60.0, 0.05 * cfg.get('mountain_m', 0.0))
     hm, pm, fm, mm, vm = (maps[k] for k in ('hills', 'plains', 'foothills', 'mountains', 'valleys'))
+    cd = maps['coast_dist']
     out, plinth = grid.new(), grid.new()
     for k in range(len(out)):
         t = _f01(f[k])
         out[k] = hm[k] * relief * (0.5 + 2.0 * t) + pm[k] * roll * f[k] - vm[k] * dip
-        plinth[k] = (fm[k] + mm[k]) * top * (0.55 + 0.45 * t)
+        # down to the shore over PLINTH_SHORE_M: the land mask ends in one cell, and an 800 m plinth stood as a
+        # wall in the sea all round a mountain island
+        plinth[k] = (fm[k] + mm[k]) * top * (0.55 + 0.45 * t) * smoothstep(0.0, PLINTH_SHORE_M, cd[k])
     maps['hill_h'], maps['plinth'] = out, plinth
     return maps
 

@@ -42,6 +42,17 @@ def test_small_island_gets_its_mountains():
     assert max(hs) > 150000
 
 
+def test_peaks_are_pointed_not_walled_domes():
+    for inten in (0.1, 0.9):
+        opts = {"preset": "Mountainous", "coast": "island", "mountain_m": 2500, "mountain_cover": 0.2, "mountain_intensity": inten}
+        t = cg.terrain(420, 600000.0, 12000.0, [], grid=160, opts=opts)
+        H, n = t["heights"], t["grid"]
+        top = max(v for r in H for v in r)
+        assert sum(v > top * 0.9 for r in H for v in r) < 300  # a summit, not a plateau (the dome had ~1200)
+        steep = max(abs(H[j][i + 1] - H[j][i]) for j in range(n) for i in range(n - 1)) / (600000.0 / n)
+        assert steep < 6.0  # no vertical walls (was 9.6)
+
+
 def test_water_level_sets_the_sea_on_every_preset():
     for preset in ("Mountainous", "Coastal", "Classic"):
         assert cg.terrain(7, 600000.0, 6000.0, CITIES, grid=32, opts={"preset": preset, "sea_m": -85})["sea"] == -8500
