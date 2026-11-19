@@ -17,6 +17,7 @@ import { themeColors } from "./view/terrain.js";
   const v = saved?.value || {};
   Object.assign(state.gen, v.gen || {});
   Object.assign(state.view, v.view || {});
+  rt.hiddenLayers = new Set(state.view.hidden || []);  // the layers hidden with the eye in Layer order
   Object.assign(state.tune, v.tune || {});
   state.tab = TABS.some((t) => t[0] === v.tab) ? v.tab : "world";
   state.live = !!v.live;

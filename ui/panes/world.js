@@ -1,6 +1,6 @@
 import { button, h, icon } from "../controls.js";
 import { parseLiveView, syncPlan } from "../sync.js";
-import { $, CHANNEL, OPTION_KEYS, busy, call, ctl, esc, groups, loading, rpc, rt, showError, state, swatch } from "../core.js";
+import { $, CHANNEL, OPTION_KEYS, busy, call, ctl, esc, groups, loading, rpc, rt, savePrefs, showError, state, swatch } from "../core.js";
 import { drawPeers, flash, live, onMemberState, onPeerPcg, onSharedSelection, peerBusy, peers, refreshHolds, tellGroup } from "../live.js";
 import { edits, renderCitiesPane, renderCityList } from "./cities.js";
 import { loadHistory } from "./history.js";
@@ -438,7 +438,8 @@ function eyeOf(l) {
   eye.addEventListener("click", (e) => {
     e.stopPropagation();
     if (!rt.hiddenLayers.delete(l.name)) rt.hiddenLayers.add(l.name);
-    localStorage.setItem("rn.hiddenLayers", JSON.stringify([...rt.hiddenLayers]));
+    state.view.hidden = [...rt.hiddenLayers];
+    savePrefs();
     for (const o of groups.pcg.children) if (o.userData.layer === l.name) o.visible = !rt.hiddenLayers.has(l.name);
     rt.needsDraw = true;
     renderLayerList();

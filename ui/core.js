@@ -197,7 +197,8 @@ const toUE = (v) => [Math.round(-v.z * 100), Math.round(v.x * 100), Math.round(v
 const rt = {
   liveReady: false,  // set once the page has started (the live helpers exist then)
   // layer names hidden in the 3D view only (the eye in Layer order): nothing in the world or UEFN changes
-  hiddenLayers: new Set(JSON.parse(localStorage.getItem("rn.hiddenLayers") || "[]")),
+  // (kept in the saved prefs as view.hidden: a plugin panel has no localStorage, touching it stops the page)
+  hiddenLayers: new Set(),
   drag: null,  // the press under way on the view (view/camera.js pointer handlers)
   needsDraw: true,
   visible: true,
