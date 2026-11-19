@@ -160,3 +160,42 @@ def test_region_shares_follow_config():
             assert sum(vals) <= maps['land'][k] + 1e-9
         # inland: no mountain within 2 km of the sea
         assert all(maps['mountains'][k] < 0.01 for k in range(g.n * g.n) if maps['coast_dist'][k] < 2000)
+
+
+# ---- stages 3, 5, 6, 11: macro, hills, plateaus, blend, detail ----
+
+from backend.terrain import hills as H  # noqa: E402
+
+
+def _height(n=96, **opts):
+    g, cfg, maps = _world(n=n, **opts)
+    nz = Noise(cfg['seed'])
+    for st in (H.macro_height, H.mountain_fallback, H.hill_height, H.plateau_height, H.blend, H.detail):
+        st(g, cfg, nz, maps)
+    return g, cfg, maps
+
+
+def test_flatland_without_mountains_is_flat():
+    g, _, maps = _height(flatland=1.0, mountain_m=0.0, detail=1.0)
+    assert max(g.slope(maps['height'])) < 0.05
+    land = [maps['height'][k] for k in range(g.n * g.n) if maps['land'][k] >= 0.5]
+    assert -1.0 < min(land) and max(land) <= 41.0  # plains 0-40 m
+    sea = [maps['height'][k] for k in range(g.n * g.n) if maps['land'][k] < 0.01]
+    assert sea and min(sea) >= -50.0 and max(sea) < 0.0
+
+
+def test_plateau_tops_are_flat():
+    g, cfg, maps = _height(n=128, plateaus=0.6, flatland=0.2, detail=1.0)
+    tops = [maps['height'][k] for k in range(g.n * g.n) if maps['plateau_w'][k] >= 0.999]
+    assert len(tops) > 20
+    assert max(tops) - min(tops) <= 2.0
+
+
+def test_heights_follow_the_bands():
+    g, cfg, maps = _height(mountain_m=2000.0, mountain_intensity=1.0)
+    h, m = maps['height'], maps['mountains']
+    top = max(h)
+    assert 1000.0 < top <= 2000.0 + 10.0
+    assert h.index(top) in [k for k in range(g.n * g.n) if m[k] >= 0.5]
+    hill = [h[k] for k in range(g.n * g.n) if maps['hills'][k] >= 0.99]
+    assert hill and max(hill) <= 300.0
