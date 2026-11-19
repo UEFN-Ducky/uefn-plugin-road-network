@@ -1,7 +1,7 @@
 """Stage 2: region masks. Soft 0..1 masks that sum to <= land per cell:
 mountains, foothills, hills, plateaus, valleys, wetlands and plains (the rest).
 
-Shares: mountains = mountain_cover of the whole map, all on land (biased inland); plains keep at least
+Shares: mountains = mountain_cover of the land (kept off the beach, placed by noise); plains keep at least
 flatland x (1 - mountain_cover) of the land; hills = hills x (1 - flatland) and plateaus = plateaus x (1 - flatland)
 of the land left after mountains and foothills, cut down to what the plains leave over. The 3 km foothill band
 narrows when it would leave the plains short (a small map is not all foothills)."""
@@ -36,13 +36,14 @@ def region_masks(grid, cfg, noise, maps):
         return (noise.fbm(wx / big + 101.3, wy / big - 57.1, 4) + 1.0) * 0.5
 
     ms = grid.field(mtn_score, big / 16)
-    # inland: 2..8 km from the sea, shrunk to the land there is (a small island has no ground 8 km inland and
-    # would get no mountains at all)
+    # inland only as a gate: off the coastal plain (2..4 km from the sea, shrunk to the land there is), then the noise
+    # alone picks where. Ranked by distance from the sea every island got one cone on its middle.
     deep = max(max(cd), grid.cell)
-    score = array('d', (ms[k] * smoothstep(min(2000.0, deep * 0.15), min(8000.0, deep * 0.6), cd[k]) for k in range(n2)))
+    score = array('d', (ms[k] * smoothstep(min(2000.0, deep * 0.1), min(4000.0, deep * 0.3), cd[k]) for k in range(n2)))
     on_land = [k for k in range(n2) if land[k] >= 0.5]
     n_land = max(len(on_land), 1)
-    rk = _ranked(score, on_land, min(cover * n2 / n_land, 0.95), floor=1e-9)
+    # a share of the LAND: of the whole map, an island's 20 % of map was most of its ground, all mountain
+    rk = _ranked(score, on_land, min(cover, 0.95), floor=1e-9)
     mtn = array('d', (rk[k] * land[k] for k in range(n2))) if rk else grid.new()
 
     dm = grid.dist_to(mtn)

@@ -147,8 +147,9 @@ def test_region_shares_follow_config():
     for opts in ({}, {'mountain_cover': 0.3, 'hills': 0.8, 'flatland': 0.3, 'plateaus': 0.3}):
         g, cfg, maps = _world(**opts)
         n2 = g.n * g.n
-        mtn_map = sum(1 for v in maps['mountains'] if v >= 0.5) / n2
-        assert abs(mtn_map - cfg['mountain_cover']) <= 0.05, (mtn_map, opts)
+        land_all = sum(1 for v in maps['land'] if v >= 0.5)
+        mtn_land = sum(1 for v in maps['mountains'] if v >= 0.5) / land_all  # mountain_cover is a share of the land
+        assert abs(mtn_land - cfg['mountain_cover']) <= 0.05, (mtn_land, opts)
         tg = maps['region_targets']
         assert tg['hills_free'] <= cfg['hills'] * (1 - cfg['flatland']) + 1e-9
         assert tg['plateaus_free'] <= cfg['plateaus'] * (1 - cfg['flatland']) + 1e-9
@@ -177,7 +178,7 @@ def test_coastal_plains_hold_at_every_map_size():
         m, n2 = w.maps, 128 * 128
         land = sum(1 for v in m['land'] if v >= 0.5)
         plains = sum(1 for v in m['plains'] if v >= 0.5) / land
-        mtn = sum(1 for v in m['mountains'] if v >= 0.5) / n2
+        mtn = sum(1 for v in m['mountains'] if v >= 0.5) / land  # mountain_cover is a share of the land
         assert plains >= 0.40, (size, plains)
         assert 0.20 <= mtn <= 0.35, (size, mtn)
 

@@ -174,7 +174,7 @@ function buildPanes() {
       h("div", { class: "rn-hint" }, "Regenerate terrain picks a new terrain seed each time. Type one back to get that ground again; 0 = the world seed.")),
     section("Mountains", sl("mountain_m", "Mountain height", 0, 2500, 25, (v) => v ? m(v) : "Off",
         "Mountain ranges in some places only, as tall as this, on top of the ground; the rest stays as flat as Ground height. Cities and the way between them stay clear. Above 256 m the heightmap's Z scale grows to fit (shown under This world)"),
-      sl("mountain_cover", "Mountain area", 0.05, 0.8, 0.05, pct, "How much of the map the ranges cover"),
+      sl("mountain_cover", "Mountain area", 0.05, 0.8, 0.05, pct, "How much of the land the ranges cover"),
       sl("mountain_intensity", "Mountain intensity", 0, 1, 0.05, pct, "How sharp and tall the ranges get: low = worn old hills, high = jagged spines and peaks")),
     section("Land", sl("flatland", "Flatland", 0, 1, 0.05, pct, "Share of the free land left as flat plains, where cities go"),
       sl("hills", "Hills", 0, 1, 0.05, pct, "Rolling hills and foothills between the plains and the ranges"),

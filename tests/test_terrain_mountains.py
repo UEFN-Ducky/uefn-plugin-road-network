@@ -146,6 +146,22 @@ def test_tallest_peak_is_mountain_height():
     assert max(_coastal(0.5, 0.0)['ridge']) == 0.0  # Mountain height 0: no mountains
 
 
+def test_island_ranges_are_not_its_middle():
+    """Mountain area is a share of the land, and the noise (not the distance from the sea) picks where: an island
+    once got one cone on the cells farthest from the sea, as big as 20 % of the whole map."""
+    from backend.terrain import engine, terrain_config
+    for seed in (1, 3):
+        cfg = terrain_config({'preset': 'Island', 'seed': seed, 'coast': 'archipelago', 'mountain_m': 600.0,
+                              'mountain_cover': 0.2})
+        m = engine.generate(cfg, 128, 0.0, 0.0, 6000.0).maps
+        cd = m['coast_dist']
+        land = sum(1 for v in m['land'] if v >= 0.5)
+        ks = [k for k, v in enumerate(m['mountains']) if v >= 0.5]
+        assert 0.15 * land <= len(ks) <= 0.25 * land, (len(ks), land)
+        inland = sorted((k for k in range(len(cd)) if cd[k] > 0), key=lambda k: -cd[k])[:len(ks)]
+        assert sum(cd[k] for k in ks) < 0.8 * sum(cd[k] for k in inland), seed
+
+
 def test_seeded_and_empty():
     g, mask, nz = _world(5)
     assert ridge_height(g, CFG, nz, mask)[0] == ridge_height(g, CFG, Noise(5), mask)[0]
