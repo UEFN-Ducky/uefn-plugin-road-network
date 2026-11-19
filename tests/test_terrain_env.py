@@ -69,3 +69,49 @@ def test_rain_shadow_and_dry_preset():
     flat = {'height': g.new(100.0), 'land': g.new(1.0)}
     climate(g, terrain_config({'preset': 'Desert'}), Noise(1), flat)
     assert sum(b == B['desert'] for b in flat['biome']) > 0.8 * g.n * g.n
+
+
+# ---- suitability ----
+
+from backend.terrain.suitability import best_sites, run as suitability  # noqa: E402
+
+
+def test_sites_dry_and_flat_road_cost_follows_slope():
+    g = Grid(64, 0.0, 0.0, 32000.0)
+    n = g.n
+    nz = Noise(5)
+    h, land, river, order = g.new(), g.new(1.0), g.new(), g.new()
+    for k, x, y in g.points():
+        i, j = k % n, k // n
+        hill = 300.0 * (nz.fbm(x, y, 4, scale=3000.0) + 1.0)
+        mtn = max(0.0, (x - 20000.0) * 0.25)              # mountains rising to the east
+        h[k] = 30.0 + hill * (0.1 if x < 16000 else 1.0) + mtn
+        if i < 4:
+            h[k], land[k] = -10.0, 0.0                    # sea in the west
+        if j == 32 and i >= 4:
+            river[k], order[k] = 1.0, 3.0                 # a river across the middle
+            h[k] -= 4.0
+    maps = {'height': h, 'land': land, 'sea': [1.0 - v for v in land], 'river': river, 'river_order': order}
+    cfg = terrain_config({'seed': 5})
+    climate(g, cfg, nz, maps)
+    suitability(g, cfg, nz, maps)
+    sites = best_sites(maps, 6, 1500.0, 4000.0, g)
+    assert sites
+    for s in sites:
+        k = g.idx(s['i'], s['j'])
+        assert land[k] == 1.0 and river[k] == 0.0 and maps['slope'][k] <= 0.08 and maps['build'][k] > 0
+    for a in sites:
+        for b in sites:
+            assert a is b or (a['x'] - b['x']) ** 2 + (a['y'] - b['y']) ** 2 >= 4000.0 ** 2
+    rc = maps['road_cost']
+    plains = [rc[g.idx(i, j)] for j in range(0, n, 4) for i in range(8, 28) if j != 32]
+    mtns = [rc[g.idx(i, j)] for j in range(0, n, 4) for i in range(48, 64) if j != 32]
+    assert sum(mtns) / len(mtns) > sum(plains) / len(plains)
+    assert rc[g.idx(10, 32)] > 500 and rc[g.idx(2, 5)] > 500  # river and sea priced as bridges
+    assert maps['flood'][g.idx(10, 33)] > maps['flood'][g.idx(10, 50)]
+    assert all(0.0 <= v <= 1.0 for v in maps['build']) and all(0.0 <= v <= 1.0 for v in maps['flood'])
+    # a pass makes the same ground cheaper
+    maps['passes'] = g.new(1.0)
+    before = rc[g.idx(50, 10)]
+    suitability(g, cfg, nz, maps)
+    assert abs(maps['road_cost'][g.idx(50, 10)] - 0.3 * before) < 1e-9
