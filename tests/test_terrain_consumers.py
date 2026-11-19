@@ -57,5 +57,39 @@ def test_highway_crosses_at_the_pass():
     assert all(((u[0] - v[0]) ** 2 + (u[1] - v[1]) ** 2) ** 0.5 <= 20001 for u, v in zip(line, line[1:]))
 
 
+def test_trees_follow_biomes():
+    import random
+    from backend.pcg_layers.land import biome_trees
+    from backend.terrain.climate import BIOMES
+    ter = cg.terrain(7, 2000000.0, 6000.0, [], grid=64, opts={"preset": "Alpine", "mountain_m": 2400, "mountain_cover": 0.5})
+    keep = biome_trees(ter)
+    n, b = ter["grid"], ter["maps"]["biome"]
+    (mx, my), (Mx, My) = ter["min"], ter["max"]
+    rnd = random.Random(1)
+    seen, kept = {}, {}
+    for _ in range(40000):
+        x, y = rnd.uniform(mx, Mx), rnd.uniform(my, My)
+        k = min(n - 1, int((y - my) / (My - my) * n)) * n + min(n - 1, int((x - mx) / (Mx - mx) * n))
+        name = BIOMES[int(b[k])]
+        seen[name] = seen.get(name, 0) + 1
+        if keep(x, y, "conifer"):
+            kept[name] = kept.get(name, 0) + 1
+            assert name not in ("snow", "cliff", "ocean"), name
+    assert seen.get("snow", 0) + seen.get("cliff", 0) > 0, seen  # the test met snow / cliff ground
+    share = lambda names: sum(kept.get(s, 0) for s in names) / max(1, sum(seen.get(s, 0) for s in names))
+    forest = share(("temperate_forest", "conifer_forest", "rainforest"))
+    assert forest > 3 * share(("meadow",)) or not seen.get("meadow"), (forest, kept, seen)
+    assert forest > 0.5  # (rivers and lakes through the forest take the rest)
+    # palms only where it is warm or sandy; broadleaf trees not above the conifer line
+    for _ in range(4000):
+        x, y = rnd.uniform(mx, Mx), rnd.uniform(my, My)
+        i, j = min(n - 1, int((x - mx) / (Mx - mx) * n)), min(n - 1, int((y - my) / (My - my) * n))
+        if keep(x, y, "palm"):
+            assert BIOMES[int(b[j * n + i])] in ("beach", "rainforest", "savanna")
+        if keep(x, y, "tree"):
+            assert ter["heights"][j][i] <= 90000
+    assert biome_trees({"heights": []}) is None
+
+
 def test_classic_unchanged():
     assert cg.place_cities(7, 3, BOUNDS) == cg.place_cities(7, 3, BOUNDS, opts={"preset": "Classic"})

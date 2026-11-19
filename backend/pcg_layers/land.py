@@ -59,6 +59,42 @@ def open_land(cities: list):
     return free
 
 
+TREE_DENSITY = {"temperate_forest": 1.0, "conifer_forest": 1.0, "rainforest": 1.0, "wetland": 0.4, "meadow": 0.3,
+                "grassland": 0.3, "alpine_meadow": 0.2, "savanna": 0.2, "shrubland": 0.15, "beach": 0.1,
+                "tundra": 0.05, "desert": 0.05, "rocky_slope": 0.05}  # share of tree candidates kept; others: none
+CONIFER_FROM_M = 900.0  # above this only conifers grow
+PALM_BIOMES = ("beach", "rainforest", "savanna")  # tropical and beach: the only places a palm grows
+
+
+def biome_trees(terrain: dict | None):
+    """(x, y, kind='tree') -> keep this tree candidate, from an engine terrain's biome map (None without one: keep
+    all). Never on snow, cliff or water (sea, lake, river); kept at TREE_DENSITY of its biome, the same draw for a
+    spot on every run. kind 'conifer' / 'palm' / anything else: above CONIFER_FROM_M only conifers, palms only in
+    PALM_BIOMES."""
+    maps = (terrain or {}).get("maps") or {}
+    biome = maps.get("biome")
+    if not biome:
+        return None
+    from ..terrain.climate import BIOMES
+    n, heights, sea = terrain["grid"], terrain["heights"], terrain.get("sea")
+    (mx, my), (Mx, My) = terrain["min"], terrain["max"]
+    river, lake = maps.get("river"), maps.get("lake")
+
+    def keep(x: float, y: float, kind: str = "tree") -> bool:
+        i = min(n - 1, max(0, int((x - mx) / (Mx - mx) * n)))
+        j = min(n - 1, max(0, int((y - my) / (My - my) * n)))
+        k = j * n + i
+        name, z = BIOMES[int(biome[k])], heights[j][i]
+        if (sea is not None and z < sea) or (river and river[k] > 0) or (lake and lake[k] > 0.5):
+            return False
+        if kind == "palm" and name not in PALM_BIOMES:
+            return False
+        if kind != "conifer" and z > CONIFER_FROM_M * 100:
+            return False
+        return _u01("biome_tree", round(x), round(y)) < TREE_DENSITY.get(name, 0.0)
+    return keep
+
+
 PAVED_NORMAL = 0.3  # of the normal city's blocks of plain lots, how many are paved (downtown and industry: all)
 PAVE_TILE_CM = 700.0  # a paved lot is laid in slabs about this size, each at the height of the ground under it
 PAVE_DEEP_CM = 200.0  # ... and this deep: where the next slab lies lower its side shows as a low wall
