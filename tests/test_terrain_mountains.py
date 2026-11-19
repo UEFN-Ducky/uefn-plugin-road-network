@@ -79,6 +79,25 @@ def test_pass_between_cities():
     assert passes(g, net, [ca], h)[0] == []  # one city: no link, no pass
 
 
+def _coastal(intensity, mountain_m=2000.0):
+    from backend.terrain import engine, terrain_config
+    cfg = terrain_config({'preset': 'Coastal', 'seed': 7, 'mountain_m': mountain_m, 'mountain_intensity': intensity})
+    return engine.generate(cfg, 128, 0.0, 0.0, 30000.0).maps
+
+
+def test_tallest_peak_is_mountain_height():
+    soft, sharp = _coastal(0.2), _coastal(0.9)
+    top_soft, top_sharp = max(soft['height']), max(sharp['height'])
+    assert 1900.0 <= top_soft <= 2100.0 and 1900.0 <= top_sharp <= 2100.0
+    assert abs(top_soft - top_sharp) <= 0.05 * top_soft  # intensity shapes, never caps
+
+    def mean_slope(m):
+        ks = [k for k, v in enumerate(m['mountains']) if v >= 0.5]
+        return sum(m['slope'][k] for k in ks) / len(ks)
+    assert mean_slope(sharp) > mean_slope(soft)
+    assert max(_coastal(0.5, 0.0)['ridge']) == 0.0  # Mountain height 0: no mountains
+
+
 def test_seeded_and_empty():
     g, mask, nz = _world(5)
     assert ridge_height(g, CFG, nz, mask)[0] == ridge_height(g, CFG, Noise(5), mask)[0]

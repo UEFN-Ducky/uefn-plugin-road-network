@@ -1,7 +1,8 @@
 """Stage 4, mountains: a ridge network (spine, side spurs, peaks) per connected mountain region, then ridge height.
 
 Units are metres. A spine follows the region's principal axis (PCA of its cells), bent to the region's own centre
-line and wiggled by noise; branches leave it every 1.5-3 km at 35-70 degrees and shorten toward the ends."""
+line and wiggled by noise; branches leave it every 1.5-3 km at 35-70 degrees and shorten toward the ends.
+The tallest peak is mountain_m; mountain_intensity only shapes the ranges (width, crags, how many peaks near the top)."""
 import math
 import random
 from collections import deque
@@ -21,7 +22,9 @@ def _height(cfg) -> float:
 
 
 def _width(cfg) -> float:
-    return min(max(float(cfg.get('ridge_width_m', 2000.0)), 1000.0), 3000.0)
+    """Ridge half-width: ridge_width_m when given, else 3 km at intensity 0 down to 1 km at 1 (narrower = sharper)."""
+    w = cfg.get('ridge_width_m', 3000.0 - 1000.0 * _intensity(cfg))
+    return min(max(float(w), 1000.0), 3000.0)
 
 
 def _regions(grid, mask):
@@ -89,24 +92,28 @@ def _spine(grid, noise, cells, step):
     return line, sorted(halfw)[len(halfw) // 2]
 
 
-def _peakline(noise, line, top):
-    """Crest height along the spine: high in the middle, lower at the ends, noise-varied, max == top."""
+def _peakline(noise, line, top, inten):
+    """Crest height along the spine, max == top. Intensity 0: one rounded hump (a single summit near top);
+    1: a flat envelope with strong short noise, so many jagged peaks come close to top."""
     m = len(line)
     if m == 1:
         return [top]
     hs = []
+    e, amp, sc = 1.2 - inten, 0.12 + 0.2 * inten, 4000.0 - 1500.0 * inten
     for i, (x, y) in enumerate(line):
         u = (i + 0.5) / m
-        env = math.sin(math.pi * u) ** 0.5
-        hs.append(env * (0.75 + 0.25 * noise.fbm(x, y, 3, scale=3000.0)))
+        env = math.sin(math.pi * u) ** e
+        hs.append(env * (1.0 - amp + amp * noise.fbm(x, y, 3, scale=sc)))
     hi = max(hs) or 1.0
     return [h / hi * top for h in hs]
 
 
 def ridge_network(grid, cfg, noise, mountains_mask):
     """{spines: [[(x, y, h)]], branches: [[(x, y, h)]], peaks: [(x, y, h)]} for every mountain region.
-    The biggest region's top is mountain_m x intensity; smaller ones scale by sqrt of their size (at least half)."""
-    top = _height(cfg) * _intensity(cfg)
+    The biggest region's top is mountain_m (intensity shapes it, never scales it); smaller ones scale by sqrt of
+    their size (at least half). mountain_m 0: no ranges."""
+    top = _height(cfg)
+    inten = _intensity(cfg)
     step = max(2.0 * grid.cell, 150.0)
     regions = _regions(grid, mountains_mask)
     out = {'spines': [], 'branches': [], 'peaks': []}
@@ -116,7 +123,7 @@ def ridge_network(grid, cfg, noise, mountains_mask):
     for ri, cells in enumerate(regions):
         rtop = top * max(0.5, math.sqrt(len(cells) / big))
         line, halfw = _spine(grid, noise, cells, step)
-        hs = _peakline(noise, line, rtop)
+        hs = _peakline(noise, line, rtop, inten)
         spine = [(x, y, h) for (x, y), h in zip(line, hs)]
         out['spines'].append(spine)
         # peaks: crest maxima within ~1.5 km either side, above half the range top
@@ -155,8 +162,8 @@ def ridge_network(grid, cfg, noise, mountains_mask):
 
 
 def ridge_height(grid, cfg, noise, mountains_mask, net=None):
-    """(height, strength) arrays. height = peakline x falloff(distance to the ridge polylines) + ridged noise x 0.25,
-    all x mask, top scaled to the network's highest peak. strength = 0..1 nearness to a ridge."""
+    """(height, strength) arrays. height = peakline x falloff(distance to the ridge polylines) + ridged noise
+    (0.1 + 0.3 x intensity share), all x mask, top scaled to the network's highest peak. strength = 0..1 nearness."""
     net = net if net is not None else ridge_network(grid, cfg, noise, mountains_mask)
     n, c, xs, ys = grid.n, grid.cell, grid.xs, grid.ys
     height, strength = grid.new(), grid.new()
@@ -164,7 +171,7 @@ def ridge_height(grid, cfg, noise, mountains_mask, net=None):
         return height, strength
     inten = _intensity(cfg)
     w0 = _width(cfg)
-    sharp = 0.7 + 1.6 * inten  # higher intensity: narrower, steeper crests
+    sharp = 0.8 + 0.8 * inten  # higher intensity: narrower, steeper crests
     segs = []
     for lines, wf in ((net['spines'], 1.0), (net['branches'], 0.6)):
         for line in lines:
@@ -197,12 +204,15 @@ def ridge_height(grid, cfg, noise, mountains_mask, net=None):
                 if f > strength[k]:
                     strength[k] = f
     top = max(p[2] for line in net['spines'] for p in line)
+    crag = 0.1 + 0.2 * inten
     for k in range(n * n):
         f = strength[k]
         if f <= 0.0:
             continue
         r = noise.ridged(xs[k % n], ys[k // n], 4, scale=1500.0)
-        height[k] = (height[k] + 0.25 * top * r * f) * mountains_mask[k]
+        # crags fade out toward the summits: a noise spike on a top is what thermal erosion would chop off
+        near = min(height[k] / top, 1.0)
+        height[k] = (height[k] + crag * top * r * f * (1.0 - near ** 3)) * mountains_mask[k]
     hi = max(height)
     if hi > 0:
         s = top / hi
