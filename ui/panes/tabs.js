@@ -5,6 +5,7 @@ import { renderPcgPane } from "./pcg.js";
 import { renderEditPane, renderUefnPane } from "./uefn.js";
 import { generate } from "./world.js";
 import { buildScene } from "../view/scene.js";
+import { DEBUG_VIEWS } from "../view/terrain.js";
 
 // ------------------------------------------------------------------ sections (the left sidebar's nav)
 const TABS = [["world", "World", "world"], ["terrain", "Terrain", "terrain"], ["roads", "Roads", "road"],
@@ -114,8 +115,14 @@ function buildPanes() {
         + "dry land. With Water level Off the sea sits at 0 m. New terrain only.")),
     section("This world", h("div", { id: "worldSummary" }), h("div", { id: "worldHeightmap" })));
   // ---- Terrain
-  ctl.look = segmented({ label: "Preview look", value: state.view.look, options: [["natural", "Natural", "terrain"], ["height", "Height", "layers"], ["slope", "Slope", "wave"]],
-    onChange: (v) => { state.view.look = v; savePrefs(); buildScene(); } });
+  // Preview look: a native dropdown (5 looks + the engine's debug maps would never fit a segmented row)
+  const lookSel = h("select", { class: "dk-input rn-select", "aria-label": "Preview look" },
+    ...[["natural", "Natural"], ["height", "Height"], ["slope", "Slope"], ["biome", "Biome"], ["rivers", "Rivers"]].map(([v, l]) => h("option", { value: v }, l)),
+    h("optgroup", { label: "Debug" }, ...DEBUG_VIEWS.map(([v, l]) => h("option", { value: `debug:${v}` }, l))));
+  lookSel.value = state.view.look;
+  lookSel.addEventListener("change", () => { state.view.look = lookSel.value; savePrefs(); buildScene(); });
+  ctl.look = { el: h("div", { class: "rn-field" }, h("div", { class: "rn-field__label" }, "Preview look"), lookSel),
+    set: (v) => { lookSel.value = v; } };
   ctl.shadows = toggle({ label: "Shadows", iconName: "shadow", value: state.view.shadows, onChange: (v) => { state.view.shadows = v; savePrefs(); buildScene(); } });
   const sunAz = slider({ label: "Sun direction", min: 0, max: 360, step: 5, value: state.view.sunAz, fmt: (v) => `${v}°`,
     onInput: (v) => { state.view.sunAz = v; buildScene(); }, onChange: (v) => { state.view.sunAz = v; savePrefs(); buildScene(); } });
@@ -164,7 +171,7 @@ function buildPanes() {
       sl("water_depth_m", "Lake depth", 0, 80, 1, m, "How far lake beds drop below the water line"),
       sl("terrace_m", "Terraces", 0, 50, 1, (v) => v ? m(v) : "Off"),
       sl("flatten_m", "City edge blend", 0, 2000, 25, m, "With flattened cities: how far the flat city ground blends back into the hills")),
-    section("Preview", ctl.look.el, zx.el, sunAz.el, sunEl.el, ctl.shadows.el));
+    section("Preview", ctl.look.el, h("div", { class: "rn-hint" }, "Biome, Rivers and Debug need an engine preset (not Classic); Debug maps come from the last generated world."), zx.el, sunAz.el, sunEl.el, ctl.shadows.el));
   // ---- Roads
   // road types from our kit (citygen.ROAD_TYPES): one-way, dirt, two-lane with or without sidewalks, four- and six-lane
   const seg = (key, label, options) => (ctl[key] = segmented({ label, value: state.gen[key], options, onChange: (v) => setGen(key, v) })).el;

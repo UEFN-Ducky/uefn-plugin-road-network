@@ -59,4 +59,26 @@ for (const [, name, ic] of opts) assert.ok(new RegExp(`\\n  ${ic}: "`).test(cont
 for (const k of ENGINE.filter((k) => k !== "preset" && k !== "coast")) assert.ok(tabs.includes(`sl("${k}"`), `slider ${k}`);
 assert.ok(tabs.indexOf(`sl("relief_m"`) < tabs.indexOf("// ---- Terrain"), "Ground height on World");
 
+// ---- preview looks (ui/view/terrain.js)
+const view = read("ui/view/terrain.js"), lit = (name) => {
+  const a = view.indexOf(`const ${name} = `), b = view.indexOf("];", a);
+  assert.ok(a >= 0 && b > a, name);
+  return new Function(`return ${view.slice(a + `const ${name} = `.length, b + 1)};`)();
+};
+const BIOMES = [...read("backend/terrain/climate.py").match(/BIOMES = \(([^)]*)\)/)[1].matchAll(/'(\w+)'/g)].map((x) => x[1]);
+assert.equal(BIOMES.length, 16, "climate.py BIOMES parsed");
+const palette = lit("BIOME_COLORS");
+assert.deepEqual(palette.map((p) => p[0]), BIOMES, "the biome palette covers all 16 ids, in id order");
+const THEME = new Set(["bg", "fg", "fg-dim", "blue", "green", "green-dim", "amber", "yellow", "red", "purple", "accent"]);
+for (const [name, c] of palette) {
+  const parts = c.startsWith("mix:") ? c.split(":").slice(1, 3) : [c];
+  assert.ok(parts.every((p) => THEME.has(p)), `${name} colour ${c} uses theme variables only`);
+}
+const views = lit("DEBUG_VIEWS").map((v) => v[0]);
+assert.deepEqual(views, ["height", "land", "coast_dist", "plains", "hills", "foothills", "mountains", "plateaus", "valleys", "wetlands",
+  "ridge", "passes", "flow", "accum", "river", "lake", "temp", "moist", "biome", "slope", "build", "road_cost", "flood"], "every debug view");
+for (const look of ["natural", "height", "slope", "biome", "rivers"]) assert.ok(tabs.includes(`["${look}", `), `look ${look} in the dropdown`);
+assert.ok(tabs.includes("debug:${v}") && view.includes("look.startsWith(\"debug:\")"), "debug looks drape the terrain_map PNG");
+assert.ok(!/#[0-9a-f]{3,6}\b|rgb\(/i.test(view.slice(view.indexOf("const BIOME_COLORS"), view.indexOf("const smooth"))), "no colour literals");
+
 console.log("terrain ui ok");

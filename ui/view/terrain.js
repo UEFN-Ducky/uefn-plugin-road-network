@@ -1,6 +1,6 @@
 import * as THREE from "../vendor/three@0.160.0/build/three.module.min.js";
 import { marchHeightfield } from "../ground.js";
-import { camera, col, hemi, renderer, scene, state, toV, tone } from "../core.js";
+import { camera, col, hemi, renderer, rpc, rt, scene, state, toV, tone } from "../core.js";
 import { placeCamera } from "./camera.js";
 import { ray } from "./edit.js";
 
@@ -40,6 +40,71 @@ const detailTex = (() => {
   return t;
 })();
 
+// backend/terrain/climate.py BIOMES in id order (t.maps.biome holds the id), each as a theme colour
+const BIOME_COLORS = [
+  ["ocean", "mix:blue:bg:0.35"], ["beach", "mix:amber:fg:0.55"], ["wetland", "mix:blue:green:0.45"],
+  ["grassland", "mix:green:amber:0.25"], ["meadow", "mix:green:yellow:0.3"], ["temperate_forest", "mix:green:bg:0.35"],
+  ["conifer_forest", "mix:green:bg:0.55"], ["rainforest", "mix:green:blue:0.2"], ["savanna", "mix:yellow:amber:0.4"],
+  ["desert", "mix:amber:yellow:0.35"], ["shrubland", "mix:amber:green:0.4"], ["rocky_slope", "mix:fg-dim:amber:0.15"],
+  ["alpine_meadow", "mix:green:fg-dim:0.45"], ["tundra", "mix:fg-dim:blue:0.25"], ["snow", "fg"], ["cliff", "mix:fg-dim:bg:0.35"],
+];
+// the engine's maps the Debug looks show (backend debug_map / rpc terrain_map takes the name)
+const DEBUG_VIEWS = [["height", "Height"], ["land", "Land"], ["coast_dist", "Coast distance"], ["plains", "Plains"],
+  ["hills", "Hills"], ["foothills", "Foothills"], ["mountains", "Mountains"], ["plateaus", "Plateaus"], ["valleys", "Valleys"],
+  ["wetlands", "Wetlands"], ["ridge", "Ridges"], ["passes", "Passes"], ["flow", "Flow direction"], ["accum", "Flow accumulation"],
+  ["river", "Rivers"], ["lake", "Lakes"], ["temp", "Temperature"], ["moist", "Moisture"], ["biome", "Biome"], ["slope", "Slope"],
+  ["build", "Buildability"], ["road_cost", "Road cost"], ["flood", "Flood risk"]];
+// a map of the engine, flat (j * n + i) or rows like heights; null when the world has none
+const mapAt = (m, n, j, i) => !m ? null : Array.isArray(m[0]) ? (m[j]?.[i] ?? null) : (m[j * n + i] ?? null);
+
+// the debug PNGs, by world and view: a rebuild of the scene never fetches one again
+const debugTex = new Map();
+function drapeDebug(mat, t, name) {
+  const key = `${state.net}|${terrainKey(t)}|${name}`;
+  const have = debugTex.get(key);
+  if (have) { mat.map = have; mat.needsUpdate = true; return; }
+  rpc("terrain_map", { net_id: state.net, name }).then((out) => {
+    const b64 = out?.png ?? out?.image ?? out?.data;
+    if (!b64) return;
+    new THREE.TextureLoader().load(String(b64).startsWith("data:") ? b64 : `data:image/png;base64,${b64}`, (tex) => {
+      tex.flipY = false;  // row 0 of the PNG is the grid's first row (j = 0), as the mesh's v runs
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.magFilter = THREE.NearestFilter;
+      debugTex.set(key, tex);
+      mat.map = tex;
+      mat.needsUpdate = true;
+      rt.needsDraw = true;
+    });
+  });
+}
+
+// river lines in --blue: the backend's polylines (cm) when it sends them, else every river cell joined to its
+// lowest neighbour (downhill, the way the water runs)
+function riverLines(t) {
+  const pts = [], lift = 150;
+  if (Array.isArray(t.rivers) && t.rivers.length) {
+    for (const line of t.rivers) for (let k = 1; k < line.length; k++) {
+      const a = line[k - 1], b = line[k];
+      const za = a[2] ?? sampleZ(t, a[0], a[1]) ?? 0, zb = b[2] ?? sampleZ(t, b[0], b[1]) ?? 0;
+      pts.push(toV(a[0], a[1], za + lift), toV(b[0], b[1], zb + lift));
+    }
+  } else if (t.maps?.river) {
+    const n = t.grid, H = t.heights, cw = (t.max[0] - t.min[0]) / n, ch = (t.max[1] - t.min[1]) / n;
+    const at = (j, i) => toV(t.min[0] + cw * (i + 0.5), t.min[1] + ch * (j + 0.5), (H[j][i] ?? 0) + lift);
+    for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+      if (!(mapAt(t.maps.river, n, j, i) > 0) || H[j][i] == null) continue;
+      let best = null, bz = H[j][i];
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        const z = H[j + dj]?.[i + di];
+        if ((dj || di) && z != null && z <= bz) { bz = z; best = [j + dj, i + di]; }
+      }
+      if (best) pts.push(at(j, i), at(best[0], best[1]));
+    }
+  }
+  if (!pts.length) return null;
+  return new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: col("blue") }));
+}
+
 const smooth = (e0, e1, x) => { const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
 
 function terrainMesh(t) {
@@ -47,12 +112,13 @@ function terrainMesh(t) {
   const H = t.heights;
   let lo = Infinity, hi = -Infinity;
   for (const row of H) for (const v of row) if (v !== null && v !== undefined) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
-  const reps = Math.max(8, n / 6);
+  const look = state.view.look || "natural", debug = look.startsWith("debug:");
+  const reps = debug ? 1 : Math.max(8, n / 6);  // a debug PNG covers the world once; the detail texture repeats
   for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
     const x = t.min[0] + (t.max[0] - t.min[0]) * (i + 0.5) / n, y = t.min[1] + (t.max[1] - t.min[1]) * (j + 0.5) / n;
     const v = toV(x, y, H[j][i] ?? lo);
     pos.push(v.x, v.y, v.z);
-    uv.push(i / n * reps, j / n * reps);
+    uv.push((i + 0.5) / n * reps, (j + 0.5) / n * reps);
   }
   // cells with no landscape under them (off the island) are left out, never drawn at a made-up height
   // ... and the square the Real pieces view covers is left open: its own full-resolution ground fills it
@@ -81,6 +147,12 @@ function terrainMesh(t) {
     snow: col("fg"), low: col("blue"), mid: col("green"), high: col("amber"), top: col("red") };
   const snowFrom = lo + 60000;  // snow only on real mountains (600 m up), never on a valley's hilltops
   const sea = t.sea ?? null;
+  // Biome: the engine's biome map in flat theme colours; Natural on an engine world: the same, toned like the outdoors
+  const biome = t.maps?.biome, river = t.maps?.river;
+  const bFlat = BIOME_COLORS.map(([, c]) => col(c));
+  const bNat = bFlat.map((c) => { const hsl = {}; c.getHSL(hsl, THREE.SRGBColorSpace);
+    return c.clone().setHSL(hsl.h, hsl.s * 0.45, 0.22 + hsl.l * 0.5, THREE.SRGBColorSpace); });
+  const water = tone("blue", 0.6, 0.45);
   const colors = new Float32Array(nrm.count * 3);
   const c = new THREE.Color();
   for (let k = 0; k < nrm.count; k++) {
@@ -89,12 +161,20 @@ function terrainMesh(t) {
     const tH = hi > lo ? (z - lo) / (hi - lo) : 0.3;
     const slope = 1 - nrm.getY(k);  // 0 flat .. 1 vertical
     const jitter = (Math.sin(i * 12.9898 + j * 78.233) * 43758.5453) % 1;
-    if (state.view.look === "height") {
+    const b = biome ? mapAt(biome, n, j, i) : null;
+    if (debug) {
+      c.setRGB(1, 1, 1);  // the PNG gives the colour
+    } else if (look === "biome" && b !== null) {
+      c.copy(bFlat[Math.round(b)] ?? bFlat[3]);
+    } else if (look === "height") {
       if (tH < 0.33) c.copy(pal.low).lerp(pal.mid, tH / 0.33);
       else if (tH < 0.66) c.copy(pal.mid).lerp(pal.high, (tH - 0.33) / 0.33);
       else c.copy(pal.high).lerp(pal.top, (tH - 0.66) / 0.34);
     } else if (state.view.look === "slope") {
       c.copy(pal.mid).lerp(pal.high, smooth(0.02, 0.12, slope)).lerp(pal.top, smooth(0.12, 0.3, slope));
+    } else if (b !== null) {
+      c.copy(bNat[Math.round(b)] ?? bNat[3]);
+      c.multiplyScalar(0.94 + 0.08 * Math.abs(jitter));
     } else {
       c.copy(pal.grassLo).lerp(pal.grassHi, smooth(0.2, 0.75, tH));
       c.lerp(pal.dirt, smooth(0.04, 0.1, slope) * 0.6);
@@ -103,12 +183,15 @@ function terrainMesh(t) {
       if (sea !== null) c.lerp(pal.sand, 1 - smooth(sea + 150, sea + 600, z));
       c.multiplyScalar(0.94 + 0.08 * Math.abs(jitter));
     }
+    if (look === "rivers" && !debug && mapAt(river, n, j, i) > 0) c.lerp(water, 0.85);
     colors[k * 3] = c.r; colors[k * 3 + 1] = c.g; colors[k * 3 + 2] = c.b;
   }
   geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
-  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, map: state.view.look === "natural" ? detailTex : null,
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, map: look === "natural" ? detailTex : null,
     roughness: 0.95, metalness: 0, side: THREE.DoubleSide });
+  if (debug) drapeDebug(mat, t, look.slice(6));
   const mesh = new THREE.Mesh(geo, mat);
+  if (["natural", "biome", "rivers"].includes(look)) { const r = riverLines(t); if (r) mesh.add(r); }
   mesh.receiveShadow = true;
   mesh.castShadow = true;
   return { mesh, lo, hi };
@@ -138,4 +221,4 @@ function groundAt(e) {
   return ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), out) ? out : null;
 }
 
-export { themeColors, detailTex, smooth, terrainMesh, terrainKey, sampleZ, groundMarch, groundAt };
+export { BIOME_COLORS, DEBUG_VIEWS, themeColors, detailTex, smooth, terrainMesh, terrainKey, sampleZ, groundMarch, groundAt };

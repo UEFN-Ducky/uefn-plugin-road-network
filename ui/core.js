@@ -32,7 +32,7 @@ const hist = { undo: [], redo: [], busy: false, timer: 0 };  // this world's his
 // calls that change nothing: every other one may have added a step to the world's history
 const RPC_READS = new Set(["history", "geometry", "get", "list", "stats", "cities", "holds", "hold", "release", "version", "chats",
   "generate_options", "pcg_layers", "pcg_preview", "pcg_plan", "pcg_assets", "pcg_exact", "ground_fit", "presets", "projects",
-  "build_brief", "check", "copy_text", "sync", "note_draft", "send_note"]);
+  "build_brief", "check", "copy_text", "sync", "note_draft", "send_note", "terrain_map"]);
 const rpc = (method, params = {}) => call("plugin.call", { method, params }, RPC_WAIT[method] ?? 90000)
   .catch((err) => ({ ok: false, error: err.message }))
   .then((out) => { if (!RPC_READS.has(method) && method !== "undo" && method !== "redo") rt.historySoon(); return out; });
