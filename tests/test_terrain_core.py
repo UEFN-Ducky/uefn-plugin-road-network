@@ -144,22 +144,42 @@ def test_coast_modes():
 
 
 def test_region_shares_follow_config():
-    for opts in ({}, {'mountain_cover': 0.4, 'hills': 0.8, 'flatland': 0.3, 'plateaus': 0.3}):
+    for opts in ({}, {'mountain_cover': 0.3, 'hills': 0.8, 'flatland': 0.3, 'plateaus': 0.3}):
         g, cfg, maps = _world(**opts)
-        sh = shares(maps)
-        assert abs(sh['mountains'] - cfg['mountain_cover']) <= 0.05, sh
-        rest = [k for k in range(g.n * g.n)
+        n2 = g.n * g.n
+        mtn_map = sum(1 for v in maps['mountains'] if v >= 0.5) / n2
+        assert abs(mtn_map - cfg['mountain_cover']) <= 0.05, (mtn_map, opts)
+        tg = maps['region_targets']
+        assert tg['hills_free'] <= cfg['hills'] * (1 - cfg['flatland']) + 1e-9
+        assert tg['plateaus_free'] <= cfg['plateaus'] * (1 - cfg['flatland']) + 1e-9
+        rest = [k for k in range(n2)
                 if maps['land'][k] - maps['mountains'][k] - maps['foothills'][k] >= 0.5]  # the land left over
         hills = sum(1 for k in rest if maps['hills'][k] >= 0.5) / len(rest)
         plat = sum(1 for k in rest if maps['plateaus'][k] >= 0.5) / len(rest)
-        assert abs(hills - cfg['hills'] * (1 - cfg['flatland'])) <= 0.05, (hills, opts)
-        assert abs(plat - cfg['plateaus'] * (1 - cfg['flatland'])) <= 0.05, (plat, opts)
+        assert abs(hills - tg['hills_free']) <= 0.05, (hills, opts)
+        assert abs(plat - tg['plateaus_free']) <= 0.05, (plat, opts)
+        land_n = sum(1 for v in maps['land'] if v >= 0.5)
+        plains = sum(1 for v in maps['plains'] if v >= 0.5) / land_n
+        assert plains >= tg['plains_land'] - 0.01, (plains, opts)
         for k in range(g.n * g.n):
             vals = [maps[m][k] for m in MASKS]
             assert all(0.0 <= v <= 1.0 for v in vals)
             assert sum(vals) <= maps['land'][k] + 1e-9
         # inland: no mountain within 2 km of the sea
         assert all(maps['mountains'][k] < 0.01 for k in range(g.n * g.n) if maps['coast_dist'][k] < 2000)
+
+
+def test_coastal_plains_hold_at_every_map_size():
+    from backend.terrain import engine
+    cfg = terrain_config({'preset': 'Coastal', 'seed': 7})
+    for size in (6000.0, 20000.0, 40000.0):
+        w = engine.generate(cfg, 128, -size / 2, -size / 2, size, quality='preview')
+        m, n2 = w.maps, 128 * 128
+        land = sum(1 for v in m['land'] if v >= 0.5)
+        plains = sum(1 for v in m['plains'] if v >= 0.5) / land
+        mtn = sum(1 for v in m['mountains'] if v >= 0.5) / n2
+        assert plains >= 0.40, (size, plains)
+        assert 0.20 <= mtn <= 0.35, (size, mtn)
 
 
 # ---- stages 3, 5, 6, 11: macro, hills, plateaus, blend, detail ----
