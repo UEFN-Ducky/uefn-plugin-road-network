@@ -42,6 +42,12 @@ def test_small_island_gets_its_mountains():
     assert max(hs) > 150000
 
 
+def test_water_level_sets_the_sea_on_every_preset():
+    for preset in ("Mountainous", "Coastal", "Classic"):
+        assert cg.terrain(7, 600000.0, 6000.0, CITIES, grid=32, opts={"preset": preset, "sea_m": -85})["sea"] == -8500
+    assert cg.terrain(7, 600000.0, 6000.0, CITIES, grid=32, opts={"preset": "Mountainous"})["sea"] is None  # Off, no coast
+
+
 def test_no_mountains_keeps_old_ground():
     ter = cg.terrain(7, 600000.0, 6000.0, CITIES, grid=40)
     assert cg.z_scale(ter) == 100.0

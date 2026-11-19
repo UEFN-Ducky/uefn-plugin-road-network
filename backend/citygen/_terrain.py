@@ -260,6 +260,8 @@ def _engine_terrain(seed, size_cm, relief_cm, cities, grid, center, o, keep, lak
     # river polylines (cm) for the panel and wet_from, their widths beside them (a point's third number is its z)
     out["rivers"] = [[[round(x), round(y)] for x, y in r["pts"]] for r in world.maps.get("river_lines") or []]
     out["river_widths_cm"] = [round(r.get("width_cm", 0.0)) for r in world.maps.get("river_lines") or []]
+    if o["sea_m"] > OPTIONS["sea_m"][1]:  # Water level on: the sea sits there on every preset (ground below it floods)
+        out["sea"] = o["sea_m"] * 100
     if not (lakes or keep):
         return out
     xs = [lo[0] + size_cm * (i + 0.5) / grid for i in range(grid)]
