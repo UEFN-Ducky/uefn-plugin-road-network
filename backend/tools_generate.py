@@ -305,7 +305,10 @@ def register(ctx) -> None:
                 t.pop("ic_steep", None)
         cg.share_freeways(towns, opts)
         progress(2, "Laying roads, freeways, bridges and runways")
-        actors = cg.generate(towns, road_ground, folder, int(seed), opts, keep, wet, bridges, airports, airport_builds)
+        # the ground goes in too: on an engine world (maps.road_cost) each highway takes the cheapest way through
+        # the passes; a scan or Classic ground has no cost map and keeps its one curve
+        actors = cg.generate(towns, road_ground, folder, int(seed), opts, keep, wet, bridges, airports, airport_builds,
+                             terrain=ter if ter.get("heights") else None)
         # every street that ends closes in a cul-de-sac now, before the ground is graded to it: not only once
         # Build pieces ran in UEFN (a regenerate dropped every turnaround until then)
         pl.cap_all([(a["points"], a["segments"]) for a in actors.values()], ter)

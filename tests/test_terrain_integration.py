@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import json
 import math
 import struct
 import sys
@@ -123,6 +124,68 @@ def test_rivers_and_lakes_are_wet_and_bridged():
     nodes, edges = cg.over_water({"a": [*p, 0.0], "b": [*q, 0.0]}, [("a", "b", "4L")], wet, bridges=bridges)
     assert bridges and edges
     assert cg.wet_from(cg.terrain(5, 600000.0, 6000.0, CITIES, grid=40)) is None  # Classic, no sea: no water
+
+
+class _Stop(Exception):
+    pass
+
+
+class _Data:
+    def get(self, key):
+        return None
+
+    def keys(self, prefix=""):
+        return []
+
+    def items(self, prefix=""):
+        return {}
+
+    def put(self, key, value):
+        pass
+
+
+def _generate_terrain_arg(monkeypatch, options):
+    """The terrain tools_generate.generate hands cg.generate (stopped there) for a new world with these options."""
+    import contextlib
+    from backend import Ctx
+    from backend import tools_generate
+    got = {}
+
+    def fake(*a, **k):
+        got.update(k)
+        raise _Stop
+
+    monkeypatch.setattr(cg, "generate", fake)
+    ctx = Ctx()
+    ctx.holds_the_world = ctx.one_run_at_a_time = lambda fn: fn
+    ctx.data, ctx.push, ctx.held_lock = _Data(), (lambda msg: None), contextlib.nullcontext()
+    ctx.actor = lambda: {"kind": "person"}
+    ctx.slug = lambda s: str(s).strip().lower()
+    tools_generate.register(ctx)
+    with contextlib.suppress(_Stop):
+        ctx.generate("Valley", seed=4, cities="2", size_km=6.0, relief_m=60.0, folder="/G/WorldGen/Roads",
+                     options=json.dumps(options))
+    return got
+
+
+def test_live_generate_routes_highways_on_the_terrain(monkeypatch):
+    got = _generate_terrain_arg(monkeypatch, {"preset": "Alpine"})
+    assert got["terrain"]["heights"] and got["terrain"]["maps"]["road_cost"]
+    assert not (_generate_terrain_arg(monkeypatch, {})["terrain"].get("maps") or {})  # Classic: no cost map
+
+
+def test_engine_highway_follows_cost_route(monkeypatch):
+    ter = cg.terrain(4, 600000.0, 6000.0, CITIES, grid=40, opts={"preset": "Coastal"})
+    towns = [{**c, "name": n, "style": "mixed", "seed": k} for k, (c, n) in enumerate(zip(CITIES, ("A", "B")))]
+    routes = []
+    real = cg.cost_route
+    monkeypatch.setattr(cg, "cost_route", lambda *a, **k: routes.append(real(*a, **k)) or routes[-1])
+    ground = lambda x, y: cg.st.sample_grid(ter, x, y) or 0.0  # noqa: E731
+    roads = cg.generate([dict(t) for t in towns], ground, "/G/WorldGen/Roads", 4, {}, terrain=ter)
+    assert routes and routes[0]
+    straight = cg.generate([dict(t) for t in towns], ground, "/G/WorldGen/Roads", 4, {})
+    hw = next(k for k in roads if k.endswith("Highways"))
+    assert roads[hw]["points"] != straight[hw]["points"]
 
 
 def test_engine_holds_keep_zones_and_digs_lakes():
