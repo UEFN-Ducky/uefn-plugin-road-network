@@ -343,6 +343,17 @@ async function loadPcgPreview() {
   try { await loadPcgPreviewNow(); } finally { if (pcgLoading === net) pcgLoading = ""; }
   if (pcgAgain && !pcgLoading && net === state.net) { pcgAgain = false; return loadPcgPreview(); }
 }
+// a flat engine map (j * n + i over terrain `a`) sampled at the cell centres of terrain `b` (nearest cell)
+function regrid(m, a, b) {
+  if (!m || Array.isArray(m[0]) || m.length !== a.grid * a.grid) return m;
+  const n = a.grid, out = new Array(b.grid * b.grid);
+  const ix = (v, lo, hi) => Math.max(0, Math.min(n - 1, Math.floor((v - lo) / (hi - lo) * n)));
+  for (let j = 0; j < b.grid; j++) {
+    const ja = ix(b.min[1] + (b.max[1] - b.min[1]) * (j + 0.5) / b.grid, a.min[1], a.max[1]);
+    for (let i = 0; i < b.grid; i++) out[j * b.grid + i] = m[ja * n + ix(b.min[0] + (b.max[0] - b.min[0]) * (i + 0.5) / b.grid, a.min[0], a.max[0])];
+  }
+  return out;
+}
 async function loadPcgPreviewNow() {
   if (!state.net || !(state.layers || []).length) { state.pcg = {}; settleCity(); state.lifted = null; buildScene(); loadSync(); return; }
   const net = state.net;
@@ -386,7 +397,11 @@ async function loadPcgPreviewNow() {
   if (net !== state.net) return;
   const raw = state.geo?.rawTerrain || state.geo?.terrain;
   if (gr.ok !== false && gr.grid && raw?.heights) {  // buildScene swaps it in
-    state.ground = { net, key: terrainKey(raw), t: { ...raw, grid: gr.grid, heights: gr.heights, max: gr.max || raw.max }, fit: gr.ground_fit };
+    const t = { ...raw, grid: gr.grid, heights: gr.heights, max: gr.max || raw.max };
+    // the engine's maps (biome, river: flat j * n + i on the raw grid) put on this finer grid: read with the raw
+    // stride they striped the whole map and the sea after every redraw (a tab switch)
+    if (raw.maps) t.maps = Object.fromEntries(Object.entries(raw.maps).map(([k, m]) => [k, regrid(m, raw, t)]));
+    state.ground = { net, key: terrainKey(raw), t, fit: gr.ground_fit };
   }
   state.pcg = out;
   live.sharing = false;

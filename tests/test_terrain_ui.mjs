@@ -93,4 +93,11 @@ assert.equal(worldGen({ options: {} }, "X", gen).seed, gen.seed, "missing fields
 assert.equal(ui.GEN_DEFAULTS.preset, "Coastal", "new worlds start on Coastal");
 assert.ok(world.includes("Object.assign(state.gen, worldGen("), "openNet uses worldGen");
 
+// the engine maps follow the finer ground grid the panel draws after the city loads (they striped the map)
+const pcg = read("ui/view/pcg.js"), ra = pcg.indexOf("function regrid("), rb = pcg.indexOf("\n}\n", ra);
+const regrid = new Function(`${pcg.slice(ra, rb + 2)}; return regrid;`)();
+const a = { grid: 2, min: [0, 0], max: [100, 100] }, b = { grid: 4, min: [0, 0], max: [100, 100] };
+assert.deepEqual(regrid([1, 2, 3, 4], a, b), [1, 1, 2, 2, 1, 1, 2, 2, 3, 3, 4, 4, 3, 3, 4, 4], "map put on the finer grid");
+assert.ok(pcg.includes("regrid(m, raw, t)"), "the ground's maps are regridded");
+
 console.log("terrain ui ok");

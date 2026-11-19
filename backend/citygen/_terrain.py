@@ -134,6 +134,61 @@ def _dig_lakes(base: list, xs: list, ys: list, lakes: list, sea, depth: float, s
     return base, sea
 
 
+LAKE_RISE_CM = LAKE_BANK_CM[1] * LAKE_BANK_GRADE  # the most a lake's banks can bring the land down to the water
+
+
+def _lake_splines(lake: list, rows: list, xs: list, ys: list, sea: float) -> tuple:
+    """The engine's lakes (flat j * n + i mask) as splines like a hand-drawn lake: (splines, hollows). Each lake
+    is a line along its long axis (each slice's middle) with one width (its area over its length), so it is dug
+    down to the world's ONE water line and a single water plane in UEFN covers every lake and the sea. A lake
+    sitting higher above that line than its banks can come down (LAKE_RISE_CM) is a hollow [(j, i), ...]
+    instead: filled level, a meadow."""
+    n = len(xs)
+    cell = xs[1] - xs[0] if n > 1 else 1.0
+    seen, splines, hollows = set(), [], []
+    for start in range(n * n):
+        if start in seen or not lake[start] > 0.5:
+            continue
+        comp, stack = [], [start]
+        seen.add(start)
+        while stack:
+            k = stack.pop()
+            comp.append(k)
+            i, j = k % n, k // n
+            for q in ((k - 1) if i else -1, (k + 1) if i < n - 1 else -1, k - n, k + n):
+                if 0 <= q < n * n and q not in seen and lake[q] > 0.5:
+                    seen.add(q)
+                    stack.append(q)
+        cells = [(k // n, k % n) for k in comp]
+        if max(rows[j][i] for j, i in cells) - sea > LAKE_RISE_CM:
+            hollows.append(cells)
+            continue
+        px = [xs[i] for _, i in cells]
+        py = [ys[j] for j, _ in cells]
+        mx, my = sum(px) / len(px), sum(py) / len(py)
+        sxx = sum((x - mx) ** 2 for x in px)
+        syy = sum((y - my) ** 2 for y in py)
+        sxy = sum((x - mx) * (y - my) for x, y in zip(px, py))
+        ang = 0.5 * math.atan2(2 * sxy, sxx - syy)  # the long axis
+        ux, uy = math.cos(ang), math.sin(ang)
+        u = [(x - mx) * ux + (y - my) * uy for x, y in zip(px, py)]
+        length = max(u) - min(u) + cell
+        area = len(cells) * cell * cell
+        width = max(area / length, 2 * cell)
+        n_pts = max(1, min(24, round(length / max(width, 2 * cell))))
+        if n_pts == 1:
+            pts, width = [[round(mx), round(my)]], 2 * math.sqrt(area / math.pi)
+        else:
+            slices: dict = {}
+            for x, y, s in zip(px, py, u):
+                slices.setdefault(min(n_pts - 1, int((s - min(u)) / length * n_pts)), []).append((x, y))
+            pts = [[round(sum(p[0] for p in v) / len(v)), round(sum(p[1] for p in v) / len(v))]
+                   for _, v in sorted(slices.items())]
+        splines.append({"id": f"engine-{len(splines) + 1}", "pts": pts,
+                        "width_m": round(min(LAKE_WIDTH_M[2], width / 100.0), 1)})
+    return splines, hollows
+
+
 def terrain(seed: int, size_cm: float, relief_cm: float, cities: list, grid: int = 160,
             center: tuple = (0.0, 0.0), opts: dict | None = None, keep: list | None = None,
             lakes: list | None = None) -> dict:
@@ -294,11 +349,32 @@ def _engine_terrain(seed, size_cm, relief_cm, cities, grid, center, o, keep, lak
     out["river_widths_cm"] = [round(r.get("width_cm", 0.0)) for r in world.maps.get("river_lines") or []]
     if o["sea_m"] > OPTIONS["sea_m"][1]:  # Water level on: the sea sits there on every preset (ground below it floods)
         out["sea"] = o["sea_m"] * 100
-    if not (lakes or keep):
-        return out
     xs = [lo[0] + size_cm * (i + 0.5) / grid for i in range(grid)]
     ys = [lo[1] + size_cm * (j + 0.5) / grid for j in range(grid)]
-    rows, out["sea"] = _dig_lakes(out["heights"], xs, ys, lakes or [], out["sea"], o["water_depth_m"] * 100, 400.0)
+    rows = out["heights"]
+    # (no sea: the water line _dig_lakes picks, just under the lowest ground, so nothing else floods)
+    line = out["sea"] if out["sea"] is not None else min(min(r) for r in rows) - 500.0
+    own, hollows = _lake_splines(world.maps.get("lake") or [], rows, xs, ys, line)
+    for cells in hollows:  # too high for the one water line: filled level to its lowest rim
+        inside = set(cells)
+        rim = min((rows[j + dj][i + di] for j, i in cells for dj, di in ((0, 1), (1, 0), (0, -1), (-1, 0))
+                   if 0 <= j + dj < grid and 0 <= i + di < grid and (j + dj, i + di) not in inside), default=None)
+        for j, i in cells:
+            rows[j][i] = max(rows[j][i], rim if rim is not None else rows[j][i])
+    # every lake, the engine's and those drawn by hand, as a spline dug to the one water line (lake_splines: for
+    # UEFN and the panel; the water itself is one plane at `sea`)
+    out["lake_splines"] = own + list(lakes or [])
+    if not out["lake_splines"] and not keep:
+        if hollows:
+            out["heights"] = [[round(v, 1) for v in r] for r in rows]
+        if "lake" in out["maps"]:
+            out["maps"]["lake"] = [0.0] * (grid * grid)
+        return out
+    before = [r[:] for r in rows]
+    rows, out["sea"] = _dig_lakes(rows, xs, ys, out["lake_splines"], out["sea"], o["water_depth_m"] * 100, 400.0)
+    if "lake" in out["maps"]:  # the lake map is the water the digging made
+        out["maps"]["lake"] = [1.0 if rows[j][i] < before[j][i] and rows[j][i] < out["sea"] else 0.0
+                               for j in range(grid) for i in range(grid)]
     blend = max(o["flatten_m"] * 100, 5000.0)
     for j, y in enumerate(ys):  # last, as in Classic: the engine's erosion and detail run after its own levelling
         for i, x in enumerate(xs):

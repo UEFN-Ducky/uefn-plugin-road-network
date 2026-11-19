@@ -598,6 +598,10 @@ own (`sea_m`), or, with none, one just under its lowest ground, so nothing else 
 to it. The streets, bridges, waterfront and buildings of every city are then laid round the lake like round
 any water. Not on a world laid over a landscape scanned from UEFN: that ground is never changed. In UEFN the
 dug ground comes with the heightmap; the water itself is the island's water at the world's water level.
+The engine's own lakes are made the same way (`citygen._lake_splines`): each becomes a spline (its long axis,
+one width) dug to that one water line, so ONE water plane at the water level covers the sea and every lake. A
+lake higher above the line than its banks can come down (180 m) is filled level instead. The terrain's
+`lake_splines` lists every lake (engine and drawn) as `{id, pts, width_m}`.
 
 ## City size, spacing and water
 - **World tab:** `City size` (option `city_size`, ×0.3–4) scales every city, and regenerating scales the ones you

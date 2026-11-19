@@ -101,7 +101,9 @@ def test_terrain_map_rpc():
 
 
 def test_rivers_and_lakes_are_wet_and_bridged():
-    t = cg.terrain(5, 600000.0, 6000.0, CITIES, grid=40, opts={"preset": "Alpine"})
+    # (every lake is a spline dug to the one water line, so it is wet: a drawn one here, engine lakes are rare)
+    t = cg.terrain(5, 600000.0, 6000.0, CITIES, grid=40, opts={"preset": "Alpine"},
+                   lakes=[{"id": "l", "pts": [[150000, -150000], [200000, -100000]], "width_m": 400}])
     wet = cg.wet_from(t)
     lake = t["maps"]["lake"]
     n = math.isqrt(len(lake))
@@ -241,6 +243,23 @@ def test_lakes_slider_is_an_option_not_drawn_lakes(monkeypatch):
     got = _generate_terrain_arg(monkeypatch, {"preset": "Coastal", "lakes": 0.7})
     assert got["terrain"]["heights"]
     assert cg.lake_list(0.7) == []
+
+
+def test_engine_lakes_are_splines_under_the_one_water_line():
+    """Every lake is dug to the world's single water line (one water plane in UEFN covers them all) and comes back as
+    a spline (middle line + width) like a hand-drawn lake."""
+    for preset in ("Coastal", "Continental"):
+        ter = cg.terrain(4, 600000.0, 6000.0, [], grid=80, opts={"preset": preset, "lakes": 1.0})
+        n, sea, H = ter["grid"], ter["sea"], ter["heights"]
+        lake = ter["maps"]["lake"]
+        assert all(H[k // n][k % n] < sea for k in range(n * n) if lake[k] > 0.5), preset
+        for s in ter["lake_splines"]:
+            assert s["pts"] and 60 <= s["width_m"] <= 1500, s
+        if ter["lake_splines"]:
+            x, y = ter["lake_splines"][0]["pts"][0]
+            i = int((x - ter["min"][0]) / (ter["max"][0] - ter["min"][0]) * n)
+            j = int((y - ter["min"][1]) / (ter["max"][1] - ter["min"][1]) * n)
+            assert H[j][i] < sea, preset  # its middle is under water
 
 
 def test_engine_highway_follows_cost_route(monkeypatch):
