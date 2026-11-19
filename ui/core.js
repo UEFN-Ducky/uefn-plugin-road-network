@@ -74,15 +74,53 @@ function drawLoading() {
 }
 
 // ------------------------------------------------------------------ state
+// ponytail: a copy of backend/terrain/config.py KEYS (default, min, max), CHOICES and PRESETS; tests/test_terrain_ui.mjs
+// fails when the two drift apart
+const TERRAIN_KEYS = {
+  mountain_m: [1200, 0, 2500], mountain_cover: [0.2, 0.05, 0.8], mountain_intensity: [0.5, 0, 1], flatland: [0.5, 0, 1],
+  hills: [0.5, 0, 1], plateaus: [0.1, 0, 1], coast_side_deg: [0, 0, 360], sea_level_m: [0, -50, 50], erosion: [0.5, 0, 1],
+  thermal: [0.5, 0, 1], rivers: [0.5, 0, 1], lakes: [0.4, 0, 1], temp_c: [14, -10, 35], rain: [0.5, 0, 1],
+  snowline_m: [1900, 300, 4000], detail: [0.5, 0, 1], hill_km: [2, 0.3, 10], relief_m: [60, 0, 250],
+};
+const TERRAIN_CHOICES = { coast: ["one", ["none", "one", "two", "island", "archipelago"]] };
+const TERRAIN_PRESETS = {
+  Coastal: { mountain_intensity: 0.55, flatland: 0.6, hills: 0.55, coast: "one", mountain_m: 1600, mountain_cover: 0.27, plateaus: 0.05 },
+  Plains: { mountain_m: 300, mountain_cover: 0.05, mountain_intensity: 0.2, flatland: 0.9, hills: 0.25, plateaus: 0.05, coast: "none", relief_m: 30, hill_km: 4 },
+  Mountainous: { mountain_m: 2200, mountain_cover: 0.45, mountain_intensity: 0.85, flatland: 0.25, hills: 0.6, coast: "none", relief_m: 120 },
+  Alpine: { mountain_m: 2500, mountain_cover: 0.5, mountain_intensity: 0.95, flatland: 0.2, hills: 0.6, coast: "none", snowline_m: 1400, temp_c: 8, lakes: 0.7, relief_m: 140 },
+  Tropical: { temp_c: 28, rain: 0.9, coast: "two", mountain_m: 1200, mountain_cover: 0.15, snowline_m: 4000, rivers: 0.7 },
+  Desert: { temp_c: 30, rain: 0.1, coast: "none", mountain_m: 900, mountain_cover: 0.12, plateaus: 0.45, rivers: 0.2, lakes: 0.1, erosion: 0.3, snowline_m: 4000 },
+  Island: { coast: "island", mountain_m: 1200, mountain_cover: 0.15, mountain_intensity: 0.6, flatland: 0.55, temp_c: 22, rain: 0.65 },
+  Mediterranean: { coast: "one", temp_c: 19, rain: 0.35, hills: 0.65, mountain_m: 1400, mountain_cover: 0.2, flatland: 0.45, coast_side_deg: 270 },
+  Continental: { coast: "none", temp_c: 9, rain: 0.5, flatland: 0.7, mountain_m: 1000, mountain_cover: 0.12, lakes: 0.6 },
+  Mixed: {},
+  Classic: { classic: true },
+};
+// what choosing a preset puts in the sliders: the engine default under the preset's own values, for the keys the
+// panel has (detail is the old generator's octave count there, so the engine's 0..1 detail is left out).
+// Classic runs the old generator, which reads none of these: the sliders keep what they show.
+function presetValues(name) {
+  const p = TERRAIN_PRESETS[name];
+  if (!p || p.classic) return {};
+  const out = {};
+  for (const [k, [d]] of Object.entries(TERRAIN_KEYS)) if (k in GEN_DEFAULTS && k !== "detail") out[k] = p[k] ?? d;
+  for (const [k, [d]] of Object.entries(TERRAIN_CHOICES)) out[k] = p[k] ?? d;
+  return out;
+}
 const GEN_DEFAULTS = {
   name: "Valley", cities: 3, size_km: 6, relief_m: 60, seed: 7, ground: "new",
-  hill_km: 2, roughness: 0.5, detail: 5, ridges: 0, peaks: 0, flatten_m: 300, sea_m: -1000, water_depth_m: 12, terrace_m: 0, smooth: 0.5, landscape_px: 2017, mountain_m: 0, mountain_cover: 0.3,
+  hill_km: 2, roughness: 0.5, detail: 5, ridges: 0, peaks: 0, flatten_m: 300, sea_m: -1000, water_depth_m: 12, terrace_m: 0, smooth: 0.5, landscape_px: 2017,
+  // the engine's sliders, as the Coastal preset sets them (presetValues("Coastal"))
+  preset: "Coastal", mountain_m: 1600, mountain_cover: 0.27, mountain_intensity: 0.55, flatland: 0.6, hills: 0.55, plateaus: 0.05,
+  coast: "one", coast_side_deg: 0, erosion: 0.5, rivers: 0.5, lakes: 0.4, temp_c: 14, rain: 0.5, snowline_m: 1900,
   block_m: 100, block_ratio: 1, wobble: 0.12, follow_hills: 0.8, green_lots: 0, prune: 0.22, downtown: 0.4, normal: 0.75, highway: "4L", highway_curve: 0.08,
   core_roads: "4L", neighbourhood_roads: "2S", suburb_roads: "2L", one_way_core: "no", interchange: "direct", overpasses: "yes",
   city_size: 1, city_gap_m: 300, freeways: "yes", waterfront: "yes", canals: "none", shipyards: "auto",
   airports: "auto", military_base: "no", wind_deg: 240, city_ground: "natural", island: "none",
 };
-const OPTION_KEYS = ["hill_km", "roughness", "detail", "ridges", "peaks", "flatten_m", "sea_m", "water_depth_m", "terrace_m", "smooth", "landscape_px", "mountain_m", "mountain_cover", "block_m", "block_ratio", "wobble", "follow_hills", "green_lots",
+const OPTION_KEYS = ["hill_km", "roughness", "detail", "ridges", "peaks", "flatten_m", "sea_m", "water_depth_m", "terrace_m", "smooth", "landscape_px",
+  "preset", "mountain_m", "mountain_cover", "mountain_intensity", "flatland", "hills", "plateaus", "coast", "coast_side_deg", "erosion",
+  "rivers", "lakes", "temp_c", "rain", "snowline_m", "block_m", "block_ratio", "wobble", "follow_hills", "green_lots",
   "prune", "downtown", "normal", "highway", "highway_curve", "core_roads", "neighbourhood_roads", "suburb_roads", "one_way_core",
   "interchange", "overpasses", "city_size", "city_gap_m", "freeways", "interchange_models", "waterfront", "canals", "shipyards", "airports", "military_base", "wind_deg", "city_ground", "island"];
 const VIEW_DEFAULTS = { zx: 1, pcg: true, terrain: true, water: true, districts: true, points: false, look: "natural", sunAz: 135, sunEl: 52, shadows: true };
@@ -204,4 +242,5 @@ const rt = {
   visible: true,
 };
 
-export { CHANNEL, call, RPC_WAIT, hist, RPC_READS, rpc, esc, $, cssVar, alert, showError, loading, busy, drawLoading, GEN_DEFAULTS, OPTION_KEYS, VIEW_DEFAULTS, state, ctl, FAMILY, family, savePrefs, view, renderer, FULL_DPR, scene, camera, groups, marks, hemi, sun, toV, col, tone, vary, swatch, MAT, SLOT_MAT, PAINT_PERIOD, ASPHALT_HALF, toUE, rt };
+export { CHANNEL, call, RPC_WAIT, hist, RPC_READS, rpc, esc, $, cssVar, alert, showError, loading, busy, drawLoading,
+  TERRAIN_KEYS, TERRAIN_CHOICES, TERRAIN_PRESETS, presetValues, GEN_DEFAULTS, OPTION_KEYS, VIEW_DEFAULTS, state, ctl, FAMILY, family, savePrefs, view, renderer, FULL_DPR, scene, camera, groups, marks, hemi, sun, toV, col, tone, vary, swatch, MAT, SLOT_MAT, PAINT_PERIOD, ASPHALT_HALF, toUE, rt };

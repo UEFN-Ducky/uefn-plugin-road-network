@@ -1,5 +1,5 @@
 import { button, choices, field, h, icon, section, segmented, slider, toggle } from "../controls.js";
-import { $, ctl, savePrefs, state } from "../core.js";
+import { $, ctl, presetValues, savePrefs, state } from "../core.js";
 import { renderCitiesPane, showSide } from "./cities.js";
 import { renderPcgPane } from "./pcg.js";
 import { renderEditPane, renderUefnPane } from "./uefn.js";
@@ -71,6 +71,21 @@ function sl(key, label, min, max, step, fmt, hint) {
   return ctl[key].el;
 }
 
+// backend/terrain/config.py PRESETS, in the order the person picks from
+const PRESET_OPTIONS = [
+  ["Coastal", "Coastal", "Sea on one side, a range inland, plains between", "wave"],
+  ["Plains", "Plains", "Wide flat land, low hills, no sea", "grid"],
+  ["Mountainous", "Mountainous", "Tall ranges over much of the map", "terrain"],
+  ["Alpine", "Alpine", "2500 m peaks, snow, lakes in the valleys", "top"],
+  ["Tropical", "Tropical", "Hot and wet, sea on two sides, many rivers", "water"],
+  ["Desert", "Desert", "Hot and dry, plateaus, few rivers", "sun"],
+  ["Island", "Island", "One big island in the sea", "pin"],
+  ["Mediterranean", "Mediterranean", "Warm, dry summers, hills down to the sea", "lake"],
+  ["Continental", "Continental", "Inland, cool, lakes", "world"],
+  ["Mixed", "Mixed", "The engine's defaults: a bit of everything", "mixed"],
+  ["Classic", "Classic", "The old hill generator (Shape sliders below)", "clock"],
+];
+
 function buildPanes() {
   // ---- World
   ctl.name = field({ label: "World name", value: state.gen.name, placeholder: "Valley", onChange: (v) => setGen("name", v.trim()) });
@@ -109,10 +124,32 @@ function buildPanes() {
   const zx = slider({ label: "Height exaggeration", min: 1, max: 5, step: 0.25, value: state.view.zx || 1, fmt: (v) => `×${v}`,
     hint: "Preview only: the heightmap and roads keep real heights",
     onChange: (v) => { state.view.zx = v; savePrefs(); state.framed = false; buildScene(); } });
+  // a preset fills its values into every engine slider; moving one afterwards keeps the preset and overrides that key
+  ctl.preset = choices({ label: "Preset", value: state.gen.preset, options: PRESET_OPTIONS, onChange: (v) => {
+    Object.assign(state.gen, presetValues(v));
+    syncControls();
+    setGen("preset", v);
+  } });
+  const deg = (v) => `${Math.round(v)}°`;
   $("pane-terrain").replaceChildren(
+    section("Preset", ctl.preset.el),
     section("Mountains", sl("mountain_m", "Mountain height", 0, 2500, 25, (v) => v ? m(v) : "Off",
         "Mountain ranges in some places only, as tall as this, on top of the ground; the rest stays as flat as Ground height. Cities and the way between them stay clear. Above 256 m the heightmap's Z scale grows to fit (shown under This world)"),
-      sl("mountain_cover", "Mountain area", 0.05, 0.8, 0.05, pct, "How much of the map the ranges cover")),
+      sl("mountain_cover", "Mountain area", 0.05, 0.8, 0.05, pct, "How much of the map the ranges cover"),
+      sl("mountain_intensity", "Mountain intensity", 0, 1, 0.05, pct, "How sharp and tall the ranges get: low = worn old hills, high = jagged spines and peaks")),
+    section("Land", sl("flatland", "Flatland", 0, 1, 0.05, pct, "Share of the free land left as flat plains, where cities go"),
+      sl("hills", "Hills", 0, 1, 0.05, pct, "Rolling hills and foothills between the plains and the ranges"),
+      sl("plateaus", "Plateaus", 0, 1, 0.05, pct, "Flat-topped high ground with steep edges")),
+    section("Coast", (ctl.coast = segmented({ label: "Sea", value: state.gen.coast, onChange: (v) => setGen("coast", v), options: [
+        ["none", "None", "terrain"], ["one", "One side", "wave"], ["two", "Two sides", "water"], ["island", "Island", "pin"],
+        ["archipelago", "Islands", "layers"]] })).el,
+      sl("coast_side_deg", "Sea side", 0, 360, 5, deg, "Where the sea is: 0° = east (+X), 90° = south (+Y)")),
+    section("Water", sl("rivers", "Rivers", 0, 1, 0.05, pct, "How many rivers run down from the mountains to lakes and the sea"),
+      sl("lakes", "Lakes", 0, 1, 0.05, pct, "How many hollows fill up into lakes"),
+      sl("erosion", "Erosion", 0, 1, 0.05, pct, "Rain carving valleys and gullies into the slopes")),
+    section("Climate", sl("temp_c", "Temperature", -10, 35, 1, (v) => `${Math.round(v)} °C`, "Mean temperature at sea level; it falls with height"),
+      sl("rain", "Rain", 0, 1, 0.05, pct, "Dry desert to wet rainforest"),
+      sl("snowline_m", "Snowline", 300, 4000, 50, m, "Ground above this is snow and rock")),
     section("Shape", sl("hill_km", "Hill size", 0.3, 10, 0.1, (v) => `${v.toFixed(1)} km`),
       sl("roughness", "Roughness", 0.2, 0.8, 0.02, pct), sl("detail", "Detail", 1, 8, 1, (v) => `${v} layers`),
       sl("ridges", "Mountain ridges", 0, 1, 0.05, pct, "0 = rolling hills, 100 % = sharp crests"),
