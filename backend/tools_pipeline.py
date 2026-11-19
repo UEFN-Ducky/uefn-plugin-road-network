@@ -573,7 +573,8 @@ def register(ctx) -> None:
                     # 'Custom', never 'BlockAll': Fortnite's BlockAll preset is query-only, which overrides
                     # collisionEnabled, so players were stopped and cars (physics) drove through buildings
                     desc = {"bodyInstance": {"collisionProfileName": "Custom" if solid_ else "NoCollision",
-                                             "collisionEnabled": "QueryAndPhysics" if solid_ else "NoCollision"}}
+                                             "collisionEnabled": "QueryAndPhysics" if solid_ else "NoCollision"},
+                            **kit_bake.draw_limits(mesh)}
                     over = ((mats or {}).get("overrides") or {}).get(mesh)
                     if over and any(over):  # textured MIs as overrides: the kit mesh itself is never edited
                         desc["overrideMaterials"] = [m or None for m in over]

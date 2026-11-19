@@ -494,12 +494,27 @@ NATURE = ("SM_Kit_Tree", "SM_Kit_Bush", "SM_Kit_Rock", "SM_Kit_Boulder", "SM_Kit
 # Everything the city places blocks players, except leaves and flat paint (a painted stall or pitch is walked on)
 NO_COLLISION = ("SM_Kit_Bush", "SM_Kit_Fern", "SM_Kit_GrassTuft", "SM_Kit_Flowers", "SM_Kit_ParkingStall", "SM_Kit_SportsField", "SM_Air_Threshold", "SM_Kit_TreePit",
                 "SM_Kit_Wetland", "SM_Kit_Pond")
-RECIPE = "collision-1"  # how a tile is built: a change here rebuilds every tile on the next push
+RECIPE = "collision-cull-2"  # how a tile is built: a change here rebuilds every tile on the next push
+# Nature drawn only this near (m): with no cull distance UEFN drew every tree and bush to the map's edge (GPU bound)
+CULL_M = (("SM_Kit_Tree", 500), ("SM_Kit_Boulder", 350), ("SM_Kit_Rock", 250), ("SM_Kit_Log", 200), ("SM_Kit_Stump", 150),
+          ("SM_Kit_Bush", 150), ("SM_Kit_Fern", 80), ("SM_Kit_GrassTuft", 60), ("SM_Kit_Flowers", 60))
 
 
 def blocks(mesh: str) -> bool:
     """Does this kit mesh stop a player?"""
     return not any(n in mesh for n in NO_COLLISION)
+
+
+def draw_limits(mesh: str) -> dict:
+    """ISM descriptor fields that keep a nature mesh cheap: fade out from 80 % of its cull distance to it, and no
+    shadow from ground cover (bushes and smaller). {} for anything else."""
+    far = next((m * 100 for n, m in CULL_M if n in mesh), 0)
+    if not far:
+        return {}
+    out = {"instanceStartCullDistance": int(far * 0.8), "instanceEndCullDistance": far}
+    if not blocks(mesh):
+        out["castShadow"] = False
+    return out
 
 
 def tiles(groups: dict) -> dict:
