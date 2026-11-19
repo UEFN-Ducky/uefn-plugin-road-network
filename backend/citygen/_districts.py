@@ -2,10 +2,61 @@ from __future__ import annotations
 
 # ------------------------------------------------------------------ cities
 def place_cities(seed: int, count: int, bounds: tuple, keep: list | None = None, size: float = 1.0,
-                 gap_cm: float | None = None) -> list:
+                 gap_cm: float | None = None, opts: dict | None = None) -> list:
     """count cities inside bounds ((x0, y0), (x1, y1)), never overlapping each other or a keep zone;
     their size follows the map (8-14 % of its width, so a 6 km map gets 500-850 m cities) x `size`, and at least
-    gap_cm of open country lies between two cities' edges (default: half their radii)."""
+    gap_cm of open country lies between two cities' edges (default: half their radii).
+    opts with an engine preset (not Classic): each city then moves to the nearest buildable site (build_sites)."""
+    out = _place_random(seed, count, bounds, keep, size, gap_cm)
+    o = options(opts)
+    if o["preset"] == "Classic":
+        return out
+    return snap_to_sites(out, seed, bounds, keep, {**o, "relief_m": float((opts or {}).get("relief_m", 60.0))}, gap_cm)
+
+
+SITE_MAX_SLOPE = 0.05  # a city centre stands on ground no steeper than this (5 %)
+SITE_GRID = 64  # preview engine cells across the map when looking for sites
+
+
+def build_sites(seed: int, bounds: tuple, o: dict, radius_cm: float, count: int) -> tuple:
+    """(sites, world): flat dry spots from a preview engine pass on the natural ground (no city levelled yet),
+    best first, in cm. o: options() with an engine preset; relief_m (default 60) is the World tab ground height."""
+    from ..terrain import generate as _engine
+    from ..terrain.suitability import best_sites
+    (x0, y0), (x1, y1) = bounds
+    cfg = {**{k: v for k, v in o.items() if k != "detail"}, "seed": seed, "relief_m": float(o.get("relief_m", 60.0))}
+    world = _engine(cfg, SITE_GRID, x0 / 100.0, y0 / 100.0, max(x1 - x0, y1 - y0) / 100.0, quality="preview")
+    m = world.maps
+    sites = [{"x": s["x"] * 100.0, "y": s["y"] * 100.0, "score": s["score"]}
+             for s in best_sites(m, count, radius_cm / 200.0, radius_cm / 200.0, world.grid)
+             if m["slope"][s["j"] * world.grid.n + s["i"]] <= SITE_MAX_SLOPE
+             and x0 <= s["x"] * 100.0 <= x1 and y0 <= s["y"] * 100.0 <= y1]
+    return sites, world
+
+
+def snap_to_sites(towns: list, seed: int, bounds: tuple, keep: list | None, o: dict, gap_cm: float | None) -> list:
+    """Each city moved to the nearest buildable site that stays clear of the cities already moved and the keep
+    zones; a city with no such site stays where it was."""
+    if not towns:
+        return towns
+    # ponytail: a disc of half the mean radius picks sites; per-city radii if small towns hug cliffs
+    sites, _ = build_sites(seed, bounds, o, sum(t["radius"] for t in towns) / len(towns), len(towns) * 40)
+    (x0, y0), (x1, y1) = bounds
+    done = []
+    for t in towns:
+        r = t["radius"]
+        gap = lambda c: gap_cm if gap_cm is not None else (r + c["radius"]) * 0.5
+        fits = [s for s in sites if x0 + r * 1.2 <= s["x"] <= x1 - r * 1.2 and y0 + r * 1.2 <= s["y"] <= y1 - r * 1.2
+                and not in_keep(keep, s["x"], s["y"], r * 1.5)
+                and all(math.hypot(s["x"] - c["x"], s["y"] - c["y"]) > r + c["radius"] + gap(c) for c in done)]
+        if fits:
+            s = min(fits, key=lambda s: math.hypot(s["x"] - t["x"], s["y"] - t["y"]))
+            t = {**t, "x": round(s["x"]), "y": round(s["y"])}
+        done.append(t)
+    return done
+
+
+def _place_random(seed, count, bounds, keep, size, gap_cm) -> list:
     rnd = random.Random(seed * 31 + 7)
     (x0, y0), (x1, y1) = bounds
     span = min(x1 - x0, y1 - y0)
