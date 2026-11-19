@@ -332,9 +332,14 @@ def _engine_terrain(seed, size_cm, relief_cm, cities, grid, center, o, keep, lak
     """A preset world from the terrain engine (backend/terrain, metres) in terrain()'s cm shape. The engine levels
     the cities and keep zones itself; lakes drawn by hand are dug in after."""
     from ..terrain import generate
+    from ..terrain.config import terrain_config
     half = size_cm / 2
     lo = [center[0] - half, center[1] - half]
     cfg = {**{k: v for k, v in o.items() if k != "detail"}, "seed": seed, "relief_m": relief_cm / 100.0}
+    if o["sea_m"] > OPTIONS["sea_m"][1] and terrain_config(cfg)["coast"] != "none":
+        # the engine builds its coast, shelf and beaches at the Water level: a plane put over a world shaped for
+        # 0 m flooded its plains into a flat sheet a few metres deep
+        cfg["sea_level_m"] = o["sea_m"]
     towns = [{"x": c["x"] / 100.0, "y": c["y"] / 100.0, "radius": c.get("radius", 0.0) / 100.0} for c in cities]
     # ponytail: a keep rectangle goes in as the circle round it; a rect zone in the engine if a long one matters
     held = [{"x": (k["x0"] + k["x1"]) / 200.0, "y": (k["y0"] + k["y1"]) / 200.0,

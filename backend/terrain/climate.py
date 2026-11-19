@@ -91,6 +91,7 @@ def run(grid, cfg, noise, maps):
         moist[k] = min(max(m, 0.0), 1.0)
 
     wl = maps.get('wetlands')
+    bm, dn = maps.get('beach'), maps.get('dune')  # ocean.py: the shaped sand and the dunes behind it
     biome = grid.new()
     for k in range(n * n):
         hk, s = h[k], slope[k]
@@ -102,8 +103,11 @@ def run(grid, cfg, noise, maps):
             b = B['snow']
         elif s > ROCK_SLOPE:
             b = B['rocky_slope']
-        elif coast[k] < 3 * cell + 30.0 and hk < sea_lvl + 4.0 and s < 0.15:
+        elif (bm[k] > 0.5 or (dn[k] > 0.6 and s < 0.3)) if bm is not None else \
+                (coast[k] < 3 * cell + 30.0 and hk < sea_lvl + 4.0 and s < 0.15):
             b = B['beach']
+        elif dn is not None and dn[k] > 0.25:
+            b = B['shrubland']  # dune grass behind the beach
         elif hk >= snow - ALPINE_BAND_M:
             b = B['alpine_meadow'] if moist[k] >= 0.25 else B['tundra']
         elif (wl is not None and wl[k] > 0.5) or (moist[k] > 0.85 and s < 0.03 and d_water[k] < 500.0):
@@ -133,10 +137,14 @@ def material_masks(maps) -> dict:
     """{layer: array('d') 0..1} for grass/rock/sand/snow/dirt; the five weights of every cell sum to 1.
     Biome sets the mix, steep ground fades to rock."""
     biome, slope = maps['biome'], maps['slope']
+    mud = maps.get('seabed')  # ocean.py: deep floor and canyons silt over, the shelf stays sand
+    ocean_id = B['ocean']
     out = {name: array('d', bytes(8 * len(biome))) for name in LAYERS}
     cols = [out[name] for name in LAYERS]
     for k in range(len(biome)):
         mix = _MIX_BY_ID[int(biome[k])]
+        if mud is not None and int(biome[k]) == ocean_id:
+            mix = (0, 0, 1.0 - mud[k], 0, mud[k])
         r = smoothstep(0.35, CLIFF_SLOPE, slope[k])
         w = [v * (1.0 - r) for v in mix]
         w[1] += r

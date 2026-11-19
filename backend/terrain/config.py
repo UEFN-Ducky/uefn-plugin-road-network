@@ -9,7 +9,7 @@ KEYS = {
     'hills': (0.5, 0.0, 1.0),
     'plateaus': (0.1, 0.0, 1.0),
     'coast_side_deg': (0.0, 0.0, 360.0),       # where the sea is: 0 = +x (east), 90 = +y
-    'sea_level_m': (0.0, -50.0, 50.0),
+    'sea_level_m': (0.0, -50.0, 50.0),         # citygen's Water level, when on and the preset has a coast
     'erosion': (0.5, 0.0, 1.0),
     'thermal': (0.5, 0.0, 1.0),
     'rivers': (0.5, 0.0, 1.0),

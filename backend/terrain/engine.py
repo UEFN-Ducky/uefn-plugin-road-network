@@ -12,7 +12,7 @@ import time
 from array import array
 from collections import OrderedDict
 
-from . import coast, hills, regions
+from . import coast, hills, ocean, regions
 from .config import terrain_config
 from .grid import Grid, smoothstep
 from .noise import Noise
@@ -70,6 +70,7 @@ def _stages():
         ('blend', _flatten, ()),
         ('erosion', ero, ero_r),
         ('hydrology', hyd, hyd_r),
+        ('ocean', ocean.stage, ocean.READS),
         ('climate', cli, cli_r),
         ('suitability', sui, sui_r),
         ('detail', hills.detail, ('detail',)),
@@ -156,7 +157,7 @@ def generate(cfg, n, x0, y0, size_m, cities=(), keep=(), quality='final') -> Wor
     for name, fn, reads in _stages():
         if fn is None or (name == 'erosion' and quality == 'preview'):
             continue
-        extra = maps['cities'] if name == 'mountains' else (maps['_flat'] if name == 'blend' else None)
+        extra = maps['cities'] if name == 'mountains' else (maps['_flat'] if name in ('blend', 'ocean') else None)
         key = hashlib.sha1(repr((name, key, sorted((k, cfg.get(k)) for k in reads), extra)).encode()).hexdigest()
         t = time.perf_counter()
         if _run(name, fn, key, grid, cfg, noise, maps):
@@ -173,5 +174,9 @@ def generate(cfg, n, x0, y0, size_m, cities=(), keep=(), quality='final') -> Wor
     meta['rivers'] = len(lines) if isinstance(lines, list) else (
         _components(grid, [v > 0 for v in riv]) if riv is not None else 0)
     meta['lakes'] = _components(grid, [v > 0.5 for v in lake]) if lake is not None else 0
+    bt = maps.get('beach_type')
+    if bt is not None:  # shore cells per beach type, and how deep the sea floor goes
+        meta['shore'] = {t: sum(1 for v in bt if int(v) == i) for i, t in enumerate(ocean.BEACH_TYPES) if i}
+        meta['max_depth'] = max(maps['depth'])
     meta['stage_ms']['output'] = round((time.perf_counter() - t) * 1000.0, 1)
     return World(grid, cfg, maps, meta)

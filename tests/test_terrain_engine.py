@@ -36,7 +36,7 @@ def test_preview_128_is_fast():
     w = _gen(n=256, quality='preview')
     dt = time.perf_counter() - t
     assert w.grid.n == 128 and 'erosion' not in w.meta['ran']
-    assert dt < 1.5, (dt, w.meta['stage_ms'])
+    assert dt < 2.0, (dt, w.meta['stage_ms'])  # 1.5 before the sea floor stage (ocean, ~0.2 s)
 
 
 def test_meta_and_maps():
@@ -64,7 +64,7 @@ def test_core_ships_alone(monkeypatch):
     engine.clear_cache()
     monkeypatch.setattr(engine, '_optional', lambda name, reads: (None, reads))
     w = _gen(mountain_m=1500.0)
-    assert w.meta['ran'] == ['coast', 'regions', 'macro', 'mountains', 'hills', 'blend', 'detail']
+    assert w.meta['ran'] == ['coast', 'regions', 'macro', 'mountains', 'hills', 'blend', 'ocean', 'detail']
     assert 500.0 < w.meta['max'] <= 1500.0
     engine.clear_cache()
 

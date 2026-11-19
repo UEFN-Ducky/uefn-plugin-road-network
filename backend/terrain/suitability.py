@@ -68,11 +68,14 @@ def run(grid, cfg, noise, maps):
                 low = 1.0 - smoothstep(0.5, 2.0 + 2.0 * o, h[k] - floor[k])
                 flood[k] = near * low
 
+    sand = maps.get('beach'), maps.get('dune')  # ocean.py: a beach and its dunes stay open, towns step back
     build, cost = grid.new(), grid.new()
     for k in range(nn):
         s = slope[k]
         if not water[k] and not cliff[k]:
             build[k] = max(0.0, 1.0 - s / MAX_BUILD_SLOPE) * (1.0 - flood[k])
+            if sand[0] is not None:
+                build[k] *= (1.0 - sand[0][k]) * (1.0 - sand[1][k])
         c = 1.0 + 40.0 * s * s + (500.0 if water[k] else 0.0) + (1e4 if cliff[k] else 0.0)
         if passes is not None and passes[k] > 0.5:
             c *= 0.3
