@@ -49,7 +49,7 @@ const BIOME_COLORS = [
   ["alpine_meadow", "mix:green:fg-dim:0.45"], ["tundra", "mix:fg-dim:blue:0.25"], ["snow", "fg"], ["cliff", "mix:fg-dim:bg:0.35"],
 ];
 // the engine's maps the Debug looks show (backend debug_map / rpc terrain_map takes the name)
-const DEBUG_VIEWS = [["height", "Height"], ["land", "Land"], ["coast_dist", "Coast distance"], ["plains", "Plains"],
+const DEBUG_VIEWS = [["height", "Height"], ["land", "Land"], ["island", "Islands"], ["mountain_score", "Mountain suitability"], ["coast_dist", "Coast distance"], ["plains", "Plains"],
   ["hills", "Hills"], ["foothills", "Foothills"], ["mountains", "Mountains"], ["plateaus", "Plateaus"], ["valleys", "Valleys"],
   ["wetlands", "Wetlands"], ["ridge", "Ridges"], ["passes", "Passes"], ["flow", "Flow direction"], ["accum", "Flow accumulation"],
   ["river", "Rivers"], ["lake", "Lakes"], ["temp", "Temperature"], ["moist", "Moisture"], ["biome", "Biome"], ["slope", "Slope"],

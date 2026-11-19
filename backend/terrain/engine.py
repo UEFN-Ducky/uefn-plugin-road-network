@@ -64,7 +64,7 @@ def _stages():
     return [
         ('coast', coast.land_mask, ('coast', 'coast_side_deg')),
         ('regions', regions.region_masks, ('mountain_cover', 'hills', 'flatland', 'plateaus')),
-        ('macro', hills.macro_height, ('sea_level_m',)),
+        ('macro', hills.macro_height, ('sea_level_m', 'relief_m', 'flatland', 'coast')),
         ('mountains', mtn or hills.mountain_fallback, mtn_r + ('mountain_m', 'mountain_intensity')),
         ('hills', _hills, ('hill_km', 'relief_m', 'flatland', 'mountain_m', 'plateaus', 'sea_level_m')),
         ('blend', _flatten, ()),
@@ -168,7 +168,7 @@ def generate(cfg, n, x0, y0, size_m, cities=(), keep=(), quality='final') -> Wor
     maps.pop('_flat', None)
     maps['slope'] = grid.slope(maps['height'])
     h = maps['height']
-    meta.update(min=min(h), max=max(h), shares=regions.shares(maps))
+    meta.update(min=min(h), max=max(h), shares=regions.shares(maps), islands=regions.island_stats(grid, maps))
     lines = maps.get('river_lines')
     riv, lake = maps.get('river'), maps.get('lake')
     meta['rivers'] = len(lines) if isinstance(lines, list) else (

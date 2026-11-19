@@ -162,6 +162,31 @@ def test_island_ranges_are_not_its_middle():
         assert sum(cd[k] for k in ks) < 0.8 * sum(cd[k] for k in inland), seed
 
 
+def test_archipelago_islands_each_get_ground():
+    """10 seeds of a 6 km archipelago: islands are not flat shelves, ranges are not always in one place, a second
+    island sometimes gets its own peak, and a seed is reproducible."""
+    from backend.terrain import engine, terrain_config
+    opts = {'preset': 'Mountainous', 'coast': 'archipelago', 'island': 'one', 'mountain_m': 600.0,
+            'mountain_cover': 0.2, 'hill_km': 7.2, 'relief_m': 120.0, 'flatland': 0.25, 'hills': 0.95}
+    centres, second, ok, total = [], 0, 0, 0
+    for seed in range(1, 11):
+        w = engine.generate(terrain_config({**opts, 'seed': seed}), 128, 0.0, 0.0, 6000.0, quality='preview')
+        isl = [i for i in w.meta['islands'] if i['area_km2'] >= 0.3]
+        total += len(isl)
+        ok += sum(1 for i in isl if i['profile'] != 'lowland' and i['top_m'] >= 60.0)
+        second += any(i['shares']['mountains'] > 0 for i in isl[1:])
+        g, h = w.grid, w.maps['height']
+        k = max(range(len(h)), key=h.__getitem__)  # the highest summit
+        centres.append((g.xs[k % g.n], g.ys[k // g.n]))
+    assert ok >= 0.75 * total, (ok, total)
+    assert second >= 2, second
+    spread = max(math.hypot(a[0] - b[0], a[1] - b[1]) for a in centres for b in centres)
+    assert spread > 1500.0, centres
+    a = engine.generate(terrain_config({**opts, 'seed': 4}), 64, 0.0, 0.0, 6000.0, quality='preview').maps['height']
+    engine.clear_cache()
+    assert engine.generate(terrain_config({**opts, 'seed': 4}), 64, 0.0, 0.0, 6000.0, quality='preview').maps['height'] == a
+
+
 def test_seeded_and_empty():
     g, mask, nz = _world(5)
     assert ridge_height(g, CFG, nz, mask)[0] == ridge_height(g, CFG, Noise(5), mask)[0]

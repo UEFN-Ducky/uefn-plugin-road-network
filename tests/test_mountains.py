@@ -70,7 +70,8 @@ def test_islands_differ_per_seed():
 def test_water_level_sets_the_sea_on_every_preset():
     for preset in ("Mountainous", "Coastal", "Classic"):
         assert cg.terrain(7, 600000.0, 6000.0, CITIES, grid=32, opts={"preset": preset, "sea_m": -85})["sea"] == -8500
-    assert cg.terrain(7, 600000.0, 6000.0, CITIES, grid=32, opts={"preset": "Mountainous"})["sea"] is None  # Off, no coast
+    off = cg.terrain(7, 600000.0, 6000.0, CITIES, grid=32, opts={"preset": "Mountainous"})  # Off, no coast:
+    assert off["sea"] is None or off.get("lake_splines")  # no sea, only the line its own lakes are dug to
 
 
 def test_no_mountains_keeps_old_ground():

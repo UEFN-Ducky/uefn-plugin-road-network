@@ -63,7 +63,7 @@ def _decode(png):
     return w, h, ch, [raw[r * stride + 1:(r + 1) * stride] for r in range(h)]
 
 
-DEBUG_VIEWS = ("height land coast_dist plains hills foothills mountains plateaus valleys wetlands ridge passes flow "
+DEBUG_VIEWS = ("height land island mountain_score coast_dist plains hills foothills mountains plateaus valleys wetlands ridge passes flow "
                "accum river lake temp moist biome slope build road_cost flood").split()
 
 
@@ -263,14 +263,14 @@ def test_engine_lakes_are_splines_under_the_one_water_line():
 
 
 def test_engine_highway_follows_cost_route(monkeypatch):
-    # seed 3: a world with a way under ROUTE_MAX_GRADE (most Coastal 6 km seeds have none)
-    ter = cg.terrain(3, 600000.0, 6000.0, CITIES, grid=40, opts={"preset": "Coastal"})
+    # seed 4: a world with a way under ROUTE_MAX_GRADE (most Coastal 6 km seeds have none)
+    ter = cg.terrain(4, 600000.0, 6000.0, CITIES, grid=40, opts={"preset": "Coastal"})
     towns = [{**c, "name": n, "style": "mixed", "seed": k} for k, (c, n) in enumerate(zip(CITIES, ("A", "B")))]
     routes = []
     real = cg.cost_route
     monkeypatch.setattr(cg, "cost_route", lambda *a, **k: routes.append(real(*a, **k)) or routes[-1])
     ground = lambda x, y: cg.st.sample_grid(ter, x, y) or 0.0  # noqa: E731
-    roads = cg.generate([dict(t) for t in towns], ground, "/G/WorldGen/Roads", 3, {}, terrain=ter)
+    roads = cg.generate([dict(t) for t in towns], ground, "/G/WorldGen/Roads", 4, {}, terrain=ter)
     assert routes and routes[0]
     straight = cg.generate([dict(t) for t in towns], ground, "/G/WorldGen/Roads", 4, {})
     hw = next(k for k in roads if k.endswith("Highways"))

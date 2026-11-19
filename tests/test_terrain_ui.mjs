@@ -75,7 +75,7 @@ for (const [name, c] of palette) {
   assert.ok(parts.every((p) => THEME.has(p)), `${name} colour ${c} uses theme variables only`);
 }
 const views = lit("DEBUG_VIEWS").map((v) => v[0]);
-assert.deepEqual(views, ["height", "land", "coast_dist", "plains", "hills", "foothills", "mountains", "plateaus", "valleys", "wetlands",
+assert.deepEqual(views, ["height", "land", "island", "mountain_score", "coast_dist", "plains", "hills", "foothills", "mountains", "plateaus", "valleys", "wetlands",
   "ridge", "passes", "flow", "accum", "river", "lake", "temp", "moist", "biome", "slope", "build", "road_cost", "flood"], "every debug view");
 for (const look of ["natural", "height", "slope", "biome", "rivers"]) assert.ok(tabs.includes(`["${look}", `), `look ${look} in the dropdown`);
 assert.ok(tabs.includes("debug:${v}") && view.includes("look.startsWith(\"debug:\")"), "debug looks drape the terrain_map PNG");

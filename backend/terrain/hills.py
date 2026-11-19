@@ -26,10 +26,26 @@ def macro_height(grid, cfg, noise, maps):
     cd = soft_coast(grid, maps)
     s0 = cfg.get('sea_level_m', 0.0)
     wob = grid.field(lambda x, y: noise.fbm(x / 8000.0 + 12.1, y / 8000.0 - 4.4, 3), 500.0)
+    # an island is the top of a hill that stands in the sea: its ground keeps rising from the beach to its middle,
+    # by its own size (a flat 1.5-40 m shelf read as a green cut-out on the water)
+    # (none without a coast: the whole map is one 'island'; none at flatland 1; never under a range, whose top is
+    # mountain_m)
+    isl = maps.get('island') if cfg.get('coast', 'none') != 'none' else None
+    mtn = maps['mountains']
+    deep: dict = {}
+    if isl is not None:
+        for k, v in enumerate(isl):
+            if v >= 1:
+                deep[v] = max(deep.get(v, 0.0), cd[k])
+    lift = cfg.get('relief_m', 60.0) * 1.5 * (1.0 - cfg.get('flatland', 0.5))
     out = grid.new()
     for k in range(len(out)):
         tilt = smoothstep(0.0, 12000.0, cd[k] * max(0.3, 1.0 + 0.8 * wob[k]))  # wobbled: a bare distance is flat-faced
         land_h = s0 + 1.5 + 38.5 * (0.55 * tilt + 0.45 * _f01(wob[k]))
+        d = deep.get(isl[k]) if isl is not None else None
+        if d:
+            land_h += (min(lift, d * 0.06) * (1.0 - mtn[k])
+                       * smoothstep(0.0, d, cd[k] * max(0.3, 1.0 + 0.5 * wob[k])))
         sea_h = s0 - 2.0 - 48.0 * smoothstep(0.0, 2500.0, -cd[k])
         out[k] = land[k] * land_h + (1.0 - land[k]) * sea_h
     maps['macro'] = out
@@ -47,7 +63,8 @@ def hill_height(grid, cfg, noise, maps):
     """Stage 5a -> hill_h: hills (0.5-2.5 x relief_m at hill_km spacing), a soft roll on plains (none at
     flatland 1), valleys pressed down; plinth: foothills rising to foothill_top() at the range edge and on
     under the range (the mountain layer is max-ed with it, never stacked on it)."""
-    sc = cfg.get('hill_km', 2.0) * 1000.0
+    # never wider than a fifth of the map: a 7 km hill size on a 6 km map was one swell, every island read flat
+    sc = min(cfg.get('hill_km', 2.0) * 1000.0, max(grid.size * 0.2, 500.0))
     # sampled every sc / 40: at sc / 10 (200 m) the bilinear fill between samples showed as flat panels and creases
     f = grid.field(lambda x, y: noise.fbm(x / sc - 3.7, y / sc + 15.2, 4), sc / 40)
     relief = cfg.get('relief_m', 60.0)
