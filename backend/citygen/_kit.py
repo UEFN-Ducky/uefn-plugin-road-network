@@ -252,6 +252,10 @@ OPTIONS = {
     "ridges": (0.0, 0.0, 1.0),         # 0 rolling hills .. 1 sharp mountain ridges
     "peaks": (0.0, 0.0, 1.0),          # 0 even hills .. 1 wide low valleys with tall sharp peaks
     "water_depth_m": (12.0, 0.0, 80.0),  # how deep lake beds drop below the water line
+    # mountain ranges in places only, on top of the everyday ground (relief_m): their tallest peak, and the share of
+    # the map they cover. The heightmap's Z scale grows with them (z_scale)
+    "mountain_m": (0.0, 0.0, 2500.0),
+    "mountain_cover": (0.3, 0.05, 0.8),
     # cities
     "city_size": (1.0, 0.3, 4.0),     # every city's radius x this (new cities; regenerating scales the old ones)
     "city_gap_m": (300.0, 0.0, 6000.0),  # open country between two cities' edges, at least

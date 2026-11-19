@@ -177,6 +177,9 @@ def terrain(seed: int, size_cm: float, relief_cm: float, cities: list, grid: int
         return h
 
     base = [[shape(n) for n in row] for row in noise]
+    if o["mountain_m"]:
+        base = _mountains(base, xs, ys, seed, size_cm, o["mountain_m"] * 100, o["mountain_cover"], cities,
+                          None if sea is None else sea + shore)
     if o["island"] != "none":
         sea = 0.0 if sea is None else sea
         base = _islands(base, xs, ys, seed, size_cm, center, o["island"], sea, depth, shore)
@@ -224,7 +227,61 @@ def terrain(seed: int, size_cm: float, relief_cm: float, cities: list, grid: int
                 h += (k["z"] - h) * (1 - _smoothstep(0, max(blend, 5000.0), keep_gap(k, x, y)))
             row.append(round(h, 1))
         rows.append(row)
-    return {"min": lo, "max": hi, "grid": grid, "heights": rows, "sea": sea}
+    out = {"min": lo, "max": hi, "grid": grid, "heights": rows, "sea": sea}
+    out["z_scale"] = z_scale(out)
+    return out
+
+
+MOUNTAIN_CREST_CM = 120000.0  # ponytail: ~1.2 km between crests, an option when someone wants other ranges
+MOUNTAIN_CLEAR_CM = (60000.0, 250000.0)  # flat ground kept around towns and on the way between them: full, then blending
+
+
+def _mountains(base: list, xs: list, ys: list, seed: int, size_cm: float, height: float, cover: float,
+               cities: list, shore) -> list:
+    """Mountain ranges raised on the ground in some places only, the rest of the map left as flat or rolling as it
+    was. A slow noise picks where: exactly `cover` of the map, its highest share. Ridged noise shapes the crests up
+    to `height` (cm), foothills where a range fades out. Each city and the way to its two nearest neighbours stays
+    clear (a pass for its highway). Water (below `shore`) is never lifted out."""
+    where = _fbm(seed + 101, 3, 0.5)
+    crest = _fbm(seed + 202, 6, 0.5, 1.0)
+    big = max(size_cm / 2.5, 150000.0)
+    w = [[where(x / big, y / big) for x in xs] for y in ys]
+    flat = sorted(v for r in w for v in r)
+    th = flat[int((1.0 - cover) * (len(flat) - 1))]
+    top = flat[-1] - th or 1.0
+    c = [[crest(x / MOUNTAIN_CREST_CM, y / MOUNTAIN_CREST_CM) for x in xs] for y in ys]
+    c_lo = min(min(r) for r in c)
+    c_span = (max(max(r) for r in c) - c_lo) or 1.0
+    segs = []
+    for a in cities:
+        near = sorted((b for b in cities if b is not a), key=lambda b: math.hypot(b["x"] - a["x"], b["y"] - a["y"]))
+        segs += [((a["x"], a["y"]), (b["x"], b["y"])) for b in near[:2]]
+    c0, c1 = MOUNTAIN_CLEAR_CM
+    for j, y in enumerate(ys):
+        for i, x in enumerate(xs):
+            # the range: rises from its edge over a third of the way to its heart, so it has foothills
+            m = _smoothstep(0.0, 0.35, (w[j][i] - th) / top)
+            if m <= 0:
+                continue
+            for t in cities:
+                m *= _smoothstep(c0, c1, math.hypot(x - t["x"], y - t["y"]) - t.get("radius", 0.0) * 1.2)
+            for a, b in segs:
+                m *= _smoothstep(c0, c1, _dist_seg((x, y), a, b))
+            if shore is not None:
+                m *= _smoothstep(shore, shore + 3000.0, base[j][i])
+            if m > 0:
+                t = (c[j][i] - c_lo) / c_span
+                base[j][i] += m * height * (0.25 + 0.75 * t ** 1.5)
+    return base
+
+
+def z_scale(ter: dict) -> float:
+    """The landscape import's Z scale: UEFN's 100 (+-256 m) unless the ground reaches further, then just enough
+    (rounded up to 50). A sample is 32768 + z * 128 / Z scale (z in cm)."""
+    if ter.get("z_scale"):
+        return float(ter["z_scale"])
+    peak = max((abs(v) for r in ter["heights"] for v in r), default=0.0)
+    return max(100.0, math.ceil(peak * 1.02 * 128 / 32767 / 50) * 50.0)
 
 
 def island_land(seed: int, size_cm: float, center: tuple, mode: str):
@@ -509,11 +566,12 @@ def pad_margin(ter: dict, res: int = 0) -> float:
 
 
 def _pixel(ter: dict, res: int, pads: list | None):
-    """(i, j) -> the heightmap's 16-bit sample there (32768 = 0, 128 per metre), lots levelled in."""
+    """(i, j) -> the heightmap's 16-bit sample there (32768 = 0, 128 per Z scale cm: 128 a metre at 100), lots levelled in."""
     lo, hi = ter["min"], ter["max"]
+    k = 128 / z_scale(ter)
     ground = graded(ter, pads or [], max(PAD_BLEND_CM, 1.5 * heightmap_px(ter, res)))
     return lambda i, j: max(0, min(65535, int(round(32768 + ground(lo[0] + (hi[0] - lo[0]) * i / (res - 1),
-                                                                   lo[1] + (hi[1] - lo[1]) * j / (res - 1)) * 128 / 100))))
+                                                                   lo[1] + (hi[1] - lo[1]) * j / (res - 1)) * k))))
 
 
 def heightmap_rows(ter: dict, res: int = 0, pads: list | None = None) -> list:
@@ -528,7 +586,7 @@ def imported_ground(ter: dict, res: int = 0, pads: list | None = None):
     (computed only where asked, so checking every building costs a few thousand samples, not a million)."""
     res = res or HEIGHTMAP_RES
     (x0, y0), (x1, y1) = ter["min"], ter["max"]
-    px, memo = _pixel(ter, res, pads), {}
+    px, memo, k = _pixel(ter, res, pads), {}, z_scale(ter) / 128
 
     def v(i, j):
         if (i, j) not in memo:
@@ -541,7 +599,7 @@ def imported_ground(ter: dict, res: int = 0, pads: list | None = None):
         i, j = min(res - 2, int(fx)), min(res - 2, int(fy))
         tx, ty = fx - i, fy - j
         a, b, c, d = v(i, j), v(i + 1, j), v(i, j + 1), v(i + 1, j + 1)
-        return ((a + (b - a) * tx) * (1 - ty) + (c + (d - c) * tx) * ty - 32768) * 100 / 128
+        return ((a + (b - a) * tx) * (1 - ty) + (c + (d - c) * tx) * ty - 32768) * k
     return at
 
 
@@ -676,7 +734,7 @@ def weightmap_png(ter: dict, res: int, discs: list, pads: list) -> bytes:
 
 def heightmap_png(ter: dict, res: int = 0, pads: list | None = None, rows: list | None = None) -> tuple:
     """16-bit greyscale PNG of the terrain for Landscape > Import, plus the import settings
-    (Z scale 100: 1 unit = 100/128 cm, so +-256 m fits). pads: lots levelled into it."""
+    (Z scale z_scale: 100 = 1 unit is 100/128 cm, so +-256 m; taller mountains get more). pads: lots levelled into it."""
     lo, hi = ter["min"], ter["max"]
     rows = rows or heightmap_rows(ter, res or HEIGHTMAP_RES, pads)
     res = len(rows)
@@ -684,7 +742,7 @@ def heightmap_png(ter: dict, res: int = 0, pads: list | None = None, rows: list 
     scale = (hi[0] - lo[0]) / (res - 1)
     # Landscape mode's New > Location is the landscape's centre, not its corner; 1009 = 16 components x 63 quads + 1
     return png, {"resolution": f"{res} x {res}", "location": [round((lo[0] + hi[0]) / 2), round((lo[1] + hi[1]) / 2), 0],
-                 "scale": [round(scale, 3), round(scale, 3), 100.0],
+                 "scale": [round(scale, 3), round(scale, 3), z_scale(ter)],
                  # more than 16 components a side spans several World Partition regions (region size 16), and
                  # UEFN's import repeated one region's heights in each (the map came in as 4 copies of a quarter):
                  # 2017 is imported as 16 x 16 components of 2 x 2 sections instead, one region

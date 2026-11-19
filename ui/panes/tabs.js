@@ -85,7 +85,7 @@ function buildPanes() {
       sl("city_gap_m", "Distance between cities", 0, 6000, 50, m, "Open country between two cities' edges, at least: cities closer than this are pushed apart"),
       ctl.seed.el),
     section("Where it goes", ctl.ground.el),
-    section("Ground height", h("div", { class: "rn-hint" }, "Mountain height is on the Terrain tab."),
+    section("Ground height", sl("relief_m", "Ground height", 0, 250, 5, m, "How far the everyday ground rolls up and down everywhere: hills and valleys. Low = flat land. Mountains in places are on the Terrain tab"),
       sl("sea_m", "Water level", -1000, 200, 5, (v) => v <= -1000 ? "Off" : m(v), "Ground below this becomes lakes and sea; streets bridge it"),
       (ctl.city_ground = segmented({ label: "Ground under the cities", value: state.gen.city_ground, onChange: (v) => setGen("city_ground", v),
         options: [["natural", "Natural", "terrain"], ["flatten", "Flatten", "layers"]] })).el,
@@ -110,9 +110,10 @@ function buildPanes() {
     hint: "Preview only: the heightmap and roads keep real heights",
     onChange: (v) => { state.view.zx = v; savePrefs(); state.framed = false; buildScene(); } });
   $("pane-terrain").replaceChildren(
-    // ponytail: 250 m tops out the heightmap UEFN imports at its default Z scale 100 (+-256 m, citygen heightmap_png)
-    section("Shape", sl("relief_m", "Mountain height", 0, 250, 5, m, "How tall the highest mountains rise above the middle (valleys drop as far below it). 250 m is the most a UEFN landscape import holds at Z scale 100"),
-      sl("hill_km", "Hill size", 0.3, 10, 0.1, (v) => `${v.toFixed(1)} km`),
+    section("Mountains", sl("mountain_m", "Mountain height", 0, 2500, 25, (v) => v ? m(v) : "Off",
+        "Mountain ranges in some places only, as tall as this, on top of the ground; the rest stays as flat as Ground height. Cities and the way between them stay clear. Above 256 m the heightmap's Z scale grows to fit (shown under This world)"),
+      sl("mountain_cover", "Mountain area", 0.05, 0.8, 0.05, pct, "How much of the map the ranges cover")),
+    section("Shape", sl("hill_km", "Hill size", 0.3, 10, 0.1, (v) => `${v.toFixed(1)} km`),
       sl("roughness", "Roughness", 0.2, 0.8, 0.02, pct), sl("detail", "Detail", 1, 8, 1, (v) => `${v} layers`),
       sl("ridges", "Mountain ridges", 0, 1, 0.05, pct, "0 = rolling hills, 100 % = sharp crests"),
       sl("peaks", "Peaks", 0, 1, 0.05, pct, "Wide low valleys with tall sharp peaks"),
