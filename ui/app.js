@@ -13,7 +13,8 @@ import { themeColors } from "./view/terrain.js";
 
 // ------------------------------------------------------------------ start
 (async () => {
-  const saved = await call("prefs.get", { id: "ui" }).catch(() => null);
+  // never wait forever on the saved look: a host that doesn't answer still gets a working panel
+  const saved = await call("prefs.get", { id: "ui" }, 8000).catch(() => null);
   const v = saved?.value || {};
   Object.assign(state.gen, v.gen || {});
   Object.assign(state.view, v.view || {});
@@ -21,7 +22,7 @@ import { themeColors } from "./view/terrain.js";
   Object.assign(state.tune, v.tune || {});
   state.tab = TABS.some((t) => t[0] === v.tab) ? v.tab : "world";
   state.live = !!v.live;
-  const last = await call("prefs.get", { id: "last_net" }).catch(() => null);
+  const last = await call("prefs.get", { id: "last_net" }, 8000).catch(() => null);
   if (last?.value) state.net = last.value;
   themeColors();
   state.tool = "select";

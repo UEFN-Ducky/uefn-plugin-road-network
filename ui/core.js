@@ -5,8 +5,11 @@ import { marchHeightfield } from "./ground.js";
 
 // ------------------------------------------------------------------ bridge
 const CHANNEL = "uefn-plugin-ui";
+let callSeq = 0;
 function call(method, params = {}, timeoutMs = 0) {
-  const id = crypto.randomUUID();
+  // crypto.randomUUID exists only on secure pages: the panel streamed to a phone over plain http has none, and
+  // the first call threw (stuck on "Loading worlds…")
+  const id = crypto.randomUUID?.() ?? `${Date.now().toString(36)}-${(++callSeq).toString(36)}-${Math.random().toString(36).slice(2)}`;
   return new Promise((resolve, reject) => {
     let timer = 0;
     function onMsg(ev) {
