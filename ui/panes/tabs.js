@@ -60,18 +60,26 @@ function newTerrainSeed() {
   ctl.terrain_seed?.set(state.gen.terrain_seed);
   savePrefs();
 }
+// a world of this name was generated already: it has trees, props and roads standing on its saved ground
+function built() {
+  const name = (state.gen.name || "").trim().toLowerCase();
+  return !!name && state.nets.some((n) => n.generated && n.name.toLowerCase() === name);
+}
 function runGenerate() {
   const s = scope();
   if (s.kind === "city") return regenerate(`Rebuilding ${s.c.name}`);  // the world with its cities as they are: only this one's changes show
-  return s.kind === "terrain" ? generateTerrain() : generate();
+  // new ground under a built world: the whole world is rebuilt on it (same cities), so trees, props and roads come
+  // with it. The quick preview only redrew the ground and left them standing on the old one
+  return s.kind === "terrain" && !built() ? generateTerrain() : generate();
 }
 function syncGenerate() {
   if (!ctl.generate) return;
   const s = scope();
-  const name = (state.gen.name || "").trim().toLowerCase();
-  const again = !!name && state.nets.some((n) => n.generated && n.name.toLowerCase() === name);
+  const again = built();
   const [label, title] = s.kind === "city" ? [`Regenerate ${s.c.name}`, `Rebuilds ${s.c.name}: its streets, blocks and buildings (offline, nothing changes in UEFN)`]
-    : s.kind === "terrain" ? ["Regenerate terrain", "New ground with a new terrain seed: different mountains, rivers and lakes. Cities and roads are not touched"]
+    : s.kind === "terrain" ? ["Regenerate terrain", again
+      ? "New ground with a new terrain seed: different mountains, rivers and lakes. The cities keep their layout; roads, trees and props are rebuilt on the new ground"
+      : "New ground with a new terrain seed: different mountains, rivers and lakes (a quick look: Generate world builds on it)"]
     : again ? ["Regenerate everything", "Rebuilds this whole world: the terrain, every city and every road (offline, nothing changes in UEFN)"]
     : ["Generate world", "Builds the terrain, cities and roads of a new world (offline, nothing changes in UEFN)"];
   ctl.generate.querySelector("span").textContent = label;
