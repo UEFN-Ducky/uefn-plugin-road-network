@@ -268,7 +268,7 @@ def place_model(out: "Plan", kind: str, f: Frame, group, road: str = "", across:
     # a service model takes a cross, not its whole square: full width over its middle half (the ramps and loops),
     # half width out along the arms (the ramps have come in to the freeway). The square left 1.4 km x 400 m of
     # forest beside every freeway (Nov 18 2026). The stack fills its corners with flyovers: all of its square.
-    corner = (lambda a, b: False) if kind == "stack" else (lambda a, b: abs(a) > sx / 2 and abs(b) > sy / 2)
+    corner = (lambda a, b: False) if kind in ("stack", "cloverleaf") else (lambda a, b: abs(a) > sx / 2 and abs(b) > sy / 2)
     a = -sx
     while a <= sx:
         b = -sy
@@ -544,9 +544,14 @@ def plan(city: dict, o: dict) -> Plan:
     free = lambda x, y: on_map(x, y) and not (hard and hard(x, y))
     # a model is flat: where the ground under it is not (citygen.slope_plan found it), the generated ramps
     on_slope = lambda x, y: any(math.hypot(x - a, y - b) < 1000 for a, b in city.get("ic_steep") or ())
-    stack_model = models().get("stack") if use_models and stacked else None
-    if stack_model and (on_slope(sx, sy) or not model_fits(city, sx, sy, stack_model, free)):
-        stack_model = None  # too big for this city: the generated stack
+    # where the two freeways cross: the stack model, else the smaller cloverleaf (1.4 x 1.05 km against 2.5 km
+    # square; it was never placed at all), else the generated stack
+    stack_model, cross_kind = None, "stack"
+    for kind_ in (("stack", "cloverleaf") if use_models and stacked else ()):
+        m_ = models().get(kind_)
+        if m_ and not on_slope(sx, sy) and model_fits(city, sx, sy, m_, free):
+            stack_model, cross_kind = m_, kind_
+            break
     for name, normal_axis, at, axis in mains:
         stack_along = stack_at[1] if name == "ns" else stack_at[0]
         upper = name == "ns"
@@ -579,35 +584,42 @@ def plan(city: dict, o: dict) -> Plan:
         step, across = (by, bx) if name == "ns" else (bx, by)  # the grid along this freeway, and across it
         n_max = int(R // step)
         soaked = set(((city.get("fw_shore") or {}).get("wet_ic") or {}).get(name) or ())
-        for n in sorted(range(-n_max, n_max + 1), key=abs):
-            t = n * step
-            if n % o["collector_every"] and n:
-                continue  # only collectors and the main axis
-            if n in soaked:
-                continue  # a ramp of it would stand in the water (shore_reach)
-            if not -back + IC_ROOM <= t <= ahead - IC_ROOM:
-                continue  # its ramps would run past the map's edge
-            cx, cy = P(t)
-            if box and min(room(cx, cy, 1, 0), room(cx, cy, -1, 0), room(cx, cy, 0, 1), room(cx, cy, 0, -1)) < IC_ROOM:
-                continue
-            share = cg.zone_share(city, cx, cy)
-            if share > 0.9:
-                continue
-            if hard and any(hard(cx + math.cos(a) * 30000, cy + math.sin(a) * 30000) or hard(cx, cy)
-                            for a in (k * math.pi / 4 for k in range(8))):
-                continue  # its ramps would be on reserved land
-            kind = "diamond" if share <= down else "parclo" if share <= normal else "diamond_frontage"
-            m = models().get(kind) if use_models else None
-            if m and (on_slope(cx, cy) or not (model_fits(city, cx, cy, m, free) and -back + model_reach(m, "a") <= t <= ahead - model_reach(m, "a"))):
-                continue  # no room for the model: no interchange here (the generated ramps fell apart, Nov 18 2026)
-            mine = model_reach(m, "a") if m else DIAMOND_A
-            if any(abs(t - d) < max(IC_SPACING, mine + theirs + 20000) for d, theirs in done):
-                continue
-            road = o["core_roads"] if share <= down or not n else "4L" if share <= normal else o["neighbourhood_roads"]
-            spots.append((n, t, cx, cy, kind, road, m))
-            done.append((t, mine))
-            if m:
-                cuts.append((t, mine))
+        def pick(order, done=tuple(done), cuts=tuple(cuts)):
+            spots, done, cuts = [], list(done), list(cuts)
+            for n in order:
+                t = n * step
+                if n % o["collector_every"] and n:
+                    continue  # only collectors and the main axis
+                if n in soaked:
+                    continue  # a ramp of it would stand in the water (shore_reach)
+                if not -back + IC_ROOM <= t <= ahead - IC_ROOM:
+                    continue  # its ramps would run past the map's edge
+                cx, cy = P(t)
+                if box and min(room(cx, cy, 1, 0), room(cx, cy, -1, 0), room(cx, cy, 0, 1), room(cx, cy, 0, -1)) < IC_ROOM:
+                    continue
+                share = cg.zone_share(city, cx, cy)
+                if share > 0.9:
+                    continue
+                if hard and any(hard(cx + math.cos(a) * 30000, cy + math.sin(a) * 30000) or hard(cx, cy)
+                                for a in (k * math.pi / 4 for k in range(8))):
+                    continue  # its ramps would be on reserved land
+                kind = "diamond" if share <= down else "parclo" if share <= normal else "diamond_frontage"
+                m = models().get(kind) if use_models else None
+                if m and (on_slope(cx, cy) or not (model_fits(city, cx, cy, m, free) and -back + model_reach(m, "a") <= t <= ahead - model_reach(m, "a"))):
+                    continue  # no room for the model: no interchange here (the generated ramps fell apart, Nov 18 2026)
+                mine = model_reach(m, "a") if m else DIAMOND_A
+                if any(abs(t - d) < max(IC_SPACING, mine + theirs + 20000) for d, theirs in done):
+                    continue
+                road = o["core_roads"] if share <= down or not n else "4L" if share <= normal else o["neighbourhood_roads"]
+                spots.append((n, t, cx, cy, kind, road, m))
+                done.append((t, mine))
+                if m:
+                    cuts.append((t, mine))
+            return spots, done, cuts
+        # from the middle out (downtown's interchange first), unless end to end fits more: a model is 1.4 km long,
+        # so the middle one alone left room for no other in a 1.5 km city (one parclo on its freeway, Nov 18 2026)
+        ns_ = range(-n_max, n_max + 1)
+        spots, done, cuts = max((pick(sorted(ns_, key=abs)), pick(ns_)), key=lambda r: len(r[0]))
 
         def lf(t, lf0=lf0, cuts=tuple(cuts)):  # down to grade at every model's sockets
             return lf0(t) * min([1.0] + [_smooth((abs(t - tm) - h) / MODEL_FADE) for tm, h in cuts])
@@ -634,8 +646,8 @@ def plan(city: dict, o: dict) -> Plan:
     if stack_model:
         cx, cy = W(*stack_at)
         f = Frame(cx, cy, -s, c)  # a along the north-south freeway, b along the east-west one (sockets: all four FW)
-        out.interchanges.append({"kind": "stack", "at": [round(cx), round(cy)], "freeway": "ns+ew", "group": ("stack",),
-                                 "model": place_model(out, "stack", f, ("stack",))})
+        out.interchanges.append({"kind": cross_kind, "at": [round(cx), round(cy)], "freeway": "ns+ew", "group": ("stack",),
+                                 "model": place_model(out, cross_kind, f, ("stack",))})
     elif stacked:
         # (its flyovers reach 1.15 km out: all on the map, and on land)
         cx, cy = W(*stack_at)
