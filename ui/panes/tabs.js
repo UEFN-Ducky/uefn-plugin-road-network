@@ -96,7 +96,7 @@ function buildPanes() {
     ["new", "New terrain", "Natural hills and water, with a heightmap to import", "terrain"],
     ["net", "Selected network's ground", "Cities sit on the open network's scanned terrain", "layers"]] });
   $("pane-world").replaceChildren(
-    section("Basics", ctl.name.el, sl("cities", "Cities", 1, 12, 1, (v) => String(v)), sl("size_km", "Map size", 1, 20, 0.5, (v) => `${v} km`),
+    section("Basics", ctl.name.el, sl("cities", "Cities", 0, 12, 1, (v) => v ? String(v) : "None, terrain only", "0 = just the ground and its heightmap; add cities later on the Cities tab"), sl("size_km", "Map size", 1, 20, 0.5, (v) => `${v} km`),
       sl("city_size", "City size", 0.3, 4, 0.05, (v) => `×${(+v).toFixed(2)}`, "Every city bigger or smaller (regenerating scales the cities you have)"),
       sl("city_gap_m", "Distance between cities", 0, 6000, 50, m, "Open country between two cities' edges, at least: cities closer than this are pushed apart"),
       ctl.seed.el),

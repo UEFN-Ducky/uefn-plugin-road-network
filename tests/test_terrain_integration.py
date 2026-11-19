@@ -174,6 +174,49 @@ def test_live_generate_routes_highways_on_the_terrain(monkeypatch):
     assert not (_generate_terrain_arg(monkeypatch, {})["terrain"].get("maps") or {})  # Classic: no cost map
 
 
+def test_terrain_only_world(monkeypatch):
+    """cities = 0 makes just the ground: no city, no road, no error."""
+    import contextlib
+    from backend import Ctx
+    from backend import tools_generate
+    store = {}
+
+    class Data(_Data):
+        def get(self, key):
+            return store.get(key)
+
+        def put(self, key, value):
+            store[key] = value
+
+        def keys(self, prefix=""):
+            return [k for k in store if k.startswith(prefix)]
+
+        def items(self, prefix=""):
+            return {k: v for k, v in store.items() if k.startswith(prefix)}
+
+    ctx = Ctx()
+    ctx.holds_the_world = ctx.one_run_at_a_time = lambda fn: fn
+    ctx.data, ctx.push, ctx.held_lock = Data(), (lambda msg: None), contextlib.nullcontext()
+    ctx.actor = lambda: {"kind": "person"}
+    ctx.slug = lambda s: str(s).strip().lower()
+    import types
+    ctx.api = types.SimpleNamespace(search=types.SimpleNamespace(upsert=lambda *a, **k: None))
+    # the storage helpers other parts define: just enough to keep the world's docs in `store`
+    ctx.save_network = lambda nid, *a: (store.setdefault(f"net.{nid}", {"name": nid}), {"ok": True})[1]
+    ctx.store_actor = lambda *a: {"stats": {}}
+    ctx.actor_docs = lambda nid: []
+    ctx.drop_city = ctx.drop_actor = ctx.put_city = ctx.record = ctx.pcg_preset = lambda *a, **k: None
+    ctx.layer_docs = lambda nid: [1]
+    ctx.sidewalks_stage = lambda nid: {"ok": True, "actors": {}}
+    tools_generate.register(ctx)
+    out = ctx.generate("Bare", seed=4, cities="0", size_km=6.0, relief_m=60.0, folder="/G/WorldGen/Roads",
+                       options=json.dumps({"preset": "Coastal"}))
+    assert out["ok"], out
+    assert out["cities"] == [] and store["net.bare.scan"]["terrain"]["heights"]
+    again = ctx.generate("Bare", seed=4, cities="", size_km=6.0, relief_m=60.0, folder="/G/WorldGen/Roads", options="")
+    assert again["ok"] and again["cities"] == [], again  # regenerating keeps it terrain only
+
+
 def test_lakes_slider_is_an_option_not_drawn_lakes(monkeypatch):
     # the panel sends the engine's Lakes slider as options.lakes (a number): generate crashed in lake_list
     got = _generate_terrain_arg(monkeypatch, {"preset": "Coastal", "lakes": 0.7})

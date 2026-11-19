@@ -233,7 +233,8 @@ def register(ctx) -> None:
             towns = [{"name": str(c.get("name") or cg.NAMES[k % len(cg.NAMES)]), "x": float(c["x"]), "y": float(c["y"]),
                       "radius": float(c.get("radius_m", 450)) * 100, "style": c.get("style") if c.get("style") in cg.STYLES else "mixed",
                       "seed": int(c.get("seed", seed + k))} for k, c in enumerate(given)]
-        elif not text and old:  # regenerate the cities already there (their names, styles and buildings stay)
+        elif not text and (old or last):  # regenerate the cities already there (their names, styles and buildings stay;
+            # a world whose cities were all removed stays terrain only)
             towns = [{k: v for k, v in c.items() if k in ("name", "x", "y", "radius", "style", "seed", "features",
                                                           "turn", "spin", "shape", "zones", "pinned", "core",
                                                           "industry_deg")}
@@ -243,11 +244,11 @@ def register(ctx) -> None:
             grow = opts["city_size"] / float((last.get("options") or {}).get("city_size", 1.0) or 1.0)
             for t in towns:
                 t["radius"] = max(15000.0, t["radius"] * grow)
-        else:
-            towns = cg.place_cities(int(seed), max(1, min(12, int(text or 3))), bounds, keep, opts["city_size"],
-                                    opts["city_gap_m"] * 100)
-        if not towns:
-            return {"ok": False, "error": "No room for that many cities: make the map bigger or ask for fewer."}
+        else:  # cities = 0: terrain only (the ground and its heightmap, cities added later)
+            count = max(0, min(12, int(text or 3)))
+            towns = cg.place_cities(int(seed), count, bounds, keep, opts["city_size"], opts["city_gap_m"] * 100) if count else []
+            if count and not towns:
+                return {"ok": False, "error": "No room for that many cities: make the map bigger or ask for fewer."}
         # every city stays on the map: pushed apart (a grown city's neighbours make room) and pulled back inside,
         # smaller if the map has no room (a grown city pushed its neighbours off the map, Nov 11 2026)
         towns, fit_notes = cg.fit_inside(towns, bounds, opts["city_gap_m"] * 100, keep)
@@ -518,8 +519,6 @@ def register(ctx) -> None:
         stop = city_guard(nid, cslug, before.get("name") or city, "deleting it")
         if stop:
             return stop
-        if len(city_docs(nid)) <= 1:
-            return {"ok": False, "error": "A world keeps at least one city."}
         if not confirm:
             return {"ok": False, "error": f"This removes {before.get('name')} and everything on it. Call again with "
                                           f"confirm=true."}

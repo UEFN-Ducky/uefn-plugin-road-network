@@ -344,7 +344,7 @@ def register(ctx) -> None:
     @tool(intent=GEN_INTENT, listener=False)
     def road_network_city_delete(net_id: str = "", city: str = "", confirm: bool = False) -> dict:
         """Remove a city (and everything on it) from a generated world; confirm=true. Then generate again: the
-        other cities' highways re-join without it. A world keeps at least one city."""
+        other cities' highways re-join without it. Removing the last city leaves the world terrain only."""
         return safe(delete_city)(net_id, city, confirm)
 
     @tool(intent=GEN_INTENT, listener=False)
