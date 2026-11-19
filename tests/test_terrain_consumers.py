@@ -146,6 +146,34 @@ def test_trees_follow_biomes():
     assert biome_trees({"heights": []}) is None
 
 
+def test_plants_keep_off_the_shore():
+    """A 200 m strip: sea west of x = 100 m, sand (beach) from 100 to 110 m, forest east of it. Trees keep 25-30 m
+    from the water and never stand on the sand; palms grow on the sand; bushes come closer than trees."""
+    from backend.pcg_layers.land import biome_trees
+    from backend.terrain.climate import B
+    n = 100  # 2 m cells
+    heights = [[(-500.0 if i < 50 else 150.0 + 20.0 * (i - 50)) for i in range(n)] for _ in range(n)]
+    biome = [float(B["ocean"] if i < 50 else B["beach"] if i < 55 else B["temperate_forest"])
+             for _ in range(n) for i in range(n)]
+    keep = biome_trees({"grid": n, "heights": heights, "sea": 0.0, "min": [0, 0], "max": [20000, 20000],
+                        "maps": {"biome": biome}})
+    at = lambda m: (m * 100.0, 10000.0)
+    assert not keep(*at(50), "tree") and not keep(*at(108), "tree"), "no tree under water or on the sand"
+    assert not keep(*at(120), "broadleaf") and keep(*at(130), "broadleaf"), "a tree stands 25 m back from the water"
+    assert not keep(*at(125), "conifer") and keep(*at(135), "conifer")
+    assert keep(*at(108), "palm") and not keep(*at(102), "palm"), "a palm on dry sand, not at the waterline"
+    assert any(keep(11200.0, y * 100.0, "bush") for y in range(0, 200, 4)), "scrub 12 m from the water, where no tree is"
+    # thin biomes grow groves: kept spots cluster (neighbours 10 m apart agree far more often than chance)
+    meadow = [float(B["meadow"])] * (n * n)
+    flat = [[1000.0] * n for _ in range(n)]
+    big = biome_trees({"grid": n, "heights": flat, "sea": 0.0, "min": [0, 0], "max": [400000, 400000],
+                       "maps": {"biome": meadow}})
+    row = [big(x * 1000.0, 200000.0) for x in range(400)]
+    share = sum(row) / len(row)
+    same = sum(a == b for a, b in zip(row, row[1:])) / (len(row) - 1)
+    assert 0.02 < share < 0.4 and same > 1 - 2 * share * (1 - share) + 0.05, (share, same)
+
+
 def _ground(ter):
     n, (mx, my), (Mx, My) = ter["grid"], ter["min"], ter["max"]
     cell = lambda x, y: (min(n - 1, max(0, int((x - mx) / (Mx - mx) * n))), min(n - 1, max(0, int((y - my) / (My - my) * n))))

@@ -60,6 +60,23 @@ def test_ridge_height():
     assert min(h) >= 0.0
 
 
+def test_summits_are_rounded():
+    """No needle summits: crest tops fall on average under 7 % of their height to their 8 neighbours (250 m away),
+    none over 12 %. The bare (1 - d/w)^sharp cone fell 13 % on average, up to 28 %."""
+    for seed in (3, 5):
+        g, mask, nz = _world(seed)
+        h, _ = ridge_height(g, CFG, nz, mask)
+        n, top, drops = g.n, max(h), []
+        for k in range(n * n):
+            i, j = k % n, k // n
+            if 0 < i < n - 1 and 0 < j < n - 1 and h[k] >= 0.6 * top:
+                nb = [h[(j + b) * n + i + a] for a in (-1, 0, 1) for b in (-1, 0, 1) if a or b]
+                if h[k] >= max(nb):
+                    drops.append((h[k] - sum(nb) / 8) / h[k])
+        assert len(drops) >= 2, drops  # several summits along the range, not one
+        assert sum(drops) / len(drops) < 0.07 and max(drops) < 0.12, (seed, drops)
+
+
 def test_pass_between_cities():
     g, mask, nz = _world()
     net = ridge_network(g, CFG, nz, mask)

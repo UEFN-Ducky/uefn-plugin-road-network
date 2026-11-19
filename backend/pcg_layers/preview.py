@@ -232,8 +232,8 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                     if discs and far < 1.0 and not any((x - cx) ** 2 + (y - cy) ** 2 <= r * r for cx, cy, r in discs) \
                             and _u01("far", seed, name, round(x), round(y)) >= far:
                         continue  # past the cities' reach: the share of it the budget leaves (the spot's own draw)
-                    if layer["cover"] < 1.0 and patch(x, y) > layer["cover"]:
-                        continue  # a meadow, not a forest
+                    if layer["cover"] < 1.0 and patch(x, y) > layer["cover"] - 0.12 * _u01("edge", seed, round(x), round(y)):
+                        continue  # a meadow, not a forest (thinning out over its last 0.12: woodland at the edge)
                     cs.append((x, y, yaw))
                 return cs
             spans = [(lo[0], lo[1], hi[0], hi[1])]
@@ -325,8 +325,9 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
             if vacant is None:
                 vacant = open_land(cities)
             where_ok = (lambda x, y, out_=where_ok, free=vacant: out_(x, y) or free(x, y))  # (not outside: in a city)
-        if by_biome and layer["kind"] in SCATTERED and layer["role"] == "tree":
-            where_ok = (lambda x, y, ok=where_ok, k=tree_kind(layer): ok(x, y) and by_biome(x, y, k))
+        if by_biome and layer["kind"] in SCATTERED and layer["role"] in ("tree", "bush"):
+            where_ok = (lambda x, y, ok=where_ok, k=tree_kind(layer) if layer["role"] == "tree" else "bush":
+                        ok(x, y) and by_biome(x, y, k))
         candidates = 0
         why: dict = {}  # building layers: why each lot was passed over (road_network_pcg_preview `skipped`)
         no = lambda k: why.__setitem__(k, why.get(k, 0) + 1)

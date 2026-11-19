@@ -12,12 +12,17 @@ from .grid import smoothstep
 
 _ON = 0.5          # mask value that counts as mountain
 TAPER_M = 1500.0   # a range fades to nothing over this far inside its region's edge (foothills, never a wall)
+TAPER_SHARE = 0.6  # ... and over at most this share of the region's depth
 ROOM_M = 1000.0    # foothill run outside a region that a range's flanks may use
 RISE = 0.8         # a range is at most RISE x (its region's depth + ROOM_M) tall: a 2.5 km cone on a 3 km island is no range
 VALLEY = 0.3       # how deep drainage cuts the valleys (share of their height per run), + 0.25 x intensity
 APRON_M = 1500.0   # the foothill apron reaches this far past a range's half-width
 APEX = 1.0         # steepest flank just under a crest (rise / run, 45 degrees)
+SPURS = 0.15       # spur spacing, share of the widest ridge half-width
+GAUSS = 0.4        # the ridge's cross profile: a Gaussian with sigma = GAUSS x the half-width
 BODY = 0.3         # valley floors between side ridges sit at this share of the envelope
+KEEP = (0.3, 1.0)  # spur noise fades out from this share of the top to the summit (smoothstep, a wide band: a
+                   # narrow one cut a cliff ring round every summit, a crater once hydrology filled it)
 _MIN_CELLS = 4     # smaller specks get no range
 
 
@@ -234,7 +239,7 @@ def ridge_height(grid, cfg, noise, mountains_mask, net=None):
         return height, strength
     inten = _intensity(cfg)
     w0 = _width(cfg)
-    sharp = _sharp(inten)
+    e_w = math.exp(-0.5 / GAUSS ** 2)  # the Gaussian at the half-width, taken off so the ridge ends at 0 there
     segs = []
     for lines, ws in ((net['spines'], net.get('widths')), (net['branches'], net.get('bwidths'))):
         for li, line in enumerate(lines):
@@ -261,8 +266,10 @@ def ridge_height(grid, cfg, noise, mountains_mask, net=None):
                 d = math.hypot(x - x1 - dx * t, y - y1 - dy * t)
                 if d >= w:
                     continue
-                # a cone, not smoothstep: smoothstep is flat at d = 0, so every summit came out a dome
-                f = (1.0 - d / w) ** sharp
+                # a Gaussian across the ridge: a rounded crest, the steepest flank a third of the way down, a foot
+                # that flares into the foothills. (1 - d/w)^sharp was nearly straight: every segment a flat-faced
+                # tent meeting the next in one needle summit; smoothstep made the whole range a dome
+                f = (math.exp(-0.5 * (d / (GAUSS * w)) ** 2) - e_w) / (1.0 - e_w)
                 v = (h1 + (h2 - h1) * t) * f
                 if v > height[k]:
                     height[k] = v
@@ -271,10 +278,17 @@ def ridge_height(grid, cfg, noise, mountains_mask, net=None):
     top = max(p[2] for line in net['spines'] for p in line)
     # the range fades out over TAPER_M inside its region's edge (and the coast): the mask goes 0 -> 1 in one cell,
     # and multiplying by it stood every range on vertical walls
+    # ... over at most TAPER_SHARE of the region's depth, and blurred: on a small region (a 6 km island's one range) a
+    # TAPER_M ramp covered nearly all of it, and the mountain took the distance field's shape, flat faces meeting
+    # in straight creases with a round plateau where the ramp topped out
     inside = grid.dist_to(array('d', (1.0 - m for m in mountains_mask)))
-    taper = [smoothstep(0.0, min(TAPER_M, w0), d) for d in inside]
+    tw = max(2.0 * c, min(TAPER_M, w0, TAPER_SHARE * max(inside)))
+    inside = grid.blur(inside, max(1, int(0.5 * tw / c)))
+    taper = [smoothstep(0.0, tw, d) for d in inside]
     wm = max(net.get('widths') or [w0])
-    sc = max(wm * 0.35, 5.0 * c)  # spur spacing: a few down every flank
+    # spur spacing: several down every flank (at 0.35 x the width one swell spanned a flank, and the envelope's
+    # planes showed through as a tent)
+    sc = max(wm * SPURS, 5.0 * c)
     cells = []
     for k in range(n * n):
         if strength[k] <= 0.0:
@@ -284,12 +298,19 @@ def ridge_height(grid, cfg, noise, mountains_mask, net=None):
         wx, wy = noise.warp(xs[k % n], ys[k // n], sc * 0.6, sc * 2.5, 2)
         r = noise.ridged(wx + 913.0, wy - 377.0, 5, scale=sc * 2.0)
         u = min(height[k] / top, 1.0)
-        # the top fifth keeps the envelope whole: noise right under a summit left a one-cell needle erosion chopped
-        s = smoothstep(0.4, 0.8, u)
+        # the summit keeps the envelope whole (noise right under it left a one-cell needle erosion chopped); the
+        # noise fades in down the flanks, never switched on at one height
+        s = smoothstep(KEEP[0], KEEP[1], u)
         body = BODY + (1.0 - BODY) * (r + (1.0 - r) * s)
         height[k] *= body * taper[k]
         cells.append(k)
+    before = array('d', height)
     _carve(grid, height, cells, VALLEY + 0.25 * inten, (sc / c) ** 2)
+    # the cut, blurred over ~80 m: flow to one of 8 neighbours cuts one-cell gullies along the 8 compass lines, a
+    # star round every summit at fine cells; blurred they are valleys with sides
+    cut = grid.blur(array('d', (b - a for a, b in zip(height, before))), max(1, int(80.0 / c)))
+    for k in cells:
+        height[k] = max(0.0, before[k] - cut[k])
     hi = max(height)
     if hi > 0:
         s = top / hi

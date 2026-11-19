@@ -64,6 +64,11 @@ TREE_DENSITY = {"temperate_forest": 1.0, "conifer_forest": 1.0, "rainforest": 1.
                 "tundra": 0.05, "desert": 0.05, "rocky_slope": 0.05}  # share of tree candidates kept; others: none
 CONIFER_FROM_M = 900.0  # above this only conifers grow
 PALM_BIOMES = ("beach", "rainforest", "savanna")  # tropical and beach: the only places a palm grows
+# metres a plant keeps from open water (sea, lake, river), checked all round it; a palm or a bush may stand closer
+SHORE_M = {"conifer": 30.0, "broadleaf": 25.0, "palm": 6.0, "bush": 8.0}
+DRY_M = {"conifer": 3.0, "broadleaf": 3.0, "palm": 1.0, "bush": 1.5}  # ... and stands this far over the water
+ON_SAND = {"palm": 1.0, "bush": 0.25}  # who grows on the beach (dry sand, dunes), at this share; trees never do
+GROVE_CM = 20000.0  # thin biomes grow their trees in groves about this size, not one here, one there
 
 
 def tree_kind(layer: dict) -> str:
@@ -75,31 +80,58 @@ def tree_kind(layer: dict) -> str:
 
 
 def biome_trees(terrain: dict | None):
-    """(x, y, kind='tree') -> keep this tree candidate, from an engine terrain's biome map (None without one: keep
-    all). Never on snow, cliff or water (sea, lake, river); kept at TREE_DENSITY of its biome, the same draw for a
-    spot on every run. kind 'conifer' / 'palm' / anything else: above CONIFER_FROM_M only conifers, palms only in
-    PALM_BIOMES."""
+    """(x, y, kind='tree') -> keep this plant candidate, from an engine terrain's biome map (None without one: keep
+    all). kind 'conifer' / 'palm' / 'bush' / anything else (a broadleaf tree). Rejected: under or near water (its
+    SHORE_M all round, DRY_M over the water), on snow or cliff, on the beach unless ON_SAND grows there; above
+    CONIFER_FROM_M only conifers, palms only in PALM_BIOMES. The rest is kept at TREE_DENSITY of its biome, by a
+    grove field (GROVE_CM) mixed with the spot's own draw, so a thin biome has groves and clearings, not a
+    sprinkle. The same answer for a spot on every run."""
     maps = (terrain or {}).get("maps") or {}
     biome = maps.get("biome")
     if not biome:
         return None
     from ..terrain.climate import BIOMES
+    from .layers import patch
     n, heights, sea = terrain["grid"], terrain["heights"], terrain.get("sea")
     (mx, my), (Mx, My) = terrain["min"], terrain["max"]
     river, lake = maps.get("river"), maps.get("lake")
+    cx, cy = n / (Mx - mx), n / (My - my)
+
+    def cell(x, y):
+        i = min(n - 1, max(0, int((x - mx) * cx)))
+        j = min(n - 1, max(0, int((y - my) * cy)))
+        return i, j, j * n + i
+
+    def wet(x, y, dry_cm):
+        i, j, k = cell(x, y)
+        return (sea is not None and heights[j][i] < sea + dry_cm) or (river and river[k] > 0) or (lake and lake[k] > 0.5)
+
+    ring = [(math.cos(a * math.pi / 4), math.sin(a * math.pi / 4)) for a in range(8)]
 
     def keep(x: float, y: float, kind: str = "tree") -> bool:
-        i = min(n - 1, max(0, int((x - mx) / (Mx - mx) * n)))
-        j = min(n - 1, max(0, int((y - my) / (My - my) * n)))
-        k = j * n + i
+        kind = kind if kind in SHORE_M else "broadleaf"
+        i, j, k = cell(x, y)
         name, z = BIOMES[int(biome[k])], heights[j][i]
-        if (sea is not None and z < sea) or (river and river[k] > 0) or (lake and lake[k] > 0.5):
+        if wet(x, y, DRY_M[kind] * 100):
             return False
+        # ponytail: 8 samples at the exclusion distance (and half of it), not a distance map; misses a creek
+        # narrower than a grid cell between two of them
+        r = SHORE_M[kind] * 100
+        if any(wet(x + dx * rr, y + dy * rr, 0.0) for dx, dy in ring for rr in (r, r * 0.5)):
+            return False
+        if name == "beach":
+            dens = ON_SAND.get(kind, 0.0)
+        else:
+            dens = TREE_DENSITY.get(name, 0.0) * (0.6 if kind == "bush" and name in ("temperate_forest", "conifer_forest", "rainforest") else 1.0)
+            if kind == "bush" and name in ("shrubland", "savanna", "meadow", "grassland", "wetland"):
+                dens = min(1.0, dens * 2.5)  # scrub belongs to open country: dune scrub, shrubland, hedges
         if kind == "palm" and name not in PALM_BIOMES:
             return False
-        if kind != "conifer" and z > CONIFER_FROM_M * 100:
+        if kind not in ("conifer", "bush") and z > CONIFER_FROM_M * 100:
             return False
-        return _u01("biome_tree", round(x), round(y)) < TREE_DENSITY.get(name, 0.0)
+        if dens >= 1.0:
+            return True
+        return 0.85 * patch(x + 7300.0, y - 1900.0, GROVE_CM) + 0.15 * _u01("biome_tree", round(x), round(y)) < dens
     return keep
 
 
