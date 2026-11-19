@@ -235,6 +235,7 @@ def terrain(seed: int, size_cm: float, relief_cm: float, cities: list, grid: int
 
 
 ENGINE_MAPS = ("biome", "river", "build", "road_cost")  # the engine maps a world keeps (flat, row-major, grid size)
+LAST_WORLD = None  # the last engine World made here, every map: the caller keeps it for debug views (never saved)
 
 
 def _engine_terrain(seed, size_cm, relief_cm, cities, grid, center, o, keep, lakes) -> dict:
@@ -249,9 +250,11 @@ def _engine_terrain(seed, size_cm, relief_cm, cities, grid, center, o, keep, lak
     held = [{"x": (k["x0"] + k["x1"]) / 200.0, "y": (k["y0"] + k["y1"]) / 200.0,
              "radius": math.hypot(k["x1"] - k["x0"], k["y1"] - k["y0"]) / 200.0, "z": k["z"] / 100.0}
             for k in keep or []]
-    world = generate(cfg, grid, lo[0] / 100.0, lo[1] / 100.0, size_cm / 100.0, cities=towns, keep=held)
+    global LAST_WORLD
+    world = LAST_WORLD = generate(cfg, grid, lo[0] / 100.0, lo[1] / 100.0, size_cm / 100.0, cities=towns, keep=held)
     out = world.to_citygen()
     out["maps"] = {k: [round(v, 3) for v in world.maps[k]] for k in ENGINE_MAPS if k in world.maps}
+    out["rivers"] = [[[round(x), round(y)] for x, y in r["pts"]] for r in world.maps.get("river_lines") or []]
     if not (lakes or keep):
         return out
     xs = [lo[0] + size_cm * (i + 0.5) / grid for i in range(grid)]

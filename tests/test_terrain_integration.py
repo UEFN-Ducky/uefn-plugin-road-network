@@ -1,9 +1,13 @@
+import base64
 import hashlib
+import struct
 import sys
+import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from backend import citygen as cg  # noqa: E402
+from backend.terrain import export as tex  # noqa: E402
 
 CITIES = [{"x": -150000.0, "y": -150000.0, "radius": 60000.0}, {"x": 150000.0, "y": 150000.0, "radius": 60000.0}]
 # terrain() before the engine was wired in (commit 81fae9f): sha1 of (heights, sea, z_scale)
@@ -34,6 +38,59 @@ def test_coastal_runs_the_engine_in_cm():
     assert all(len(m) == 48 * 48 for m in t["maps"].values())
     png, settings = cg.heightmap_png(t, res=129)
     assert settings["scale"][2] == t["z_scale"]
+
+
+def _decode(png):
+    """(width, height, channels, rows of bytes) of an 8-bit PNG as export writes it (filter 0 rows)."""
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    w, h, bits, kind = struct.unpack(">IIBB", png[16:26])
+    assert bits == 8
+    ch = {0: 1, 2: 3}[kind]
+    k, idat = 8, b""
+    while k < len(png):
+        size, tag = struct.unpack(">I4s", png[k:k + 8])
+        idat += png[k + 8:k + 8 + size] if tag == b"IDAT" else b""
+        k += 12 + size
+    raw = zlib.decompress(idat)
+    stride = 1 + w * ch
+    return w, h, ch, [raw[r * stride + 1:(r + 1) * stride] for r in range(h)]
+
+
+DEBUG_VIEWS = ("height land coast_dist plains hills foothills mountains plateaus valleys wetlands ridge passes flow "
+               "accum river lake temp moist biome slope build road_cost flood").split()
+
+
+def test_material_masks_and_debug_maps():
+    t = cg.terrain(5, 600000.0, 6000.0, CITIES, grid=40, opts={"preset": "Alpine"})
+    assert t["rivers"] and all(len(p) == 2 for line in t["rivers"] for p in line)
+    pngs = tex.material_pngs(t, 65)
+    assert sorted(pngs) == sorted(tex.LAYERS)
+    rows = {k: _decode(v) for k, v in pngs.items()}
+    assert all(r[:3] == (65, 65, 1) for r in rows.values())
+    for j in range(65):
+        for i in range(65):
+            assert abs(sum(rows[k][3][j][i] for k in rows) - 255) <= 2
+    assert tex.material_pngs(cg.terrain(5, 600000.0, 6000.0, CITIES, grid=40), 65) == {}  # Classic: no biomes
+    full = {**t, "maps": cg.LAST_WORLD.maps}
+    for name in DEBUG_VIEWS:
+        assert _decode(tex.debug_map(full, name, 32))[:3] == (32, 32, 3), name
+
+
+def test_terrain_map_rpc():
+    from backend import Ctx
+    from backend import tools_generate
+    ter = cg.terrain(5, 600000.0, 6000.0, CITIES, grid=40, opts={"preset": "Coastal"})
+    ctx = Ctx()
+    ctx.scan_terrain = lambda nid: ter if nid == "valley" else {}
+    ctx.slug = lambda s: str(s).strip().lower()
+    ctx.holds_the_world = ctx.one_run_at_a_time = lambda fn: fn  # decorators used while registering
+    tools_generate.register(ctx)
+    for name in ("biome", "debug:river", "height"):
+        out = ctx.terrain_map("Valley", name)
+        assert out["ok"], out
+        assert _decode(base64.b64decode(out["png"]))[:3] == (256, 256, 3)
+    assert not ctx.terrain_map("Valley", "accum")["ok"]  # not kept in the stored world, no run this session
+    assert not ctx.terrain_map("Nowhere", "biome")["ok"]
 
 
 def test_engine_holds_keep_zones_and_digs_lakes():

@@ -4,6 +4,7 @@ Handlers moved out of backend/__init__.py register(): ctx carries what the parts
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import math
@@ -17,6 +18,7 @@ from . import pcg_layers as pl
 from . import pieces
 from . import splines_text as st
 from . import waterfront
+from .terrain import export as tex
 
 
 def register(ctx) -> None:
@@ -31,6 +33,8 @@ def register(ctx) -> None:
         "roads_digest save_network scan_terrain sidewalks_stage slug store_actor team_live world_actors")
 
     # ---------------------------------------------------------------- generated worlds
+    engine_maps: dict = {}  # world id -> every map of its last engine run (this session only: debug views)
+
     def junction_folder(pts: list, segs: list) -> str:
         old = next((ln for p in pts for ln in p["lines"] if "/WorldGen/Roads/Junctions/SM_Junc_" in ln), "")
         m = re.search(r"'(/[^']+?/WorldGen/Roads/Junctions)/SM_Junc_", old)
@@ -77,15 +81,16 @@ def register(ctx) -> None:
     def write_heightmap(nid: str, ter: dict) -> dict:
         # every previewed lot is cut into its level pad: only ever this new landscape, never the level's terrain
         got = pcg_preview(nid)
+        src_maps = ter.get("maps")
         ter = _PREVIEW_CACHE.get("ter") or ter  # with the roads cut in: the ground the buildings were fitted to
         fit = _PREVIEW_CACHE.get("fit") or {}
         pads = fit.get("pads") if fit.get("pads") is not None else pl.pads(got.get("layers") or {}, cg.pad_margin(ter))
         png, settings = cg.heightmap_png(ter, pads=pads)
         path = heightmap_path(nid, png)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        for old in os.listdir(os.path.dirname(path)):  # one file per world: the last one made
-            if (old == f"{nid}.png" or (old.startswith(f"{nid}_") and len(old) in (len(nid) + 13, len(nid) + 19))) \
-                    and os.path.join(os.path.dirname(path), old) not in (path, path[:-4] + "_paved.png"):
+        mine = re.compile(re.escape(nid) + r"(_[0-9a-f]{8}(_paved|_" + "|_".join(tex.LAYERS) + r")?)?\.png")
+        for old in os.listdir(os.path.dirname(path)):  # one set of files per world: the last one made
+            if mine.fullmatch(old) and not old.startswith(os.path.basename(path)[:-4]):
                 os.remove(os.path.join(os.path.dirname(path), old))
         with open(path + ".tmp", "wb") as fh:
             fh.write(png)
@@ -98,7 +103,15 @@ def register(ctx) -> None:
         with open(wpath + ".tmp", "wb") as fh:
             fh.write(mask)
         os.replace(wpath + ".tmp", wpath)
-        return {"path": path, "paint_layer_path": wpath, **settings}
+        # an engine world's ground materials, one weightmap per layer (they sum to 255): grass, rock, sand, snow, dirt
+        layers = {}
+        for layer, mpng in tex.material_pngs({**ter, "maps": ter.get("maps") or src_maps},
+                                             int(settings["resolution"].split(" x ")[0])).items():
+            layers[layer] = path[:-4] + f"_{layer}.png"
+            with open(layers[layer] + ".tmp", "wb") as fh:
+                fh.write(mpng)
+            os.replace(layers[layer] + ".tmp", layers[layer])
+        return {"path": path, "paint_layer_path": wpath, "material_layer_paths": layers, **settings}
 
     def _layout_doc(layout: dict) -> dict:
         return {"lots": layout["lots"], "hoods": layout["hoods"], "plan": layout.get("plan"),
@@ -251,6 +264,10 @@ def register(ctx) -> None:
         progress(0, "Reading the ground" if base else "Shaping the terrain")
         ter = base or cg.terrain(int(seed), size, max(0.0, float(relief_m)) * 100, towns, center=(center_x, center_y),
                                  opts=opts, keep=keep, lakes=lakes)
+        if not base and ter.get("maps"):  # an engine world: its full maps stay here for the panel's Debug looks
+            engine_maps[nid] = cg.LAST_WORLD.maps
+        else:
+            engine_maps.pop(nid, None)
         sea_level = ter.get("sea")
         # the hills under each city, read before any street is laid: its streets follow them (cg.plan_hills)
         cg.plan_hills(towns, (lambda x, y, t=ter: st.sample_grid(t, x, y)) if ter.get("heights") else None, opts)
@@ -686,8 +703,27 @@ def register(ctx) -> None:
                        f"Location (the centre) {hm['location']}, Scale {hm['scale']}, components {hm['components']}. "
                        f"Under Layers, give your road/dirt paint layer (not the grass one) the file {hm['paint_layer_path']}: "
                        f"every road, junction and building lot comes in painted with it. "
-                       f"It makes a new landscape; your current one is not touched. "
+                       f"Z scale is {hm['scale'][2]} (the third Scale number: it holds the ground's full height). "
+                       + (f"Give these ground layers their weightmaps (they sum to full): " + ", ".join(
+                           f"{k} {v}" for k, v in hm["material_layer_paths"].items()) + ". "
+                          if hm.get("material_layer_paths") else "")
+                       + f"It makes a new landscape; your current one is not touched. "
                        f"Every building lot is already levelled into it (cut and fill), so buildings sit flat on hills."}
+
+    def terrain_map(net_id: str = "", name: str = "") -> dict:
+        """The panel's Debug look: one engine map of a world (bare name: height, biome, river ...) as a base64 RGB
+        PNG, row 0 = the grid's j 0. Every map from this session's last generate, else the few the world keeps."""
+        nid = slug(net_id)
+        ter = scan_terrain(nid) or {}
+        if not ter.get("heights"):
+            return {"ok": False, "error": f"{net_id!r} has no terrain. Generate the world first."}
+        name = str(name or "").removeprefix("debug:")
+        try:
+            png = tex.debug_map({**ter, "maps": {**(ter.get("maps") or {}), **engine_maps.get(nid, {})}}, name)
+        except KeyError:
+            return {"ok": False, "error": f"This world has no {name!r} map: pick an engine preset (not Classic) and "
+                                          f"generate again."}
+        return {"ok": True, "name": name, "png": base64.b64encode(png).decode()}
 
     def import_all(net_id: str = "", confirm: bool = False, force: bool = False) -> dict:
         """Push roads: build the junction pieces and paste every road actor that changed since its last push
