@@ -41,7 +41,7 @@ STEPS = {  # what a step is called in the history, by the call that made it
 # Calls that only push what the world already is into UEFN, or note what was pushed: no step of the world's history
 NOT_STEPS = ("history", "undo", "redo", "sync", "import_all", "reimport", "heightmap", "pcg_build", "pcg_place",
              "build_pieces", "kit_materials", "hold", "release", "send_note", "note_draft", "terrain_preview",
-             "pcg_progress")
+             "pcg_progress", "generate_stop")
 
 
 def step_label(name: str, k: dict) -> str:

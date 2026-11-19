@@ -14,13 +14,13 @@ from . import uefn_memory
 
 def register(ctx) -> None:
     (actor, add_city, build_pieces, check, circle, city_docs, copy_text, data, delete_city,
-     delete_network, delete_project, drape, generate, get_network, heightmap, hold, holds,
+     delete_network, delete_project, drape, generate, generate_stop, get_network, heightmap, hold, holds,
      holds_the_world, import_all, import_text, kit_convert, kit_materials, kit_root, layer_docs,
      list_cities, list_networks, list_projects, listener, move_point, panel_rpc, pipeline_run, pull,
      reimport, release, repair_actor, restore_actor, roads_pcg, safe, save_city, save_lake, save_network,
      save_project, scan_ground, slug, stats, terrain_preview, tool, tune_actor) = ctx.take(
         "actor add_city build_pieces check circle city_docs copy_text data delete_city delete_network "
-        "delete_project drape generate get_network heightmap hold holds holds_the_world import_all "
+        "delete_project drape generate generate_stop get_network heightmap hold holds holds_the_world import_all "
         "import_text kit_convert kit_materials kit_root layer_docs list_cities list_networks list_projects "
         "listener move_point panel_rpc pipeline_run pull reimport release repair_actor restore_actor "
         "roads_pcg safe save_city save_lake save_network save_project scan_ground slug stats terrain_preview tool "
@@ -436,9 +436,14 @@ def register(ctx) -> None:
 
     panel_rpc("terrain_preview", lambda name="", seed=7, size_km=6.0, relief_m=60.0, center_x=0.0, center_y=0.0,
               options="": safe(terrain_preview)(name, seed, size_km, relief_m, center_x, center_y, options))
-    panel_rpc("generate", lambda name="", seed=7, cities="", size_km=6.0, relief_m=60.0, ground_from="",
-                           folder="", center_x=0.0, center_y=0.0, options="": safe(generate)(
-                               name, seed, cities, size_km, relief_m, ground_from, folder, center_x, center_y, options))
+    def generate_panel(name="", seed=7, cities="", size_km=6.0, relief_m=60.0, ground_from="", folder="",
+                       center_x=0.0, center_y=0.0, options=""):
+        try:
+            return safe(generate)(name, seed, cities, size_km, relief_m, ground_from, folder, center_x, center_y, options)
+        finally:
+            generate_stop(name, clear=True)
+    panel_rpc("generate", generate_panel)
+    panel_rpc("generate_stop", lambda name="": generate_stop(name))
     panel_rpc("generate_options", lambda: road_network_generate_options())
 
     ctx.share(locals())

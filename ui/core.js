@@ -49,11 +49,12 @@ function showError(msg, retry) {
   if (msg && retry) $("err").firstElementChild.append(button("Try again", "refresh", () => { showError(""); retry(); }));
 }
 // the loading card: a title, what is happening now, and a bar (filled when the step count is known)
-const loading = { title: "", text: "", step: 0, of: 0 };
+// (stop: a Stop button on the card; kept while the same run updates its card, gone when the card is)
+const loading = { title: "", text: "", step: 0, of: 0, stop: null };
 function busy(msg, opts = {}) {
   const host = $("busy");
-  if (!msg) { loading.title = ""; host.replaceChildren(); return; }
-  Object.assign(loading, { title: msg, text: opts.text || "", step: opts.step || 0, of: opts.of || 0 });
+  if (!msg) { loading.title = ""; loading.stop = null; host.replaceChildren(); return; }
+  Object.assign(loading, { title: msg, text: opts.text || "", step: opts.step || 0, of: opts.of || 0, stop: opts.stop ?? loading.stop });
   drawLoading();
 }
 function drawLoading() {
@@ -63,7 +64,9 @@ function drawLoading() {
   let card = host.querySelector(".rn-load");
   if (!card) {
     card = h("div", { class: "rn-load", role: "status", "aria-live": "polite" },
-      h("div", { class: "rn-load__title" }, h("span", { class: "rn-load__name" }), h("span", { class: "rn-load__pct" })),
+      h("div", { class: "rn-load__title" }, h("span", { class: "rn-load__name" }), h("span", { class: "rn-load__pct" }),
+        h("button", { type: "button", class: "rn-mini rn-load__stop", title: "Stop: nothing is changed",
+          onclick: () => loading.stop?.() }, "Stop")),
       h("div", { class: "rn-load__step" }),
       h("div", { class: "rn-load__bar" }, h("div", { class: "rn-load__fill" })));
     host.replaceChildren(card);
@@ -71,6 +74,7 @@ function drawLoading() {
   card.querySelector(".rn-load__name").textContent = loading.title;
   card.querySelector(".rn-load__pct").textContent = loading.of ? `${pct} %` : "";
   card.querySelector(".rn-load__step").textContent = loading.text;
+  card.querySelector(".rn-load__stop").hidden = !loading.stop;
   const fill = card.querySelector(".rn-load__fill");
   fill.classList.toggle("is-indet", !loading.of);
   fill.style.width = loading.of ? `${Math.max(4, pct)}%` : "";

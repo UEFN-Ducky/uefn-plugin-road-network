@@ -200,6 +200,17 @@ def register(ctx) -> None:
             data.delete(k)
         data.put(head, {**{k: v for k, v in rest.items() if k not in big}, "file": path, "sha": sha})
 
+    # worlds whose Stop was pressed: their rebuild quits at its next stage, always before anything is saved
+    stops: set = set()
+
+    class Stopped(ValueError):  # safe() answers it as {"ok": False, "error": ...}; one_run_at_a_time keeps no answer
+        pass
+
+    def generate_stop(name: str = "", clear: bool = False) -> dict:
+        """The panel's Stop (clear: the rebuild returned, so a late press never stops the next one)."""
+        (stops.discard if clear else stops.add)(slug(name))
+        return {"ok": True}
+
     @one_run_at_a_time  # a waiting rebuild with the same settings takes one that started after it asked
     @holds_the_world
     def generate(name: str = "", seed: int = 7, cities: str = "", size_km: float = 6.0, relief_m: float = 60.0,
@@ -279,7 +290,14 @@ def register(ctx) -> None:
         cg.yield_plan(towns)  # where two cities overlap the bigger keeps the land: no street or house twice
         steps = 4 + len(towns)
 
+        def stop_here() -> None:
+            if nid in stops:
+                stops.discard(nid)
+                raise Stopped("Stopped. Nothing was changed.")
+
         def progress(step: int, text: str) -> None:  # the panel's loading card follows these
+            if step < 3:  # (city steps come after the save: those run to the end)
+                stop_here()
             push({"what": "progress", "id": nid, "step": step, "of": steps, "text": text})
         progress(0, "Reading the ground" if base else "Shaping the terrain")
         ter = base or cg.terrain(int(seed), size, max(0.0, float(relief_m)) * 100, towns, grid=cg.GROUND_GRID,
@@ -337,6 +355,7 @@ def register(ctx) -> None:
             for label, a in actors.items():  # so freeways and highways stand on it as meshes, never reshaping it
                 if label.endswith(("Freeways", "Highways")):
                     cg.detach(a)
+        stop_here()  # the last chance: from here on the world is written
         before = data.get(f"net.{nid}")
         saved = save_network(nid, name, "", "live")
         if not saved.get("ok"):

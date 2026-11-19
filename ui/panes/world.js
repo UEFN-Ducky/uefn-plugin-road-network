@@ -175,6 +175,7 @@ function renderActors(geo) {
   }) : [h("div", { class: "rn-hint" }, "No road actors in this network.")]));
 }
 
+let genRun = 0;  // Stop moves it on: the stopped run's answer is then dropped
 // terrainOnly: a world not built yet is saved as ground only (no cities; Generate world adds them on it)
 async function generate({ terrainOnly = false } = {}) {
   const other = peerBusy();
@@ -196,10 +197,20 @@ async function generate({ terrainOnly = false } = {}) {
   const have = cur && cur.name.toLowerCase() === name.toLowerCase() ? state.cities.length : prev?.cities;
   const keep = same && have === g.cities;
   state.generating = true;
-  busy(`Generating ${name}`, { text: "Starting…", step: 0, of: 1 });
+  const run = ++genRun;
+  // Stop: the panel is free at once; the backend quits at its next stage, before it saves anything
+  const stop = () => {
+    rpc("generate_stop", { name });
+    genRun++;
+    state.generating = false;
+    busy("");
+    tellGroup();
+  };
+  busy(`Generating ${name}`, { text: "Starting…", step: 0, of: 1, stop });
   tellGroup();
   const out = await rpc("generate", { name, seed: g.seed, cities: terrainOnly && !prev ? "0" : keep ? "" : String(g.cities), size_km: g.size_km, relief_m: g.relief_m,
     ground_from: groundFrom, options: JSON.stringify(optionsOf(g)) });
+  if (run !== genRun) return;  // stopped (or a newer run took over)
   state.generating = false;
   busy("");
   tellGroup();
