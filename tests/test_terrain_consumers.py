@@ -7,24 +7,40 @@ from backend import citygen as cg  # noqa: E402
 BOUNDS = ((-300000.0, -300000.0), (300000.0, 300000.0))
 
 
-def test_cities_on_buildable_ground():
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("half_cm", [300000.0, 1000000.0])  # 6 km and 20 km maps
+def test_cities_on_dry_buildable_ground(half_cm):
+    bounds = ((-half_cm, -half_cm), (half_cm, half_cm))
     opts = {"preset": "Coastal"}
-    towns = cg.place_cities(7, 3, BOUNDS, None, 1.0, 50000.0, opts=opts)
+    towns = cg.place_cities(7, 3, bounds, None, 1.0, 50000.0, opts=opts)
     assert len(towns) == 3
-    _, world = cg.build_sites(7, BOUNDS, {**cg.options(opts), "relief_m": 60.0}, 60000.0, 1)
+    _, world = cg.build_sites(7, bounds, {**cg.options(opts), "relief_m": 60.0}, 60000.0, 1)
     g, m = world.grid, world.maps
     water = lambda k: (m.get("land") is not None and m["land"][k] < 0.5) or any(
         m.get(w) is not None and m[w][k] > 0.5 for w in ("sea", "lake")) or (m.get("river") is not None and m["river"][k] > 0)
     for t in towns:
+        assert t.get("site") != "none", t
         i = min(g.n - 1, max(0, int((t["x"] / 100.0 - g.x0) / g.cell)))
         j = min(g.n - 1, max(0, int((t["y"] / 100.0 - g.y0) / g.cell)))
-        k = g.idx(i, j)
-        assert m["slope"][k] <= 0.05, (t, m["slope"][k])
-        assert not water(k), t
-    for a in towns:  # still apart
+        assert m["slope"][g.idx(i, j)] <= 0.05, (t, m["slope"][g.idx(i, j)])
+        r = t["radius"] * 0.5 / 100.0  # the 0.5 x radius disc, in metres
+        wet = [(a, b) for b in range(g.n) for a in range(g.n)
+               if (g.xs[a] - t["x"] / 100.0) ** 2 + (g.ys[b] - t["y"] / 100.0) ** 2 <= r * r and water(g.idx(a, b))]
+        assert not wet, (t, wet[:3])
+    for a in towns:  # still apart (a fallback city may stand closer)
         for b in towns:
             if a is not b:
-                assert ((a["x"] - b["x"]) ** 2 + (a["y"] - b["y"]) ** 2) ** 0.5 > a["radius"] + b["radius"] + 49000
+                gap = 0 if (a.get("site") or b.get("site")) else 49000
+                assert ((a["x"] - b["x"]) ** 2 + (a["y"] - b["y"]) ** 2) ** 0.5 > a["radius"] + b["radius"] + gap
+    # and the world they are built in has no lake or river at a city centre either
+    ter = cg.terrain(7, 2 * half_cm, 6000.0, towns, opts=opts)
+    n, mp = ter["grid"], ter["maps"]
+    for t in towns:
+        i, j = int((t["x"] + half_cm) / (2 * half_cm) * n), int((t["y"] + half_cm) / (2 * half_cm) * n)
+        k = j * n + i
+        assert mp["lake"][k] <= 0.5 and mp["river"][k] <= 0 and (ter["sea"] is None or ter["heights"][j][i] >= ter["sea"]), t
 
 
 def _ridge_world(n=128, size_m=8000.0):

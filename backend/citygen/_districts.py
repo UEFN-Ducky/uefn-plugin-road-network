@@ -11,50 +11,102 @@ def place_cities(seed: int, count: int, bounds: tuple, keep: list | None = None,
     o = options(opts)
     if o["preset"] == "Classic":
         return out
-    return snap_to_sites(out, seed, bounds, keep, {**o, "relief_m": float((opts or {}).get("relief_m", 60.0))}, gap_cm)
+    o = {**o, "relief_m": float((opts or {}).get("relief_m", 60.0))}
+    (x0, y0), (x1, y1) = bounds
+    banned: list = []
+    for _ in range(SITE_ROUNDS):
+        towns = snap_to_sites(out, seed, bounds, keep, o, gap_cm, banned)
+        # the world they get: levelled for them, its rivers and lakes run again. A centre in water there is no site
+        # ponytail: one terrain() a round (~2 s at 160 cells); hand the world back to the caller if that adds up
+        ter = terrain(seed, max(x1 - x0, y1 - y0), o["relief_m"] * 100, towns, grid=SITE_GRID,
+                      center=((x0 + x1) / 2, (y0 + y1) / 2), opts=opts, keep=keep)
+        bad = [t for t in towns if wet_at(ter, t["x"], t["y"])]
+        if not bad:
+            break
+        banned += [(t["x"], t["y"], t["radius"]) for t in bad]
+    return towns
 
 
 SITE_MAX_SLOPE = 0.05  # a city centre stands on ground no steeper than this (5 %)
-SITE_GRID = 64  # preview engine cells across the map when looking for sites
+SITE_GRID = 160  # terrain()'s own grid: sites come from the very maps (lakes, rivers) the world gets
+SITE_DRY = 0.5  # no lake, river or sea within this share of the city's radius of its centre
+SITE_ROUNDS = 3  # placements tried against the finished world
+# the engine levels a city to the plains level (macro) round it: a site far off it (a plateau top) became a pit
+# that hydrology filled as a lake round the city (20 km Coastal seed 7, Nov 18 2026)
+SITE_LEVEL_M = 80.0
+
+
+def wet_at(ter: dict, x: float, y: float) -> bool:
+    """Is (x, y) cm in a terrain() world's lake, river or sea?"""
+    n, (mx, my), (Mx, My) = ter["grid"], ter["min"], ter["max"]
+    i = min(n - 1, max(0, int((x - mx) / (Mx - mx) * n)))
+    j = min(n - 1, max(0, int((y - my) / (My - my) * n)))
+    maps, k = ter.get("maps") or {}, j * n + i
+    return bool((ter.get("sea") is not None and ter["heights"][j][i] < ter["sea"])
+                or (maps.get("lake") and maps["lake"][k] > 0.5) or (maps.get("river") and maps["river"][k] > 0))
 
 
 def build_sites(seed: int, bounds: tuple, o: dict, radius_cm: float, count: int) -> tuple:
-    """(sites, world): flat dry spots from a preview engine pass on the natural ground (no city levelled yet),
-    best first, in cm. o: options() with an engine preset; relief_m (default 60) is the World tab ground height."""
+    """(sites, world): flat dry spots near the plains level from a final engine pass on the natural ground (no city
+    levelled yet), best first, in cm; each with dry_cm, how far it is from the nearest lake, river or sea cell.
+    o: options() with an engine preset; relief_m (default 60) is the World tab ground height."""
     from ..terrain import generate as _engine
     from ..terrain.suitability import best_sites
     (x0, y0), (x1, y1) = bounds
     cfg = {**{k: v for k, v in o.items() if k != "detail"}, "seed": seed, "relief_m": float(o.get("relief_m", 60.0))}
-    world = _engine(cfg, SITE_GRID, x0 / 100.0, y0 / 100.0, max(x1 - x0, y1 - y0) / 100.0, quality="preview")
-    m = world.maps
-    sites = [{"x": s["x"] * 100.0, "y": s["y"] * 100.0, "score": s["score"]}
-             for s in best_sites(m, count, radius_cm / 200.0, radius_cm / 200.0, world.grid)
-             if m["slope"][s["j"] * world.grid.n + s["i"]] <= SITE_MAX_SLOPE
-             and x0 <= s["x"] * 100.0 <= x1 and y0 <= s["y"] * 100.0 <= y1]
+    world = _engine(cfg, SITE_GRID, x0 / 100.0, y0 / 100.0, max(x1 - x0, y1 - y0) / 100.0)
+    m, g = world.maps, world.grid
+    wet = g.new()
+    for k in range(g.n * g.n):
+        if any(m.get(w) is not None and m[w][k] > 0.5 for w in ("lake", "sea")) or (
+                m.get("river") is not None and m["river"][k] > 0) or (m.get("land") is not None and m["land"][k] < 0.5):
+            wet[k] = 1.0
+    dry = g.dist_to(wet) if any(wet) else None
+    # what can't hold a city is no site at all: best_sites ranks only the rest (filtering after it left a few)
+    build = g.new()
+    build[:] = m["build"]
+    for k in range(g.n * g.n):
+        if (wet[k] or m["slope"][k] > SITE_MAX_SLOPE
+                or ("macro" in m and abs(m["height"][k] - m["macro"][k]) > SITE_LEVEL_M)):
+            build[k] = 0.0
+    sites = [{"x": s["x"] * 100.0, "y": s["y"] * 100.0, "score": s["score"],
+              "dry_cm": dry[g.idx(s["i"], s["j"])] * 100.0 if dry else 1e12}
+             for s in best_sites({**m, "build": build}, count, radius_cm / 200.0, g.cell, g)
+             if x0 <= s["x"] * 100.0 <= x1 and y0 <= s["y"] * 100.0 <= y1]
     return sites, world
 
 
-def snap_to_sites(towns: list, seed: int, bounds: tuple, keep: list | None, o: dict, gap_cm: float | None) -> list:
-    """Each city moved to the nearest buildable site that stays clear of the cities already moved and the keep
-    zones; a city with no such site stays where it was."""
+def snap_to_sites(towns: list, seed: int, bounds: tuple, keep: list | None, o: dict, gap_cm: float | None,
+                  banned: list = ()) -> list:
+    """Each city moved to the nearest buildable site with no water within SITE_DRY of its radius that stays clear
+    of the cities already moved, the keep zones and the banned discs [(x, y, r)]. With none: the driest site that
+    overlaps no city, the city shrunk till its SITE_DRY disc is dry (site='fallback'); with no site at all it stays
+    where it was (site='none')."""
     if not towns:
         return towns
-    # ponytail: a disc of half the mean radius picks sites; per-city radii if small towns hug cliffs
-    sites, _ = build_sites(seed, bounds, o, sum(t["radius"] for t in towns) / len(towns), len(towns) * 40)
+    # ponytail: sites are ranked for the smallest city's disc; per-city ranking if big and small cities mix badly
+    sites, _ = build_sites(seed, bounds, o, min(t["radius"] for t in towns), len(towns) * 300)
     (x0, y0), (x1, y1) = bounds
+    sites = [s for s in sites if all(math.hypot(s["x"] - bx, s["y"] - by) > br for bx, by, br in banned)]
     done = []
     for t in towns:
         r = t["radius"]
         gap = lambda c: gap_cm if gap_cm is not None else (r + c["radius"]) * 0.5
-        fits = [s for s in sites if x0 + r * 1.2 <= s["x"] <= x1 - r * 1.2 and y0 + r * 1.2 <= s["y"] <= y1 - r * 1.2
-                and not in_keep(keep, s["x"], s["y"], r * 1.5)
+        ok = [s for s in sites if not in_keep(keep, s["x"], s["y"], r * 1.5)
+              and x0 + r * 1.2 <= s["x"] <= x1 - r * 1.2 and y0 + r * 1.2 <= s["y"] <= y1 - r * 1.2]
+        fits = [s for s in ok if s["dry_cm"] > r * SITE_DRY
                 and all(math.hypot(s["x"] - c["x"], s["y"] - c["y"]) > r + c["radius"] + gap(c) for c in done)]
         if fits:
             s = min(fits, key=lambda s: math.hypot(s["x"] - t["x"], s["y"] - t["y"]))
             t = {**t, "x": round(s["x"]), "y": round(s["y"])}
+        else:  # the wet or crowded world: the driest free site, the city as big as its dry land lets it be
+            room = lambda s: min((math.hypot(s["x"] - c["x"], s["y"] - c["y"]) - r - c["radius"] for c in done), default=1e12)
+            s = max(ok, key=lambda s: (min(room(s), 0.0), min(s["dry_cm"], r * SITE_DRY * 1.05), s["score"]), default=None)
+            t = {**t, "site": "none"} if s is None else {
+                **t, "x": round(s["x"]), "y": round(s["y"]), "site": "fallback",
+                "radius": round(max(15000.0, min(r, s["dry_cm"] / SITE_DRY * 0.95)))}
         done.append(t)
     return done
-
 
 def _place_random(seed, count, bounds, keep, size, gap_cm) -> list:
     rnd = random.Random(seed * 31 + 7)
