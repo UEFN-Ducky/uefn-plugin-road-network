@@ -986,6 +986,8 @@ def _demo() -> None:
         got = [i for i in freeway_plan(huge).interchanges if i.get("model")]
         assert got, [i["kind"] for i in freeway_plan(huge).interchanges]
         assert all(math.hypot(*i["at"]) <= 450000 for i in got), "centre inside the city circle"
+        # a street crossing gets a street model (XR cross sockets): never a freeway-to-freeway cloverleaf
+        assert all(i["kind"] in _fw.SERVICE_FALLBACK for i in got if i["freeway"] != "ns+ew"), [i["kind"] for i in got]
         mid = {"name": "Mid", "x": 0, "y": 0, "radius": 150000, "seed": 7, "style": "mixed"}  # a normal city uses them too
         assert any(i.get("model") for i in freeway_plan(mid).interchanges), [i["kind"] for i in freeway_plan(mid).interchanges]
         world = generate([huge], lambda x, y: 0.0, "/G", seed=1)["Huge Freeways"]

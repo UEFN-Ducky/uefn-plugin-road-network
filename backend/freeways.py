@@ -225,7 +225,6 @@ def interchange(kind: str, f: Frame, hA: float, hB: float, liftA, liftB, tag: tu
 # +Y along the cross road, cm. UEFN imports Blender's +Y as its -Y, so a socket's local y is negated here.
 MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "interchanges")
 SERVICE_FALLBACK = ("diamond", "diamond_frontage", "parclo")  # smallest square first
-CLOVER_MIN_R = 150000.0  # from this radius the normal zone's interchanges are full cloverleafs where they fit
 MODEL_FADE = 1.6 * 2 * LEVEL_CM / MAX_GRADE["freeway"]  # a freeway comes down from two levels to a model's grade
 MODEL_CELL = 5000.0  # the model's square is marked taken on a 50 m grid ...
 MODEL_CELL_HALF = 3600.0  # ... each mark this wide, so the whole square is covered
@@ -612,11 +611,12 @@ def plan(city: dict, o: dict) -> Plan:
                 kind = "diamond" if share <= down else "parclo" if share <= normal else "diamond_frontage"
                 m = None
                 if use_models and models():
-                    # the zone's own model (a big city's normal zone: a full cloverleaf first), else the smaller
-                    # Blender ones before none at all; on a slope the ground can't take (slope_plan): no interchange
-                    # (generated ramps there broke and waved over the hillside, Nov 20 2026)
-                    first = ("cloverleaf",) if kind == "parclo" and R >= CLOVER_MIN_R else ()
-                    tries = first + (kind,) + tuple(k for k in SERVICE_FALLBACK if k != kind)
+                    # the zone's own model, else the smaller Blender ones before none at all; on a slope the ground
+                    # can't take (slope_plan): no interchange (generated ramps there broke and waved over the
+                    # hillside, Nov 20 2026). Never a cloverleaf or trumpet on a street: their cross sockets are
+                    # freeway, so no street stub joined them, and test1's 1.4 x 1.05 km cloverleaf levelled a 525 m
+                    # wide pad across the south coast for a cross road that was never built (Nov 20 2026)
+                    tries = (kind,) + tuple(k for k in SERVICE_FALLBACK if k != kind)
                     at = [round(cx), round(cy)]
                     if on_slope(cx, cy):
                         rej.append({"at": at, "freeway": name, "kind": kind, "why": "slope: no interchange"})
