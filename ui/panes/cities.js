@@ -201,28 +201,43 @@ function renderCitiesPane() {
     h("div", { class: "rn-hint" }, "Each city keeps its own roads actor, style and building sets. Changing one places that city again; the others stay as they are."));
 }
 // ------------------------------------------------------------------ city edits: queued into one rebuild
-// Moving, resizing, restyling, adding and deleting cities never rebuilds per edit: each edit shows at once and
-// waits; a moment after the last one, one rebuild takes them all, and edits made while a rebuild runs go into the
-// next one. A rebuild per edit kept the person waiting, and rebuilds side by side undid each other's edits.
-const edits = { list: [], running: false, timer: 0 };
-const QUIET_MS = 1200;  // the pause after the last edit before the rebuild starts
+// Moving, resizing, restyling, adding and deleting cities never rebuilds by itself: each edit shows at once and
+// waits until the person presses Apply, so they can make several changes first (it rebuilt 1.2 s after the last
+// one, mid-edit, Nov 20 2026). One rebuild takes them all; Discard drops them and shows the world as it is.
+const edits = { list: [], running: false };
 function queueEdit(title, apply, after) {
   edits.list.push({ title, apply, after });
-  clearTimeout(edits.timer);
   const n = edits.list.length;
   if (edits.running) {
-    busy(loading.title || title, { text: `${n} more change${n > 1 ? "s" : ""} waiting for the next rebuild…`,
+    busy(loading.title || title, { text: `${n} more change${n > 1 ? "s" : ""} waiting: Apply when this rebuild is done`,
       step: loading.step, of: loading.of });
     return;
   }
-  busy(title, { text: n > 1 ? `${n} changes: rebuilding once you pause…` : "Rebuilding once you pause…" });
-  edits.timer = setTimeout(runEdits, QUIET_MS);
+  showPending();
+}
+// the waiting changes: Apply rebuilds once with all of them, Discard puts the world back as it is
+function showPending() {
+  const n = edits.list.length;
+  if (!n) { busy(""); return; }
+  busy("");
+  $("busy").replaceChildren(h("div", { class: "rn-load", role: "status" },
+    h("div", { class: "rn-load__title" }, h("span", { class: "rn-load__name" }, `${n} change${n > 1 ? "s" : ""} waiting`)),
+    h("div", { class: "rn-load__step" }, "Nothing is rebuilt until you press Apply."),
+    h("div", { class: "rn-btns", style: "margin-top: 8px" },
+      button("Apply", "check", () => runEdits(), "primary", "Rebuild the world with every waiting change"),
+      button("Discard", "x", discardEdits, "secondary", "Drop the waiting changes"))));
+}
+async function discardEdits() {
+  edits.list = [];
+  busy("");
+  await loadGeometry(true);  // the world as it is: undoes what the panel showed
+  renderWorldCity();
 }
 async function runEdits() {
-  if (edits.running) return;
+  if (edits.running || !edits.list.length) return;
   edits.running = true;
   try {
-    while (edits.list.length) {
+    {
       const batch = edits.list.splice(0);
       const saved = [], failed = [];
       for (const e of batch) {  // saved only now: never while a rebuild runs (it would write the old city back)
@@ -238,6 +253,7 @@ async function runEdits() {
     }
   } finally {
     edits.running = false;
+    if (edits.list.length) showPending();  // made while it ran: they wait for Apply too
   }
 }
 function saveCity(c, change) {
