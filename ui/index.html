@@ -230,8 +230,9 @@
                color: var(--fg); background: var(--bg-hover); border: 1px solid var(--border); border-radius: var(--radius); }
     .rn-pane [inert] { opacity: 0.55; }
     .rn-busy { position: absolute; left: 50%; top: 56px; transform: translateX(-50%); z-index: 5; pointer-events: none; }
+    .rn-busy:has(~ .rn-banner:not([hidden])) { top: 104px; }  /* below the edit banner, not over it */
     /* ---------- loading card: what is happening, and how far along */
-    .rn-load { width: min(360px, calc(100vw - 48px)); background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius);
+    .rn-load { width: min(360px, calc(100vw - 48px)); background: var(--card, var(--bg)); pointer-events: auto; /* its Stop button */ border: 1px solid var(--border); border-radius: var(--radius);
                box-shadow: var(--shadow-lg); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; animation: rn-pop 180ms ease; }
     .rn-load__title { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; font-weight: 600; color: var(--fg); }
     .rn-load__pct { font-weight: 400; color: var(--fg-dim); font-variant-numeric: tabular-nums; font-size: 12px; }
