@@ -989,17 +989,25 @@ def _demo() -> None:
                 assert any(math.hypot(sx_ - x, sy_ - y) < 100 for x, y in held), (i["kind"], sx_, sy_)
         assert sum(1 for p in world["points"] if "/Interchanges/IC_" in "".join(p["lines"])) == len(got)
         assert not any(i.get("model") for i in freeway_plan(huge, {"interchange_models": "no"}).interchanges)
-        # a spot on a slope the ground can't take keeps an interchange (generated ramps), it is never dropped; a
+        # a spot on a slope the ground can't take gets no interchange (generated ramps broke there); a
         # gentle natural slope (20 m over the square) keeps its Blender model: the pad is cut level
         n0 = len(freeway_plan(mid).interchanges)
         tilt = lambda x, y: x * 0.01
         slope_plan([mid], None, tilt)  # 1 %: ~14 m over a 1.4 km model, more than a scan may have
         sl = freeway_plan(mid)
-        assert mid.get("ic_steep") and len(sl.interchanges) == n0, (n0, [i["kind"] for i in sl.interchanges])
+        assert mid.get("ic_steep") and len(sl.interchanges) < n0, (n0, [i["kind"] for i in sl.interchanges])
+        assert all(i.get("model") for i in sl.interchanges if i.get("kind") != "stack"), sl.interchanges
         assert any(r["why"].startswith("slope") for r in sl.rejected), sl.rejected
         slope_plan([mid], None, tilt, MODEL_GRADE_CM)
         assert not mid.get("ic_steep") and any(i.get("model") for i in freeway_plan(mid).interchanges)
         mid.pop("ic_steep", None)
+    # winding suburbs never climb a mountain no house fits on: east of x=60 km the ground rises 35 %
+    wind = {"name": "W", "x": 0, "y": 0, "radius": 140000, "seed": 3, "style": "mixed", "features": {"suburbs": "winding"}}
+    mount = lambda x, y: max(0.0, x - 60000) * 0.35
+    plan_hills([wind], mount)
+    sub = [p for n, p in city_graph(wind)[0].items() if len(n) == 3 and n[0] >= SUB_KEY]
+    assert sub and not any(hill_grade(wind, city_options(wind), *p[:2]) > SUB_STEEP for p in sub), len(sub)
+    assert not any(p[0] > 75000 for p in sub), max(p[0] for p in sub)
     # every ramp lands on its road in jittered (mixed) cities of any seed: main roads are straight lines
     for s in range(1, 9):
         r = freeway_report({"name": "K", "x": 0, "y": 0, "radius": 160000, "seed": s, "style": "mixed"},

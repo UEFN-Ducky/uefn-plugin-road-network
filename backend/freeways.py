@@ -613,12 +613,14 @@ def plan(city: dict, o: dict) -> Plan:
                 m = None
                 if use_models and models():
                     # the zone's own model (a big city's normal zone: a full cloverleaf first), else the smaller
-                    # Blender ones before none at all; on a slope the ground can't take (slope_plan): generated ramps
+                    # Blender ones before none at all; on a slope the ground can't take (slope_plan): no interchange
+                    # (generated ramps there broke and waved over the hillside, Nov 20 2026)
                     first = ("cloverleaf",) if kind == "parclo" and R >= CLOVER_MIN_R else ()
                     tries = first + (kind,) + tuple(k for k in SERVICE_FALLBACK if k != kind)
                     at = [round(cx), round(cy)]
                     if on_slope(cx, cy):
-                        rej.append({"at": at, "freeway": name, "kind": kind, "why": "slope: generated ramps"})
+                        rej.append({"at": at, "freeway": name, "kind": kind, "why": "slope: no interchange"})
+                        continue
                     else:
                         for k in tries:
                             m_ = models().get(k)

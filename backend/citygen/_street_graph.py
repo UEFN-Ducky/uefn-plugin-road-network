@@ -405,6 +405,20 @@ SUB_CLEAR = 7000.0  # ... never closer than this to another street's point (two 
 SUB_OFF = 4000.0  # ... nor this close to a street of the grid
 SUB_SEED_GAP = 20000.0  # a collector leaves the grid about every 200 m
 SUB_KEY = 10 ** 6
+SUB_STEEP = 0.2  # a winding street stops where the hillside is steeper than this: no house lot fits there
+
+
+def hill_grade(city: dict, o: dict, x: float, y: float) -> float:
+    """The ground's grade at a world point, from the city's hills (plan_hills) at the nearest grid crossing; 0 with none.
+    ponytail: nearest crossing, a block apart; sample the ground itself if streets need finer."""
+    hills = city.get("hills")
+    if not hills:
+        return 0.0
+    bx, by = block_xy(o)
+    t = math.radians(orientation(city))
+    dx, dy = x - city["x"], y - city["y"]
+    g = hill_at(hills, round((math.cos(t) * dx + math.sin(t) * dy) / bx), round((-math.sin(t) * dx + math.cos(t) * dy) / by))
+    return math.hypot(g[2], g[3])
 
 
 def winding_suburbs(city: dict, o: dict, nodes: dict, ring: dict, edges: list, wet=None) -> tuple:
@@ -413,7 +427,7 @@ def winding_suburbs(city: dict, o: dict, nodes: dict, ring: dict, edges: list, w
     out to the city's edge, local streets branch off them on both sides (crescents; some close a loop on a
     neighbour), and short cul-de-sacs fill what room is left. The further out, the more a street winds. Nodes are
     (SUB_KEY + n, 0, 0) (three ints: they sort with the grid's (ix, iy) wherever nodes are ordered); all are public streets, so lots front them (frontage_lots) and every end gets its turnaround.
-    ponytail: streets ignore the hills here (the ground is graded to them); follow hill_at if they must."""
+    No street climbs onto a hillside steeper than SUB_STEEP (a mountain): no house would fit along it."""
     normal = max(o["normal"], o["downtown"])
     outer = lambda e: max(ring[e[0]], ring[e[1]]) > normal and not ((e[0][0] == 0 == e[1][0]) or (e[0][1] == 0 == e[1][1]))
     cut, edges, old = [e for e in edges if outer(e)], [e for e in edges if not outer(e)], nodes
@@ -458,7 +472,8 @@ def winding_suburbs(city: dict, o: dict, nodes: dict, ring: dict, edges: list, w
             elif i:  # a local street keeps one bend: a crescent
                 h += c * (0.4 + 0.6 * far)
             nx, ny = x + SUB_STEP * math.cos(h), y + SUB_STEP * math.sin(h)
-            if zone_share(city, nx, ny) > 0.97 or (wet and wet(nx, ny)) or (city.get("yield_to") and yielded(city, nx, ny)):
+            if zone_share(city, nx, ny) > 0.97 or (wet and wet(nx, ny)) or (city.get("yield_to") and yielded(city, nx, ny)) \
+                    or hill_grade(city, o, nx, ny) > SUB_STEEP:
                 break
             got = hit(nx, ny, skip)
             if got:
