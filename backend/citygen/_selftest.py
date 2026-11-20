@@ -785,6 +785,16 @@ def _demo() -> None:
     after = [p for ln in freeway_plan(host).lines if ln["cls"] == "freeway" for p in ln["points"]]
     assert through and after and not any(zone_share(guest, p[0], p[1]) <= 1.0 for p in after), (len(through), len(after))
     assert "fw_shore" not in guest or guest["fw_shore"], "the small one has no freeway to limit"
+    # ... and it ends at the foot of a mountain, never inside it; a gentle rise it climbs
+    hill_city = dict(lake_city, name="Hill")
+    hill_city.pop("fw_shore")
+    shore_plan([hill_city], None, None, lambda x, y: max(0.0, y - 80000) * 0.5)
+    back, ahead = hill_city["fw_shore"]["ns"]
+    assert 80000 <= ahead <= 90000 and back > 150000, hill_city["fw_shore"]
+    assert max(p[1] for ln in freeway_plan(hill_city).lines if ln["cls"] == "freeway" for p in ln["points"]) <= ahead
+    hill_city.pop("fw_shore")
+    shore_plan([hill_city], None, None, lambda x, y: abs(y) * 0.03)
+    assert min(hill_city["fw_shore"]["ns"]) > 150000, hill_city["fw_shore"]
     # ... and the land along a joining street fills in with house lots, outside both cities' own edges
     cs2 = [{**cs[0], "joins": [[60000, 0, 80000, 0]]}, {**cs[1], "x": 220000}]
     jl, corridors = join_lots(cs2[0], cs2)

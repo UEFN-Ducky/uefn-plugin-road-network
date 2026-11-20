@@ -195,15 +195,15 @@ def join_lots(city: dict, cities: list, opts: dict | None = None, wet=None, keep
     return lots, corridors
 
 
-def shore_plan(cities: list, opts: dict | None = None, wet=None) -> None:
+def shore_plan(cities: list, opts: dict | None = None, wet=None, ground=None) -> None:
     """Where each city's freeways must end: at the shore when only open water lies beyond, and before a
-    neighbouring city's land (sets city['fw_shore'], see freeways.shore_reach). Before the streets: the freeway
+    neighbouring city's land, and at the foot of a mountain (sets city['fw_shore'], see freeways.shore_reach). Before the streets: the freeway
     plan and everything laid round it follow."""
     from .. import freeways
     for c in cities:
         others = [u for u in cities if u is not c and math.hypot(u["x"] - c["x"], u["y"] - c["y"]) < (u["radius"] + c["radius"]) * 1.3 + 400000]
         taken = (lambda x, y, c=c, others=others: zone_share(c, x, y) > 1.0 and any(zone_share(u, x, y) <= 1.02 for u in others))             if others else None
-        got = freeways.shore_reach(c, city_options(c, opts), wet, taken) if wet or taken else None
+        got = freeways.shore_reach(c, city_options(c, opts), wet, taken, ground) if wet or taken or ground else None
         if got:
             c["fw_shore"] = got
         else:

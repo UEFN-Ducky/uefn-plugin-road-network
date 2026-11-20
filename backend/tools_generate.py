@@ -336,7 +336,7 @@ def register(ctx) -> None:
         airport_builds: dict = {}
         # a freeway ends at the shore when only open water lies beyond it, and each city's streets give way to its
         # neighbours' ramps where those reach over its land
-        cg.shore_plan(towns, opts, wet)
+        cg.shore_plan(towns, opts, wet, road_ground)  # (and at the foot of a mountain)
         # a scanned landscape is never reshaped: a Blender interchange model only where it is flat already. Ground
         # the world owns is cut to the model's pad (grade_to_roads), up to MODEL_GRADE_CM of relief under it: test1's
         # parclo was cut 90 m into a hill, a 50 m street beside its level pad (Nov 20 2026)

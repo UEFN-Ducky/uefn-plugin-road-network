@@ -307,6 +307,7 @@ MAP_EDGE = 5000.0  # nothing closer than 50 m to the map's edge
 IC_ROOM = 35000.0  # an interchange's ramps and frontage roads reach ~300 m from its centre
 CORRIDOR = 1500.0  # right of way past a road's edge: no building lot inside it
 FW_WATER_MAX = 40000.0  # a freeway bridges water up to 400 m across (a river); wider water ends it at the shore
+FW_BURY_CM = 1500.0  # ground this far over the deck (climbing at its grade) is a mountain: the freeway ends before it
 
 
 def _densify(pts, step=1500.0):
@@ -421,7 +422,7 @@ def reserved(city: dict):
                          or any(shipyard.reserved(y_, x, y, 2000) for y_ in yards) or cg.yielded(city, x, y, 5000.0))
 
 
-def shore_reach(city: dict, o: dict, wet, taken=None) -> dict | None:
+def shore_reach(city: dict, o: dict, wet, taken=None, ground=None) -> dict | None:
     """How far each of the city's freeways may run from the middle of its line: {'ns': [back cm, ahead cm], 'ew':
     [...], 'stack': is the stack's place free, 'wet_ic': {'ns': [n, ...], 'ew': [...]} the interchanges (plan()'s
     own numbering along each freeway) that would stand with a ramp in the water}; None with nothing in its way
@@ -431,11 +432,13 @@ def shore_reach(city: dict, o: dict, wet, taken=None) -> dict | None:
       bay and Riverton's 1.6 km, with the stack's flyovers on piers in the water beside it: far too much bridge).
     - a neighbouring city's land (`taken(x, y)`): it ends before that city's edge and never runs through it
       (Northgate's ran on through Riverton and took most of its streets).
+    - a mountain (`ground(x, y)`): it ends where the ground rises more than FW_BURY_CM above the deck climbing at
+      its MAX_GRADE from the city (test1's decks ran 195 m inside the hill north-west of the city, Nov 20 2026).
     And no interchange is built where any of its ramps would stand in water: a freeway bridge is one deck.
     The lines here are plan()'s own: keep the two in step."""
     from . import citygen as cg
     R = city["radius"]
-    if not (wet or taken) or o.get("freeways", "yes") != "yes" or R < FW_MIN_R:
+    if not (wet or taken or ground) or o.get("freeways", "yes") != "yes" or R < FW_MIN_R:
         return None
     bx, by = cg.block_xy(o)
     turn = math.radians(cg.orientation(city))
@@ -450,10 +453,18 @@ def shore_reach(city: dict, o: dict, wet, taken=None) -> dict | None:
         reach = []
         for sign in (-1.0, 1.0):
             dry, t, water = 0.0, 0.0, None  # (water: where the stretch of water it is over began)
+            deck = ground(px, py) if ground else None  # the highest the deck can be here, climbing from the city
             while t <= end:
                 x, y = px + dx * sign * t, py + dy * sign * t
                 if taken and taken(x, y):
                     break
+                if ground:
+                    g = ground(x, y)
+                    if g - deck > FW_BURY_CM:
+                        dry = max(0.0, t - 1000.0)
+                        break  # into a mountain: it ends at its foot
+                    climb = MAX_GRADE["freeway"] * 1000.0
+                    deck = min(g, deck + climb) if g > deck else max(g, deck - climb)
                 if wet and wet(x, y):
                     water = t if water is None else water
                     if t - water > FW_WATER_MAX:
