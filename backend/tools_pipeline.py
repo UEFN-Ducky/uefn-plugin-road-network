@@ -123,15 +123,17 @@ def register(ctx) -> None:
                     continue
                 if not gen:
                     return {"ok": False, "error": "Only generated worlds can re-run their roads."}
+                # (its own ground_from, as the panel's Apply passes it: `or nid` laid a world that makes its own
+                # terrain on its last graded ground as if scanned from UEFN, and marked it so: no grading after)
                 r = generate(doc.get("name") or nid, gen.get("seed", 7), "", gen.get("size_km", 6), gen.get("relief_m", 60),
-                             gen.get("ground_from") or nid, "", *(gen.get("center") or [0, 0]), "")
+                             gen.get("ground_from") or "", "", *(gen.get("center") or [0, 0]), "")
                 if not r.get("ok"):
                     return r
                 ran += ["terrain", "planner", "roads", "blocks"]
             elif stage == "demand":  # planned with the blocks in generate (city_layout -> urban.plan)
                 if "blocks" not in ran:
                     r = generate(doc.get("name") or nid, gen.get("seed", 7), "", gen.get("size_km", 6),
-                                 gen.get("relief_m", 60), gen.get("ground_from") or nid, "",
+                                 gen.get("relief_m", 60), gen.get("ground_from") or "", "",
                                  *(gen.get("center") or [0, 0]), "")
                     if not r.get("ok"):
                         return r
