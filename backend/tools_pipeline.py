@@ -273,7 +273,7 @@ def register(ctx) -> None:
                 continue
             _h, pts, segs = load_actor(nid, aslug)
             if segs:
-                p2, s2 = st.straighten(pts, segs, keep_z=label.endswith(("Freeways", "Highways")))  # straight from corner to corner
+                p2, s2 = st.straighten(pts, segs, keep_z=st.keeps_heights(label))  # straight from corner to corner
                 acts[label] = {"points": p2, "segments": s2}
         if not acts:
             return {"ok": False, "error": "No road actors to push (generate the world first)."}

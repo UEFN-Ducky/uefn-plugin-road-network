@@ -287,6 +287,23 @@ def test_engine_highway_follows_cost_route(monkeypatch):
     assert roads[hw]["points"] != straight[hw]["points"]
 
 
+def test_airport_roads_take_the_cost_route_and_keep_its_heights():
+    # a 400 m cone between the airport and the town (5 km map): the access road goes round it, never over it
+    g, half = 64, 250000.0
+    z = lambda x, y: max(0.0, 40000.0 - 40000.0 * math.hypot(x, y) / 120000.0)  # noqa: E731
+    xy = lambda k: -half + (k + 0.5) * 2 * half / g  # noqa: E731
+    ter = {"grid": g, "min": [-half, -half], "max": [half, half],
+           "heights": [[z(xy(i), xy(j)) for i in range(g)] for j in range(g)], "maps": {"road_cost": [1.0] * (g * g)}}
+    nodes = {("ap", "A", "gate"): [-200000, 0], ("ap", "A", "access", "city"): [200000, 0]}
+    edges = [[("ap", "A", "gate"), ("ap", "A", "access", "city"), "4L"]]
+    cg.route_out(ter, nodes, edges)
+    line = [nodes[edges[0][0]]] + edges[0][3] + [nodes[edges[0][1]]]
+    assert max(z(*p[:2]) for p in line) < 8000, "round the mountain's foot, not across its 400 m top"
+    cg.route_out(None, nodes, edges)  # no terrain: left as it was
+    assert cg.st.keeps_heights("A Airport Roads") and cg.st.keeps_heights("A Airbase Roads")
+    assert not cg.st.keeps_heights("A Roads")  # city streets still run straight from corner to corner
+
+
 def test_engine_holds_keep_zones_and_digs_lakes():
     keep = cg.keep_zones([{"x0": -20000, "y0": -20000, "x1": 20000, "y1": 20000, "z": 500}])
     lakes = cg.lake_list([{"pts": [[100000, -200000], [200000, -200000]], "width_m": 300}])

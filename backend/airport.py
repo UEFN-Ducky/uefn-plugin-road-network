@@ -53,6 +53,9 @@ TYPES = {
                      terminal="none", cargo=False, min_pop=0),
 }
 RSA = 30000.0  # runway safety area / approach margin past each end
+SITE_GRADE = 0.015  # the airport's whole land (runways, apron, terminal, car parks) may fall at most this over a runway length
+APPROACH_SLOPE = 0.05  # 20:1 approach surface: no ground above it, from each runway end ...
+APPROACH_CM = 300000.0  # ... out to 3 km
 LANDSIDE = 30000.0  # terminal + curb + parking depth on the city side
 RW_HALF = {"RW": 2250.0, "RS": 900.0}
 OFA = {"RW": 7500.0, "RS": 3500.0}  # object-free half width from the runway centre line
@@ -222,16 +225,23 @@ def plan_world(cities: list, ground, wet, keep: list | None, bounds: tuple, opts
         # no room for this size: a smaller airport (an international city may still fit a regional one)
         ladder = {"international": ["international", "regional", "general_aviation"],
                   "regional": ["regional", "general_aviation"]}.get(t0, [t0])
+        why: dict = {}
         for t in ladder:
-            best = _site(c, t, cities, ground, wet, keep, (x0, y0, x1, y1), wind, out)
+            best = _site(c, t, cities, ground, wet, keep, (x0, y0, x1, y1), wind, out, why)
             if best:
                 out.append({**best, "wanted": t0} if t != t0 else best)
                 break
+        else:  # no level land with clear approaches: no airport, never one cut into a mountain
+            c["no_airport"] = why
     return out
 
 
-def _site(c, t, cities, ground, wet, keep, box, wind, out):
-    """The best site for an airport of type t near city c (three rings of 24 bearings, three headings), or None."""
+def _site(c, t, cities, ground, wet, keep, box, wind, out, why=None):
+    """The best site for an airport of type t near city c (three rings of 24 bearings, three headings), or None.
+    The whole land is checked, not its centre: a site whose ground falls more than SITE_GRADE across it, or whose
+    approach past either runway end climbs over APPROACH_SLOPE, is rejected (counted in why[reason]): an airport
+    stood at a mountain's foot with its terminal on a 100 m cut into the slope (Nov 20 2026)."""
+    why = {} if why is None else why
     x0, y0, x1, y1 = box
     spec = TYPES[t]
     hu, v0, v1 = extent(spec)
@@ -264,6 +274,14 @@ def _site(c, t, cities, ground, wet, keep, box, wind, out):
                 if len(zs) < 20:
                     continue
                 mean = sum(zs) / len(zs)
+                if max(zs) - min(zs) > SITE_GRADE * spec["L"] + 1000:
+                    why["steep"] = why.get("steep", 0) + 1
+                    continue
+                if any(z is not None and z > mean + 1000 + APPROACH_SLOPE * d
+                       for end in (-1, 1) for d in (APPROACH_CM * k / 10 for k in range(1, 11))
+                       for z in (ground(*f.w(end * (spec["L"] / 2 + d), 0)),)):
+                    why["approach"] = why.get("approach", 0) + 1
+                    continue
                 grading = sum(abs(z - mean) for z in zs) / len(zs)
                 score = grading + 0.02 * reach + abs(((heading - wind + 180) % 360) - 180) * 20
                 if best is None or score < best[0]:
@@ -660,6 +678,19 @@ def _demo() -> None:
     bad = validate(ap, f, TYPES["regional"], *got["airside"], got["rows"], got["lots"], [], (-1e9, 0), *got["landside"],
                    got["links"], [], flat, None)
     assert not bad["ok"] and any("object-free" in p for p in bad["problems"]), bad
+    # the whole site must be level and its approaches clear: no airport on a mountainside, one on a plateau
+    slope = lambda x, y: 0.08 * x  # 8 % everywhere
+    town = {"name": "Hill", "x": 0, "y": 0, "radius": 150000}
+    assert plan_world([town], slope, None, [], bounds, {}, {"Hill": 40000}) == [] and town["no_airport"].get("steep"), town
+    peak = lambda x, y: 0.0 if abs(x) < 600000 and abs(y) < 600000 else 400000.0  # a plateau walled in by mountains
+    town = {"name": "Mesa", "x": 0, "y": 0, "radius": 150000}
+    high = lambda x, y: 150000.0  # the same plateau 1.5 km up, open all round
+    assert plan_world([town], high, None, [], bounds, {}, {"Mesa": 40000}), "a high flat plateau takes an airport"
+    got_ = plan_world([town], peak, None, [], bounds, {}, {"Mesa": 40000})
+    for ap_ in got_:  # any site it found keeps its approaches clear of the wall
+        f_ = Frame(*ap_["center"], ap_["heading"])
+        L_ = TYPES[ap_["type"]]["L"]
+        assert all(peak(*f_.w(e * (L_ / 2 + d), 0)) == 0.0 for e in (-1, 1) for d in (0, APPROACH_CM)), ap_
     print("airport ok")
 
 

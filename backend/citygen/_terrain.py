@@ -620,7 +620,7 @@ def grade_to_roads(ter: dict, actors: dict, locked: set | None = None) -> dict:
             continue
         # graded to the roads exactly as they are pushed (straight from corner to corner, road_network_roads_pcg),
         # never to the point-per-bump line they were drawn with: the two must meet everywhere
-        pts_, segs_ = st.straighten(a["points"], a["segments"], keep_z=label.endswith(("Freeways", "Highways")))
+        pts_, segs_ = st.straighten(a["points"], a["segments"], keep_z=st.keeps_heights(label))
         by_i = {p["i"]: p for p in pts_}
         links: dict = {}  # mesh-less links per point: a piece with one is a dead end's turnaround
         for s in segs_:

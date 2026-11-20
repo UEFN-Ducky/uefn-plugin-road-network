@@ -337,7 +337,7 @@ def register(ctx) -> None:
         head, pts, segs = load_actor(nid, aslug)
         if not head:
             return None, None
-        fw = str(head.get("label") or "").endswith(("Freeways", "Highways"))  # (they keep their height bends)
+        fw = st.keeps_heights(head.get("label"))  # (they keep their height bends)
         return head, st.serialize(*st.straighten(pts, segs, keep_z=fw), terrain=terrain)  # long roads straight, not a point per bump
 
     def copy_text(net_id: str = "", actor: str = "") -> dict:

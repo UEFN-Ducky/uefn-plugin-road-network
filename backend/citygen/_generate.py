@@ -200,6 +200,7 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
         label = f"{ap['city']} Airport" if ap["type"] != "military" else f"{ap['city']} Airbase"
         out[label] = build_actor(an, ae, flat, folder)
         rn, re_ = got["landside"]
+        route_out(terrain, rn, re_)
         if re_:
             airport_drives(got["lots"], rn, re_)
             out[f"{label} Roads"] = build_actor(rn, re_, ground, folder)
@@ -266,7 +267,7 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
     # a point only where a road turns, meets another or carries a piece: straight from corner to corner (a point
     # per 20 m, each on its own bump, made every road wave); then every welded end put back on the road it reaches
     for label in list(out):
-        pts, segs = st.straighten(out[label]["points"], out[label]["segments"], keep_z=label.endswith(("Freeways", "Highways")))
+        pts, segs = st.straighten(out[label]["points"], out[label]["segments"], keep_z=st.keeps_heights(label))
         out[label] = {**out[label], "points": pts, "segments": segs}
     for _ in range(8):
         if not weld_ends(out, edge):
@@ -308,9 +309,10 @@ def terrain_z(ter: dict, x: float, y: float) -> float:
 
 ROUTE_CLIMB = 25.0  # cost of a metre up or down, in metres of flat road: a 500 m crest is worth a 25 km detour
 ROUTE_MAX_GRADE = 0.08  # no step of a routed highway steeper than this
+STREET_ROUTE_GRADE = 0.15  # an airport's access road (a street) may climb this where no highway grade gets through
 
 
-def cost_route(ter: dict, p, q, n: int = ROUTE_N) -> list | None:
+def cost_route(ter: dict, p, q, n: int = ROUTE_N, max_grade: float = ROUTE_MAX_GRADE) -> list | None:
     """Via points (cm, ends left out) of the cheapest way from p to q (8-way A* on an n x n grid over the terrain):
     the engine's road_cost per metre, ROUTE_CLIMB per metre climbed or descended, and no step steeper than
     ROUTE_MAX_GRADE, so a highway crosses a range at its pass. Simplified at ROUTE_TOL_CM, then split so no two
@@ -342,7 +344,7 @@ def cost_route(ter: dict, p, q, n: int = ROUTE_N) -> list | None:
             if 0 <= a < n and 0 <= b < n:
                 m = b * n + a
                 rise = abs(z[m] - z[k])
-                if rise > L * ROUTE_MAX_GRADE:
+                if rise > L * max_grade:
                     continue
                 nd = d + L * (c[k] + c[m]) / 2 + ROUTE_CLIMB * rise
                 if nd < best.get(m, 1e30):
@@ -361,6 +363,22 @@ def cost_route(ter: dict, p, q, n: int = ROUTE_N) -> list | None:
         m = max(1, math.ceil(math.dist(a, b) / ROUTE_STEP_CM))
         via += [[a[0] + (b[0] - a[0]) * t / m, a[1] + (b[1] - a[1]) * t / m] for t in range(1, m + 1)]
     return via[:-1]
+
+
+def route_out(terrain: dict | None, nodes: dict, edges: list) -> None:
+    """An airport's access and cargo roads out to the city (edges ending at a (..., 'city') node) take the
+    cheapest way over the terrain, round a mountain or through its pass: straight, one ran level through a
+    mountain in a 100 m trench (Nov 20 2026). Highway grade first, a street's where that finds none; left
+    straight when neither does. In place."""
+    if not terrain or not (terrain.get("maps") or {}).get("road_cost"):
+        return
+    for e in edges:
+        if e[1][-1] == "city":
+            via = e[3] if len(e) > 3 else []
+            a, b = via[-1] if via else nodes[e[0]], nodes[e[1]]
+            routed = cost_route(terrain, a, b) or cost_route(terrain, a, b, max_grade=STREET_ROUTE_GRADE)
+            if routed:
+                e[3:] = [via + routed]
 
 
 def model_pieces(a: dict, ics: list, ground, folder: str) -> dict:

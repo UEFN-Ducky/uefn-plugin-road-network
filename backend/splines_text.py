@@ -627,6 +627,15 @@ STRAIGHT_Z_CM = 200.0   # ...and, on a deck or ramp (never shaping the ground), 
 # landscape's Splines layer cuts / fills the ground to it (a point per bump made every street wave up and down).
 
 
+HEIGHT_KEEPERS = ("Freeways", "Highways", "Airport Roads", "Airbase Roads")
+
+
+def keeps_heights(label) -> bool:
+    """Long roads routed over the land (straighten(keep_z=True)): cut to their two ends, an airport's 3 km access
+    road ran dead level through a mountain between them and dug a 100 m trench (Nov 20 2026)."""
+    return str(label or "").endswith(HEIGHT_KEEPERS)
+
+
 def straighten(points: list, segments: list, xy_tol: float = STRAIGHT_XY_CM, z_tol: float = STRAIGHT_Z_CM,
                keep_z: bool = False) -> tuple:
     """Copies of (points, segments) with every run of plain road points cut to the fewest straight segments.
