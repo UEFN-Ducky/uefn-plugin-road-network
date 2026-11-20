@@ -151,7 +151,8 @@ def sites(city: dict, segments: list, population: int, opts: dict | None = None)
         mid = S[len(S) // 2]
         if not free(mid):
             continue
-        L = min(seg["length_m"], 900) * 100
+        # a yard in scale with its city: about 1 m of quay per 100 people (a 36k town gets ~360 m, 90k the full 900)
+        L = min(seg["length_m"], 900, max(150, population // 100)) * 100
         deep = max(q["depth80_m"] for q in S)
         kind = None
         if seg["type"] == "industrial":
@@ -654,7 +655,9 @@ def _demo() -> None:
             assert not any(abs(u1 - du) < w1 + half and v1 - d1 < v_end for du, half, v_end in openings(yard_)), "a hall on a dock"
             assert abs(u1 - (-yard_["L"] / 2 + 3000)) > w1 + 150 or v1 + d1 < yard_["D"] * 0.5, "a hall on the rail siding"
     # the other yard types
-    for pop, water, L, want in ((30000, "ocean", 500, "offshore"), (20000, "lake", 300, "repair"),
+    small = sites({"x": -30000, "y": 0, "radius": 100000}, [seg], 36000)[0]
+    assert small["L"] == 36000 and small["type"] == "repair", ("a 36k town: a 360 m yard, not 900 m", small)
+    for pop, water, L, want in ((45000, "ocean", 500, "offshore"), (30000, "lake", 300, "repair"),
                                 (5000, "lake", 200, "fishing")):
         seg2 = {**seg, "water": water, "length_m": L, "samples": seg["samples"][:L // 20]}
         st = sites({"x": -30000, "y": 0, "radius": 100000}, [seg2], pop)

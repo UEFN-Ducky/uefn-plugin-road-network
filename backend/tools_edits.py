@@ -155,9 +155,13 @@ def register(ctx) -> None:
                     return "beside or across a road at another height"
             return "unexplained"
         reasons: dict = {}
+        high: list = []  # a plain road (not a deck or bridge) more than 20 m over dry ground
         for p, mesh in checks:
             gap = ground(p["x"], p["y"]) - p["z"] + cg.ROAD_SINK_CM  # measured from where the ground should be
-            if gap < -2000 or (sea is not None and (raw(p["x"], p["y"]) or 0.0) < sea):
+            if sea is not None and (raw(p["x"], p["y"]) or 0.0) < sea:
+                continue
+            if gap < -2000:
+                high.append((round(gap), round(p["x"]), round(p["y"]), round(p["z"]), mesh))
                 continue
             n += 1
             over += gap > 30
@@ -176,10 +180,16 @@ def register(ctx) -> None:
             by = {p["i"]: p for p in pts}
             for node, arms, _a in st.pending_nodes(pts, segs, True):
                 if node in by:
-                    steps.append(max([abs(by[m]["z"] - by[node]["z"]) for m in arms if m in by] or [0.0]))
-        junction_steps = {"checked": len(steps), "stepped": sum(1 for s in steps if s > 10), "over_50cm": sum(1 for s in steps if s > 50),
-                          "worst_cm": round(max(steps or [0.0]))}
+                    q = by[node]
+                    m = max((by[m] for m in arms if m in by), key=lambda r: abs(r["z"] - q["z"]), default=q)
+                    steps.append((round(abs(m["z"] - q["z"])), round(q["x"]), round(q["y"]), round(q["z"]),
+                                  round(m["x"]), round(m["y"]), round(m["z"])))
+        junction_steps = {"checked": len(steps), "stepped": sum(1 for s in steps if s[0] > 10),
+                          "over_50cm": sum(1 for s in steps if s[0] > 50),
+                          "worst_cm": max([s[0] for s in steps] or [0]), "worst": sorted(steps, reverse=True)[:6],
+                          "row": "step cm, node x, y, z, steepest arm x, y, z"}
         return {"checked": n, "ground_over_road": over, "road_in_air": under, "worst_cm": round(worst), "by_mesh": bad,
+                 "high_over_land": {"count": len(high), "worst": sorted(high)[:6], "row": "ground minus road cm, x, y, z, mesh"},
                 "why": reasons, "unexplained": len(loose), "junction_steps": junction_steps,
                 "decks": {"samples": decks[0], "ground_through_deck": decks[1],
                           "worst": sorted(deck_rows, reverse=True)[:6], "row": "ground minus deck cm, x, y, deck z, mesh"},

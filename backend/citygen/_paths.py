@@ -161,25 +161,28 @@ for _k, _m in ROAD_MESH.items():
         _KIND_OF_MESH[_m] = _k
 
 
-PR_GRADE = 0.10  # a joined private street climbs to (or down to) its street's height at most this steeply
+PR_GRADE = 0.10  # a joined private street eases from its street's height back to its own at most this steeply
 
 
 def _ramp(rp: dict, rs: list, start, came, z0: float) -> None:
-    """From the mouth (`came`, at height z0) along a private street: each point no further from z0 than PR_GRADE of
-    the way it has come, until one already is (in place in `rp`)."""
-    d, cur = 0.0, start
+    """From the mouth (`came`, at height z0) along a private street: the step between z0 and the street's own
+    height is shared out over the first |step| / PR_GRADE of it, fading to nothing; past that the street keeps its
+    own profile (laid on the ground). Clamping every point to within PR_GRADE of z0 instead held a lane down a 24 %
+    slope to 10 %, and its far end stood 24 m over the shore (Nov 20 2026)."""
+    step = z0 - rp[start]["z"] if start in rp else 0.0
+    if abs(step) < 1:
+        return
+    span, d, cur = abs(step) / PR_GRADE, 0.0, start
     while cur in rp:
         q, p = rp[cur], rp[came]
         d += math.hypot(q["x"] - p["x"], q["y"] - p["y"])
-        lo, hi = z0 - PR_GRADE * d, z0 + PR_GRADE * d
-        if lo <= q["z"] <= hi:
+        if d >= span:
             return
-        q["z"] = min(max(q["z"], lo), hi)
+        q["z"] += step * (1 - d / span)
         on = [x for x in rs if cur in (x["a"], x["b"]) and came not in (x["a"], x["b"])]
         if len(on) != 1:
             return
         came, cur = cur, on[0]["b"] if on[0]["a"] == cur else on[0]["a"]
-
 
 def unjoin_private(roads: dict) -> dict:
     """The roads actor as it was before join_private: every joined private street out, every host road whole again."""

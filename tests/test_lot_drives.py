@@ -68,6 +68,18 @@ def test_private_street_carries_on_from_a_street_that_just_ends():
     assert not any(p["x"] == 10500 for p in out["points"]), "its end inside the street's end is gone"
 
 
+def test_private_street_down_a_steep_slope_keeps_to_its_ground():
+    # a lane leaving its street down a 24 % slope, laid on the ground (a point every 40 m): only the first metres
+    # ease from the street's height; it never hangs at 10 % over the hill all the way to the shore
+    roads = _actor([(0, 0, 0, 0, 875.0), (1, 10000, 0, 0, 875.0)], [(2, 0, 1, "2S")])
+    lane = [(10 + k, 10500 + 4000 * k, 0, -120 - 0.24 * 4000 * k, 400.0) for k in range(5)]
+    access = _actor(lane, [(30 + k, 10 + k, 11 + k, "PR") for k in range(4)])
+    out, _rest, _joins = cg.join_private(roads, access, "/Game/X")
+    z = {p["x"]: p["z"] for p in out["points"]}
+    assert abs(z[26500] - (-120 - 0.24 * 16000)) < 1, ("its far end stays on its ground", z)
+    assert z[14500] > -120 - 0.24 * 4000, "the step at the street is eased"
+
+
 def test_drives_to_one_junction_all_join_it():
     g = lambda x, y: 0.0  # noqa: E731
     nodes = {"A": [0, 0], "B": [20000, 12000], "C": [0, 20000], "D": [-20000, 12000]}
