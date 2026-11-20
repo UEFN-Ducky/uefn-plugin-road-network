@@ -154,13 +154,42 @@ def _every(pts: list, step: float = PR_SAMPLE_CM) -> list:
     return out
 
 
-def access_actor(city: dict, rows: list, ground, folder: str) -> dict:
-    """Private access network: the city's '<City> Access' spline actor: every subdivision / complex street
-    (the city doc's private streets) and every driveway (single DW, double DD), graded like roads."""
-    nodes, edges = paths_graph(rows, ("DW", "DD"))
-    for k, s in enumerate((city.get("private") or {}).get("streets") or []):
+PR_STEEP = 0.30  # a private street ends before a leg of ground steeper than this: no drive climbs it
+
+
+def steep_cut(streets: list, ground) -> list:
+    """Each private street cut at the first leg (from its mouth) whose ground is steeper than PR_STEEP: the part
+    it still reaches stays, with the lots along it. Test1's dead ends up 50 % slopes hung 23 m over the ground
+    (Nov 20 2026). The mouth is its first point, or its last when only that one meets another private street;
+    a street joined at both ends runs through and is kept whole."""
+    def touched(k, p):
+        return any(math.dist(p, q[:2]) < 100 for j, o in enumerate(streets) if j != k for q in o)
+    out = []
+    for k, s in enumerate(streets):
         if len(s) < 2:
             continue
+        a, b = touched(k, s[0][:2]), touched(k, s[-1][:2])
+        if a and b:
+            out.append(s)
+            continue
+        run = _every(s[::-1] if b else s)
+        keep = 1
+        while keep < len(run) and abs(ground(*run[keep][:2]) - ground(*run[keep - 1][:2])) \
+                <= PR_STEEP * max(1.0, math.dist(run[keep][:2], run[keep - 1][:2])):
+            keep += 1
+        if keep == len(run):
+            out.append(s)
+        elif keep >= 2:
+            out.append([list(p) for p in run[:keep]])
+    return out
+
+
+def access_actor(city: dict, rows: list, ground, folder: str) -> dict:
+    """Private access network: the city's '<City> Access' spline actor: every subdivision / complex street
+    (the city doc's private streets, less what is too steep: steep_cut) and every driveway (single DW, double
+    DD), graded like roads."""
+    nodes, edges = paths_graph(rows, ("DW", "DD"))
+    for k, s in enumerate(steep_cut((city.get("private") or {}).get("streets") or [], ground)):
         s = _every(fillet(s))
         a, b = ("pr", k, 0), ("pr", k, 1)
         nodes[a], nodes[b] = list(s[0]), list(s[-1])

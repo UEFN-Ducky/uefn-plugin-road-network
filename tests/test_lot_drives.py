@@ -136,3 +136,16 @@ def test_ramp_climbs_to_the_street_at_most_ten_percent():
     cg._ramp(rp, rs, 1, 0, 0.0)
     assert [round(rp[k]["z"]) for k in range(1, 5)] == [-100, -200, -300, -400]
     assert round(rp[11]["z"]) == -1100 and round(rp[12]["z"]) == -1200, "back on its own ground after 12 m of climb"
+
+
+def test_private_street_ends_before_ground_too_steep_to_drive():
+    cliff = lambda x, y: max(0.0, x - 10000) * 0.6  # flat, then a 60 % slope from x = 100 m
+    reach = lambda streets: max(p["x"] for p in cg.access_actor({"private": {"streets": streets}}, [], cliff, "/Game/X")["points"])
+    assert 9000 <= reach([[[0, 0], [20000, 0]]]) <= 11000, "cut where the slope starts (a point per 18 m)"
+    assert reach([[[0, 0], [8000, 0]]]) == 8000, "all on flat ground: kept whole"
+    # its mouth is the end that meets another private street, wherever the cliff is
+    up = [[20000, 5000], [0, 5000]]
+    assert 9000 <= reach([up, [[0, 0], [0, 5000]]]) <= 11000
+    gentle = lambda x, y: x * 0.2  # 20 %: driven, kept whole
+    assert max(
+        p["x"] for p in cg.access_actor({"private": {"streets": [[[0, 0], [20000, 0]]]}}, [], gentle, "/Game/X")["points"]) == 20000
