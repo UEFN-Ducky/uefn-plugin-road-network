@@ -152,27 +152,24 @@ def _demo() -> None:
     assert len({t[0] % 700 for t in grown}) > len(grown) // 2, "scattered like the forest, not on a grid"
     assert not any(abs(t[0]) < 1000 and abs(t[1]) < 700 for t in grown) and not any(abs(t[0]) < 3000 and abs(t[1] - 2000) < 150 for t in grown)
     assert not pads(green), "a park levels nothing"
-    # the city centre stands on concrete, lot by lot: a downtown lot is paved at its building's level, an empty one
-    # at the ground's, a house's lot and a suburb's are not; the ground is levelled under each, to its own edge
+    # the city centre stands on concrete round its buildings: a downtown lot with a building is paved at its level;
+    # an empty one, a house's lot and a suburb's are not; the paving levels nothing itself
     core = {**cities[0], "blocks": [[0, 0, "parcels", "downtown", [(-6000, -6000), (6000, -6000), (6000, 6000), (-6000, 6000)], 0]],
             "lots": [[-3000, 0, 90.0, 2800, 3000, -3000, 1500, "", False], [0, 0, 90.0, 2800, 3000, 0, 1500, "", False],
                      [3000, 0, 90.0, 2800, 3000, 3000, 1500, "house", False], [45000, 0, 90.0, 1600, 3000, 45000, 1500, "", False]]}
     stands = {"Offices": {"kind": "buildings", "role": "office", "points": [[-3000, 200, 340, 90, 1.0, 20.0, 0, 24.0, 22.0, 0.5]]},
               "Homes": {"kind": "buildings", "role": "house", "points": [[3000, 200, 100, 90, 1.0, 6.0, 0, 12.0, 10.0, 0.5]]}}
     paved = paved_lots([core], stands, lambda x, y: 100.0)["Paved lots"]
-    # level ground: one slab a lot, the whole lot (30 m deep along its facing, 28 m wide), its top 6 cm over the ground
-    assert [p[:2] + p[4:6] for p in paved["points"]] == [[-3000, 0, 30.0, 28.0], [0, 0, 30.0, 28.0]], paved["points"]
-    assert paved["lots"] == 2 and all(p[2] + paved["box_m"][2] * 100 * p[6] == 100 + PAVE_UP_CM for p in paved["points"])
+    # level ground: one slab, the office's whole lot (30 m deep along its facing, 28 m wide), its top 6 cm over the ground
+    assert [p[:2] + p[4:6] for p in paved["points"]] == [[-3000, 0, 30.0, 28.0]], paved["points"]
+    assert paved["lots"] == 1 and all(p[2] + paved["box_m"][2] * 100 * p[6] == 100 + PAVE_UP_CM for p in paved["points"])
     assert not pads({"Paved lots": paved}), "it lies on the ground as it is: it levels nothing"
-    # a slope: the slabs step down it like stacked boxes, none below the ground under it, none more than a step over
+    assert not paved_lots([core], {}, lambda x, y: 100.0), "nothing built: no paving (the forest grows there)"
+    # a slope: only the slabs level with the building, never a staircase of boxes down the hill
     hill = lambda x, y: 100.0 + 0.1 * y
-    steps = paved_lots([core], {}, hill)["Paved lots"]["points"]
-    assert len(steps) > 6 and len({p[2] for p in steps}) > 3, len(steps)
-    for p in steps:
-        top, far = p[2] + PAVE_DEEP_CM, p[1] + p[4] * 50  # (yaw 90: its depth runs along y)
-        assert hill(0, far) + PAVE_UP_CM - 1 <= top <= hill(0, far) + PAVE_UP_CM + 5, (p, top, hill(0, far))
-    area = sum(p[4] * p[5] for p in steps)
-    assert abs(area - 2 * 30.0 * 28.0) < 1.0, ("both lots covered edge to edge, no slab twice; the house's lot is not", area)
+    steps = paved_lots([core], stands, hill)["Paved lots"]["points"]
+    assert steps and len({p[2] for p in steps}) == 1, steps
+    assert all(abs(p[0] + 3000) < 1500 for p in steps), "the office's lot only"
     # the land a planned city leaves free: the middle of a block of plain lots, the ground beyond its last lots;
     # never a lot, a block with its own layout, a planned ground. A city with no plan has none.
     sq = lambda x0, y0, s: [[x0, y0], [x0 + s, y0], [x0 + s, y0 + s], [x0, y0 + s]]

@@ -143,6 +143,7 @@ PAVED_NORMAL = 0.3  # of the normal city's blocks of plain lots, how many are pa
 PAVE_TILE_CM = 700.0  # a paved lot is laid in slabs about this size, each at the height of the ground under it
 PAVE_DEEP_CM = 200.0  # ... and this deep: where the next slab lies lower its side shows as a low wall
 PAVE_UP_CM = 6.0  # a slab's top over the highest ground under it
+PAVE_LEVEL_CM = 30.0  # only the slabs this close to the level under the lot's building: its apron, never a stair
 GREEN_ROLES = ("house", "mansion", "park")  # what stands on these keeps its garden
 
 
@@ -155,7 +156,9 @@ def paved_lots(cities: list, placed: dict, ground) -> dict:
     round a building, where the lot was cut level) they join into one. `ground`: the finished ground, lots cut
     in: the paving levels nothing itself and never rises over a building's floor, the ground does not.
     Not a lot with a house, a mansion or a park on it, nor a spot a plan drew a building at (a complex, a
-    facility: those have their own grounds). A tree on a paved lot stays: it stands in its pit.
+    facility: those have their own grounds). Only a lot something was built on, and only the part of it level with
+    the building (PAVE_LEVEL_CM): an empty lot paved down a hillside was a staircase of grey boxes with trees on
+    it and nothing built (Nov 20 2026); it is open land, where the forest grows. A tree on a paved lot stays.
     Rows [x, y, z, yaw, sx, sy, sz] for the 1 m apron slab, z its bottom."""
     built = _Rects()
     for layer in placed.values():
@@ -188,9 +191,9 @@ def paved_lots(cities: list, placed: dict, ground) -> dict:
                 continue
             f = math.radians(yaw)
             fx, fy = math.cos(f), math.sin(f)
-            if any(o[6] in GREEN_ROLES for o in built.near(x, y, math.hypot(w, d) / 2)
-                   if _rects_hit((x, y, fx, fy, w / 2, d / 2), o, -100.0)):
-                continue
+            on = [o for o in built.near(x, y, math.hypot(w, d) / 2) if _rects_hit((x, y, fx, fy, w / 2, d / 2), o, -100.0)]
+            if not on or any(o[6] in GREEN_ROLES for o in on):
+                continue  # nothing built here (or a garden): no paving
             lots += 1
             # the lot in slabs: nu along its facing, nv across; each slab's top from the ground at its corners
             nu, nv = max(1, round(d / PAVE_TILE_CM)), max(1, round(w / PAVE_TILE_CM))
@@ -199,7 +202,10 @@ def paved_lots(cities: list, placed: dict, ground) -> dict:
             node = [[ground(*at(-d / 2 + i * du, -w / 2 + j * dv)) or 0.0 for j in range(nv + 1)] for i in range(nu + 1)]
             top = [[max(node[i][j], node[i + 1][j], node[i][j + 1], node[i + 1][j + 1]) + PAVE_UP_CM for j in range(nv)]
                    for i in range(nu)]
-            done_ = [[False] * nv for _ in range(nu)]
+            # the level the building's pad left: the slab under the building's centre
+            bu, bv = (on[0][0] - x) * fx + (on[0][1] - y) * fy, -(on[0][0] - x) * fy + (on[0][1] - y) * fx
+            ref = top[min(nu - 1, max(0, int((bu + d / 2) // du)))][min(nv - 1, max(0, int((bv + w / 2) // dv)))]
+            done_ = [[abs(top[i][j] - ref) > PAVE_LEVEL_CM for j in range(nv)] for i in range(nu)]  # (off its level: left)
             for i in range(nu):
                 for j in range(nv):
                     if done_[i][j]:
