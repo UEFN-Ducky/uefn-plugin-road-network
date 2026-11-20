@@ -50,6 +50,14 @@ def _demo() -> None:
     pad = grade_to_roads(side, cut)["heights"]
     for line in (pad[20], [r[20] for r in pad]):  # across it, and on past its end
         assert max(abs(b - a) for a, b in zip(line, line[1:])) / 500 < 1.0, ("bank round a pad", [round(z) for z in line])
+    # ... and a street cut 40 m into flat ground: its blend widens to keep the bank under 1 in 1 (STREET_BANK)
+    level = {"grid": 40, "min": [-10000, -10000], "max": [10000, 10000], "heights": [[0.0] * 40 for _ in range(40)]}
+    sm = ROAD_MESH["2S"].split("/")[-1]
+    trench = {"C Roads": {"points": [{"i": 0, "x": 0, "y": -10000, "z": -4000, "yaw": 90, "pitch": 0, "w": 600, "mesh": "", "lines": []},
+                                     {"i": 1, "x": 0, "y": 10000, "z": -4000, "yaw": 90, "pitch": 0, "w": 600, "mesh": "", "lines": []}],
+                          "segments": [{"i": 0, "a": 0, "b": 1, "mesh": sm, "ta": 2000, "tb": -2000, "lines": []}]}}
+    row = grade_to_roads(level, trench)["heights"][20]
+    assert min(row) < -3500 and max(abs(b - a) for a, b in zip(row, row[1:])) / 500 < 1.0, ("street bank", [round(z) for z in row])
     # the ground never covers a street between its points either (at a world's own grid, ~37 m a cell)
     fine = terrain(3, 400000, 6000, cities, grid=108)
     fa = generate(cities[:1], lambda x, y: st.sample_grid(fine, x, y) or 0.0, "/Game/X/WorldGen/Roads", seed=3)
