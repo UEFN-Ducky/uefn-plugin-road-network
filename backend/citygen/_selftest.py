@@ -659,6 +659,10 @@ def _demo() -> None:
     g_near = list(city_graph(near_c))
     short = port_roads([near_c], [g_near], {}, [], lambda x, y: 0.0)
     assert len(short) == 1 and len(short[0]) == 4 and math.dist(short[0][2], short[0][3]) < 30000, short
+    # ... but never straight up a 40 m cliff between them: then it goes the long way, overland
+    cliff_c = {**near_c, "name": "Cliff", "shipyards": [dict(tight)]}
+    steep = port_roads([cliff_c], [list(city_graph(cliff_c))], {}, [], lambda x, y: 0.0 if y < -48000 else 4000.0)
+    assert len(steep) == 1 and (len(steep[0]) != 4 or steep[0][-1][1] < -48000), ("no straight road up the cliff", steep)
     hw_n, hw_e = {"a": [-300000, -230000], "b": [300000, -230000]}, [["a", "b", "4L", [[x, -230000] for x in range(-280000, 280001, 20000)]]]
     far_c = {**port_c, "name": "Far", "y": 400000}
     port_roads([far_c], [list(city_graph(far_c))], hw_n, hw_e, lambda x, y: 0.0)

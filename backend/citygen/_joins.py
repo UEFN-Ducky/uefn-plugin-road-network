@@ -240,6 +240,9 @@ PORT_ROAD = "4L"  # the road to a port: four lanes, for its trucks
 PORT_CELL_CM = 6000.0  # ... found on a grid this coarse
 PORT_REACH_CM = 600000.0  # ... to a street or a highway no further than this from its gate
 PORT_GRADE = 0.08  # ... keeping to ground no steeper than this where it can (steeper costs it dearly)
+# a straight port road only over ground no steeper than this: checked for dry land alone, one ran straight down a
+# 40 m sea cliff in a trench to its yard (Nov 20 2026); steeper, it goes overland, along the slope
+PORT_STRAIGHT_GRADE = 0.12
 
 
 def overland(start, goals: list, ok, ground, cell: float = PORT_CELL_CM, reach: float = PORT_REACH_CM):
@@ -338,7 +341,9 @@ def port_roads(cities: list, graphs: list, hw_nodes: dict, hw_edges: list, groun
             for g in sorted((g for g in goals if g[2][0] == "street" and math.dist(g[:2], out_) < reach), key=lambda g: math.dist(g[:2], out_)):
                 n = max(1, int(math.dist(g[:2], out_) // 800))
                 line = [(out_[0] + (g[0] - out_[0]) * i / n, out_[1] + (g[1] - out_[1]) * i / n) for i in range(n + 1)]
-                if not any((dry and wet and wet(*p)) or any(shipyard.reserved(s, p[0], p[1], 300) for s in every) for p in line[1:]):
+                if not any((dry and wet and wet(*p)) or any(shipyard.reserved(s, p[0], p[1], 300) for s in every) for p in line[1:]) \
+                        and not (dry and any(abs((ground(*q) or 0.0) - (ground(*p) or 0.0)) > PORT_STRAIGHT_GRADE * math.dist(p, q)
+                                             for p, q in zip(line, line[1:]))):
                     return [tuple(out_), tuple(g[:2])], g[2]
             return None
         for k, (side, at) in enumerate(ways):
