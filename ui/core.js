@@ -50,10 +50,11 @@ function showError(msg, retry) {
 }
 // the loading card: a title, what is happening now, and a bar (filled when the step count is known)
 // (stop: a Stop button on the card; kept while the same run updates its card, gone when the card is)
-const loading = { title: "", text: "", step: 0, of: 0, stop: null };
+// (idle: what shows when no run does, the city edits' Apply card while changes wait)
+const loading = { title: "", text: "", step: 0, of: 0, stop: null, idle: null };
 function busy(msg, opts = {}) {
   const host = $("busy");
-  if (!msg) { loading.title = ""; loading.stop = null; host.replaceChildren(); return; }
+  if (!msg) { loading.title = ""; loading.stop = null; host.replaceChildren(); loading.idle?.(); return; }
   Object.assign(loading, { title: msg, text: opts.text || "", step: opts.step || 0, of: opts.of || 0, stop: opts.stop ?? loading.stop });
   drawLoading();
 }
@@ -61,7 +62,7 @@ function drawLoading() {
   const host = $("busy");
   if (!loading.title) return;
   const pct = loading.of ? Math.round((loading.step / loading.of) * 100) : 0;
-  let card = host.querySelector(".rn-load");
+  let card = host.querySelector(".rn-load:not(.rn-pending)");  // (never the Apply card: it has no bar)
   if (!card) {
     card = h("div", { class: "rn-load", role: "status", "aria-live": "polite" },
       h("div", { class: "rn-load__title" }, h("span", { class: "rn-load__name" }), h("span", { class: "rn-load__pct" }),

@@ -218,15 +218,15 @@ function queueEdit(title, apply, after) {
 // the waiting changes: Apply rebuilds once with all of them, Discard puts the world back as it is
 function showPending() {
   const n = edits.list.length;
-  if (!n) { busy(""); return; }
-  busy("");
-  $("busy").replaceChildren(h("div", { class: "rn-load", role: "status" },
+  if (!n || edits.running || loading.title) return;  // (a run's card stays; this comes back when it is done)
+  $("busy").replaceChildren(h("div", { class: "rn-load rn-pending", role: "status" },
     h("div", { class: "rn-load__title" }, h("span", { class: "rn-load__name" }, `${n} change${n > 1 ? "s" : ""} waiting`)),
     h("div", { class: "rn-load__step" }, "Nothing is rebuilt until you press Apply."),
     h("div", { class: "rn-btns", style: "margin-top: 8px" },
       button("Apply", "check", () => runEdits(), "primary", "Rebuild the world with every waiting change"),
       button("Discard", "x", discardEdits, "secondary", "Drop the waiting changes"))));
 }
+loading.idle = showPending;
 async function discardEdits() {
   edits.list = [];
   busy("");
