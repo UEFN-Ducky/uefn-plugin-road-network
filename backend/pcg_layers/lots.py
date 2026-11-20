@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import math
-import random
 
 from .land import _Rects
+from .nature import grow, in_rect
 from .samples import GROUNDS
 
 BIG_SITE_M = 25.0  # wider than a lot (~17 m frontage, fits up to ~1.5x): offices, towers, civic, mansions take
@@ -158,28 +158,14 @@ def leave_out_deep(placed: dict, max_m: float | None = None) -> tuple:
     return gone, kept_sites, lost
 
 
-def plant_lots(placed: dict, lots: list, sample_z, sea=None) -> int:
-    """Trees on the lots leave_out_deep emptied, in the 'Infill trees' layer with the lots nothing could be built
-    on: a jittered grid over each footprint, standing on the ground as it is once the lot's pad is gone."""
-    rows = []
+def plant_lots(placed: dict, lots: list, sample_z, sea=None, keep=None) -> int:
+    """The lots leave_out_deep / leave_out_steep emptied are open land: the forest grows there (nature.grow), on
+    the ground as it is once the lot's pad is gone. (An 8 m grid of trees over each one read as a plantation.)"""
+    n = 0
     for x, y, yaw, w_m, d_m in lots:
-        c, s = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
-        nu, nv = max(1, int(d_m * 100 // PLANT_EVERY_CM)), max(1, int(w_m * 100 // PLANT_EVERY_CM))
-        for i in range(nu):
-            for j in range(nv):
-                seed = abs(int(x) * 31 + int(y) * 17 + i * 7919 + j * 104729)
-                u = -d_m * 50 + (i + 0.5) * d_m * 100 / nu + (seed % 97 - 48) / 48 * 150
-                w = -w_m * 50 + (j + 0.5) * w_m * 100 / nv + (seed % 89 - 44) / 44 * 150
-                px, py = x + c * u - s * w, y + s * u + c * w
-                z = sample_z(px, py)
-                if z is not None and not (sea is not None and z < sea):
-                    rows.append([round(px), round(py), round(z), seed % 360, round(0.85 + (seed % 40) / 100, 2)])
-    if rows:
-        layer = placed.setdefault("Infill trees", {"kind": "scatter", "role": "tree", "count": 0, "shown": 0, "points": [],
-                                                   "radius_cm": 250, "meshes": [], "build": "", "row": "x, y, z, yaw, scale"})
-        layer["points"] = layer["points"] + rows
-        layer["count"] = layer["shown"] = len(layer["points"])
-    return len(rows)
+        area, box = in_rect(x, y, yaw, d_m * 50, w_m * 50)
+        n += len(grow(placed, area, box, sample_z, ("left out", round(x), round(y)), sea, keep))
+    return n
 
 
 def pads(previewed: dict, margin_cm: float = 400.0) -> list:
@@ -206,11 +192,8 @@ def pads(previewed: dict, margin_cm: float = 400.0) -> list:
     return out
 
 
-PARK_TREE_CM = 700.0  # a planned park's trees: one about every 7 m where a grove stands ...
-
-
-def park_trees(placed: dict, cities: list, ground) -> dict:
-    """The built-in layer 'Park trees': what a planned park (a row of a layer with role 'park') really is. Trees in
+def park_trees(placed: dict, cities: list, ground, sea=None, keep=None) -> int:
+    """What a planned park (a row of a layer with role 'park') really is: the forest's trees (nature.grow) in
     groves with open lawns between them, standing on the ground as it lies, kept off the park's own playground,
     pond, field, car park, paths and benches (the city's grounds and car parks) and off every building. A park
     was drawn as one flat green slab the size of its lot, level, hanging over the hillside (Nov 13 2026)."""
@@ -228,34 +211,16 @@ def park_trees(placed: dict, cities: list, ground) -> dict:
                 if len(p) > 8:
                     f = math.radians(p[3])
                     slabs.add((p[0], p[1], math.cos(f), math.sin(f), p[7] * 50 + 200, p[8] * 50 + 200))
-    rows = []
-    for layer in placed.values():
+    n = 0
+    for layer in list(placed.values()):
         if layer.get("kind") != "buildings" or layer.get("role") != "park":
             continue
         for p in layer.get("points") or []:
             if len(p) < 9:
                 continue
-            x, y, yaw, w, d = p[0], p[1], p[3], p[7] * 100, p[8] * 100
-            fx, fy = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
-            rnd = random.Random(f"parktrees:{round(x)}:{round(y)}")
-            waves = [(rnd.uniform(2500.0, 5500.0), rnd.uniform(0, 6.283), rnd.uniform(0, 6.283)) for _ in range(3)]
-            nu, nv = max(1, int(d // PARK_TREE_CM)), max(1, int(w // PARK_TREE_CM))
-            for i in range(nu):
-                for j in range(nv):
-                    u = -d / 2 + (i + 0.5 + rnd.uniform(-0.35, 0.35)) * d / nu
-                    v = -w / 2 + (j + 0.5 + rnd.uniform(-0.35, 0.35)) * w / nv
-                    scale, turn = round(0.85 + rnd.random() * 0.5, 2), round(rnd.uniform(0, 360))
-                    tx, ty = x + fx * u - fy * v, y + fy * u + fx * v
-                    edge = i in (0, nu - 1) or j in (0, nv - 1)  # the trees round its edge always stand
-                    if not edge and sum(math.sin(tx / lam + a) * math.sin(ty / lam * 1.3 + b) for lam, a, b in waves) <= 0.0:
-                        continue  # a lawn
-                    if slabs.hit((tx, ty, 1.0, 0.0, 1.0, 1.0), 0.0):
-                        continue
-                    z = ground(tx, ty)
-                    if z is not None:
-                        rows.append([round(tx), round(ty), round(z), turn, scale])
-    if not rows:
-        return {}
-    return {"Park trees": {"kind": "scatter", "role": "tree", "count": len(rows), "shown": len(rows), "points": rows,
-                           "radius_cm": 250, "meshes": [], "build": "", "row": "x, y, z, yaw, scale"}}
+            inside_park, box = in_rect(p[0], p[1], p[3], p[8] * 50, p[7] * 50)
+            # the forest's own rule, groves and lawns of GROVE_CELL_CM (nature.grow), off everything the park holds
+            n += len(grow(placed, lambda x, y, f=inside_park: f(x, y) and not slabs.hit((x, y, 1.0, 0.0, 1.0, 1.0), 0.0),
+                          box, ground, ("park", round(p[0]), round(p[1])), sea, keep))
+    return n
 

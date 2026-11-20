@@ -97,10 +97,10 @@ def register(ctx) -> None:
         """Which pieces City Builder uses for a world's layers: 'own' (the project's own kit: WorldGen/City,
         WorldGen/Kit, BuildingKit storeys), 'fortnite' (Fortnite's props and buildings) or 'mixed', and whether
         buildings get interiors (interiors 'yes' / 'no': floors, stair cores, furniture seen through windows).
-        trees 'fortnite': a city's trees (street, park, garden, infill and interchange trees) are Fortnite's own
+        trees 'fortnite': a city's planted trees (street and garden trees) are Fortnite's own
         tree props, the ones players can chop, each placed as an actor by road_network_pcg_build; 'kit': the
         kit's instanced trees. trees_max: the most prop trees a world places (6000 unless set): every one is an
-        actor in the level's memory budget, so street and park trees come first and garden trees are thinned to
+        actor in the level's memory budget, so street trees come first and garden trees are thinned to
         what is left. The forest outside the cities always stays instanced kit trees: UEFN refuses Fortnite tree
         meshes in PCG. Empty arguments read them, with where each role (traffic light, skyscraper, bench...)
         comes from."""

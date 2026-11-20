@@ -332,12 +332,13 @@ def aprons(placed: dict) -> dict:
                                 "meshes": [], "row": "x, y, z, yaw, sx, sy, sz"}}
 
 
-def interchange_groves(fast: list, ground, sea=None, radius: float = 16000.0, count: int = 90) -> dict:
-    """Trees in and round every interchange: the land inside the loops and between the ramps is right of way, so
-    no lot is cut there and it stood bare. fast: the freeway / highway actors [(points, segments)]; an interchange
-    is where their ramp connectors (gores, flares) cluster. `count` trees in a disc of `radius` round each, the
-    same every time; the caller takes out the ones on a road (clear_of). Never houses: nobody lives in a loop."""
-    import random
+def interchange_groves(placed: dict, fast: list, ground, sea=None, keep=None, blocked=None, radius: float = 16000.0) -> int:
+    """The forest grows in and round every interchange (nature.grow): the land inside the loops and between the
+    ramps is right of way, so no lot is cut there and it stood bare. fast: the freeway / highway actors [(points,
+    segments)]; an interchange is where their ramp connectors (gores, flares) cluster: a disc of `radius` round
+    each, less what `blocked(x, y)` says (a road, a building). Never houses: nobody lives in a loop. Returns how
+    many trees it grew."""
+    from .nature import grow
     ends = [(p["x"], p["y"]) for pts, _segs in fast for p in pts if str(p.get("mesh") or "").startswith("SM_Road_Ramp")]
     groups: list = []
     for e in ends:  # greedy clusters, 300 m: one interchange's ramp ends
@@ -346,22 +347,14 @@ def interchange_groves(fast: list, ground, sea=None, radius: float = 16000.0, co
             g.append(e)
         else:
             groups.append([e])
-    rows = []
+    n = 0
     for g in groups:
         if len(g) < 3:
             continue  # a lone ramp end is no interchange
         cx, cy = sum(p[0] for p in g) / len(g), sum(p[1] for p in g) / len(g)
-        rnd = random.Random(f"grove:{round(cx)}:{round(cy)}")
-        for k in range(count):
-            a, d = rnd.uniform(0, 2 * math.pi), radius * math.sqrt(rnd.random())
-            x, y = cx + math.cos(a) * d, cy + math.sin(a) * d
-            z = ground(x, y)
-            if z is not None and (sea is None or z > sea + 50):
-                rows.append([round(x), round(y), round(z), round(rnd.uniform(0, 360)), round(rnd.uniform(0.8, 1.3), 2)])
-    if not rows:
-        return {}
-    return {"Interchange trees": {"kind": "scatter", "role": "tree", "count": len(rows), "shown": len(rows), "points": rows,
-                                  "radius_cm": 250, "meshes": [], "build": "", "row": "x, y, z, yaw, scale"}}
+        n += len(grow(placed, lambda x, y, cx=cx, cy=cy: math.hypot(x - cx, y - cy) <= radius and not (blocked and blocked(x, y)),
+                      (cx - radius, cy - radius, cx + radius, cy + radius), ground, ("interchange", round(cx), round(cy)), sea, keep))
+    return n
 
 
 def off_roads(streets: list, samples: list, margin: float = 1000.0) -> list:

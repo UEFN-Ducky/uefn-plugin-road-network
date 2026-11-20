@@ -483,15 +483,18 @@ def register(ctx) -> None:
             # nothing on or under a freeway, a ramp or a highway (lots are cut before those are laid)
             fast = [load_actor(nid, a)[1:] for a, h in actor_docs(nid).items()
                     if str(h.get("label") or "").endswith(("Freeways", "Highways"))]
-            # the land inside an interchange's loops is planted, never built on: trees there, off every road
-            groves = pl.interchange_groves(fast, ground, terrain.get("sea"))
-            pl.clear_of(groves, pl.road_samples(actors, 400.0), 400.0)
-            blds = [(p[0], p[1], 50.0 * max(p[7], p[8]) + 400) for v in placed.values() if v.get("kind") == "buildings"
-                    for p in v.get("points") or [] if len(p) > 8]
-            for g in groves.values():  # and none in a building at the interchange's edge
-                g["points"] = [t for t in g["points"] if not any(abs(t[0] - x) < r and abs(t[1] - y) < r for x, y, r in blds)]
-                g["count"] = g["shown"] = len(g["points"])
-            placed.update(groves)
+            # the land inside an interchange's loops is never built on: the forest grows there (nature.grow), off
+            # every road and out of every building at the interchange's edge
+            wild = pl.biome_trees({**terrain, "veg": veg})  # the biomes, as the forest itself reads them
+            busy = pl._Hash()
+            for x, y, half, _dx, _dy in pl.road_samples(actors, 400.0):
+                busy.add(x, y, half + 400.0)
+            for v in placed.values():
+                if v.get("kind") == "buildings":
+                    for p in v.get("points") or []:
+                        if len(p) > 8:
+                            busy.add(p[0], p[1], 50.0 * max(p[7], p[8]) + 400)
+            pl.interchange_groves(placed, fast, ground, terrain.get("sea"), wild, lambda x, y: busy.hit(x, y, 250.0))
             pl.clear_of(placed, pl.road_samples(fast, 400.0))
             # last of all: nothing on a road surface (junctions and private streets are road too), no tree in a
             # building. Every layer above was placed by its own rule, and each knew some roads and not others.
@@ -590,7 +593,7 @@ def register(ctx) -> None:
                                    "too_steep": {"max_grade": {**pl.GRADE_MAX, "any other": pl.GRADE_OTHER},
                                                  "left_out": len(steep_lots), "by_layer": steep_lost}}
             if lots:
-                fit["left_out"]["trees"] = pl.plant_lots(placed, lots, fit["ground"], terrain.get("sea"))
+                fit["left_out"]["trees"] = pl.plant_lots(placed, lots, fit["ground"], terrain.get("sea"), wild)
                 if "Driveway aprons" in placed:
                     rows = (pl.aprons(placed).get("Driveway aprons") or {}).get("points") or []
                     placed["Driveway aprons"].update(points=rows, count=len(rows), shown=len(rows))
@@ -634,7 +637,7 @@ def register(ctx) -> None:
             stands_on = (fit or {}).get("ground") or (lambda x, y: ground(x, y) or 0.0)
             # the city centre stands on concrete, not grass: laid last, on the ground as the lots left it
             placed.update(pl.paved_lots(cities, placed, stands_on))
-            placed.update(pl.park_trees(placed, cities, stands_on))  # a planned park is trees in groves, not a slab
+            pl.park_trees(placed, cities, stands_on, terrain.get("sea"), wild)  # a planned park is trees in groves, not a slab
             cols, caps = cg.bridge_piers(decks, stands_on)
             # ... a cable-stayed or suspension bridge on its two towers, each astride the deck with its stay cables;
             # the deck those cables carry needs no piers

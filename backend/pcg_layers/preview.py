@@ -13,6 +13,8 @@ from .land import (DIRTY_CM, TILE_CM, _city_sig, _height, _lot_hits_road, _Rects
                    biome_trees, inside, open_land, tree_kind)
 from .layers import FAR_KEEP, FORM_NAMES, PLANNED_ROLES, clean, patch, patch_rank
 from .lots import BIG_SITE_M, _lot_ground
+from .nature import grow, in_forest, in_rect
+from .layers import PATCH_CM
 from .samples import BASE_RADIUS, SCATTERED, _Hash, junction_corners, street_samples
 
 class PreviewMemo:
@@ -172,7 +174,6 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
     yards = [s for c in cities for s in c.get("shipyards") or [] if s.get("z") is not None]
     shores = waterfront.Made(cities)  # ... and a made shore (quay, beach, lawn) is the waterfront plan's
     vacant = None  # (x, y) -> on land inside a city that nothing was planned for (open_land, made when first asked)
-    infill: list = []  # lots left empty because a building would stand on another or on a street: planted instead
     plan_roles = {row[7] for c in cities for row in c.get("lots") or [] if len(row) > 8 and row[8] is True}
     # (where the planner ran, what it sites is built on its sites only: when it found a city too small for a mall
     # the Malls layer went back to road frontage and put one every 250 m, 18 in a world that had one)
@@ -232,7 +233,7 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                     if discs and far < 1.0 and not any((x - cx) ** 2 + (y - cy) ** 2 <= r * r for cx, cy, r in discs) \
                             and _u01("far", seed, name, round(x), round(y)) >= far:
                         continue  # past the cities' reach: the share of it the budget leaves (the spot's own draw)
-                    if layer["cover"] < 1.0 and patch_rank(x, y) > layer["cover"] * (1.0 + 0.15 * _u01("edge", seed, round(x), round(y))) - 0.075:
+                    if layer["cover"] < 1.0 and not in_forest(x, y, layer["cover"], seed, PATCH_CM):
                         continue  # a meadow, not a forest (cover = share of the land; it thins out over its edge: woodland)
                     cs.append((x, y, yaw))
                 return cs
@@ -348,13 +349,12 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
             taken.update(had["taken"])
             for x, y, h in had["heights"]:
                 own_heights.add(x, y, 0.0, h)
-            infill.extend(list(r) for r in had["infill"])
             pts.extend(copy.deepcopy(had["rows"]) if building else [list(r) for r in had["rows"]])
         for uid, cands in todo:
             if callable(cands):
                 cands = cands()
             candidates += len(cands)
-            rec = {"n": len(cands), "rows": [], "own": [], "rects": [], "taken": [], "heights": [], "infill": []}
+            rec = {"n": len(cands), "rows": [], "own": [], "rects": [], "taken": [], "heights": []}
             last_at = {1: -1e18, -1: -1e18}
             for cand in cands:
                 x, y, yaw = cand[:3]
@@ -452,10 +452,6 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                         if lot:
                             no("on a private street" if _lot_hits_road(priv_hash, x, y, yaw, rw * 50, rd * 50)
                                else "on another building")
-                            tree = [round(x), round(y), round(z), round((x * 7 + y * 13) % 360),
-                                    round(0.9 + int(_u01("infill", round(x), round(y)) * 40) / 100, 2)]
-                            infill.append(tree)
-                            rec["infill"].append(list(tree))
                         continue
                     built.add(rect)
                     rec["rects"].append(rect)
@@ -504,38 +500,25 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
         out[name] = {"kind": layer["kind"], "role": layer["role"], "count": count, "shown": len(pts), "points": pts,
                      **({"skipped": why} if why else {}),
                      "radius_cm": round(r_base), "meshes": layer["meshes"], "build": layer["build"],
+                     # (the forest's own settings: nature.grow plants every other tree of the world by them)
+                     **({"grow": {k: layer[k] for k in ("density", "cover", "scale_min", "scale_max", "sink_cm",
+                                                        "footprint", "max_slope_deg", "seed")}}
+                        if layer["kind"] == "foliage" and layer["role"] == "tree" else {}),
                      **({"size_m": [layer["width_m"], layer["depth_m"]], "setback_m": layer["setback_m"],
                          "forms": FORM_NAMES, "driveway": layer["driveway"], "walkway": layer["walkway"],
                          "row": "x, y, pad z, yaw, scale, height_m, form, width_m, depth_m, foundation_m, "
                                 "paths [[width_m, [x, y, z, ...]]], [] (unused), facility (planned sites)"} if building else {})}
     if memo is not None:
         memo.units = units_now
-    # no lot is left with nothing: one that no layer built on (too shallow for a house behind its front yard, a
-    # corner nothing fits) is planted, like the ones a building could not stand on
-    planted: dict = {}
-    for t in infill:
-        planted.setdefault((int(t[0] // 4000), int(t[1] // 4000)), []).append(t)
+    # a lot no layer built on (too shallow for a house behind its front yard, a corner nothing fits, a building that
+    # would stand on another) is open land: the forest grows on it by its own rule (nature.grow), woods or a clearing
     if any(l["kind"] == "buildings" for l in layers):
         for c in cities:
             for row in c.get("lots") or []:
                 if (row[5], row[6]) in taken or (len(row) > 8 and row[8] is True):
                     continue  # built on; a footprint a plan drew (its own layer builds it, or none does)
-                f = math.radians(row[2])
-                fx, fy = math.cos(f), math.sin(f)
-                gx, gy = int(row[0] // 4000), int(row[1] // 4000)
-                if any(abs((t[0] - row[0]) * fx + (t[1] - row[1]) * fy) <= row[4] / 2 and abs(-(t[0] - row[0]) * fy + (t[1] - row[1]) * fx) <= row[3] / 2
-                       for i in (-1, 0, 1) for j in (-1, 0, 1) for t in planted.get((gx + i, gy + j), ())):
-                    continue  # it has its tree
-                for back in ((0.0,) if row[4] < 2400 else (0.22, -0.25)):  # one tree, two on a deep lot
-                    x, y = row[0] + fx * row[4] * back, row[1] + fy * row[4] * back
-                    z = sample_z(x, y)
-                    if z is None or (sea is not None and z < sea + 50) or not on_map(x, y) or road_hash.hit(x, y, 250.0) or \
-                            priv_hash.hit(x, y, 250.0):
-                        continue
-                    infill.append([round(x), round(y), round(z), round((x * 7 + y * 13) % 360),
-                                   round(0.9 + int(_u01("infill", round(x), round(y)) * 40) / 100, 2)])
-    if infill:  # a tree on every lot nothing could be built on
-        out["Infill trees"] = {"kind": "scatter", "role": "tree", "count": len(infill), "shown": len(infill), "points": infill,
-                               "radius_cm": 250, "meshes": [], "build": "", "row": "x, y, z, yaw, scale"}
+                inside_lot, box = in_rect(row[0], row[1], row[2], row[4] / 2, row[3] / 2)
+                grow(out, lambda x, y, f=inside_lot: f(x, y) and on_map(x, y) and not road_hash.hit(x, y, 250.0)
+                     and not priv_hash.hit(x, y, 250.0), box, sample_z, ("lot", round(row[5]), round(row[6])), sea, by_biome)
     return out
 

@@ -141,9 +141,15 @@ def _demo() -> None:
     park_c = {**cities[0], "private": {"grounds": [[0, 0, 0.0, 20.0, 14.0, "playground", "neighbourhood_park"],
                                                    [0, 2000, 0.0, 60.0, 3.0, "path", "neighbourhood_park"]], "parking": []}}
     green = {"Parks": {"kind": "buildings", "role": "park", "points": [[0, 0, 0, 0, 1.0, 1.0, 0, 80.0, 60.0, 0.0, [], []]]}}
-    grown = park_trees(green, [park_c], lambda x, y: 0.1 * x)["Park trees"]["points"]
-    assert 15 < len(grown) < 0.8 * (80 * 60 / 49), ("groves and lawns", len(grown))
+    # (every tree on open land comes from nature.grow, into the world's forest layer: none without one)
+    woods = lambda: {"Trees": {"kind": "foliage", "role": "tree", "count": 0, "shown": 0, "points": [],
+                               "grow": {"cover": 1.0, "sink_cm": 0}}}
+    assert park_trees(dict(green), [park_c], lambda x, y: 0.1 * x) == 0, "no forest layer: no tree anywhere"
+    green.update(woods())
+    assert park_trees(green, [park_c], lambda x, y: 0.1 * x) > 15
+    grown = green["Trees"]["points"]
     assert all(abs(t[0]) <= 3000 and abs(t[1]) <= 4000 and abs(t[2] - 0.1 * t[0]) <= 1 for t in grown), "inside the park, each on its own ground"
+    assert len({t[0] % 700 for t in grown}) > len(grown) // 2, "scattered like the forest, not on a grid"
     assert not any(abs(t[0]) < 1000 and abs(t[1]) < 700 for t in grown) and not any(abs(t[0]) < 3000 and abs(t[1] - 2000) < 150 for t in grown)
     assert not pads(green), "a park levels nothing"
     # the city centre stands on concrete, lot by lot: a downtown lot is paved at its building's level, an empty one
@@ -270,9 +276,16 @@ def _demo() -> None:
     assert deep["Houses"]["count"] == 2 and [p[0] for p in deep["Towers"]["points"]] == [20000], "the tower on a 13.5 m podium stands"
     out_lots = out_lots[:1]
     assert len(deep["Parks"]["points"]) == 1
-    assert plant_lots(deep, out_lots, lambda x, y: 50.0) == 6 and deep["Infill trees"]["count"] == 6
-    assert all(abs(t[0]) <= 1350 and abs(t[1]) <= 950 and t[2] == 50 for t in deep["Infill trees"]["points"])
+    deep.update(woods())
+    assert plant_lots(deep, out_lots, lambda x, y: 50.0) > 5 and deep["Trees"]["count"] == len(deep["Trees"]["points"])
+    assert all(abs(t[0]) <= 1200 and abs(t[1]) <= 800 and t[2] == 50 for t in deep["Trees"]["points"]), "on its lot, on the ground"
     assert plant_lots(deep, out_lots, lambda x, y: -50.0, sea=0.0) == 0, "no tree in the water"
+    assert plant_lots(deep, out_lots, lambda x, y: 50.0, keep=lambda x, y, k: False) == 0, "nor where its biome grows none"
+    from .nature import grow as _grow
+    meadow = {"Trees": {**woods()["Trees"], "grow": {"cover": 0.0}}}
+    assert not _grow(meadow, lambda x, y: True, (0, 0, 20000, 20000), lambda x, y: 0.0, "m"), "a meadow: the forest's cover"
+    assert _grow(woods(), lambda x, y: True, (0, 0, 4000, 4000), lambda x, y: 0.0, "k") == \
+        _grow(woods(), lambda x, y: True, (0, 0, 4000, 4000), lambda x, y: 0.0, "k"), "the same every run"
     # on the hill as it is, before any pad: a warehouse needs flat land, a house takes a moderate slope, nothing
     # ordinary goes on a mountain face, a car park on a slope goes with its stalls; flat ground keeps everything
     from .lots import grade_under, leave_out_steep
@@ -357,10 +370,8 @@ def _demo() -> None:
     towers = fill["Office blocks"]["points"]
     assert sum(1 for r in wide if stands(r, towers)) > 0.85 * len(wide), (sum(1 for r in wide if stands(r, towers)), len(wide))
     assert all(in_core(p[0], p[1]) for p in towers), "office blocks stay downtown"
-    all_of_it = towers + fill["Houses"]["points"] + (fill.get("Infill trees") or {"points": []})["points"]
-    bare = [r[:5] for r in core_town["lots"] if not r[8] and not stands(r, all_of_it)]
-    assert not bare, ("a lot with nothing on it", len(bare), bare[:3])
-    assert len(fill["Houses"]["points"]) > 300 and fill.get("Infill trees"), "homes outside downtown; trees where nothing fits"
+    assert len(fill["Houses"]["points"]) > 300 and set(fill) == {"Office blocks", "Houses"}, \
+        "homes outside downtown; no tree of a rule of its own on the lots nothing fits (no forest layer here)"
     # ... but what the planner sites (a mall, a school) never takes a free lot: with none planned it stays a rare
     # building along a road (18 malls stood on downtown lots)
     mall = clean({"name": "Malls", "kind": "buildings", "role": "mall", "where": "downtown", "width_m": 30, "depth_m": 20,
@@ -386,9 +397,11 @@ def _demo() -> None:
     assert fit_fences(fl, [(1500.0, 0.0, 400.0, 0.0, 1.0)]) == 4 and fl["Yard fences"]["points"] == [[-1200, 0, 0, 90, 16, 1, 0.6]]
     # trees fill an interchange (four ramp ends round a point), none for a lone ramp end
     ramp_end = lambda x, y: {"x": x, "y": y, "mesh": "SM_Road_RampFlare15m"}
-    grove = interchange_groves([([ramp_end(0, 0), ramp_end(9000, 0), ramp_end(0, 9000), ramp_end(9000, 9000), ramp_end(90000, 0)], [])],
-                               lambda x, y: 0.0)["Interchange trees"]
-    assert grove["count"] == 90 and all(math.dist(p[:2], (4500, 4500)) <= 16000 for p in grove["points"]), grove["count"]
+    ramps = [([ramp_end(0, 0), ramp_end(9000, 0), ramp_end(0, 9000), ramp_end(9000, 9000), ramp_end(90000, 0)], [])]
+    grove = woods()
+    assert interchange_groves(grove, ramps, lambda x, y: 0.0) > 90
+    assert all(math.dist(p[:2], (4500, 4500)) <= 16000 for p in grove["Trees"]["points"]), "round the interchange only"
+    assert interchange_groves(woods(), ramps, lambda x, y: 0.0, blocked=lambda x, y: True) == 0, "never on a road"
     # a private street stops each side of a ramp it would cross (ramp half width 500 at x 5000)
     cut = off_roads([[[0, 0], [10000, 0]]], [(5000, 0, 500, 0, 1)])
     assert len(cut) == 2 and cut[0][-1][0] <= 3100 and cut[1][0][0] >= 6900 and cut[1][-1] == [10000, 0], cut
