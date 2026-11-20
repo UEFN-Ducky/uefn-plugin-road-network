@@ -335,7 +335,11 @@ const CITY_FEATURES = [  // [key, label, icon, value when on, value when off] (c
 function cityFeatures(c) {
   const own = c.features || {};
   const has = (k, on) => (own[k] ?? state.gen[k]) === on;
-  const set = (k, v) => saveCity(c, { features: JSON.stringify({ [k]: v }) });
+  const set = (k, v) => {  // shown at once (it waited for the rebuild: a click on + Add seemed to do nothing)
+    c.features = { ...own, [k]: v };
+    saveCity(c, { features: JSON.stringify({ [k]: v }) });
+    renderWorldCity();
+  };
   const box = h("div", { class: "rn-feat" }, h("div", { class: "rn-feat__head" }, "Features"));
   for (const [k, label, ic, on, off] of CITY_FEATURES) {
     if (!has(k, on)) continue;

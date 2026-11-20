@@ -115,7 +115,7 @@ CHOICES = {
     "superblocks": (("yes", "no"), "yes"),
     # the suburbs' own road strategy: 'blocks' keeps the city's grid out to its edge, 'winding' ends the grid at the
     # normal city and grows curving collectors, crescents, loops and cul-de-sacs from there (winding_suburbs)
-    "suburbs": (("blocks", "winding"), "blocks"),
+    "suburbs": (("blocks", "winding"), "blocks"),  # (the panel asks for winding: ui/core.js GEN_DEFAULTS)
     # urban freeways through each big city, planned before its blocks (freeways.py): viaducts over the grid,
     # service interchanges on the main roads, a stack where two freeways cross
     "freeways": (("yes", "no"), "yes"),

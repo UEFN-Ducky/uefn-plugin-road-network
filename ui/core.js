@@ -122,7 +122,7 @@ const GEN_DEFAULTS = {
   coast: "one", coast_side_deg: 0, erosion: 0.5, rivers: 0.5, lakes: 0.4, temp_c: 14, rain: 0.5, snowline_m: 1900,
   block_m: 100, block_ratio: 1, wobble: 0.12, follow_hills: 0.8, green_lots: 0, prune: 0.22, downtown: 0.4, normal: 0.75, highway: "4L", highway_curve: 0.08,
   core_roads: "4L", neighbourhood_roads: "2S", suburb_roads: "2L", one_way_core: "no", interchange: "direct", overpasses: "yes",
-  city_size: 1, city_gap_m: 300, freeways: "yes", waterfront: "yes", canals: "none", shipyards: "auto",
+  city_size: 1, city_gap_m: 300, suburbs: "winding", freeways: "yes", waterfront: "yes", canals: "none", shipyards: "auto",
   airports: "auto", military_base: "no", wind_deg: 240, city_ground: "natural", island: "none",
   tree_density: 1, bush_density: 1, forest_cover: 0.55, tree_shore_m: 25, groves: 0.85,
 };
@@ -130,7 +130,7 @@ const OPTION_KEYS = ["terrain_seed", "hill_km", "roughness", "detail", "ridges",
   "preset", "mountain_m", "mountain_cover", "mountain_intensity", "flatland", "hills", "plateaus", "coast", "coast_side_deg", "erosion",
   "rivers", "lakes", "temp_c", "rain", "snowline_m", "block_m", "block_ratio", "wobble", "follow_hills", "green_lots",
   "prune", "downtown", "normal", "highway", "highway_curve", "core_roads", "neighbourhood_roads", "suburb_roads", "one_way_core",
-  "interchange", "overpasses", "city_size", "city_gap_m", "freeways", "interchange_models", "waterfront", "canals", "shipyards", "airports", "military_base", "wind_deg", "city_ground", "island",
+  "interchange", "overpasses", "city_size", "city_gap_m", "suburbs", "freeways", "interchange_models", "waterfront", "canals", "shipyards", "airports", "military_base", "wind_deg", "city_ground", "island",
   "tree_density", "bush_density", "forest_cover", "tree_shore_m", "groves"];
 const VIEW_DEFAULTS = { zx: 1, pcg: true, terrain: true, water: true, districts: true, points: false, look: "natural", sunAz: 135, sunEl: 52, shadows: true };
 const state = {
