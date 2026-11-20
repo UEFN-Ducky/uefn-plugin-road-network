@@ -63,6 +63,71 @@ SMALL_ROLES = ("house", "mansion")  # (a house on a wall taller than itself read
 PLANT_EVERY_CM = 800.0  # ... with a tree about every 8 m
 
 
+# the steepest natural ground (best-fit plane under the whole footprint, before any pad is cut) each kind is built on
+GRADE_MAX = {"warehouse": 0.06, "factory": 0.06, "mall": 0.06, "utility": 0.06, "parking": 0.06, "parking_garage": 0.06,
+             "site": 0.06, "house": 0.15, "mansion": 0.15}
+GRADE_OTHER = 0.10  # apartments, shops, offices, civic
+GRADE_PLANNED = 0.25  # a site the planner chose (the city's one hospital) may take a hillside, never a mountain face
+STALL_MESH = "SM_Kit_ParkingStall"
+
+
+def grade_under(ground, x: float, y: float, yaw: float, w_m: float, d_m: float):
+    """(grade, relief m) of the natural ground under a footprint: the best-fit plane through a 3 x 3 grid of
+    samples over it (corners, edge middles, centre), and how far its highest and lowest samples lie apart."""
+    c, s = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+    z = {(a, b): ground(x + c * a * d_m * 50 - s * b * w_m * 50, y + s * a * d_m * 50 + c * b * w_m * 50)
+         for a in (-1, 0, 1) for b in (-1, 0, 1)}
+    if any(v is None for v in z.values()):
+        return 0.0, 0.0
+    gu = sum(z[(1, b)] - z[(-1, b)] for b in (-1, 0, 1)) / 3 / max(d_m * 100, 1.0)
+    gv = sum(z[(a, 1)] - z[(a, -1)] for a in (-1, 0, 1)) / 3 / max(w_m * 100, 1.0)
+    return math.hypot(gu, gv), (max(z.values()) - min(z.values())) / 100
+
+
+def leave_out_steep(placed: dict, ground) -> tuple:
+    """Before any pad is cut: take out every building and paved slab (car park, yard, apron) standing on natural
+    ground steeper than its kind allows (GRADE_MAX), with the parking stalls on a slab that goes. A warehouse on a
+    mountain face was levelled into a box on a 14 m podium and its car parks stepped up the slope as slabs (Nov 20
+    2026): measured on the cut ground, every one of them passed. Parks, shipyards and anything laid at its own
+    level stay. Returns (footprints taken out [(x, y, yaw, width_m, depth_m)], {layer: how many it lost})."""
+    gone, lost, slabs = [], {}, []
+    for name, v in placed.items():
+        slab = v.get("kind") == "site" and v.get("role") == "site" and list((v.get("box_m") or [0, 0])[:2]) == [1, 1]
+        if v.get("keep_z") or v.get("pad") is False or v.get("on_road") or not (slab or v.get("kind") == "buildings") \
+                or v.get("role") == "park":
+            continue
+        keep = []
+        for p in v.get("points") or []:
+            w, d = (p[5], p[4]) if slab else (p[7], p[8]) if len(p) > 8 else (0, 0)
+            role = "site" if slab else v.get("role")
+            limit = GRADE_PLANNED if (not slab and len(p) > 12 and p[12]) else GRADE_MAX.get(role, GRADE_OTHER)
+            if w and d and grade_under(ground, p[0], p[1], p[3], w, d)[0] > limit:
+                gone.append((p[0], p[1], p[3], w, d))
+                if slab:
+                    slabs.append(gone[-1])
+                continue
+            keep.append(p)
+        if len(keep) != len(v.get("points") or []):
+            lost[name] = len(v["points"]) - len(keep)
+            v["count"] = max(0, v.get("count", len(v["points"])) - lost[name])
+            v["points"], v["shown"] = keep, len(keep)
+    if slabs:  # the stalls painted on a slab that went
+        def on(px, py):
+            for x, y, yaw, w, d in slabs:
+                c, s = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+                u, t = (px - x) * c + (py - y) * s, -(px - x) * s + (py - y) * c
+                if abs(u) <= d * 50 + 100 and abs(t) <= w * 50 + 100:
+                    return True
+            return False
+        for name, v in placed.items():
+            if v.get("mesh") == STALL_MESH:
+                keep = [p for p in v["points"] if not on(p[0], p[1])]
+                if len(keep) != len(v["points"]):
+                    lost[name] = len(v["points"]) - len(keep)
+                    v["points"], v["count"], v["shown"] = keep, len(keep), len(keep)
+    return gone, lost
+
+
 def leave_out_deep(placed: dict, max_m: float | None = None) -> tuple:
     """Take out every building that would stand on a foundation deeper than its kind allows (its foundation_m,
     measured on the cut ground): FOUND_MAX_M for a house or a mansion, PODIUM_MAX_M for everything bigger, which

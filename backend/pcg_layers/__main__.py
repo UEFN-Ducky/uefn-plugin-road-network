@@ -273,6 +273,29 @@ def _demo() -> None:
     assert plant_lots(deep, out_lots, lambda x, y: 50.0) == 6 and deep["Infill trees"]["count"] == 6
     assert all(abs(t[0]) <= 1350 and abs(t[1]) <= 950 and t[2] == 50 for t in deep["Infill trees"]["points"])
     assert plant_lots(deep, out_lots, lambda x, y: -50.0, sea=0.0) == 0, "no tree in the water"
+    # on the hill as it is, before any pad: a warehouse needs flat land, a house takes a moderate slope, nothing
+    # ordinary goes on a mountain face, a car park on a slope goes with its stalls; flat ground keeps everything
+    from .lots import grade_under, leave_out_steep
+    hill = lambda x, y: 0.12 * x  # noqa: E731  (12 %)
+    assert abs(grade_under(hill, 0, 0, 30.0, 20, 30)[0] - 0.12) < 1e-9, "the plane's grade, whatever the turn"
+    def town():
+        return {"Warehouses": {"kind": "buildings", "role": "warehouse", "count": 1, "shown": 1,
+                               "points": [[0, 0, 0, 0, 1, 9, 0, 40, 30, 0, [], []]]},
+                "Houses": {"kind": "buildings", "role": "house", "count": 1, "shown": 1,
+                           "points": [[5000, 0, 0, 0, 1, 7, 0, 12, 12, 0, [], []]]},
+                "Car parks": {"kind": "site", "role": "site", "box_m": [1, 1, 0.1], "count": 1, "shown": 1,
+                              "points": [[9000, 0, 0, 0, 30, 20, 1]]},
+                "Stalls": {"kind": "site", "role": "site", "mesh": "SM_Kit_ParkingStall", "box_m": [2.5, 5, 0.1],
+                           "count": 2, "shown": 2, "points": [[9000, 500, 0, 0, 1, 1, 1], [40000, 0, 0, 0, 1, 1, 1]]}}
+    flat_t = town()
+    assert leave_out_steep(flat_t, lambda x, y: 0.0) == ([], {}), "flat land keeps everything"
+    hill_t = town()
+    gone, lost = leave_out_steep(hill_t, hill)
+    assert lost == {"Warehouses": 1, "Car parks": 1, "Stalls": 1} and len(gone) == 2, lost
+    assert hill_t["Houses"]["count"] == 1 and [p[0] for p in hill_t["Stalls"]["points"]] == [40000], "a house takes 12 %"
+    face_t = town()
+    leave_out_steep(face_t, lambda x, y: 0.4 * x)
+    assert not any(face_t[k]["points"] for k in ("Warehouses", "Houses", "Car parks")), "a mountain face stays natural"
     (drive,) = paths
     assert drive[0] == DRIVE_M and len(drive[1]) == 6 and drive[1][2] == round(pad) and drive[1][-1] < pad - 100, paths
     # a lot never reaches onto a street

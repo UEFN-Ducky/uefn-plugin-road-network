@@ -561,12 +561,17 @@ def register(ctx) -> None:
                         first_pad.setdefault(p[:2], p[6])
                     ter = cg.cut_pads(_GROUND["ter"], [(*p[:6], first_pad[p[:2]]) for p in pads], _GROUND["locked"])
                 return ter, fit_buildings(placed, ter, cut, ter is not terrain) if gen and terrain.get("heights") else None
+            # nothing is built on land too steep for it, measured on the hill as it is (a pad cut level into a
+            # mountain face made every warehouse there look buildable): those lots stay natural, planted below
+            steep_lots, steep_lost = [], {}
+            if gen and terrain.get("heights"):
+                steep_lots, steep_lost = pl.leave_out_steep(placed, lambda x, y: cg.terrain_z(terrain, x, y))
             tick(80, "Fitting every building to the ground…")
             fit_ter, fit = cut_and_fit()
             # Nothing is built where the land falls more than pl.FOUND_MAX_M away under it: those buildings go, the
             # ground is cut again without their pads (which moves their neighbours' a little, so a few rounds) and
             # their lots are planted. Then the kerbs and fences that were theirs go too.
-            lots, sites, lost = [], 0, {}
+            lots, sites, lost = list(steep_lots), 0, {}
             for last in (False, False, False, True) if fit else ():
                 gone, sites, went = pl.leave_out_deep(placed)
                 lots += gone
@@ -580,8 +585,10 @@ def register(ctx) -> None:
                     fit_ter, fit = cut_and_fit()
             if fit:
                 fit["left_out"] = {"deeper_than_m": {"house, mansion": pl.FOUND_MAX_M, "any other": pl.PODIUM_MAX_M},
-                                   "buildings": len(lots), "planned_sites_kept": sites,
-                                   "by_layer": lost}
+                                   "buildings": len(lots) - len(steep_lots), "planned_sites_kept": sites,
+                                   "by_layer": lost,
+                                   "too_steep": {"max_grade": {**pl.GRADE_MAX, "any other": pl.GRADE_OTHER},
+                                                 "left_out": len(steep_lots), "by_layer": steep_lost}}
             if lots:
                 fit["left_out"]["trees"] = pl.plant_lots(placed, lots, fit["ground"], terrain.get("sea"))
                 if "Driveway aprons" in placed:
