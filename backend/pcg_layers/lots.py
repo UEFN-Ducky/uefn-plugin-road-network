@@ -65,8 +65,10 @@ PLANT_EVERY_CM = 800.0  # ... with a tree about every 8 m
 
 # the steepest natural ground (best-fit plane under the whole footprint, before any pad is cut) each kind is built on
 GRADE_MAX = {"warehouse": 0.06, "factory": 0.06, "mall": 0.06, "utility": 0.06, "parking": 0.06, "parking_garage": 0.06,
-             "site": 0.06, "house": 0.15, "mansion": 0.15}
-GRADE_OTHER = 0.10  # apartments, shops, offices, civic
+             "site": 0.06, "house": 0.25, "mansion": 0.25}
+# apartments, shops, offices, civic. (15 % for houses and 10 % for these took 158 houses and 265 apartments out of
+# test1's gentle hills, most of the winding suburbs stood empty, Nov 20 2026: a house steps down a 25 % lot)
+GRADE_OTHER = 0.15
 GRADE_PLANNED = 0.25  # a site the planner chose (the city's one hospital) may take a hillside, never a mountain face
 STALL_MESH = "SM_Kit_ParkingStall"
 
