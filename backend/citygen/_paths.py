@@ -140,6 +140,20 @@ def fillet(pts: list, radius: float = FILLET_CM) -> list:
     return [[round(x), round(y)] for x, y in out]
 
 
+PR_SAMPLE_CM = 2000.0  # a private street gets a point at least this often, so it lies on the ground between its corners
+
+
+def _every(pts: list, step: float = PR_SAMPLE_CM) -> list:
+    """pts with points added along every leg longer than `step`: a 360 m straight street had only its two ends, and
+    its spline ran straight over the dip between them 23 m up (thin drops the extra points where the ground is even)."""
+    out = [pts[0]]
+    for p, q in zip(pts, pts[1:]):
+        n = int(math.dist(p, q) // step)
+        out += [[round(p[0] + (q[0] - p[0]) * t / (n + 1)), round(p[1] + (q[1] - p[1]) * t / (n + 1))] for t in range(1, n + 1)]
+        out.append(q)
+    return out
+
+
 def access_actor(city: dict, rows: list, ground, folder: str) -> dict:
     """Private access network: the city's '<City> Access' spline actor: every subdivision / complex street
     (the city doc's private streets) and every driveway (single DW, double DD), graded like roads."""
@@ -147,7 +161,7 @@ def access_actor(city: dict, rows: list, ground, folder: str) -> dict:
     for k, s in enumerate((city.get("private") or {}).get("streets") or []):
         if len(s) < 2:
             continue
-        s = fillet(s)
+        s = _every(fillet(s))
         a, b = ("pr", k, 0), ("pr", k, 1)
         nodes[a], nodes[b] = list(s[0]), list(s[-1])
         edges.append([a, b, "PR", [list(p) for p in s[1:-1]]])

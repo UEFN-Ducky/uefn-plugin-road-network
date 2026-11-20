@@ -1,3 +1,4 @@
+import math
 import sys
 from pathlib import Path
 
@@ -78,6 +79,14 @@ def test_private_street_down_a_steep_slope_keeps_to_its_ground():
     z = {p["x"]: p["z"] for p in out["points"]}
     assert abs(z[26500] - (-120 - 0.24 * 16000)) < 1, ("its far end stays on its ground", z)
     assert z[14500] > -120 - 0.24 * 4000, "the step at the street is eased"
+
+
+def test_long_straight_private_street_follows_the_dip_under_it():
+    # a 360 m straight street over a 20 m deep dip: it gets points between its ends and lies on the dip
+    g = lambda x, y: -2000.0 * math.sin(math.pi * x / 36000) if 0 < x < 36000 else 0.0  # noqa: E731
+    acc = cg.access_actor({"private": {"streets": [[[0, 0], [36000, 0]]]}}, [], g, "/Game/X")
+    mid = min(acc["points"], key=lambda p: abs(p["x"] - 18000))
+    assert abs(mid["x"] - 18000) < 2000 and mid["z"] < -1500, mid
 
 
 def test_drives_to_one_junction_all_join_it():
