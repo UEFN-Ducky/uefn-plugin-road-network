@@ -63,7 +63,7 @@ def _stages():
     cli, cli_r = _optional('climate', ('temp_c', 'rain', 'snowline_m', 'sea_level_m'))
     sui, sui_r = _optional('suitability', ('sea_level_m',))
     return [
-        ('coast', coast.land_mask, ('coast', 'coast_side_deg')),
+        ('coast', coast.land_mask, ('coast', 'coast_side_deg', 'land_size')),
         ('regions', regions.region_masks, ('mountain_cover', 'hills', 'flatland', 'plateaus')),
         ('macro', hills.macro_height, ('sea_level_m', 'relief_m', 'flatland', 'coast')),
         ('mountains', mtn or hills.mountain_fallback, mtn_r + ('mountain_m', 'mountain_intensity')),

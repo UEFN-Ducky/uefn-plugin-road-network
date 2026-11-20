@@ -132,6 +132,21 @@ def test_coast_on_the_chosen_side():
         assert maps['land'][k_land] >= 0.5 and min(maps['coast_dist']) < 0
 
 
+def test_island_size_grows_the_land():
+    # Island size: more of the map is land, the island still never touches the map's edge
+    got = {}
+    for mode in ('island',):
+        for s in (0.5, 1.0, 1.25, 1.6):
+            g, _, maps = _world(n=64, coast=mode, land_size=s)
+            got[(mode, s)] = sum(v >= 0.5 for v in maps['land']) / len(maps['land'])
+            if mode == 'island':
+                edge = [maps['land'][g.idx(i, j)] for j in range(g.n) for i in range(g.n) if min(i, j, g.n - 1 - i, g.n - 1 - j) == 0]
+                assert max(edge) < 0.5, s
+        shares_ = [got[(mode, s)] for s in (0.5, 1.0, 1.25, 1.6)]
+        assert shares_ == sorted(shares_) and shares_[2] > shares_[1] * 1.15, (mode, shares_)
+    print({k: round(v, 2) for k, v in got.items()})
+
+
 def test_coast_modes():
     g, _, maps = _world(n=64, coast='none')
     assert min(maps['land']) == 1.0 and min(maps['coast_dist']) > 1e6

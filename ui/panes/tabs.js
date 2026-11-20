@@ -182,7 +182,8 @@ function buildPanes() {
     section("Coast", (ctl.coast = segmented({ label: "Sea", value: state.gen.coast, onChange: (v) => setGen("coast", v), options: [
         ["none", "None", "terrain"], ["one", "One side", "wave"], ["two", "Two sides", "water"], ["island", "Island", "pin"],
         ["archipelago", "Islands", "layers"]] })).el,
-      sl("coast_side_deg", "Sea side", 0, 360, 5, deg, "Where the sea is: 0° = east (+X), 90° = south (+Y)")),
+      sl("coast_side_deg", "Sea side", 0, 360, 5, deg, "Where the sea is: 0° = east (+X), 90° = south (+Y)"),
+      sl("land_size", "Island size", 0.5, 1.6, 0.05, (v) => `×${v.toFixed(2)}`, "Sea: Island only. How much of the map the island covers: ×1 is the old size; bigger fills more of the map (it never runs off its edge)")),
     section("Water", sl("rivers", "Rivers", 0, 1, 0.05, pct, "How many rivers run down from the mountains to lakes and the sea"),
       sl("lakes", "Lakes", 0, 1, 0.05, pct, "How many hollows fill up into lakes"),
       sl("erosion", "Erosion", 0, 1, 0.05, pct, "Rain carving valleys and gullies into the slopes")),

@@ -27,7 +27,8 @@ def land_mask(grid, cfg, noise, maps):
     rng = random.Random(noise.seed * 31 + 5)
     icx, icy = cx + rng.uniform(-0.06, 0.06) * size, cy + rng.uniform(-0.06, 0.06) * size
     rot = rng.uniform(0.0, math.pi)
-    ra, rb = rng.uniform(0.7, 0.85), rng.uniform(0.4, 0.65)
+    grow = cfg.get('land_size', 1.0)  # Island size: the island this much bigger than its base shape (Island only)
+    ra, rb = rng.uniform(0.7, 0.85) * grow, rng.uniform(0.4, 0.65) * grow
     ca, sa = math.cos(rot), math.sin(rot)
 
     def edge(x, y):

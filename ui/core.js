@@ -86,7 +86,7 @@ function drawLoading() {
 // fails when the two drift apart
 const TERRAIN_KEYS = {
   mountain_m: [1200, 0, 2500], mountain_cover: [0.2, 0.05, 0.8], mountain_intensity: [0.5, 0, 1], flatland: [0.5, 0, 1],
-  hills: [0.5, 0, 1], plateaus: [0.1, 0, 1], coast_side_deg: [0, 0, 360], sea_level_m: [0, -50, 50], erosion: [0.5, 0, 1],
+  hills: [0.5, 0, 1], plateaus: [0.1, 0, 1], coast_side_deg: [0, 0, 360], land_size: [1.25, 0.5, 1.6], sea_level_m: [0, -50, 50], erosion: [0.5, 0, 1],
   thermal: [0.5, 0, 1], rivers: [0.5, 0, 1], lakes: [0.4, 0, 1], temp_c: [14, -10, 35], rain: [0.5, 0, 1],
   snowline_m: [1900, 300, 4000], detail: [0.5, 0, 1], hill_km: [2, 0.3, 10], relief_m: [60, 0, 250],
 };
@@ -120,7 +120,7 @@ const GEN_DEFAULTS = {
   hill_km: 2, roughness: 0.5, detail: 5, ridges: 0, peaks: 0, flatten_m: 300, sea_m: -1000, water_depth_m: 12, terrace_m: 0, smooth: 0.5, landscape_px: 2017,
   // the engine's sliders, as the Coastal preset sets them (presetValues("Coastal"))
   preset: "Coastal", mountain_m: 1600, mountain_cover: 0.25, mountain_intensity: 0.55, flatland: 0.6, hills: 0.55, plateaus: 0.05,
-  coast: "one", coast_side_deg: 0, erosion: 0.5, rivers: 0.5, lakes: 0.4, temp_c: 14, rain: 0.5, snowline_m: 1900,
+  coast: "one", coast_side_deg: 0, land_size: 1.25, erosion: 0.5, rivers: 0.5, lakes: 0.4, temp_c: 14, rain: 0.5, snowline_m: 1900,
   block_m: 100, block_ratio: 1, wobble: 0.12, follow_hills: 0.8, green_lots: 0, prune: 0.22, downtown: 0.4, normal: 0.75, highway: "4L", highway_curve: 0.08,
   core_roads: "4L", neighbourhood_roads: "2S", suburb_roads: "2L", one_way_core: "no", interchange: "direct", overpasses: "yes",
   city_size: 1, city_gap_m: 300, suburbs: "winding", freeways: "yes", waterfront: "yes", canals: "none", shipyards: "auto",
@@ -128,7 +128,7 @@ const GEN_DEFAULTS = {
   tree_density: 1, bush_density: 1, forest_cover: 0.55, tree_shore_m: 25, groves: 0.85,
 };
 const OPTION_KEYS = ["terrain_seed", "hill_km", "roughness", "detail", "ridges", "peaks", "flatten_m", "sea_m", "water_depth_m", "terrace_m", "smooth", "landscape_px",
-  "preset", "mountain_m", "mountain_cover", "mountain_intensity", "flatland", "hills", "plateaus", "coast", "coast_side_deg", "erosion",
+  "preset", "mountain_m", "mountain_cover", "mountain_intensity", "flatland", "hills", "plateaus", "coast", "coast_side_deg", "land_size", "erosion",
   "rivers", "lakes", "temp_c", "rain", "snowline_m", "block_m", "block_ratio", "wobble", "follow_hills", "green_lots",
   "prune", "downtown", "normal", "highway", "highway_curve", "core_roads", "neighbourhood_roads", "suburb_roads", "one_way_core",
   "interchange", "overpasses", "city_size", "city_gap_m", "suburbs", "freeways", "interchange_models", "waterfront", "canals", "shipyards", "airports", "military_base", "wind_deg", "city_ground", "island",
