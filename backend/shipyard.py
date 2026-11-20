@@ -142,6 +142,9 @@ def sites(city: dict, segments: list, population: int, opts: dict | None = None)
         return []
     out = []
     used = []
+    # yards in scale with their city: about 1 m of quay per 100 people for ALL of its yards together (a 36k town
+    # gets ~360 m; one had an 800 m offshore yard and two more beside it, Nov 20 2026)
+    left = max(150, population // 100)
 
     def free(s):
         return all(math.hypot(s["x"] - o["frame"]["x"], s["y"] - o["frame"]["y"]) > (o["L"] / 2 + 20000) for o in used)
@@ -149,10 +152,9 @@ def sites(city: dict, segments: list, population: int, opts: dict | None = None)
     for seg in sorted(segments, key=lambda g: -g["length_m"]):
         S = seg["samples"]
         mid = S[len(S) // 2]
-        if not free(mid):
+        if not free(mid) or left < 150:
             continue
-        # a yard in scale with its city: about 1 m of quay per 100 people (a 36k town gets ~360 m, 90k the full 900)
-        L = min(seg["length_m"], 900, max(150, population // 100)) * 100
+        L = min(seg["length_m"], 900, left) * 100
         deep = max(q["depth80_m"] for q in S)
         kind = None
         if seg["type"] == "industrial":
@@ -187,6 +189,7 @@ def sites(city: dict, segments: list, population: int, opts: dict | None = None)
             site["docks"].append({"u": round(u), "len": dock_len(kind, D)})
         out.append(site)
         used.append(site)
+        left -= L // 100
     return out
 
 
@@ -657,6 +660,8 @@ def _demo() -> None:
     # the other yard types
     small = sites({"x": -30000, "y": 0, "radius": 100000}, [seg], 36000)[0]
     assert small["L"] == 36000 and small["type"] == "repair", ("a 36k town: a 360 m yard, not 900 m", small)
+    two = sites({"x": -30000, "y": 0, "radius": 100000}, [seg, {**seg, "samples": [{**q, "y": q["y"] + 200000} for q in seg["samples"]]}], 36000)
+    assert len(two) == 1, ("its 360 m all went to the first yard: no second one", [(y["type"], y["L"]) for y in two])
     for pop, water, L, want in ((45000, "ocean", 500, "offshore"), (30000, "lake", 300, "repair"),
                                 (5000, "lake", 200, "fishing")):
         seg2 = {**seg, "water": water, "length_m": L, "samples": seg["samples"][:L // 20]}

@@ -169,7 +169,8 @@ def register(ctx) -> None:
             elif s["id"] == "planner":
                 info = {"cities": [{"name": t["name"], "style": t.get("style"), "radius_m": round(t["radius"] / 100),
                                     "orientation_deg": round(cg.orientation(t), 1),
-                                    "districts": {k: v.get("radius") for k, v in (t.get("districts") or {}).items()}}
+                                    "districts": {k: v.get("radius") for k, v in (t.get("districts") or {}).items()
+                                                  if isinstance(v, dict)}}  # ('core' is a point)
                                    for t in towns]}
             elif s["id"] == "roads":
                 info = {"actors": [a for a in doc.get("actors") or [] if not a.endswith(" Paths")]}
