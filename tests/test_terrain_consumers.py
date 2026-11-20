@@ -1,3 +1,4 @@
+import math
 import sys
 from pathlib import Path
 
@@ -228,3 +229,40 @@ def test_preview_trees_follow_biomes():
 
 def test_classic_unchanged():
     assert cg.place_cities(7, 3, BOUNDS) == cg.place_cities(7, 3, BOUNDS, opts={"preset": "Classic"})
+
+
+def _flat_world(n=40, height=lambda x, y: 0.0):
+    lo, hi = -300000.0, 300000.0
+    c = lambda k: lo + (k + 0.5) * (hi - lo) / n
+    return {"grid": n, "min": [lo, lo], "max": [hi, hi], "heights": [[height(c(i), c(j)) for i in range(n)] for j in range(n)],
+            "maps": {"road_cost": [1.0] * (n * n)}}
+
+
+def test_open_freeway_end_routes_to_the_road_ahead_and_never_up_a_hill():
+    gen = cg
+    road = [("Highways", {"x": 100000.0, "y": -50000.0}, {"x": 100000.0, "y": 50000.0}, "SM_Road_2L")]
+    end = {"x": 0.0, "y": 0.0}
+    got = gen._route_on(_flat_world(), end, road, ahead=(1.0, 0.0))
+    assert got and 96000 <= got[-1][0] <= 98000 and abs(got[-1][1]) < 5000, got[-3:]
+    assert all(math.dist(a, b) <= 2100 for a, b in zip([(0.0, 0.0)] + got, got)), "a piece every 20 m"
+    assert gen._route_on(_flat_world(), end, road, ahead=(-1.0, 0.0)) == [], "never back the way it came"
+    assert gen._route_on(None, end, road) == [], "no cost map: nothing"
+    assert gen._route_on(_flat_world(), end, road, wet=lambda x, y: 40000 < x < 60000) == [], "no bridge laid here"
+    flat, hill = (lambda x, y: 0.0), (lambda x, y: max(0.0, x) * 0.5)
+    line = [(k * 2000.0, 0.0) for k in range(10)]
+    assert not gen._climbs(line, flat) and gen._climbs(line, hill)
+
+
+def test_collector_with_no_room_for_a_model_takes_the_street_beside_it(monkeypatch):
+    from backend import freeways as fw
+    city = {"name": "Roomy", "x": 0, "y": 0, "radius": 120000, "seed": 4, "style": "grid", "turn": 0.0}
+    fw_plan = lambda c: fw.plan(c, cg.city_options(c, None))
+    first = [i for i in fw_plan(city).interchanges if i.get("model") and i["freeway"] != "ns+ew"]
+    assert first
+    blocked = first[0]["at"]
+    real = fw.model_fits
+    monkeypatch.setattr(fw, "model_fits", lambda c, x, y, *a: math.dist((x, y), blocked) > 100 and real(c, x, y, *a))
+    after = [i for i in fw_plan(city).interchanges if i.get("model") and i["freeway"] == first[0]["freeway"]]
+    assert after and not any(math.dist(i["at"], blocked) < 100 for i in after)
+    bx, by = cg.block_xy(cg.city_options(city, None))
+    assert any(math.dist(i["at"], blocked) <= max(bx, by) + 100 for i in after), (blocked, [i["at"] for i in after])

@@ -238,7 +238,7 @@ def generate(cities: list, ground, folder: str, seed: int = 1, opts: dict | None
         hw_nodes, hw_edges = over_water(hw_nodes, hw_edges, wet, long, bridges)
     if hw_edges:
         out["Highways"] = build_actor(hw_nodes, hw_edges, ground, folder, pieces)
-    edge = {"box": cities[0].get("map") if cities else None, "ground": ground, "wet": wet}
+    edge = {"box": cities[0].get("map") if cities else None, "ground": ground, "wet": wet, "terrain": terrain}
     for _ in range(8):  # again while anything moved: an end may land on a road whose own end just moved
         if not weld_ends(out, edge):
             break
@@ -428,6 +428,7 @@ WELD_SNAP_CM = 6000.0  # an end that stops short of every road by less than this
 FREEWAY_LINK_CM = 15000.0  # a freeway that ends this close to a road runs on to it (an urban freeway ending in a field)
 FREEWAY_OUT_CM = 400000.0  # a freeway end no highway took runs on to the map's edge when that is this close
 FREEWAY_REACH_CM = 150000.0  # ... or runs on up to 1.5 km to the nearest road ahead of it
+FREEWAY_ROUTE_CM = 400000.0  # ... else takes the cheapest way round the hills (cost_route) to a road this close
 FREEWAY_MESHES = {ROAD_MESH[k].split("/")[-1] for k in ("6L", "ED")}
 RAMP_MESHES = {ROAD_MESH[k].split("/")[-1] for k in ("ER", "FR")}  # their ends get a connector piece
 # a connector's half width at the ramp's end (road_profiles.connector: the gore widens to 10 m, the flare to 10.5 m)
@@ -528,6 +529,46 @@ def _connector(p: dict, yaw: float, seg: dict, name: str) -> None:
     p["mesh"] = name
     p["lines"] = [l for l in p.get("lines") or [] if not l.startswith(("Mesh=", "MeshScale=", "SegmentMeshOffset="))] + \
         [f"Mesh=\"/Script/Engine.StaticMesh'{folder}/{name}.{name}'\"", "MeshScale=(X=1.000000,Y=1.000000,Z=1.000000)"]
+
+
+def _climbs(line: list, gnd) -> bool:
+    """Any step of `line` over ground steeper than a routed highway's ROUTE_MAX_GRADE (+1 m): up an empty hill."""
+    zs = [gnd(x, y) or 0.0 for x, y in line]
+    return any(abs(zb - za) > ROUTE_MAX_GRADE * math.dist(a, b) + 100 for a, b, za, zb in zip(line, line[1:], zs, zs[1:]))
+
+
+def _route_on(ter: dict | None, p: dict, roads: list, wet=None, ahead=None) -> list:
+    """[(x, y)] a piece every 20 m on the cheapest way (cost_route, highway grade) from open end p to the nearest
+    road of `roads` [(label, u, v, mesh)] within FREEWAY_ROUTE_CM (and on the way it was going, `ahead`: never
+    back alongside itself into its own city), stopping 20 m short of it (the next weld_ends
+    pass lands it there); [] with no terrain cost map, no road in reach, no way under the grade or over water."""
+    if not ter or not (ter.get("maps") or {}).get("road_cost"):
+        return []
+    best = None
+    for _lab, u, v, _mesh in roads:
+        ux, uy = v["x"] - u["x"], v["y"] - u["y"]
+        t = max(0.0, min(1.0, ((p["x"] - u["x"]) * ux + (p["y"] - u["y"]) * uy) / (ux * ux + uy * uy or 1.0)))
+        nx, ny = u["x"] + ux * t, u["y"] + uy * t
+        d = math.hypot(p["x"] - nx, p["y"] - ny)
+        if ahead and (nx - p["x"]) * ahead[0] + (ny - p["y"]) * ahead[1] <= 0:
+            continue
+        if d <= FREEWAY_ROUTE_CM and (best is None or d < best[0]):
+            best = (d, nx, ny)
+    if not best:
+        return []
+    via = cost_route(ter, (p["x"], p["y"]), (best[1], best[2]))
+    if via is None:
+        return []
+    corners = [(p["x"], p["y"])] + [tuple(v) for v in via] + [(best[1], best[2])]
+    out = []
+    for a, b in zip(corners, corners[1:]):
+        m = max(1, round(math.dist(a, b) / 2000))
+        out += [(a[0] + (b[0] - a[0]) * k / m, a[1] + (b[1] - a[1]) * k / m) for k in range(1, m + 1)]
+    while out and math.dist(out[-1], corners[-1]) < 2000:
+        out.pop()
+    if wet and any(wet(x, y) for x, y in out):
+        return []
+    return out
 
 
 def own_run(touch: dict, by: dict, i, limit: float = 8000.0) -> set:
@@ -648,22 +689,32 @@ def weld_ends(actors: dict, edge: dict | None = None) -> int:
                         st.retangent(by, s)
                         prev, nid = nid, nid + 2
                     moved += 1
-                elif edge and edge.get("box") and ss[0]["mesh"].split("/")[-1] in FREEWAY_MESHES:
+                elif edge and ss[0]["mesh"].split("/")[-1] in FREEWAY_MESHES:
                     # no road to reach at all: the freeway runs straight on out of the world, as far as the map's
-                    # edge, at the height over the ground it ended at (over dry land only: no bridge is laid here)
-                    box, gnd, wet = edge["box"], edge["ground"], edge.get("wet")
+                    # edge, at the height over the ground it ended at (over dry land only: no bridge is laid here),
+                    # never up a hill steeper than a highway climbs. Else it takes the cheapest way round the hills
+                    # to the nearest road (test1's freeway kept 3 open ends, Nov 20 2026)
+                    box, gnd, wet = edge.get("box"), edge["ground"], edge.get("wet")
                     L0 = math.hypot(p["x"] - o0["x"], p["y"] - o0["y"]) or 1.0
                     ex, ey = (p["x"] - o0["x"]) / L0, (p["y"] - o0["y"]) / L0
-                    d = min((box[2] - p["x"]) / ex if ex > 1e-6 else (box[0] - p["x"]) / ex if ex < -1e-6 else 1e18,
-                            (box[3] - p["y"]) / ey if ey > 1e-6 else (box[1] - p["y"]) / ey if ey < -1e-6 else 1e18)
-                    n = max(1, round(d / 2000))
-                    line = [(p["x"] + ex * d * k / n, p["y"] + ey * d * k / n) for k in range(1, n + 1)]
-                    if 2000 < d <= FREEWAY_OUT_CM and not (wet and any(wet(x, y) for x, y in line)):
+                    line, fade = [], False
+                    if box:
+                        d = min((box[2] - p["x"]) / ex if ex > 1e-6 else (box[0] - p["x"]) / ex if ex < -1e-6 else 1e18,
+                                (box[3] - p["y"]) / ey if ey > 1e-6 else (box[1] - p["y"]) / ey if ey < -1e-6 else 1e18)
+                        n = max(1, round(d / 2000))
+                        line = [(p["x"] + ex * d * k / n, p["y"] + ey * d * k / n) for k in range(1, n + 1)]
+                        if not (2000 < d <= FREEWAY_OUT_CM) or (wet and any(wet(x, y) for x, y in line)) or \
+                                _climbs([(p["x"], p["y"])] + line, gnd):
+                            line = []
+                    if not line:
+                        line, fade = _route_on(edge.get("terrain"), p, [r for r in every if r[0] != label], wet, (ex, ey)), True
+                    if line:
                         up = p["z"] - (gnd(p["x"], p["y"]) or 0.0)
                         nid = 1 + max([q["i"] for q in a["points"]] + [s["i"] for s in a["segments"]])
                         prev = i
-                        for x, y in line:
-                            q = {**p, "i": nid, "x": x, "y": y, "z": (gnd(x, y) or 0.0) + up, "lines": list(p.get("lines") or [])}
+                        for k, (x, y) in enumerate(line):
+                            z = (gnd(x, y) or 0.0) + up * ((1 - (k + 1) / len(line)) if fade else 1.0)
+                            q = {**p, "i": nid, "x": x, "y": y, "z": z, "lines": list(p.get("lines") or [])}
                             s = {**ss[0], "i": nid + 1, "a": prev, "b": nid, "lines": list(ss[0].get("lines") or [])}
                             a["points"].append(q)
                             a["segments"].append(s)

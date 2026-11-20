@@ -602,53 +602,63 @@ def plan(city: dict, o: dict) -> Plan:
         soaked = set(((city.get("fw_shore") or {}).get("wet_ic") or {}).get(name) or ())
         def pick(order, done=tuple(done), cuts=tuple(cuts), any_line=False):
             spots, done, cuts, rej = [], list(done), list(cuts), []
-            for n in order:
-                t = n * step
-                if n % o["collector_every"] and n and not any_line:
+            for n0 in order:
+                if n0 % o["collector_every"] and n0 and not any_line:
                     continue  # only collectors and the main axis
-                if n in soaked:
-                    continue  # a ramp of it would stand in the water (shore_reach)
-                if not -back + IC_ROOM <= t <= ahead - IC_ROOM:
-                    continue  # its ramps would run past the map's edge
-                cx, cy = P(t)
-                if box and min(room(cx, cy, 1, 0), room(cx, cy, -1, 0), room(cx, cy, 0, 1), room(cx, cy, 0, -1)) < IC_ROOM:
-                    continue
-                share = cg.zone_share(city, cx, cy)
-                if share > 0.9:
-                    continue
-                if hard and any(hard(cx + math.cos(a) * 30000, cy + math.sin(a) * 30000) or hard(cx, cy)
-                                for a in (k * math.pi / 4 for k in range(8))):
-                    continue  # its ramps would be on reserved land
-                kind = "diamond" if share <= down else "parclo" if share <= normal else "diamond_frontage"
-                m = None
-                if use_models and models():
-                    # the zone's own model, else the smaller Blender ones before none at all; on a slope the ground
-                    # can't take (slope_plan): no interchange (generated ramps there broke and waved over the
-                    # hillside, Nov 20 2026). Never a cloverleaf or trumpet on a street: their cross sockets are
-                    # freeway, so no street stub joined them, and test1's 1.4 x 1.05 km cloverleaf levelled a 525 m
-                    # wide pad across the south coast for a cross road that was never built (Nov 20 2026)
-                    tries = (kind,) + tuple(k for k in SERVICE_FALLBACK if k != kind)
-                    at = [round(cx), round(cy)]
-                    if on_slope(cx, cy):
-                        rej.append({"at": at, "freeway": name, "kind": kind, "why": "slope: no interchange"})
+                # where no model has room on the collector, on the street a block either side of it: test1's diamond
+                # was left out as "no room for any model" (Nov 20 2026)
+                noroom = None
+                for n in (n0, n0 + 1, n0 - 1):
+                    if n != n0 and not noroom:
+                        break
+                    t = n * step
+                    if n in soaked or abs(n) > n_max:
+                        continue  # a ramp of it would stand in the water (shore_reach)
+                    if not -back + IC_ROOM <= t <= ahead - IC_ROOM:
+                        continue  # its ramps would run past the map's edge
+                    cx, cy = P(t)
+                    if box and min(room(cx, cy, 1, 0), room(cx, cy, -1, 0), room(cx, cy, 0, 1), room(cx, cy, 0, -1)) < IC_ROOM:
                         continue
-                    else:
+                    share = cg.zone_share(city, cx, cy)
+                    if share > 0.9:
+                        continue
+                    if hard and any(hard(cx + math.cos(a) * 30000, cy + math.sin(a) * 30000) or hard(cx, cy)
+                                    for a in (k * math.pi / 4 for k in range(8))):
+                        continue  # its ramps would be on reserved land
+                    kind = "diamond" if share <= down else "parclo" if share <= normal else "diamond_frontage"
+                    m = None
+                    if use_models and models():
+                        # the zone's own model, else the smaller Blender ones before none at all; on a slope the
+                        # ground can't take (slope_plan): no interchange (generated ramps there broke and waved over
+                        # the hillside, Nov 20 2026). Never a cloverleaf or trumpet on a street: their cross sockets
+                        # are freeway, so no street stub joined them, and test1's 1.4 x 1.05 km cloverleaf levelled a
+                        # 525 m wide pad across the south coast for a cross road that was never built (Nov 20 2026)
+                        tries = (kind,) + tuple(k for k in SERVICE_FALLBACK if k != kind)
+                        at = [round(cx), round(cy)]
+                        if on_slope(cx, cy):
+                            if n == n0:
+                                rej.append({"at": at, "freeway": name, "kind": kind, "why": "slope: no interchange"})
+                            continue
                         for k in tries:
                             m_ = models().get(k)
                             if m_ and model_fits(city, cx, cy, m_, free) and -back + model_reach(m_, "a") <= t <= ahead - model_reach(m_, "a"):
                                 m, kind = m_, k
                                 break
                         if m is None:  # (the generated ramps fell apart here, Nov 18 2026)
-                            rej.append({"at": at, "freeway": name, "kind": kind, "why": "no room for any model"})
+                            noroom = noroom or {"at": at, "freeway": name, "kind": kind, "why": "no room for any model"}
                             continue
-                mine = model_reach(m, "a") if m else DIAMOND_A
-                if any(abs(t - d) < max(IC_SPACING, mine + theirs + 20000) for d, theirs in done):
-                    continue
-                road = o["core_roads"] if share <= down or not n else "4L" if share <= normal else o["neighbourhood_roads"]
-                spots.append((n, t, cx, cy, kind, road, m))
-                done.append((t, mine))
-                if m:
-                    cuts.append((t, mine))
+                    mine = model_reach(m, "a") if m else DIAMOND_A
+                    if any(abs(t - d) < max(IC_SPACING, mine + theirs + 20000) for d, theirs in done):
+                        continue
+                    road = o["core_roads"] if share <= down or not n else "4L" if share <= normal else o["neighbourhood_roads"]
+                    spots.append((n, t, cx, cy, kind, road, m))
+                    done.append((t, mine))
+                    if m:
+                        cuts.append((t, mine))
+                    noroom = None
+                    break
+                if noroom:
+                    rej.append(noroom)
             return spots, done, cuts, rej
         # from the middle out (downtown's interchange first), unless end to end fits more: a model is 1.4 km long,
         # so the middle one alone left room for no other in a 1.5 km city (one parclo on its freeway, Nov 18 2026)
