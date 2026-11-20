@@ -623,6 +623,10 @@ def retangent(by_i: dict, s: dict) -> None:
 
 STRAIGHT_XY_CM = 150.0  # a run point this close to the straight line in plan is dropped...
 STRAIGHT_Z_CM = 200.0   # ...and, on a deck or ramp (never shaping the ground), this close in height
+# ...and on the ground this close: smaller bumps go (a point per bump made streets wave), a crest or a dip stays.
+# Ignoring height there ran a street straight from foot to foot of a 40 m ridge and the grading dug a trench
+# through it; it goes up and over now (Nov 20 2026)
+GROUND_Z_CM = 400.0
 # A road on the ground keeps a point only where it turns: from corner to corner it runs dead straight and the
 # landscape's Splines layer cuts / fills the ground to it (a point per bump made every street wave up and down).
 
@@ -670,7 +674,7 @@ def straighten(points: list, segments: list, xy_tol: float = STRAIGHT_XY_CM, z_t
             t = max(0.0, min(1.0, ((p["x"] - a["x"]) * dx + (p["y"] - a["y"]) * dy) / (L * L)))
             off_xy = abs((p["x"] - a["x"]) * dy - (p["y"] - a["y"]) * dx) / L
             off_z = abs(p["z"] - (a["z"] + (b["z"] - a["z"]) * t))
-            score = max(off_xy / xy_tol, 0.0 if a.get("raise", True) and not keep_z else off_z / z_tol)
+            score = max(off_xy / xy_tol, off_z / (GROUND_Z_CM if a.get("raise", True) and not keep_z else z_tol))
             if score > worst:
                 best, worst = k, score
         return best, worst > 1.0
