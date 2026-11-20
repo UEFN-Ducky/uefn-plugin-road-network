@@ -299,7 +299,8 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
                         _dist_seg(ic["at"], p[:2], q[:2]) < 1500:
                     return True
             return False
-        fw.drop({ic["group"] for ic in fw.interchanges if ic.get("b_axis") and not crosses(ic)})
+        # (a Blender model brings its own cross road: stubs from its sockets out to the streets, place_model)
+        fw.drop({ic["group"] for ic in fw.interchanges if ic.get("b_axis") and not ic.get("model") and not crosses(ic)})
         # the cross road keeps its interchange width through the whole interchange (ramps were sized for it)
         for ic in fw.interchanges:
             if not ic.get("b_axis"):

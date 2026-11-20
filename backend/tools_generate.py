@@ -338,12 +338,9 @@ def register(ctx) -> None:
         # neighbours' ramps where those reach over its land
         cg.shore_plan(towns, opts, wet)
         # a scanned landscape is never reshaped: a Blender interchange model only where it is flat already. Ground
-        # the world owns is always cut to the model's pad (grade_to_roads): every interchange is a Blender one there
-        if base:
-            cg.slope_plan(towns, opts, road_ground, cg.MODEL_FLAT_CM)
-        else:
-            for t in towns:
-                t.pop("ic_steep", None)
+        # the world owns is cut to the model's pad (grade_to_roads), up to MODEL_GRADE_CM of relief under it: test1's
+        # parclo was cut 90 m into a hill, a 50 m street beside its level pad (Nov 20 2026)
+        cg.slope_plan(towns, opts, road_ground, cg.MODEL_FLAT_CM if base else cg.MODEL_GRADE_CM, keep_one=not base)
         cg.share_freeways(towns, opts)
         progress(2, "Laying roads, freeways, bridges and runways")
         # the ground goes in too: on an engine world (maps.road_cost) each highway takes the cheapest way through

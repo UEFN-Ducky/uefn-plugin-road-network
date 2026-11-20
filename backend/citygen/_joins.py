@@ -217,23 +217,37 @@ MODEL_FLAT_CM = 400.0  # a Blender interchange model (flat to a metre) goes only
 MODEL_GRADE_CM = 1500.0
 
 
-def slope_plan(cities: list, opts: dict | None, ground, flat_cm: float = MODEL_FLAT_CM) -> None:
+def slope_plan(cities: list, opts: dict | None, ground, flat_cm: float = MODEL_FLAT_CM, keep_one: bool = False) -> None:
     """Where a Blender interchange model would stand on a slope (its centre and sockets more than MODEL_FLAT_CM apart
     in height: a parclo on a hillside had its two freeway ends 124 m apart, Nov 18 2026), the spot goes in
-    city['ic_steep'] and the plan builds generated ramps there instead. Again until no model is left on a slope."""
+    city['ic_steep'] and the plan builds generated ramps there instead. Again until no model is left on a slope.
+    keep_one (ground the world owns, cut to the pad): a freeway with every spot too steep still keeps its gentlest
+    one, so it is never left without a Blender interchange."""
     for c in cities:
         c.pop("ic_steep", None)
+        best = None  # (relief, spot): the gentlest model spot seen
         for _ in range(4):
             steep = []
             for ic in freeway_plan(c, opts).interchanges:
                 m = ic.get("model")
                 if m:
-                    zs = [ground(x, y) for x, y in [ic["at"]] + m["sockets"]]
-                    if max(zs) - min(zs) > flat_cm:
+                    # its centre, sockets and the corners of its levelled cross (the middle half of its square at
+                    # full width): a hill beside the freeway is cut too, not only the ground under the sockets
+                    (cx, cy), yaw = ic["at"], math.radians(m["yaw"])
+                    ax, ay, u, v = math.cos(yaw), math.sin(yaw), m["size"][0] / 4, m["size"][1] / 2
+                    corners = [(cx + ax * a - ay * b, cy + ay * a + ax * b) for a in (-u, u) for b in (-v, v)]
+                    zs = [z for z in (ground(x, y) for x, y in [ic["at"]] + m["sockets"] + corners) if z is not None]
+                    relief = max(zs) - min(zs) if zs else 0.0
+                    if relief > flat_cm:
                         steep.append(list(ic["at"]))
+                    if ic.get("freeway") != "ns+ew" and (best is None or relief < best[0]):
+                        best = (relief, list(ic["at"]))
             if not steep:
                 break
             c["ic_steep"] = (c.get("ic_steep") or []) + steep
+        if keep_one and best and best[1] in (c.get("ic_steep") or []) and \
+                not any(ic.get("model") and ic.get("freeway") != "ns+ew" for ic in freeway_plan(c, opts).interchanges):
+            c["ic_steep"] = [s for s in c["ic_steep"] if s != best[1]]
 
 
 PORT_ROAD = "4L"  # the road to a port: four lanes, for its trucks

@@ -174,10 +174,12 @@ def test_natural_ground_keeps_interchange_models_off_slopes(monkeypatch):
     # natural city ground: a Blender interchange model only on a gentle slope its pad is cut into (slope_plan at
     # MODEL_GRADE_CM; levelled any steeper, a parclo's square stood as a 1.4 km grey plate on the hillside)
     asked = []
-    monkeypatch.setattr(cg, "slope_plan", lambda towns, opts, ground, flat: asked.append((opts["city_ground"], flat)))
+    monkeypatch.setattr(cg, "slope_plan", lambda towns, opts, ground, flat, keep_one=False: asked.append((flat, keep_one)))
     _generate_terrain_arg(monkeypatch, {"preset": "Coastal"})
     _generate_terrain_arg(monkeypatch, {"preset": "Coastal", "city_ground": "flatten"})
-    assert asked == []  # ground the world owns: every interchange a Blender model, its pad cut whatever the slope
+    # ground the world owns: a model only where its pad cuts no more than MODEL_GRADE_CM (test1's parclo was cut 90 m
+    # into a hill), but a freeway with no such spot keeps its gentlest one: never a freeway with no Blender model
+    assert asked == [(cg.MODEL_GRADE_CM, True)] * 2, asked
 
 
 def test_live_generate_routes_highways_on_the_terrain(monkeypatch):

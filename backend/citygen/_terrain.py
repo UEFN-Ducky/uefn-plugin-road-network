@@ -543,7 +543,10 @@ def graded(ter: dict, pads: list, blend: float = PAD_BLEND_CM):
 
 DECK_CLEAR_CM = 200.0  # the ground stays this far under a deck's top (its slab and beams), at least
 ROAD_SINK_CM = 10.0  # the ground sits this far under a road's surface: the mesh always shows, never flickers with it
-ROAD_BLEND_CM = 3000.0  # generated ground meets a road at its kerb and blends back to the hills over this
+ROAD_BLEND_CM = 3000.0  # generated ground meets a road at its kerb and blends back to the hills over this ...
+ROAD_BANK = 0.35  # ... round an interchange model's pad wider, so its bank averages no steeper than this ...
+ROAD_BANK_MAX_CM = 15000.0  # ... out to this. test1's interchange pad was cut 93 m into a hill with a 30 m blend:
+# a dirt cliff at 4 in 1 round it (Nov 20 2026)
 STRUCTURES = {ROAD_MESH[k].split("/")[-1] for k in ("BR", "BRR", "BW", "ED", "ER")}  # bridges and viaducts stand free
 
 
@@ -658,12 +661,20 @@ def grade_to_roads(ter: dict, actors: dict, locked: set | None = None) -> dict:
             # never rises over the road; it blends back to the hills beyond that
             deck = half + 0.75 * max(cw, ch)  # a cell this close is on the road's own deck (or the nearest to it)
             half = max(half, 1.5 * max(cw, ch))
-            reach = half + ROAD_BLEND_CM
             ga, gb = st.sample_grid(ter, pa["x"], pa["y"]), st.sample_grid(ter, pb["x"], pb["y"])
             if ga is None or gb is None or min(pa["z"] - ga, pb["z"] - gb) > 2000:
                 continue  # a structure high above the ground stands free (a deep cut is always graded)
             ux, uy = pb["x"] - pa["x"], pb["y"] - pa["y"]
             L2 = ux * ux + uy * uy or 1.0
+            # a Blender interchange's pad: its bank as wide as the deepest cut or fill round it needs (sampled all
+            # round both ends and the middle: a model's link is wider than it is long, its bank is past its end).
+            # ponytail: model links only; a street's 30 m blend stays (wider would flatten every hillside it crosses)
+            ring = [] if not s.get("half") else [(math.cos(k * math.pi / 4) * (half + o), math.sin(k * math.pi / 4) * (half + o))
+                    for k in range(8) for o in (ROAD_BLEND_CM, ROAD_BANK_MAX_CM / 2, ROAD_BANK_MAX_CM)]
+            dz = max([abs(g - (pa["z"] + (pb["z"] - pa["z"]) * t)) for t in (0.0, 0.5, 1.0) for ox, oy in ring
+                      for g in [st.sample_grid(ter, pa["x"] + ux * t + ox, pa["y"] + uy * t + oy)]
+                      if g is not None and not (sea is not None and g < sea)] + [0.0])
+            reach = half + max(ROAD_BLEND_CM, min(ROAD_BANK_MAX_CM, dz / ROAD_BANK))
             for j in range(max(0, int((min(pa["y"], pb["y"]) - reach - y0) / ch)),
                            min(grid, int((max(pa["y"], pb["y"]) + reach - y0) / ch) + 1)):
                 cy = y0 + (j + 0.5) * ch

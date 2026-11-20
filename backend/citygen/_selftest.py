@@ -41,6 +41,15 @@ def _demo() -> None:
     hg = grade_to_roads(slope, hill)
     assert all(abs(st.sample_grid(hg, 1000 * math.cos(a), 1000 * math.sin(a)) + ROAD_SINK_CM) < 60
                for a in (0.0, 1.57, -1.57, 0.8)), "the turnaround's whole round is cut level"
+    # a Blender interchange's pad (a model link, wider than it is long) cut 50 m into a 20 % hillside leaves a
+    # bank all round, past its ends too, never a cliff (ROAD_BANK)
+    side = {"grid": 40, "min": [-10000, -10000], "max": [10000, 10000], "heights": [[i * 100.0 for i in range(40)] for _ in range(40)]}
+    cut = {"C Freeways": {"points": [{"i": 0, "x": 0, "y": -1000, "z": -3000, "yaw": 90, "pitch": 0, "w": 875, "mesh": "", "lines": []},
+                                     {"i": 1, "x": 0, "y": 1000, "z": -3000, "yaw": 90, "pitch": 0, "w": 875, "mesh": "", "lines": []}],
+                          "segments": [{"i": 0, "a": 0, "b": 1, "mesh": "", "ta": 2000, "tb": -2000, "half": 3000, "lines": []}]}}
+    pad = grade_to_roads(side, cut)["heights"]
+    for line in (pad[20], [r[20] for r in pad]):  # across it, and on past its end
+        assert max(abs(b - a) for a, b in zip(line, line[1:])) / 500 < 1.0, ("bank round a pad", [round(z) for z in line])
     # the ground never covers a street between its points either (at a world's own grid, ~37 m a cell)
     fine = terrain(3, 400000, 6000, cities, grid=108)
     fa = generate(cities[:1], lambda x, y: st.sample_grid(fine, x, y) or 0.0, "/Game/X/WorldGen/Roads", seed=3)
