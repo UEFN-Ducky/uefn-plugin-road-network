@@ -399,4 +399,4 @@ function selectCity(id) {
   if (state.tab === "cities") document.querySelector(`#pane-cities [data-live-id="city:${id}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 
-export { STYLE_OPTS, cityAirport, cityWater, CAT_LABEL, COVER_LABEL, cityPlan, showSide, ZONE_LABEL, insidePoly, pickedBlock, blockSection, lotsIn, setBlock, renderWorldCity, renderCitiesPane, edits, QUIET_MS, queueEdit, runEdits, saveCity, regenerate, fmtK, renderCityList, cityContents, CITY_FEATURES, cityFeatures, selectCity };
+export { STYLE_OPTS, cityAirport, cityWater, CAT_LABEL, COVER_LABEL, cityPlan, showSide, ZONE_LABEL, insidePoly, pickedBlock, blockSection, lotsIn, setBlock, renderWorldCity, renderCitiesPane, edits, queueEdit, runEdits, saveCity, regenerate, fmtK, renderCityList, cityContents, CITY_FEATURES, cityFeatures, selectCity };
