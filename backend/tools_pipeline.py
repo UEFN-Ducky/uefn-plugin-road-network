@@ -74,7 +74,9 @@ def register(ctx) -> None:
                 continue
             roads, rest, n_pr = cg.join_private({"points": rpts, "segments": rsegs}, access, folder)
             roads, n_links = cg.join_links(roads, [rest, paths], folder)
-            pts, segs = st.straighten(roads["points"], roads["segments"])
+            # keep_z: the private streets were laid on the ground AFTER it was graded to the public roads, so nothing
+            # grades it to them: cut to its two ends, a 360 m lane ran straight over a 20 m dip (Nov 20 2026)
+            pts, segs = st.straighten(roads["points"], roads["segments"], keep_z=True)
             # a private street that ends (a subdivision lane, a complex's drive) closes in a cul-de-sac too: they
             # join the roads only here, after generate capped the public streets, so they all ended square
             mine = slug(f"{t['name']} Roads")
