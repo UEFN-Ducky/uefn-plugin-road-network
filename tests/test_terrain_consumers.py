@@ -253,6 +253,20 @@ def test_open_freeway_end_routes_to_the_road_ahead_and_never_up_a_hill():
     assert not gen._climbs(line, flat) and gen._climbs(line, hill)
 
 
+def test_interchange_pad_is_level_with_the_streets_that_meet_it():
+    model = {"mesh": "SM_IC_Parclo", "yaw": 0.0, "width": 70000.0, "size": [140000, 40000],
+             "sockets": [[70000, 0], [-70000, 0], [0, 20000], [0, -20000]], "cross": [[0, 25000], [0, -25000]]}
+    bluff = lambda x, y: 5400.0 if x > 50000 else 0.0  # 54 m up under one freeway socket, the streets on the flat
+    a = cg.model_pieces({"points": [], "segments": []}, [{"at": [0, 0], "kind": "parclo", "model": model}], bluff, "/Game/X")
+    assert [round(p["z"]) for p in a["points"]] == [0]
+    slope = lambda x, y: y * 0.1  # the two streets 50 m apart: the pad halfway, 25 m to each
+    a = cg.model_pieces({"points": [], "segments": []}, [{"at": [0, 0], "kind": "parclo", "model": model}], slope, "/Game/X")
+    assert [round(p["z"]) for p in a["points"]] == [0]
+    stack = dict(model, cross=[])  # no cross road: the mean under it, as before
+    a = cg.model_pieces({"points": [], "segments": []}, [{"at": [0, 0], "kind": "stack", "model": stack}], bluff, "/Game/X")
+    assert [round(p["z"]) for p in a["points"]] == [1080]
+
+
 def test_collector_with_no_room_for_a_model_takes_the_street_beside_it(monkeypatch):
     from backend import freeways as fw
     city = {"name": "Roomy", "x": 0, "y": 0, "radius": 120000, "seed": 4, "style": "grid", "turn": 0.0}

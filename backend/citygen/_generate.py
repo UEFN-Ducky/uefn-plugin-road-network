@@ -400,9 +400,15 @@ def model_pieces(a: dict, ics: list, ground, folder: str) -> dict:
         m = ic.get("model")
         if m:
             x, y = ic["at"]
-            # its pad at the mean of the ground under its centre and sockets: on a gentle slope cut and fill even out
-            zs = [ground(px, py) for px, py in [(x, y)] + [tuple(s) for s in m["sockets"]]]
-            centre = _point(i, x, y, sum(zs) / len(zs), m["yaw"], m["width"], lifted=True,
+            # its pad level with the streets that meet it: halfway between the ground at its cross roads' ends (the
+            # freeway comes in on a deck, which eases to any height; a street lies on the ground). The mean of the
+            # ground under its centre and sockets left test1's parclo 54 m over the street on the shore side (Nov 20
+            # 2026). With no cross road (a stack): that mean, so cut and fill even out
+            cross = [tuple(c) for c in m.get("cross") or ()]
+            zs = [ground(px, py) for px, py in cross] if cross else \
+                [ground(px, py) for px, py in [(x, y)] + [tuple(s) for s in m["sockets"]]]
+            level = (min(zs) + max(zs)) / 2 if cross else sum(zs) / len(zs)
+            centre = _point(i, x, y, level, m["yaw"], m["width"], lifted=True,
                             piece=f"{folder}/{INTERCHANGE_FOLDER}/{m['mesh']}")
             a["points"].append(centre)
             i += 1
