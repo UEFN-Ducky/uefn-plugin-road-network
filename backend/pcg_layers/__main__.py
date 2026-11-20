@@ -306,6 +306,11 @@ def _demo() -> None:
     face_t = town()
     leave_out_steep(face_t, lambda x, y: 0.4 * x)
     assert not any(face_t[k]["points"] for k in ("Warehouses", "Houses", "Car parks")), "a mountain face stays natural"
+    flats = {**town(), "Apartments": {"kind": "buildings", "role": "apartment", "count": 1, "shown": 1,
+                                      "points": [[20000, 0, 0, 0, 1, 20, 0, 22, 18, 0, [], []]]}}
+    gone, lost = leave_out_steep(flats, lambda x, y: 0.2 * x)
+    assert not flats["Apartments"]["points"] and lost["Apartments"] == 1, "too steep for apartments"
+    assert any(p[0] == 20000 and p[7] <= 13.2 for p in flats["Houses"]["points"]), "... a house on its lot instead"
     (drive,) = paths
     assert drive[0] == DRIVE_M and len(drive[1]) == 6 and drive[1][2] == round(pad) and drive[1][-1] < pad - 100, paths
     # a lot never reaches onto a street

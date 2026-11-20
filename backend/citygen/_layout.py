@@ -550,7 +550,11 @@ def frontage_lots(city: dict, o: dict, nodes: dict, edges: list, fronted: set, w
             L = math.dist(p[:2], q[:2])
             if in_keep(clear, p[0], p[1], 2000) or in_keep(clear, q[0], q[1], 2000):
                 continue  # (the street itself is not laid there)
-            m0, m1 = (FRONT_END_CM if deg[a] > 1 else 300.0), (FRONT_END_CM if deg[b] > 1 else 300.0)
+            # the corner stays clear at a junction only: where one street just bends (a winding suburb street is a
+            # point every 45 m) the lots run on round it. With the gap at every bend a 45 m piece held one lot, and
+            # 70 % of the winding streets' frontage stood empty (Nov 20 2026)
+            gap = lambda n: FRONT_END_CM if deg[n] > 2 else 100.0 if deg[n] == 2 else 300.0
+            m0, m1 = gap(a), gap(b)
             n = int((L - m0 - m1) // W)
             if n < 1:
                 continue

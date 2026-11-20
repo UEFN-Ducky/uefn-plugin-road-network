@@ -177,7 +177,7 @@ def test_natural_ground_keeps_interchange_models_off_slopes(monkeypatch):
     monkeypatch.setattr(cg, "slope_plan", lambda towns, opts, ground, flat: asked.append((opts["city_ground"], flat)))
     _generate_terrain_arg(monkeypatch, {"preset": "Coastal"})
     _generate_terrain_arg(monkeypatch, {"preset": "Coastal", "city_ground": "flatten"})
-    assert asked == [("natural", cg.MODEL_GRADE_CM)]
+    assert asked == []  # ground the world owns: every interchange a Blender model, its pad cut whatever the slope
 
 
 def test_live_generate_routes_highways_on_the_terrain(monkeypatch):

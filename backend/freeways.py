@@ -590,11 +590,11 @@ def plan(city: dict, o: dict) -> Plan:
         step, across = (by, bx) if name == "ns" else (bx, by)  # the grid along this freeway, and across it
         n_max = int(R // step)
         soaked = set(((city.get("fw_shore") or {}).get("wet_ic") or {}).get(name) or ())
-        def pick(order, done=tuple(done), cuts=tuple(cuts)):
+        def pick(order, done=tuple(done), cuts=tuple(cuts), any_line=False):
             spots, done, cuts, rej = [], list(done), list(cuts), []
             for n in order:
                 t = n * step
-                if n % o["collector_every"] and n:
+                if n % o["collector_every"] and n and not any_line:
                     continue  # only collectors and the main axis
                 if n in soaked:
                     continue  # a ramp of it would stand in the water (shore_reach)
@@ -643,6 +643,12 @@ def plan(city: dict, o: dict) -> Plan:
         # so the middle one alone left room for no other in a 1.5 km city (one parclo on its freeway, Nov 18 2026)
         ns_ = range(-n_max, n_max + 1)
         spots, done, cuts, rej = max((pick(sorted(ns_, key=abs)), pick(ns_)), key=lambda r: len(r[0]))
+        if use_models and models() and not any(sp[6] for sp in spots):
+            # every freeway gets a Blender interchange: none fitted on a collector, so any street it crosses will do
+            # (test1's only freeway had none, Nov 20 2026)
+            more = pick(sorted(ns_, key=abs), any_line=True)
+            if any(sp[6] for sp in more[0]):
+                spots, done, cuts, rej = more[0], more[1], more[2], rej + more[3]
         out.rejected += rej
 
         def lf(t, lf0=lf0, cuts=tuple(cuts)):  # down to grade at every model's sockets

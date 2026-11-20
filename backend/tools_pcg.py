@@ -681,6 +681,7 @@ def register(ctx) -> None:
             return {"ok": True, "id": nid, "counts": {k: v["count"] for k, v in out.items()},
                     # why lots stood empty, per building layer (only units placed again since the plugin started)
                     "skipped": {k: v["skipped"] for k, v in out.items() if v.get("skipped")},
+                    "empty_lots": getattr(pl.preview, "empty", None),
                     "ground_fit": fit_summary(),
                     # what the last pass took off the roads and out of the buildings, per layer
                     "swept": _PREVIEW_CACHE.get("swept"),

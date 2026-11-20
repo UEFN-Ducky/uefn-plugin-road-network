@@ -193,6 +193,19 @@ def city_graph(city: dict, opts: dict | None = None, wet=None, bridges: list | N
         nodes, edges = winding_suburbs(city, o, nodes, ring, edges, water_of(city, o, wet))
         if virtual:  # (no block lines of the grid that is gone there)
             virtual[:] = [v for v in virtual if max(ring.get(v[0], 0), ring.get(v[1], 0)) <= normal]
+    if city.get("hills"):
+        # a dead end up a hillside no house fits on goes, back to where the ground eases: a road out of town ran up
+        # a mountain to a turnaround with nothing along it (Nov 20 2026)
+        while True:
+            deg: dict = {}
+            for e in edges:
+                deg[e[0]] = deg.get(e[0], 0) + 1
+                deg[e[1]] = deg.get(e[1], 0) + 1
+            dead = {n for n, k in deg.items() if k == 1 and n in nodes and hill_grade(city, o, *nodes[n][:2]) > SUB_STEEP}
+            if not dead:
+                break
+            edges = [e for e in edges if e[0] not in dead and e[1] not in dead]
+            nodes = {n: p for n, p in nodes.items() if n not in dead}
     yards = (city.get("shipyards") or []) + (city.get("shipyards_near") or [])
     fields = city.get("airports") or []
     if yards or fields:  # shipyards and airports are dedicated districts with their own roads

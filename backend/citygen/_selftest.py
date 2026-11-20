@@ -1005,9 +1005,12 @@ def _demo() -> None:
     wind = {"name": "W", "x": 0, "y": 0, "radius": 140000, "seed": 3, "style": "mixed", "features": {"suburbs": "winding"}}
     mount = lambda x, y: max(0.0, x - 60000) * 0.35
     plan_hills([wind], mount)
-    sub = [p for n, p in city_graph(wind)[0].items() if len(n) == 3 and n[0] >= SUB_KEY]
+    wn, we = city_graph(wind)
+    sub = [p for n, p in wn.items() if len(n) == 3 and n[0] >= SUB_KEY]
     assert sub and not any(hill_grade(wind, city_options(wind), *p[:2]) > SUB_STEEP for p in sub), len(sub)
     assert not any(p[0] > 75000 for p in sub), max(p[0] for p in sub)
+    ends = [n for n in wn if sum((e[0] == n) + (e[1] == n) for e in we) == 1]
+    assert not any(hill_grade(wind, city_options(wind), *wn[n][:2]) > SUB_STEEP for n in ends), "no dead end up the mountain"
     # every ramp lands on its road in jittered (mixed) cities of any seed: main roads are straight lines
     for s in range(1, 9):
         r = freeway_report({"name": "K", "x": 0, "y": 0, "radius": 160000, "seed": s, "style": "mixed"},

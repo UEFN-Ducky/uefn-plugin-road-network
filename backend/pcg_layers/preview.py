@@ -329,6 +329,9 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
         if by_biome and layer["kind"] in SCATTERED and layer["role"] in ("tree", "bush"):
             where_ok = (lambda x, y, ok=where_ok, k=tree_kind(layer) if layer["role"] == "tree" else "bush":
                         ok(x, y) and by_biome(x, y, k))
+        # a lot past the city's outer ring (a street out to the edge, or between two towns) is still a lot of that
+        # city: homes are built on it. No layer's district reached it, so it stood empty (Nov 20 2026)
+        past_edge = _where_test("outside", cities) if layer["where"] == "housing" and cities else None
         candidates = 0
         why: dict = {}  # building layers: why each lot was passed over (road_network_pcg_preview `skipped`)
         no = lambda k: why.__setitem__(k, why.get(k, 0) + 1)
@@ -383,7 +386,7 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
                         x, y = cand[6] - math.cos(f) * back, cand[7] - math.sin(f) * back
                 if along and cand[3] - last_at[cand[4]] < spacing:
                     continue  # too soon after the last one on this side of the street
-                if not lot_role and not where_ok(x, y):
+                if not lot_role and not where_ok(x, y) and not (lot and past_edge and past_edge(x, y)):
                     lot and no("wrong district")
                     continue  # (a neighbourhood's own lots are already in the right place)
                 if layer["area"] and not inside(layer["area"], x, y):
@@ -512,11 +515,15 @@ def preview(layers: list, cities: list, terrain: dict, roads: list, sample_z, li
         memo.units = units_now
     # a lot no layer built on (too shallow for a house behind its front yard, a corner nothing fits, a building that
     # would stand on another) is open land: the forest grows on it by its own rule (nature.grow), woods or a clearing
+    preview.empty = {}  # lots no layer built on, by district (road_network_pcg_preview summary 'empty_lots')
     if any(l["kind"] == "buildings" for l in layers):
+        zones = [(z, _where_test(z, cities)) for z in ("downtown", "industrial", "normal", "housing")]
         for c in cities:
             for row in c.get("lots") or []:
                 if (row[5], row[6]) in taken or (len(row) > 8 and row[8] is True):
                     continue  # built on; a footprint a plan drew (its own layer builds it, or none does)
+                z = next((z for z, t in zones if t(row[0], row[1])), "outside") + (f" ({row[7]})" if len(row) > 7 and row[7] else "")
+                preview.empty[z] = preview.empty.get(z, 0) + 1
                 inside_lot, box = in_rect(row[0], row[1], row[2], row[4] / 2, row[3] / 2)
                 grow(out, lambda x, y, f=inside_lot: f(x, y) and on_map(x, y) and not road_hash.hit(x, y, 250.0)
                      and not priv_hash.hit(x, y, 250.0), box, sample_z, ("lot", round(row[5]), round(row[6])), sea, by_biome)

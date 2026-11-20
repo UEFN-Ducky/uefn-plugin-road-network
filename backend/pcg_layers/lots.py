@@ -70,6 +70,9 @@ GRADE_MAX = {"warehouse": 0.06, "factory": 0.06, "mall": 0.06, "utility": 0.06, 
 # test1's gentle hills, most of the winding suburbs stood empty, Nov 20 2026: a house steps down a 25 % lot)
 GRADE_OTHER = 0.15
 GRADE_PLANNED = 0.25  # a site the planner chose (the city's one hospital) may take a hillside, never a mountain face
+# a building too big for its slope leaves a house on its lot instead of bare ground (256 apartments and 76 offices
+# left test1's hillside lots empty, Nov 20 2026)
+HOUSE_INSTEAD = ("apartment", "shop", "office", "skyscraper")
 STALL_MESH = "SM_Kit_ParkingStall"
 
 
@@ -93,7 +96,9 @@ def leave_out_steep(placed: dict, ground) -> tuple:
     2026): measured on the cut ground, every one of them passed. Parks, shipyards and anything laid at its own
     level stay. Returns (footprints taken out [(x, y, yaw, width_m, depth_m)], {layer: how many it lost})."""
     gone, lost, slabs = [], {}, []
-    for name, v in placed.items():
+    homes = next((v for v in placed.values() if v.get("kind") == "buildings" and v.get("role") == "house"), None)
+    hw, hd = (homes.get("size_m") or [11, 14]) if homes else (0, 0)
+    for name, v in list(placed.items()):
         slab = v.get("kind") == "site" and v.get("role") == "site" and list((v.get("box_m") or [0, 0])[:2]) == [1, 1]
         if v.get("keep_z") or v.get("pad") is False or v.get("on_road") or not (slab or v.get("kind") == "buildings") \
                 or v.get("role") == "park":
@@ -104,14 +109,22 @@ def leave_out_steep(placed: dict, ground) -> tuple:
             role = "site" if slab else v.get("role")
             limit = GRADE_PLANNED if (not slab and len(p) > 12 and p[12]) else GRADE_MAX.get(role, GRADE_OTHER)
             if w and d and grade_under(ground, p[0], p[1], p[3], w, d)[0] > limit:
+                bw, bd = min(w, hw * 1.2), min(d, hd * 1.2)
+                if homes is not None and role in HOUSE_INSTEAD and not (len(p) > 12 and p[12]) and \
+                        grade_under(ground, p[0], p[1], p[3], bw, bd)[0] <= GRADE_MAX["house"]:
+                    homes["points"].append([*p[:5], 6.5, 0, round(bw, 1), round(bd, 1), *p[9:12]])
+                    homes["count"] = homes.get("count", 0) + 1
+                    homes["shown"] = len(homes["points"])
+                    continue
                 gone.append((p[0], p[1], p[3], w, d))
                 if slab:
                     slabs.append(gone[-1])
                 continue
             keep.append(p)
         if len(keep) != len(v.get("points") or []):
-            lost[name] = len(v["points"]) - len(keep)
-            v["count"] = max(0, v.get("count", len(v["points"])) - lost[name])
+            n = len(v["points"]) - len(keep)
+            lost[name] = n
+            v["count"] = max(0, v.get("count", len(v["points"])) - n)
             v["points"], v["shown"] = keep, len(keep)
     if slabs:  # the stalls painted on a slab that went
         def on(px, py):
