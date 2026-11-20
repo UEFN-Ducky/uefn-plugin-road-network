@@ -211,9 +211,13 @@ def shore_plan(cities: list, opts: dict | None = None, wet=None) -> None:
 
 
 MODEL_FLAT_CM = 400.0  # a Blender interchange model (flat to a metre) goes only where the ground under it varies less
+# ... on ground the world owns (natural city ground) grade_to_roads cuts its pad level: up to this much relief
+# (4 m over 1.4 km left no model on any natural hillside at all: a bare freeway, Nov 20 2026; much more and
+# the pad stands as a grey plate on the hill, Nov 19 2026)
+MODEL_GRADE_CM = 1500.0
 
 
-def slope_plan(cities: list, opts: dict | None, ground) -> None:
+def slope_plan(cities: list, opts: dict | None, ground, flat_cm: float = MODEL_FLAT_CM) -> None:
     """Where a Blender interchange model would stand on a slope (its centre and sockets more than MODEL_FLAT_CM apart
     in height: a parclo on a hillside had its two freeway ends 124 m apart, Nov 18 2026), the spot goes in
     city['ic_steep'] and the plan builds generated ramps there instead. Again until no model is left on a slope."""
@@ -225,7 +229,7 @@ def slope_plan(cities: list, opts: dict | None, ground) -> None:
                 m = ic.get("model")
                 if m:
                     zs = [ground(x, y) for x, y in [ic["at"]] + m["sockets"]]
-                    if max(zs) - min(zs) > MODEL_FLAT_CM:
+                    if max(zs) - min(zs) > flat_cm:
                         steep.append(list(ic["at"]))
             if not steep:
                 break

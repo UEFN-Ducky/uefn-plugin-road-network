@@ -400,7 +400,9 @@ def model_pieces(a: dict, ics: list, ground, folder: str) -> dict:
         m = ic.get("model")
         if m:
             x, y = ic["at"]
-            centre = _point(i, x, y, ground(x, y), m["yaw"], m["width"], lifted=True,
+            # its pad at the mean of the ground under its centre and sockets: on a gentle slope cut and fill even out
+            zs = [ground(px, py) for px, py in [(x, y)] + [tuple(s) for s in m["sockets"]]]
+            centre = _point(i, x, y, sum(zs) / len(zs), m["yaw"], m["width"], lifted=True,
                             piece=f"{folder}/{INTERCHANGE_FOLDER}/{m['mesh']}")
             a["points"].append(centre)
             i += 1

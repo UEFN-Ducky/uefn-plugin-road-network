@@ -33,13 +33,13 @@ def freeway_report(city: dict, opts: dict | None = None) -> dict:
     from .. import freeways
     fw = freeway_plan(city, opts)
     if not fw.lines:
-        return {"interchanges": [], "validation": {"ok": True, "checked": 0}}
+        return {"interchanges": [], "rejected": fw.rejected, "validation": {"ok": True, "checked": 0}}
     nodes, edges = city_graph(city, opts)
     streets = [{"name": f"street {a}-{b}", "cls": "street", "kind": k, "half": HALF.get(k, 500.0),
                 "points": [(*nodes[a][:2], 0.0), (*nodes[b][:2], 0.0)]} for a, b, k, *_ in edges]
     lines = fw.lines + streets
     rep = freeways.validate(lines, [(ln["points"], ln["half"]) for ln in lines])
-    return {"interchanges": fw.interchanges, "validation": rep}
+    return {"interchanges": fw.interchanges, "rejected": fw.rejected, "validation": rep}
 
 
 def sidewalks(nodes: dict, edges: list) -> tuple:

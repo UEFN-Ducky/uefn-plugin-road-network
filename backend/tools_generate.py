@@ -13,6 +13,7 @@ import re
 import time
 
 from . import citygen as cg
+from . import freeways as fwmod
 from . import holds as hd
 from . import pcg_layers as pl
 from . import pieces
@@ -336,10 +337,10 @@ def register(ctx) -> None:
         # a freeway ends at the shore when only open water lies beyond it, and each city's streets give way to its
         # neighbours' ramps where those reach over its land
         cg.shore_plan(towns, opts, wet)
-        # a scanned landscape is never reshaped, nor is natural city ground: a Blender interchange model only where
-        # it is flat already (levelled, a parclo's square stood as a 1.4 km grey plate on a hillside, Nov 19 2026)
+        # a scanned landscape is never reshaped: a Blender interchange model only where it is flat already. Natural
+        # ground the world owns is cut to the model's pad (grade_to_roads) on gentle slopes; steeper, generated ramps
         if base or opts["city_ground"] != "flatten":
-            cg.slope_plan(towns, opts, road_ground)  # (flatten: the ground is levelled under each model: grade_to_roads)
+            cg.slope_plan(towns, opts, road_ground, cg.MODEL_FLAT_CM if base else cg.MODEL_GRADE_CM)
         else:
             for t in towns:
                 t.pop("ic_steep", None)
@@ -445,7 +446,11 @@ def register(ctx) -> None:
                                                     "y": round(t["y"]), "radius_m": round(t["radius"] / 100)} for t in towns],
                 **({"fitted": fit_notes} if fit_notes else {}),
                 "actors": stats_out,
-                "freeways": {n: {"interchanges": [i["kind"] for i in r["interchanges"]],
+                "interchange_models": {"registered": sorted(fwmod.models()),
+                                       "placed": {k: sum(1 for r in freeways.values() for i in r["interchanges"]
+                                                         if i.get("model") and i["kind"] == k) for k in sorted(fwmod.models())}},
+                "freeways": {n: {"interchanges": [i["kind"] + ("" if i.get("model") else " (generated)") for i in r["interchanges"]],
+                                 **({"not_modelled": r["rejected"]} if r.get("rejected") else {}),
                                  "validator_ok": r["validation"]["ok"],
                                  **({} if r["validation"]["ok"] else {"validation": r["validation"]})}
                              for n, r in freeways.items()},

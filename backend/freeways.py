@@ -224,6 +224,8 @@ def interchange(kind: str, f: Frame, hA: float, hB: float, liftA, liftB, tag: tu
 # a short stub of the cross road leaves each N / S socket for the street grid. Frame: Blender +X along the freeway,
 # +Y along the cross road, cm. UEFN imports Blender's +Y as its -Y, so a socket's local y is negated here.
 MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "interchanges")
+SERVICE_FALLBACK = ("diamond", "diamond_frontage", "parclo")  # smallest square first
+CLOVER_MIN_R = 150000.0  # from this radius the normal zone's interchanges are full cloverleafs where they fit
 MODEL_FADE = 1.6 * 2 * LEVEL_CM / MAX_GRADE["freeway"]  # a freeway comes down from two levels to a model's grade
 MODEL_CELL = 5000.0  # the model's square is marked taken on a 50 m grid ...
 MODEL_CELL_HALF = 3600.0  # ... each mark this wide, so the whole square is covered
@@ -323,6 +325,7 @@ class Plan:
 
     def __init__(self):
         self.nodes, self.edges, self.lines, self.interchanges = {}, [], [], []
+        self.rejected: list = []  # spots a Blender model was not used at: {at, freeway, kind, why}
         self._grid: dict = {}
         self._builds: list = []
         self._marks: list = []  # (marks, group): land a model interchange takes
@@ -362,7 +365,10 @@ class Plan:
         keep = [b for b in self._builds if b[2] not in groups]
         marks = [m for m in self._marks if m[1] not in groups]
         ics = [i for i in self.interchanges if i.get("group") not in groups]
+        rejected = self.rejected + [{"at": i["at"], "freeway": i.get("freeway"), "kind": i["kind"], "why": "cross road gone"}
+                                    for i in self.interchanges if i.get("group") in groups]
         self.__init__()
+        self.rejected = rejected
         for bld, gk, g in keep:
             self.add(bld, gk, g)
         for m, g in marks:
@@ -585,7 +591,7 @@ def plan(city: dict, o: dict) -> Plan:
         n_max = int(R // step)
         soaked = set(((city.get("fw_shore") or {}).get("wet_ic") or {}).get(name) or ())
         def pick(order, done=tuple(done), cuts=tuple(cuts)):
-            spots, done, cuts = [], list(done), list(cuts)
+            spots, done, cuts, rej = [], list(done), list(cuts), []
             for n in order:
                 t = n * step
                 if n % o["collector_every"] and n:
@@ -604,9 +610,24 @@ def plan(city: dict, o: dict) -> Plan:
                                 for a in (k * math.pi / 4 for k in range(8))):
                     continue  # its ramps would be on reserved land
                 kind = "diamond" if share <= down else "parclo" if share <= normal else "diamond_frontage"
-                m = models().get(kind) if use_models else None
-                if m and (on_slope(cx, cy) or not (model_fits(city, cx, cy, m, free) and -back + model_reach(m, "a") <= t <= ahead - model_reach(m, "a"))):
-                    continue  # no room for the model: no interchange here (the generated ramps fell apart, Nov 18 2026)
+                m = None
+                if use_models and models():
+                    # the zone's own model (a big city's normal zone: a full cloverleaf first), else the smaller
+                    # Blender ones before none at all; on a slope the ground can't take (slope_plan): generated ramps
+                    first = ("cloverleaf",) if kind == "parclo" and R >= CLOVER_MIN_R else ()
+                    tries = first + (kind,) + tuple(k for k in SERVICE_FALLBACK if k != kind)
+                    at = [round(cx), round(cy)]
+                    if on_slope(cx, cy):
+                        rej.append({"at": at, "freeway": name, "kind": kind, "why": "slope: generated ramps"})
+                    else:
+                        for k in tries:
+                            m_ = models().get(k)
+                            if m_ and model_fits(city, cx, cy, m_, free) and -back + model_reach(m_, "a") <= t <= ahead - model_reach(m_, "a"):
+                                m, kind = m_, k
+                                break
+                        if m is None:  # (the generated ramps fell apart here, Nov 18 2026)
+                            rej.append({"at": at, "freeway": name, "kind": kind, "why": "no room for any model"})
+                            continue
                 mine = model_reach(m, "a") if m else DIAMOND_A
                 if any(abs(t - d) < max(IC_SPACING, mine + theirs + 20000) for d, theirs in done):
                     continue
@@ -615,11 +636,12 @@ def plan(city: dict, o: dict) -> Plan:
                 done.append((t, mine))
                 if m:
                     cuts.append((t, mine))
-            return spots, done, cuts
+            return spots, done, cuts, rej
         # from the middle out (downtown's interchange first), unless end to end fits more: a model is 1.4 km long,
         # so the middle one alone left room for no other in a 1.5 km city (one parclo on its freeway, Nov 18 2026)
         ns_ = range(-n_max, n_max + 1)
-        spots, done, cuts = max((pick(sorted(ns_, key=abs)), pick(ns_)), key=lambda r: len(r[0]))
+        spots, done, cuts, rej = max((pick(sorted(ns_, key=abs)), pick(ns_)), key=lambda r: len(r[0]))
+        out.rejected += rej
 
         def lf(t, lf0=lf0, cuts=tuple(cuts)):  # down to grade at every model's sockets
             return lf0(t) * min([1.0] + [_smooth((abs(t - tm) - h) / MODEL_FADE) for tm, h in cuts])
