@@ -454,12 +454,38 @@ def _segment(i, a, b, kind, folder, lifted=False):
     return {"i": i, "a": a, "b": b, "ta": 0.0, "tb": 0.0, "mesh": mesh, "raise": not lifted, "lines": lines}
 
 
+ROAD_SAMPLE_CM = 2000.0  # a street on the ground gets a point this often, draped on the hill (straighten keeps crests)
+UNSAMPLED = {"ED", "ER", "BR", "BRR", "BW", "CN", "DK", "RW", "RS", "TW"}  # decks, bridges, canals, docks, runways: level by design
+
+
+def _sampled(e: list, nodes: dict) -> list:
+    """e with a via point every ROAD_SAMPLE_CM along each leg that lies on the ground as the edge's own kind (no lift,
+    no bridge / ramp kind of its own). A street had points only at its crossings: one 370 m straight line from foot to
+    foot of a ridge, and the grading dug a trench through the ridge to it (Nov 20 2026)."""
+    if e[2] in UNSAMPLED:
+        return e
+    via = e[3] if len(e) > 3 else []
+    line = [nodes[e[0]]] + via + [nodes[e[1]]]
+    flat = lambda v: len(v) < 3 or not float(v[2] or 0)  # noqa: E731
+    out, changed = [], False
+    for k, (p, q) in enumerate(zip(line, line[1:])):
+        if k:
+            out.append(via[k - 1])
+        own = k == 0 or len(via[k - 1]) < 4 or via[k - 1][3] in (None, e[2])
+        n = math.ceil(math.dist(p[:2], q[:2]) / ROAD_SAMPLE_CM) - 1
+        if n and own and flat(p) and flat(q):
+            out += [[p[0] + (q[0] - p[0]) * t / (n + 1), p[1] + (q[1] - p[1]) * t / (n + 1)] for t in range(1, n + 1)]
+            changed = True
+    return [e[0], e[1], e[2], out] + list(e[4:]) if changed else e
+
+
 def build_actor(nodes: dict, edges: list, ground, folder: str, pieces: dict | None = None) -> dict:
     """Street graph -> spline points and segments. A node with 3+ streets becomes a junction (a
     pending piece with a mouth point on every arm); edges may carry 'via' points (highways):
     [x, y] or [x, y, lift_cm, kind of the segment that starts there] for bridges and ramps.
     pieces: {node: mesh path} puts a piece (trumpet loop, cloverleaf) on an end point."""
     pieces = pieces or {}
+    edges = [_sampled(e, nodes) for e in edges]
 
     def high(x, y):  # a bridge / ramp point sits over the HIGHEST ground near it, never in a hill between samples
         return max(ground(x + dx, y + dy) for dx, dy in ((0, 0), (1500, 0), (-1500, 0), (0, 1500), (0, -1500)))

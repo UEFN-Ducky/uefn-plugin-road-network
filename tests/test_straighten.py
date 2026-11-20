@@ -46,5 +46,19 @@ def test_straighten():
     print("straighten ok")
 
 
+def test_street_between_two_crossings_goes_over_the_ridge():
+    # a 400 m street with no point between its ends, over a 30 m ridge: built and straightened, it keeps a point
+    # near the crest, high on the ridge, instead of one straight line through it
+    import math
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+    from backend import citygen as cg
+    ridge = lambda x, y: 3000.0 * max(0.0, 1 - abs(x - 20000) / 15000)  # noqa: E731
+    a = cg.build_actor({"A": [0, 0], "B": [40000, 0]}, [["A", "B", "2S"]], ridge, "/Game/X")
+    pts, _segs = st.straighten(a["points"], a["segments"])
+    top = max(pts, key=lambda p: p["z"])
+    assert len(pts) > 2 and top["z"] > 3000 - 1500 and abs(top["x"] - 20000) < 6000, [(p["x"], round(p["z"])) for p in pts]
+    assert not math.isnan(top["z"])
+
+
 if __name__ == "__main__":
     test_straighten()
