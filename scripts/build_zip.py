@@ -26,6 +26,8 @@ def _prune_superseded_zips(keep: pathlib.Path | None = None) -> None:
     pile up one per version bump and can be re-created by re-running this
     script. Keeping them only invites installing an old build by mistake.
     """
+    if keep is not None and keep.resolve().parent != OUT_DIR.resolve():
+        return  # built somewhere else (a test build): nothing in deploy/ was superseded
     try:
         zips = sorted(OUT_DIR.glob("*.ducky-plugin.zip"))
     except OSError:
@@ -40,7 +42,7 @@ def _prune_superseded_zips(keep: pathlib.Path | None = None) -> None:
             z.unlink()
         except OSError:
             pass
-SKIP_NAMES = {".git", "scripts", "deploy", ".gitignore", "README.md", "__pycache__"}
+SKIP_NAMES = {".git", "scripts", "deploy", "tests", "node_modules", ".gitignore", "README.md", "__pycache__"}
 SKIP_SUFFIX = {".pyc", ".pyo", ".zip", ".ducky-plugin"}
 
 

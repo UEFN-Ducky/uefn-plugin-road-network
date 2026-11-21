@@ -21,14 +21,21 @@ Most backend modules carry their own self-checks: `py -3 -m backend.splines_text
 ## citygen is one module in several files
 
 `backend/citygen/` is one module cut by system (`_kit.py`, `_terrain.py`, …): `__init__.py` runs each file into its
-own namespace, so every name is `citygen.X`. The Store build has no `.py` files to read, so Ducky's build engine
-compiles the files named in the marked list (`_CG_PARTS = (...)  # ducky-build: one module`) into the module.
+own namespace, so every name is `citygen.X`. A compiled build (Ducky's Publish buttons make one) has no `.py`
+files to read, so Ducky's build engine compiles the files named in the marked list
+(`_CG_PARTS = (...)  # ducky-build: one module`) into the module.
 
 - A new part is a new file **and** its name in `_CG_PARTS`, in the order it must run.
 - Every part starts with `from __future__ import annotations`, like `__init__.py`.
-- Nothing else in the backend reads or runs a `.py` file: a Store build would not load, and the build refuses it.
+- Nothing else in the backend reads or runs a `.py` file: a compiled build would not load, and the build refuses it.
 
 `tests/test_citygen_parts.py` holds the first two.
+
+## What the Store gets
+
+Readable source. The repo is public, so compiling hides nothing, and a compiled build is no faster (the self-check
+runs in the same time) while the compile takes 12 to 35 minutes. `plugin.json` says it once, `"compiled": false`,
+and `scripts/release.py` follows it; `--compiled` builds the compiled zip for one run.
 
 ## The worker process
 

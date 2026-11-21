@@ -13,6 +13,10 @@ Env:
 Usage:
   py scripts/release.py              # zip only
   py scripts/release.py --publish    # zip + MCP upload + publish
+
+What ships is said once, in plugin.json: "compiled": false ships the readable Python source (an
+open-source plugin: compiling hides nothing and costs a long build); without that line the Store gets
+the compiled build. --plain / --compiled choose for one run.
 """
 
 from __future__ import annotations
@@ -179,6 +183,11 @@ def publish(zip_path: Path, *, category: str, changelog: str) -> None:
         raise SystemExit(result.get("error") or "release failed")
 
 
+def ships_compiled(manifest: dict) -> bool:
+    """plugin.json decides: the compiled build, unless it says "compiled": false."""
+    return manifest.get("compiled") is not False
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--publish", action="store_true", help="Upload + publish via Store MCP")
@@ -189,14 +198,23 @@ def main() -> None:
         action="store_true",
         help="ship the readable Python source instead of the compiled build",
     )
+    parser.add_argument(
+        "--compiled",
+        action="store_true",
+        help='ship the compiled build although plugin.json says "compiled": false',
+    )
     args = parser.parse_args()
+    if args.plain and args.compiled:
+        parser.error("--plain or --compiled, not both")
+    manifest = json.loads((ROOT / "plugin.json").read_text(encoding="utf-8"))
+    compiled = args.compiled or (ships_compiled(manifest) and not args.plain)
 
     if args.publish:
         from commit_before_store import commit_and_push_before_publish
 
         commit_and_push_before_publish(ROOT, args.changelog)
-    # The Store gets the compiled build: no Python source ships, and the license check is baked in.
-    zip_path = build_zip() if args.plain else build_compiled_zip(release=args.publish)
+    # A compiled build ships no Python source and has the license check baked in; a plain one is the source.
+    zip_path = build_compiled_zip(release=args.publish) if compiled else build_zip()
     if args.publish:
         publish(zip_path, category=args.category, changelog=args.changelog)
     else:

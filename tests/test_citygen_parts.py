@@ -1,6 +1,6 @@
-"""citygen is one module written across files. The Store build has no .py files to read, so Ducky's build
+"""citygen is one module written across files. A compiled build has no .py files to read, so Ducky's build
 engine compiles the files named in the marked list of citygen/__init__.py into the module itself. These
-hold that list to the files on disk: a part left out of it would be missing from every Store build."""
+hold that list to the files on disk: a part left out of it would be missing from every compiled build."""
 
 import ast
 import sys

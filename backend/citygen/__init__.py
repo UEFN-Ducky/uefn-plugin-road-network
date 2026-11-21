@@ -13,7 +13,7 @@ from __future__ import annotations
 # every name (privates too) stays `citygen.X` and a test that patches `cg.X` still reaches every caller. A part
 # may use any name an earlier part defined; relative imports in them climb one more level (`from .. import`).
 #
-# The Store build has no .py files to read: Ducky's build engine sees the mark on the list below, compiles the
+# A compiled build has no .py files to read: Ducky's build engine sees the mark on the list below, compiles the
 # listed files into this module (their source goes where the list is) and leaves the list empty, so the loop
 # under it runs nothing there. For that, every part starts with this file's own `from __future__` line, and a
 # new part is one more name in the list (tests/test_citygen_parts.py holds both).
