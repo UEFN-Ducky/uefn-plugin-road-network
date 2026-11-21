@@ -621,16 +621,20 @@ def weld_ends(actors: dict, edge: dict | None = None) -> int:
         return [every[k] for k in sorted(ks)]
     # every freeway / highway open end: one that sits on another actor's end is that road going on (the highway
     # starting on a freeway's tip). It stays there: slid to the freeway's edge it stood 2.5 m off the tip, joined
-    # nothing, and the freeway ran on past it 200 m along the highway (Nov 18 2026)
-    tips = []
+    # nothing, and the freeway ran on past it 200 m along the highway (Nov 18 2026). A highway's end on a city's
+    # gate stub (a street's open end) is that street going on too: welded to the stub's nearest-level point 20 m
+    # back, its last 39 m lay on top of the street (Riverton, seed 3, Nov 20 2026)
+    tips, stubs = [], []
     for label, a in actors.items():
-        if label.endswith(("Freeways", "Highways")):
-            deg: dict = {}
-            for s in a["segments"]:
-                if s["mesh"]:
-                    for i in (s["a"], s["b"]):
-                        deg[i] = deg.get(i, 0) + 1
-            tips += [(label, p) for p in a["points"] if deg.get(p["i"]) == 1]
+        if label.endswith((" Docks", " Canals", " Paths", " Access")):
+            continue
+        deg: dict = {}
+        for s in a["segments"]:
+            if s["mesh"]:
+                for i in (s["a"], s["b"]):
+                    deg[i] = deg.get(i, 0) + 1
+        (tips if label.endswith(("Freeways", "Highways")) else stubs).extend(
+            (label, p) for p in a["points"] if deg.get(p["i"]) == 1)
     moved = 0
     for label, a in actors.items():
         if not label.endswith(("Freeways", "Highways")):
@@ -644,9 +648,10 @@ def weld_ends(actors: dict, edge: dict | None = None) -> int:
             p = by.get(i)
             if not p or len(ss) != 1 or not ss[0]["mesh"] or (p["mesh"] and p["mesh"] not in CONNECTOR_HALF):
                 continue  # only a road's own open end (one with its connector is welded again: its road may move)
-            other = next((q for lab2, q in tips if lab2 != label and math.hypot(q["x"] - p["x"], q["y"] - p["y"]) < 50), None)
+            ends = tips + stubs if label.endswith("Highways") else tips
+            other = next((q for lab2, q in ends if lab2 != label and math.hypot(q["x"] - p["x"], q["y"] - p["y"]) < 50), None)
             if other:
-                if label.endswith("Highways") and abs(other["z"] - p["z"]) > 1:  # (the freeway's height wins)
+                if label.endswith("Highways") and abs(other["z"] - p["z"]) > 1:  # (the freeway's / street's height wins)
                     p["z"] = other["z"]
                     st.retangent(by, ss[0])
                     moved += 1

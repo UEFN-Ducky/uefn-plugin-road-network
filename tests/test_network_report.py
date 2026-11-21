@@ -1,3 +1,4 @@
+import math
 import sys
 from pathlib import Path
 
@@ -55,6 +56,19 @@ def test_sheds_side_by_side_get_drives_that_branch_not_stack():
     acc = cg.access_actor({"private": {"streets": drives}}, [], lambda x, y: 0.0, FOLDER)
     assert not cg.network_report({"A": acc})["stacked"], drives
     assert all(d[1][0] > 1000 for d in drives[1:]), "the further sheds drive to the first's drive, not all the way"
+
+
+def test_a_highway_on_a_gate_stub_stays_on_its_end_never_along_the_street():
+    # the stub's point 20 m back lies nearer the highway's height: welded there, the highway lay on the street
+    town = cg.build_actor({0: [0, 0], 1: [2000, 0], 2: [4000, 0]}, [[0, 1, "4L"], [1, 2, "4L"]],
+                          lambda x, y: -x / 10, FOLDER)
+    hw = street({0: [4000, 0], 1: [12000, 1000]}, [[0, 1, "4L"]])
+    out = {"Town Roads": town, "Highways": hw}
+    cg.weld_ends(out)
+    tip = next(p for p in town["points"] if round(p["x"]) == 4000)
+    end = next(p for p in hw["points"] if math.hypot(p["x"] - 4000, p["y"]) < 1500)
+    assert (round(end["x"]), round(end["y"]), round(end["z"])) == (4000, 0, round(tip["z"])), (end, tip)
+    assert not cg.network_report(out)["stacked"]
 
 
 @pytest.mark.parametrize("seed", [3, 7, 11])
