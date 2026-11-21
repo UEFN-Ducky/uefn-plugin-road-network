@@ -94,18 +94,20 @@ def stage(grid, cfg, noise, maps):
     mtn = maps.get('mountains')
     rng = random.Random(cfg.get('seed', 0) * 7919 + 17)
 
-    # --- fields (smooth ones on a lattice: grid.field) ---
-    big = grid.field(lambda x, y: noise.fbm(x / (2.5 * shelf) + 41.3, y / (2.5 * shelf) - 7.7, 3), shelf / 8)
-    mid = grid.field(lambda x, y: noise.fbm(x / (0.6 * shelf) - 13.1, y / (0.6 * shelf) + 22.9, 3), shelf / 8)
-    swell = grid.field(lambda x, y: noise.fbm(x / 3000.0 + 3.3, y / 3000.0 + 8.8, 4), 200.0)
-    knoll = grid.field(lambda x, y: noise.fbm(x / 650.0 - 5.5, y / 650.0 + 1.1, 4), 100.0)
-    crest = grid.field(lambda x, y: noise.ridged(x / 2400.0 + 9.9, y / 2400.0 - 3.1, 4), 150.0)
+    # --- fields (smooth ones on a lattice: grid.field), read only in the sea branch below ---
+    def sea(k):
+        return cd_raw[k] < 0
+    big = grid.field(lambda x, y: noise.fbm(x / (2.5 * shelf) + 41.3, y / (2.5 * shelf) - 7.7, 3), shelf / 8, sea)
+    mid = grid.field(lambda x, y: noise.fbm(x / (0.6 * shelf) - 13.1, y / (0.6 * shelf) + 22.9, 3), shelf / 8, sea)
+    swell = grid.field(lambda x, y: noise.fbm(x / 3000.0 + 3.3, y / 3000.0 + 8.8, 4), 200.0, sea)
+    knoll = grid.field(lambda x, y: noise.fbm(x / 650.0 - 5.5, y / 650.0 + 1.1, 4), 100.0, sea)
+    crest = grid.field(lambda x, y: noise.ridged(x / 2400.0 + 9.9, y / 2400.0 - 3.1, 4), 150.0, sea)
 
     def basin_fn(x, y):
         wx, wy = noise.warp(x, y, 900.0, 2500.0)
         return noise.fbm(wx / 1800.0 + 77.0, wy / 1800.0 - 19.0, 3)
-    basin = grid.field(basin_fn, 150.0)
-    ripple = array('d', (noise.fbm(x / 90.0 + 0.3, y / 90.0 - 0.6, 2) for _, x, y in grid.points())) \
+    basin = grid.field(basin_fn, 150.0, sea)
+    ripple = grid.field(lambda x, y: noise.fbm(x / 90.0 + 0.3, y / 90.0 - 0.6, 2), 0.0, sea) \
         if cell < 45.0 else grid.new()
 
     # beach suitability B = C (the band below) x S (gentle ground) x G (soft rock, away from the ranges)

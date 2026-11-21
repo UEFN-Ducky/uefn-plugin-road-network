@@ -27,12 +27,15 @@ class Grid:
                 yield k, x, y
                 k += 1
 
-    def field(self, fn, step: float) -> array:
+    def field(self, fn, step: float, where=None) -> array:
         """fn(x, y) for every cell. A smooth field (features >> step) is evaluated on a lattice at world multiples
-        of `step` metres and filled in bilinearly: same values on any grid size, a fraction of the noise calls."""
+        of `step` metres and filled in bilinearly: same values on any grid size, a fraction of the noise calls.
+        `where(k)` false: the caller never reads cell k, so a per-cell field leaves it 0 (the lattice fills all)."""
         n = self.n
         if step <= self.cell * 1.5:
-            return array('d', (fn(x, y) for _, x, y in self.points()))
+            if where is None:
+                return array('d', (fn(x, y) for _, x, y in self.points()))
+            return array('d', (fn(x, y) if where(k) else 0.0 for k, x, y in self.points()))
         a0, b0 = math.floor(self.xs[0] / step), math.floor(self.ys[0] / step)
         na, nb = math.floor(self.xs[-1] / step) - a0 + 2, math.floor(self.ys[-1] / step) - b0 + 2
         lat = [[fn((a0 + a) * step, (b0 + b) * step) for a in range(na)] for b in range(nb)]
