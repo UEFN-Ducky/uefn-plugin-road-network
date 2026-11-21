@@ -16,8 +16,12 @@ The worker starts on the first call, closes when nothing has called it for IDLE_
 call that left it holding more than its memory limit: all of its memory goes back to Windows, and the
 next call starts a fresh one. When it cannot start, the call runs in the caller, as it always did.
 
-    CITY_BUILDER_WORKER=1     on (off unless set, until it has been checked inside the installed app)
-    CITY_BUILDER_WORKER_MB=N  the memory limit, in MB
+On or off is this PC's choice, kept as a file in the plugin's own folder (`Link.switch`, the
+road_network_worker tool); off until it is switched on. It is read for every call, so the switch
+takes effect at once.
+
+    CITY_BUILDER_WORKER=1 / 0  on / off whatever the PC's choice (tests, a trial run)
+    CITY_BUILDER_WORKER_MB=N   the memory limit, in MB
 """
 
 from __future__ import annotations
@@ -77,8 +81,10 @@ class WorkerGone(Exception):
     """The worker closed while it ran a call."""
 
 
-def enabled() -> bool:
-    return os.environ.get("CITY_BUILDER_WORKER", "0").strip().lower() in ("1", "on", "true", "yes")
+def forced() -> bool | None:
+    """CITY_BUILDER_WORKER says on (True) or off (False); None when it says nothing."""
+    said = os.environ.get("CITY_BUILDER_WORKER", "").strip().lower()
+    return True if said in ("1", "on", "true", "yes") else False if said in ("0", "off", "false", "no") else None
 
 
 # ---------------------------------------------------------------- errors across the two processes
@@ -114,9 +120,20 @@ def _stamp(package: str, folder: str = "") -> tuple[str, str, list]:
     """(stamp, origin, search): the stamp changes with the plugin's code, so an updated plugin never talks to a
     worker that still runs the old code (that one closes when it has been idle). It is the folder's too: a
     second Ducky on this PC with its own data (a test copy) gets a worker of its own."""
-    spec = sys.modules[package].__spec__
-    origin = str(spec.origin or "")
-    search = [str(p) for p in (spec.submodule_search_locations or [])]
+    module = sys.modules[package]
+    spec = module.__spec__
+    origin = str(getattr(spec, "origin", "") or getattr(module, "__file__", "") or "")
+    search = [str(p) for p in (getattr(spec, "submodule_search_locations", None) or [])]
+    if origin and not os.path.isfile(origin):
+        # A compiled build is one extension file, and names a folder that is not on disk as its own
+        # (<plugin>/<package>/__init__.py for <plugin>/<package>.cp313-win_amd64.pyd): the file is what loads.
+        root = os.path.dirname(os.path.dirname(origin))
+        try:
+            built = sorted(f for f in os.listdir(root) if f.startswith(package + ".") and f.lower().endswith((".pyd", ".so")))
+        except OSError:
+            built = []
+        if built:
+            origin, search = os.path.join(root, built[-1]), []
     newest, size = 0, 0
     try:
         if origin.lower().endswith((".pyd", ".so")):
@@ -154,9 +171,39 @@ class Link:
         self._down_until = 0.0
         self._said = ""
         self._gave_up = -1e9  # when this process last asked for the running work to be stopped
+        self._on, self._on_read = False, -1e9
 
     def provide(self, **objects) -> None:
         self.objects.update(objects)
+
+    # ---- on or off, for this PC
+    def _flag(self) -> str:
+        return os.path.join(self.folder, "worker.on")
+
+    def on(self) -> bool:
+        said = forced()
+        if said is not None:
+            return said
+        now = time.monotonic()
+        if now - self._on_read > 2.0:  # (asked before every call: read from disk every two seconds at most)
+            self._on, self._on_read = os.path.exists(self._flag()), now
+        return self._on
+
+    def switch(self, on: bool) -> bool:
+        """This PC's choice. Off also closes a running worker. Returns what `on()` now says."""
+        try:
+            if on:
+                os.makedirs(self.folder, exist_ok=True)
+                with open(self._flag(), "w", encoding="utf-8") as fh:
+                    fh.write("City Builder runs its work in a process of its own on this PC.\n")
+            elif os.path.exists(self._flag()):
+                os.remove(self._flag())
+        except OSError:
+            pass
+        self._on_read = -1e9
+        if not on:
+            self.stop()
+        return self.on()
 
     # ---- reaching it
     def _key(self) -> bytes | None:
@@ -234,7 +281,7 @@ class Link:
     # ---- a call
     def call(self, kind: str, name: str, args: tuple, kwargs: dict, local):
         """Run handler `name` in the worker. `local` is the same handler here: used when there is no worker."""
-        if SERVING or not enabled():
+        if SERVING or not self.on():
             return local(*args, **kwargs)
         try:
             conn = self.connect()
@@ -437,8 +484,8 @@ class NodeShim:
 
 
 def link_for(api) -> Link | None:
-    """This process's link to the worker; None inside the worker and when workers are off."""
-    if SERVING or not enabled():
+    """This process's link to the worker; None inside the worker. Whether it is used is asked per call (`on`)."""
+    if SERVING:
         return None
     try:
         folder = str(api.local_dir() if callable(api.local_dir) else api.local_dir)

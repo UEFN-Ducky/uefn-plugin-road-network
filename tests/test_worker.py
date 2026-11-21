@@ -359,6 +359,9 @@ def test_the_real_plugin_gives_the_same_world_through_the_worker(tmp_path, monke
         backend.register(api)
         try:
             runs[mode] = (api, _flow(api))
+            said = api.tools["road_network_worker"]()  # (answered by the caller itself: it is not a call to the worker)
+            assert said["ok"] and said["on"] is (mode == "1") and said["running"] is (mode == "1")
+            assert (said.get("memory_mb", 0) > 50) is (mode == "1")
         finally:
             if mode == "1":
                 status = worker.Link("backend", str(folder)).status()
@@ -375,6 +378,49 @@ def test_the_real_plugin_gives_the_same_world_through_the_worker(tmp_path, monke
     assert there.data.blobs == here.data.blobs and docs(there.data.docs) == docs(here.data.docs)  # and after the undo
     assert [(what, key) for what, key, _t in there.seen] == [(what, key) for what, key, _t in here.seen]
     assert {t for *_x, t in there.seen} == {threading.current_thread().name}
+
+
+def test_this_pc_switches_it_on_and_off_and_it_is_off_until_then(toy, monkeypatch) -> None:
+    monkeypatch.delenv("CITY_BUILDER_WORKER", raising=False)  # nothing forced: the PC's own choice
+    api = toy()
+    link = [c.cell_contents for c in api.rpcs["count"].__closure__ if isinstance(c.cell_contents, toy.worker.Link)][0]
+    assert link.on() is False and api.rpcs["count"]() == {"n": 1, "pid": os.getpid()}  # off: inside Ducky, as before
+    assert link.status() is None
+    assert link.switch(True) is True and os.path.exists(os.path.join(api.folder, "worker.on"))
+    there = api.rpcs["count"]()  # at once, with no reload of the plugin
+    assert there["n"] == 1 and there["pid"] != os.getpid() and link.status()["calls"] == 1
+    assert toy.link().on() is True  # the choice is the PC's: every Ducky process reads the same file
+    assert link.switch(False) is False and link.status() is None  # off closes the running one too
+    assert api.rpcs["count"]() == {"n": 2, "pid": os.getpid()}
+    monkeypatch.setenv("CITY_BUILDER_WORKER", "1")  # said from outside: it wins over the PC's choice
+    assert link.on() is True
+
+
+def test_a_compiled_build_starts_its_worker_from_the_one_file_it_is(tmp_path) -> None:
+    """A compiled plugin is one extension file, and Python is told its code lives in a folder that is not on
+    disk: <plugin>/<package>/__init__.py for <plugin>/<package>.cp313-win_amd64.pyd (seen Nov 20 2026)."""
+    import types
+    from importlib.machinery import ModuleSpec
+
+    plugin = tmp_path / "road-network"
+    plugin.mkdir()
+    built = plugin / "uefn_plugin_x_v2000000.cp313-win_amd64.pyd"
+    built.write_bytes(b"MZ")
+    (plugin / "uefn_plugin_x_v2000000_other.cp313-win_amd64.pyd").write_bytes(b"MZ")  # another package's file
+    name = "uefn_plugin_x_v2000000"
+    module = types.ModuleType(name)
+    module.__spec__ = ModuleSpec(name, None, origin=str(plugin / name / "__init__.py"))
+    module.__spec__.submodule_search_locations = [str(plugin / name), "\\not_existing"]
+    sys.modules[name] = module
+    try:
+        stamp, origin, search = worker._stamp(name, str(tmp_path / "data"))
+        assert origin == str(built) and search == [] and len(stamp) == 20
+        built.unlink()
+        (plugin / "uefn_plugin_x_v2000000_other.cp313-win_amd64.pyd").unlink()
+        _stamp2, origin, _search = worker._stamp(name, str(tmp_path / "data"))
+        assert not os.path.isfile(origin)  # nothing to load a second time: link_for() gives no link, the old way
+    finally:
+        sys.modules.pop(name, None)
 
 
 def test_only_the_callers_side_reaches_into_ducky() -> None:

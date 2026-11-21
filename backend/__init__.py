@@ -403,3 +403,23 @@ def register(api) -> None:
                  tools_mcp, tools_notes, tools_pcg_mcp, tools_panel):
         part.register(ctx)
     ctx.check()
+
+    if cb_link is not None:
+        @api.tool(intent=getattr(ctx, "INTENT", ""), listener=False)
+        def road_network_worker(on: str = "") -> dict:
+            """City Builder's own process on this PC. With it on, previews, rebuilds and builds run outside
+            Ducky's window: the window, the chats and other plugins stay smooth while City Builder works, and
+            its memory is given back three minutes after the last call. Answers whether it is on, whether one
+            is running, and how much it holds. on='yes' or on='no' switches it for this PC (off: the work runs
+            inside Ducky, as before); it takes effect at once."""
+            want = str(on or "").strip().lower()
+            if want in ("yes", "on", "true", "1"):
+                cb_link.switch(True)
+            elif want in ("no", "off", "false", "0"):
+                cb_link.switch(False)
+            elif want:
+                return {"ok": False, "error": "on is 'yes' or 'no' (or leave it out to only look)."}
+            running = cb_link.status()
+            return {"ok": True, "on": cb_link.on(), "running": bool(running), **(
+                {"memory_mb": running["memory_mb"], "calls": running["calls"], "doing": running["running"],
+                 "limit_mb": running["limit_mb"]} if running else {})}
