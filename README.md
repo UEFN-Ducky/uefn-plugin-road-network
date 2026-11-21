@@ -18,6 +18,30 @@ Install it from the UEFN Ducky Store (City Builder), or load this folder as a pl
 
 Most backend modules carry their own self-checks: `py -3 -m backend.splines_text`, for example.
 
+## The worker process
+
+City Builder's work runs in one process of its own on the PC (`backend/worker.py`), not inside Ducky's window:
+a preview or a rebuild no longer slows the window, the chats and the other plugins, and the hundreds of MB a
+placement holds are given back when the worker closes (3 minutes after the last call).
+
+- Every Ducky process still registers the plugin, but each panel call, tool and workflow node is passed to the
+  worker. The parts (`backend/tools_*.py`) run there, so their caches, locks and progress exist once.
+- What belongs to Ducky stays with the process that asked, and is called back there on the thread that made
+  the call: `data` (the store and its history), `api` (UEFN, Ducky's tools), `actor`, `team_live`, the holds,
+  `push`, `record`, `epic_call`.
+
+Rules when changing the backend:
+
+1. A part never imports Ducky's own modules (`frontend.*`, `backend.*` of the app). Take what you need from `ctx`.
+2. A new helper in `register()` that keeps state on this PC for the person (like the holds), or that imports
+   Ducky's modules, belongs to the caller: add its name to both lists in `register()` (`api.caller(...)` and
+   `cb_link.provide(...)`).
+3. Arguments and answers of a panel call, a tool or a node are plain data (they already are: JSON).
+
+`tests/test_worker.py` holds the plugin to this: it runs the whole backend in one process and through the worker
+and compares every answer, the stored docs and files, and every call into Ducky. `CITY_BUILDER_WORKER=0` runs
+everything in the caller, the old way.
+
 ## Contributing
 
 Issues and pull requests are welcome. Keep changes small and include the self-check that covers them.

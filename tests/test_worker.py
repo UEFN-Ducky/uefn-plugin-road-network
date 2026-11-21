@@ -375,3 +375,38 @@ def test_the_real_plugin_gives_the_same_world_through_the_worker(tmp_path, monke
     assert there.data.blobs == here.data.blobs and docs(there.data.docs) == docs(here.data.docs)  # and after the undo
     assert [(what, key) for what, key, _t in there.seen] == [(what, key) for what, key, _t in here.seen]
     assert {t for *_x, t in there.seen} == {threading.current_thread().name}
+
+
+def test_only_the_callers_side_reaches_into_ducky() -> None:
+    """The parts run in the worker, where Ducky's own modules must never be imported: what a part needs of
+    Ducky it takes from ctx, and backend/__init__.py register() hands the worker the caller's own for it.
+    So Ducky's modules are imported in __init__.py only, inside functions the worker is given as the caller's."""
+    import ast
+
+    handed_over = set()
+    tree = ast.parse((REPO / "backend" / "__init__.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):  # api.caller("actor team_live ...") names what the worker takes from the caller
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "caller"
+                and node.args and isinstance(node.args[0], (ast.Constant, ast.BinOp, ast.JoinedStr))):
+            handed_over |= set(ast.literal_eval(node.args[0]).split())
+    assert {"actor", "team_live", "push", "epic_call", "held_cities", "held_lock"} <= handed_over
+
+    def ducky_imports(tree_: ast.AST) -> list:
+        found = []
+        for node in ast.walk(tree_):
+            names = ([node.module or ""] if isinstance(node, ast.ImportFrom) and node.level == 0
+                     else [a.name for a in node.names] if isinstance(node, ast.Import) else [])
+            found += [(n, node.lineno) for n in names if n.split(".")[0] in ("frontend", "backend")]
+        return found
+
+    wrong = []
+    for path in sorted((REPO / "backend").rglob("*.py")):
+        if path.name == "__init__.py" and path.parent == REPO / "backend":
+            continue
+        wrong += [f"{path.relative_to(REPO)}:{line} imports {name}" for name, line in ducky_imports(
+            ast.parse(path.read_text(encoding="utf-8")))]
+    assert not wrong, wrong
+    register = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "register")
+    for fn in [n for n in ast.walk(register) if isinstance(n, ast.FunctionDef) and n is not register]:
+        if ducky_imports(fn):
+            assert fn.name in handed_over, f"{fn.name}() imports Ducky's modules but the worker is not given the caller's"
