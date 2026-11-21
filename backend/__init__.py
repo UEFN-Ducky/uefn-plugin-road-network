@@ -26,6 +26,7 @@ from . import editor_heal
 from . import history
 from . import holds as hd
 from . import uefn_memory
+from . import worker
 
 CHUNK = 1000
 
@@ -87,34 +88,53 @@ class Ctx:
 
 
 def register(api) -> None:
+    # The plugin's work runs in a process of its own (worker.py). cb_served: this IS that process, and `api` is
+    # its stand-in for the caller's. cb_link: any other Ducky process, which passes its calls there (None: off).
+    cb_served = bool(getattr(api, "city_builder_worker", False))
+    cb_link = worker.link_for(api)
     # everything this plugin stores goes through `data`: history.Recorder remembers what each step changed, on
     # this PC only (the plugin's own folder), so the panel can undo and redo it
-    data = history.Recorder(api.data, lambda: os.path.join(str(api.local_dir() if callable(api.local_dir) else api.local_dir), "history"))
+    # (in the worker `data` is the caller's own recorder: a step is opened, kept and undone where the call came from)
+    data = api.data if cb_served else history.Recorder(
+        api.data, lambda: os.path.join(str(api.local_dir() if callable(api.local_dir) else api.local_dir), "history"))
     pid_ = api.plugin_id
 
     def panel_rpc(name: str, fn) -> None:
         """A panel call. Whatever it changes in a world is one step of that world's history."""
-        if name in NOT_STEPS:
+        if cb_served:  # (its caller opened the step and passed the call here)
             return api.register_panel_rpc(name, fn)
+        call = worker.forward(cb_link, "rpc", name, fn)
+        if name == "generate_stop" and cb_link is not None:
+            # Stop ends a rebuild at its next stage (the plugin's own flag, set by the call below). One that is
+            # still working things out seconds later, with nothing saved yet, is ended with the worker itself.
+            def call(*a, _stop=call, **k):
+                out = _stop(*a, **k)
+                cb_link.give_up()
+                return out
+        if name in NOT_STEPS:
+            return api.register_panel_rpc(name, call)
 
         @functools.wraps(fn)
         def run(*a, **k):
             # (a city edit is followed by the rebuild it asked for: the two are one step, history.Recorder.step)
             with data.step(step_label(name, k), opens=name in ("city_save", "city_add", "city_delete", "lake_save", "lake_delete"),
                            joins=name in ("generate", "pipeline")):
-                return fn(*a, **k)
+                return call(*a, **k)
         return api.register_panel_rpc(name, run)
 
     def tool(**kw):
         """An agent tool, the same way: what a ducky changes can be undone like what the person changed."""
         def deco(fn):
-            if fn.__name__.replace("road_network_", "") in NOT_STEPS:
+            if cb_served:
                 return api.tool(**kw)(fn)
+            call = worker.forward(cb_link, "tool", fn.__name__, fn)
+            if fn.__name__.replace("road_network_", "") in NOT_STEPS:
+                return api.tool(**kw)(call)
 
             @functools.wraps(fn)
             def run(*a, **k):
                 with data.step(step_label(fn.__name__, k)):
-                    return fn(*a, **k)
+                    return call(*a, **k)
             return api.tool(**kw)(run)
         return deco
 
@@ -322,16 +342,19 @@ def register(api) -> None:
                 continue
         raise TimeoutError(f"UEFN is still busy with {command} after {round(timeout)} s.")
 
-    def epic(toolset: str, tool: str, arguments: dict, timeout: float = 120):
+    def epic_call(toolset: str, tool: str, arguments: dict, timeout: float = 120):
+        """One call through Ducky's Epic pool, as text or a dict. The pool is Ducky's: always the caller's side."""
         # Same route as Ducky's own Epic callers: the pool keeps the nested arguments intact
         # (api.call_tool's dispatcher drops them for unreal__call_tool).
         from backend.mcp_plugins.client_pool import get_plugin_pool
         pool = get_plugin_pool()
-        out = editor_heal.retry_once(lambda: uefn_memory.metered(f"{toolset.rsplit('.', 1)[-1]}.{tool}", lambda: pool.run_sync(
-            pool.call_tool("unreal__call_tool", {"toolset_name": toolset, "tool_name": tool, "arguments": arguments}),
-            timeout=timeout)), api.call_tool)
-        if not isinstance(out, (str, dict)):
-            out = getattr(out, "text", None) or str(out)
+        out = pool.run_sync(pool.call_tool("unreal__call_tool", {
+            "toolset_name": toolset, "tool_name": tool, "arguments": arguments}), timeout=timeout)
+        return out if isinstance(out, (str, dict)) else (getattr(out, "text", None) or str(out))
+
+    def epic(toolset: str, tool: str, arguments: dict, timeout: float = 120):
+        out = editor_heal.retry_once(lambda: uefn_memory.metered(
+            f"{toolset.rsplit('.', 1)[-1]}.{tool}", lambda: epic_call(toolset, tool, arguments, timeout)), api.call_tool)
         if isinstance(out, str):
             try:
                 out = json.loads(out)
@@ -340,6 +363,20 @@ def register(api) -> None:
         if isinstance(out, dict) and out.get("ok") is False:
             raise ValueError(str(out.get("error") or out)[:300])
         return out
+
+    # ---------------------------------------------------------------- the worker and its caller
+    if cb_served:
+        # What belongs to Ducky and to the process that asked stays there, and each use of it here is answered by
+        # that process's own (worker.Remote): who is calling, the holds, events, change records, Ducky's Epic pool.
+        # Everything above that only works things out, and every part below, runs here.
+        (actor, team_live, city_guard, hold, release, holds, record, push, epic_call, held_cities,
+         held_lock) = api.caller("actor team_live city_guard hold release holds record push epic_call "
+                                 "held_cities held_lock")
+    elif cb_link is not None:
+        cb_link.provide(api=api, data=data, actor=actor, team_live=team_live, city_guard=city_guard, hold=hold,
+                        release=release, holds=holds, record=record, push=push, epic_call=epic_call,
+                        held_cities=held_cities, held_lock=held_lock)
+        api = worker.NodeShim(api, cb_link)  # (a workflow node the parts register runs in the worker too)
 
     # ---------------------------------------------------------------- the tools, panel RPCs and nodes
     # (imported here, not at the top: they import this module's constants); registered in this order
