@@ -438,7 +438,7 @@ class NodeShim:
 
 def link_for(api) -> Link | None:
     """This process's link to the worker; None inside the worker and when workers are off."""
-    if SERVING or not enabled() or getattr(api, "city_builder_worker", False):
+    if SERVING or not enabled():
         return None
     try:
         folder = str(api.local_dir() if callable(api.local_dir) else api.local_dir)

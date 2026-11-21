@@ -18,6 +18,7 @@ import functools
 import json
 import os
 import re
+import sys
 import threading
 import time
 
@@ -87,11 +88,25 @@ class Ctx:
             raise NameError(f"backend/tools_*.py take names no part defines: {missing}")
 
 
+def _ducky_starts_workers() -> bool:
+    """Can this Ducky start a process for the plugin? Run from source: yes. The installed app: from 1.2.111
+    (Sep 16 2026), whose EXE lets a process it starts be something other than a second Ducky. An older one
+    would open another Ducky window instead, so there everything stays in the caller."""
+    if not getattr(sys, "frozen", False):
+        return True
+    try:
+        from frontend import __version__
+        return tuple(int(part) for part in str(__version__).split(".")[:3]) >= (1, 2, 111)
+    except Exception:  # noqa: BLE001 - a version that cannot be read: the old way
+        return False
+
+
 def register(api) -> None:
     # The plugin's work runs in a process of its own (worker.py). cb_served: this IS that process, and `api` is
     # its stand-in for the caller's. cb_link: any other Ducky process, which passes its calls there (None: off).
-    cb_served = bool(getattr(api, "city_builder_worker", False))
-    cb_link = worker.link_for(api)
+    # (worker.SERVING, never a question to `api`: Ducky notes every member of its api a register() touches)
+    cb_served = worker.SERVING
+    cb_link = worker.link_for(api) if _ducky_starts_workers() else None
     # everything this plugin stores goes through `data`: history.Recorder remembers what each step changed, on
     # this PC only (the plugin's own folder), so the panel can undo and redo it
     # (in the worker `data` is the caller's own recorder: a step is opened, kept and undone where the call came from)

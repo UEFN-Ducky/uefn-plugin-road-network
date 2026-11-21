@@ -46,7 +46,7 @@ class Refused(PermissionError):
 
 
 def register(api):
-    served = bool(getattr(api, "city_builder_worker", False))
+    served = worker.SERVING
     link = worker.link_for(api)
     if served:
         data = api.data
