@@ -14,6 +14,10 @@ as on only when it is lit.
 from __future__ import annotations
 
 import ctypes
+import os
+import shutil
+import subprocess
+import sys
 import time
 from ctypes import wintypes
 
@@ -28,6 +32,18 @@ TITLE = "Unreal Editor for Fortnite"
 _MOUSE_DOWN, _MOUSE_UP = 0x0002, 0x0004
 _KEY_UP = 0x0002
 _VK_CONTROL, _VK_V, _VK_ESCAPE = 0x11, 0x56, 0x1B
+
+
+def set_clipboard(text: str, check: bool = False) -> None:
+    """Put text on this PC's clipboard for a Ctrl+V into UEFN."""
+    if sys.platform == "win32":
+        subprocess.run(["clip"], input=text.encode("utf-16le"), creationflags=0x08000000, check=check)
+        return
+    # Linux: UEFN under Proton reads the desktop clipboard through Wine.
+    cmd = ["wl-copy"] if os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-copy") else ["xclip", "-selection", "clipboard"]
+    if not shutil.which(cmd[0]):
+        raise RuntimeError("Copying splines for UEFN needs wl-clipboard or xclip: install one (sudo apt install xclip).")
+    subprocess.run(cmd, input=text.encode("utf-8"), check=check)
 
 
 def _user32():

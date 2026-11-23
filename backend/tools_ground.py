@@ -4,13 +4,13 @@ Handlers moved out of backend/__init__.py register(): ctx carries what the parts
 
 from __future__ import annotations
 
-import subprocess
 import time
 
 from . import citygen as cg
 from . import ramp_joins
 from . import road_profiles as rp
 from . import splines_text as st
+from . import uefn_input
 from . import CHUNK
 
 
@@ -344,7 +344,7 @@ def register(ctx) -> None:
         head, text = text_for(net_id, actor)
         if not head:
             return {"ok": False, "error": f"No actor {actor!r} in network {net_id!r}."}
-        subprocess.run(["clip"], input=text.encode("utf-16le"), creationflags=0x08000000, check=False)
+        uefn_input.set_clipboard(text)
         return {"ok": True, "label": head["label"], "chars": len(text),
                 "note": "On the clipboard. In UEFN: Landscape mode > Manage > Splines, hover the viewport, Ctrl+V."}
 

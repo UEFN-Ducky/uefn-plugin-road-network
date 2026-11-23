@@ -8,7 +8,6 @@ import hashlib
 import json
 import math
 import re
-import subprocess
 import time
 
 from . import citygen as cg
@@ -261,7 +260,7 @@ def register(ctx) -> None:
         try:
             before = listener("road_network_count", {"label": label})
             # same PC: the clipboard is set here, never pushed through the listener socket (MBs abort it)
-            subprocess.run(["clip"], input=text.encode("utf-16le"), creationflags=0x08000000, check=True)
+            uefn_input.set_clipboard(text, check=True)
             if before.get("path"):
                 epic("EditorToolset.LevelToolset", "RemoveFromScene", {"actor": {"refPath": before["path"]}})
             epic("EditorToolset.EditorAppToolset", "SetEditorMode", {"modeId": "EM_Landscape"})
